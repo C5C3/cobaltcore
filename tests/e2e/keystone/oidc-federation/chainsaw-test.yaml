@@ -36,7 +36,10 @@ spec:
     # finalizer deprovisions its domain THROUGH that same Keystone, so its first
     # attempt races the rollout and fails (EOF), then a requeue retries and
     # succeeds ~30s later — past the 30s global delete bound. 2m covers one
-    # failed attempt plus the retry with margin for a slow rollout.
+    # failed attempt plus the retry with margin for a slow rollout. A request
+    # the old pod never answers ends at the identity client's 10-second
+    # request timeout, so a failed first attempt takes at most 20 seconds
+    # before the 30-second requeue.
     delete: 2m
   steps:
   # ── Step 1: Deploy the Keycloak fixture and Keystone; both become ready ──
@@ -70,16 +73,13 @@ spec:
               reason: IdentityBackendsNotRequired
     catch:
     - script:
+        timeout: 90s
         content: |
           echo "=== Keystone CR ==="
           kubectl get keystone keystone-oidc -n $NAMESPACE -o yaml 2>&1 || true
           echo "=== keycloak pod logs ==="
           kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=keycloak --tail=80 2>&1 || true
-          echo "=== operator logs ==="
-          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 2>&1 || true
-          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 --previous 2>&1 || true
-          echo "=== Events ==="
-          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          ../../lib/dump-identity-backend-diagnostics.sh $NAMESPACE keystone-oidc || true
   # ── Step 2: Late-attach the cobaltcore backend; every condition converges ────
   - try:
     - apply:
@@ -122,6 +122,7 @@ spec:
             - status: "True"
     catch:
     - script:
+        timeout: 90s
         content: |
           echo "=== Backend CR ==="
           kubectl get keystoneidentitybackend keycloak-cobaltcore -n $NAMESPACE -o yaml 2>&1 || true
@@ -133,11 +134,7 @@ spec:
           kubectl logs -n $NAMESPACE -l app.kubernetes.io/instance=keystone-oidc --all-containers --tail=80 2>&1 || true
           echo "=== keycloak pod logs ==="
           kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=keycloak --tail=60 2>&1 || true
-          echo "=== operator logs ==="
-          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 2>&1 || true
-          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 --previous 2>&1 || true
-          echo "=== Events ==="
-          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          ../../lib/dump-identity-backend-diagnostics.sh $NAMESPACE keystone-oidc || true
   # ── Step 3: The pod carries the sidecar; the Service targets the proxy ──
   - try:
     - assert:
@@ -173,6 +170,7 @@ spec:
               targetPort: 5050
     catch:
     - script:
+        timeout: 90s
         content: |
           echo "=== Keystone Deployment ==="
           kubectl get deployment keystone-oidc -n $NAMESPACE -o yaml 2>&1 || true
@@ -182,11 +180,7 @@ spec:
           kubectl get keystone keystone-oidc -n $NAMESPACE -o yaml 2>&1 || true
           echo "=== sidecar logs ==="
           kubectl logs -n $NAMESPACE -l app.kubernetes.io/instance=keystone-oidc -c federation-proxy --tail=60 2>&1 || true
-          echo "=== operator logs ==="
-          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 2>&1 || true
-          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 --previous 2>&1 || true
-          echo "=== Events ==="
-          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          ../../lib/dump-identity-backend-diagnostics.sh $NAMESPACE keystone-oidc || true
   # ── Step 4: CLI flow — IdP bearer token through the introspection path ──
   - try:
     - script:
@@ -269,6 +263,7 @@ spec:
           '
     catch:
     - script:
+        timeout: 90s
         content: |
           echo "=== Backend CR ==="
           kubectl get keystoneidentitybackend keycloak-cobaltcore -n $NAMESPACE -o yaml 2>&1 || true
@@ -280,8 +275,7 @@ spec:
           kubectl logs -n $NAMESPACE -l app.kubernetes.io/instance=keystone-oidc -c federation-proxy --tail=80 2>&1 || true
           echo "=== keycloak pod logs ==="
           kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=keycloak --tail=60 2>&1 || true
-          echo "=== Events ==="
-          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          ../../lib/dump-identity-backend-diagnostics.sh $NAMESPACE keystone-oidc || true
   # ── Step 5: Browser websso flow — full authorization-code round trip ────
   - try:
     - script:
@@ -368,6 +362,7 @@ spec:
           '
     catch:
     - script:
+        timeout: 90s
         content: |
           echo "=== sidecar logs ==="
           kubectl logs -n $NAMESPACE -l app.kubernetes.io/instance=keystone-oidc -c federation-proxy --tail=100 2>&1 || true
@@ -375,8 +370,7 @@ spec:
           kubectl logs -n $NAMESPACE -l app.kubernetes.io/instance=keystone-oidc -c keystone --tail=80 2>&1 || true
           echo "=== keycloak pod logs ==="
           kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=keycloak --tail=60 2>&1 || true
-          echo "=== Events ==="
-          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          ../../lib/dump-identity-backend-diagnostics.sh $NAMESPACE keystone-oidc || true
   # ── Step 6: Second realm — the multi-realm proof ─────────────────────────
   - try:
     - apply:
@@ -454,6 +448,7 @@ spec:
           '
     catch:
     - script:
+        timeout: 90s
         content: |
           echo "=== Backend CRs ==="
           kubectl get keystoneidentitybackend -n $NAMESPACE -o yaml 2>&1 || true
@@ -461,11 +456,7 @@ spec:
           kubectl get keystone keystone-oidc -n $NAMESPACE -o yaml 2>&1 || true
           echo "=== sidecar logs ==="
           kubectl logs -n $NAMESPACE -l app.kubernetes.io/instance=keystone-oidc -c federation-proxy --tail=80 2>&1 || true
-          echo "=== operator logs ==="
-          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 2>&1 || true
-          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 --previous 2>&1 || true
-          echo "=== Events ==="
-          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          ../../lib/dump-identity-backend-diagnostics.sh $NAMESPACE keystone-oidc || true
   # ── Step 7: Detach — sidecar removed, objects torn down, domains gone ───
   - try:
     - delete:
@@ -572,6 +563,7 @@ spec:
           ' "$ADMIN_PASSWORD"
     catch:
     - script:
+        timeout: 90s
         content: |
           echo "=== Backend CRs (if still present) ==="
           kubectl get keystoneidentitybackend -n $NAMESPACE -o yaml 2>&1 || true
@@ -579,8 +571,4 @@ spec:
           kubectl get keystone keystone-oidc -n $NAMESPACE -o yaml 2>&1 || true
           echo "=== Keystone Deployment ==="
           kubectl get deployment keystone-oidc -n $NAMESPACE -o yaml 2>&1 || true
-          echo "=== operator logs ==="
-          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 2>&1 || true
-          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 --previous 2>&1 || true
-          echo "=== Events ==="
-          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          ../../lib/dump-identity-backend-diagnostics.sh $NAMESPACE keystone-oidc || true

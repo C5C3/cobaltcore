@@ -572,6 +572,17 @@ rollout, the SP-metadata export, OIDC/SAML coexistence, and clean detach —
 lives in `tests/e2e/keystone/saml-federation/`. See
 [Keystone E2E Test Suites](../testing/keystone-e2e-tests.md).
 
+On a failed step, each catch block of the three suites runs
+`tests/e2e/lib/dump-identity-backend-diagnostics.sh` for the suite's
+Keystone. The script prints six sections. The first three hold the
+`KeystoneIdentityBackend` events of the namespace, the Keystone's events and
+the last 30 events of the namespace. The other three read every operator pod:
+30 minutes of its log, filtered to the `KeystoneIdentityBackend` controller and
+the Keystone's name, its last 60 log lines, and its workqueue and reconcile
+metrics. A pass that hangs shows as a growing
+`workqueue_longest_running_processor_seconds` next to a busy worker in
+`controller_runtime_active_workers`.
+
 ## Retained Artefacts
 
 Like the config ConfigMaps, up to 3 historical content-hashed
