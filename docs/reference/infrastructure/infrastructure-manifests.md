@@ -660,9 +660,12 @@ entry never automerges: every bump of this operator is a human decision.
 upstream 0.5.1 release notes require the operator upgrade before an instance moves to
 OpenBao 2.7, and what a 0.4.2 operator does with a 2.7 instance is not verified. Nothing
 enforces the order: the `c5c3-operator` HelmRelease has no `dependsOn` on this release.
-The kind path keeps it, because the overlay applies `openbao-instance` with
-`paused: true` and `hack/deploy-infra.sh` un-pauses it only after every Helm release,
-this one included, is ready. The upgrade from chart 0.4.2 changes three things. The manager and
+On the kind path the overlay applies `openbao-instance` with `paused: true`, and
+`hack/deploy-infra.sh` un-pauses it after the OpenBao bootstrap. The script's Helm
+release wait reads only the `Ready` condition, which a release keeps from the previous
+chart until Flux has installed the new one, so on a re-run the order rests on Flux
+finishing the upgrade before the un-pause. In an in-place upgrade from chart 0.4.2 it
+finished 12 seconds before. The upgrade from chart 0.4.2 changes three things. The manager and
 helper images come from `ghcr.io/kubebao/`. The provisioner requests 64Mi of memory with
 a 128Mi limit, where 0.4.2 set 32Mi and 64Mi. The 0.5.3 `OpenBaoCluster` CRD stores
 `spec.resources`, which the 0.4.2 schema pruned, so the dedicated instance a
