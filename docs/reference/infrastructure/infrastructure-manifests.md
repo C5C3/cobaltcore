@@ -228,7 +228,7 @@ namespace, and poll at `interval: 1h`.
 
 **The openbao-operator chart is sourced from an OCIRepository, not a HelmRepository.**
 `sources/openbao-operator.yaml` addresses the chart artifact directly
-(`oci://ghcr.io/dc-tec/charts/openbao-operator`) and pins `spec.ref.digest` next to
+(`oci://ghcr.io/kubebao/charts/openbao-operator`) and pins `spec.ref.digest` next to
 `spec.ref.tag`. A HelmRepository can only carry a chart *version*, and on a mutable OCI
 tag that gates version drift alone: Flux resolves the tag on every interval and tracks
 the resulting artifact digest, so a re-pushed tag upgrades the release with no Git change
@@ -573,11 +573,11 @@ this layer.
 | --- | --- |
 | Target namespace | `openbao-operator-system` |
 | Chart | `openbao-operator` |
-| Version constraint | `0.4.2`, pinned by artifact digest |
+| Version constraint | `0.5.3`, pinned by artifact digest |
 | Source | `openbao-operator` OCIRepository, referenced via `spec.chartRef` |
 | Dependencies | `cert-manager` in `cert-manager` namespace |
 
-The [openbao-operator](https://github.com/dc-tec/openbao-operator) manages
+The [openbao-operator](https://github.com/kubebao/openbao-operator) manages
 `OpenBaoCluster` instances: static-seal auto-unseal, cert-manager TLS in External mode,
 declarative self-init, raft snapshots, and upgrade strategies. It delivers the
 per-service OpenBao instances a Barbican secret store builds on. The in-repo instance it
@@ -602,10 +602,10 @@ namespace of every ControlPlane, and those namespaces are created at runtime, so
 single watched namespace covers them. Multi-tenant mode covers them: the controller
 reconciles in every namespace an `OpenBaoTenant` has onboarded.
 
-`tenancy.mode` only shapes the chart's own output. The controller reads its tenancy from
-the `WATCH_NAMESPACE` environment variable, and no chart template sets it, so leaving
-`controller.extraEnv` unset is what runs it multi-tenant. A value reintroduced there pins
-the controller to one namespace and strands every other one.
+The controller reads its tenancy from the `WATCH_NAMESPACE` environment variable. The
+chart sets it in `single` mode only, so `tenancy.mode: multi` is what leaves it unset. A
+value reintroduced through `controller.extraEnv` pins the controller to one namespace
+and strands every other one.
 
 Under the chart default (`enforce`) the provisioner holds update and patch on namespaces
 cluster-wide and stamps restricted Pod Security labels onto every namespace it onboards,
@@ -628,7 +628,7 @@ namespace it projects into, and the kind overlay carries a static one for the pr
 instance (see [OpenBao Proving Instance](#openbao-proving-instance)).
 
 **Accepted risk (decided 2026-08-05):** openbao-operator is a young, single-maintainer,
-pre-1.0 (v0.4.x) project, and unlike garage-operator it sits in the production data path
+pre-1.0 (v0.5.x) project, and unlike garage-operator it sits in the production data path
 of every future Barbican secret store. Three things bound the exposure. The consumed
 surface is a single `OpenBaoCluster` CR shape. A Barbican secret store can also attach to
 the shared management OpenBao, where the bootstrap scripts provision the same mount,
@@ -637,12 +637,13 @@ policy, and AppRole role without this operator taking part (see the
 projection derived from the openbao Helm chart stays available as a fallback. Accepted
 for the Barbican onboarding.
 
-**Why the chart is pinned by digest.** The chart carries no cosign signature Flux can
-verify, so no `spec.verify` policy can gate it, and the operator holds cluster-wide RBAC
-over the namespace that stores the instance seal key. Two weaker pins were rejected. The
+**Why the chart is pinned by digest.** Whether Flux can verify the sigstore bundles the
+publisher attaches to the chart is not established, so no `spec.verify` policy gates it,
+and the operator holds cluster-wide RBAC over the namespace that stores the instance seal
+key. Two weaker pins were rejected. The
 `>=x <1.0.0` range garage-operator uses would install every future 0.x release of an
 individual-owned GHCR namespace within the 30-minute reconcile interval. An exact chart
-version on a HelmRepository is not enough either: `0.4.2` is a mutable OCI tag, Flux
+version on a HelmRepository is not enough either: `0.5.3` is a mutable OCI tag, Flux
 tracks the resolved artifact digest rather than the tag string, and re-pushing that tag
 with different bytes would upgrade the release on its own — no Git change, no reviewer.
 Pinning `spec.ref.digest` on the OCIRepository is what makes every change to what runs
@@ -1427,7 +1428,7 @@ fails when the two differ:
 | LimitRange (`Container`) | `defaultRequest.cpu` | `100m` |
 | LimitRange (`Container`) | `defaultRequest.memory` | `128Mi` |
 
-The spec starts from the provisioner defaults of chart 0.4.2. `pods` rises from 50 to
+The spec starts from the provisioner defaults of chart 0.5.3. `pods` rises from 50 to
 100: a `Standard` ControlPlane with its three-member OVN central runs 55 pods, and up to
 77 with CronJobs and a rollout's surge. The requests stay. Every limit of the defaults is
 left out. A `limits.cpu: 40` or `limits.memory: 128Gi` quota rejects every pod that sets
@@ -1942,7 +1943,7 @@ One row per entry of `deploy/flux-system/kustomization.yaml` and
 | `releases/memcached-operator.yaml` | HelmRelease | `spec.values` | The chart's values reference at `oci://ghcr.io/c5c3/charts` (`sources/c5c3-charts.yaml`) |
 | `releases/openbao/helmrelease.yaml` | HelmRelease | `spec.values`; the shipped release already sets `server.resources` | The chart's values reference at `https://openbao.github.io/openbao-helm` (`sources/openbao.yaml`) |
 | `releases/garage-operator.yaml` | HelmRelease | `spec.values` | The chart's values reference at `oci://ghcr.io/rajsinghtech/charts` (`sources/garage-operator.yaml`) |
-| `releases/openbao-operator.yaml` | HelmRelease | `spec.values` | The chart's values reference at `oci://ghcr.io/dc-tec/charts/openbao-operator` (`sources/openbao-operator.yaml`) |
+| `releases/openbao-operator.yaml` | HelmRelease | `spec.values` | The chart's values reference at `oci://ghcr.io/kubebao/charts/openbao-operator` (`sources/openbao-operator.yaml`) |
 | `releases/keystone-operator.yaml`, `horizon-operator.yaml`, `glance-operator.yaml`, `placement-operator.yaml`, `barbican-operator.yaml`, `ovn-operator.yaml`, `neutron-operator.yaml`, `cinder-operator.yaml`, `nova-operator.yaml`, `c5c3-operator.yaml` | HelmRelease | `spec.values`, and `spec.chart.spec.version` with the placement keys ([merge rule 3](#merge-rules)) | [`replicas`, `resources`, `nodeSelector`, `tolerations`, `priorityClassName`](../backend/helm-values-schema.md#nodeselector-tolerations-and-priorityclassname) |
 | `releases/k-orc.yaml` | Flux Kustomization | `spec.patches` | [JSON6902 recipe](#patching-the-upstream-installers-and-the-flux-controllers) |
 | `releases/rabbitmq-cluster-operator.yaml` | Flux Kustomization | `spec.patches` | [JSON6902 recipe](#patching-the-upstream-installers-and-the-flux-controllers) |
@@ -3076,7 +3077,7 @@ The base overlay also labels every namespace it renders with
 Gardener shoot, and Gardener's `kubernetes-service-host` webhook sets
 `KUBERNETES_SERVICE_HOST` in every new pod to the API server's DNS name, so
 that pods bypass the node-local apiserver-proxy. The stack's NetworkPolicies
-expect the address instead. openbao-operator 0.4.2 reads the variable as an IP
+expect the address instead. openbao-operator 0.5.3 reads the variable as an IP
 address when it derives the API-server egress of the policy it renders over an
 `OpenBaoCluster`; a name makes the read fail, the fallback (`get` on Service
 `default/kubernetes`) is outside the operator's RBAC, and the instance stays at
