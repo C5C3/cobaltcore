@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	. "github.com/onsi/gomega"
 	"k8s.io/utils/ptr"
@@ -30,6 +31,18 @@ func newClient(t *testing.T) (identity.Client, *fake.Server) {
 		Username: "admin",
 		Password: adminPassword,
 	}, nil)
+	return c, srv
+}
+
+// newClientWithTimeout is newClient with a shorter per-request timeout.
+func newClientWithTimeout(t *testing.T, timeout time.Duration) (identity.Client, *fake.Server) {
+	t.Helper()
+	srv := fake.NewServer(adminPassword)
+	t.Cleanup(srv.Close)
+	c := identity.NewHTTPClientWithRequestTimeout(srv.Endpoint(), identity.Credentials{
+		Username: "admin",
+		Password: adminPassword,
+	}, nil, timeout)
 	return c, srv
 }
 
@@ -245,4 +258,176 @@ func TestGetDomainByName_IssuesNoMutatingRequests(t *testing.T) {
 	_, err := c.GetDomainByName(context.Background(), "corp")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(srv.MutatingRequests()).To(BeEmpty())
+}
+
+// A token request that gets no answer ends at the request timeout with an
+// error that names the timeout, and no API request follows it.
+func TestAuthenticate_UnansweredTokenRequestTimesOut(t *testing.T) {
+	g := NewGomegaWithT(t)
+	c, srv := newClientWithTimeout(t, 100*time.Millisecond)
+	srv.SeedDomain("corp", "", true)
+	srv.InjectFault(fake.Fault{Method: http.MethodPost, Path: "/v3/auth/tokens", Hang: true})
+
+	start := time.Now()
+	_, err := c.GetDomainByName(context.Background(), "corp")
+	g.Expect(time.Since(start)).To(BeNumerically("<", 5*time.Second))
+	g.Expect(errors.Is(err, context.DeadlineExceeded)).To(BeTrue(), "got %v", err)
+	g.Expect(err.Error()).To(ContainSubstring("authenticating against"))
+	g.Expect(err.Error()).To(ContainSubstring("request did not complete within 100ms"))
+	g.Expect(matchesSentinel(err)).To(BeFalse())
+	g.Expect(srv.Requests()).To(Equal([]string{"POST /v3/auth/tokens"}))
+}
+
+// A response whose body never ends fails at the request timeout while the
+// body is read, behind the method and path.
+func TestGetDomainByName_UnfinishedResponseBodyTimesOut(t *testing.T) {
+	g := NewGomegaWithT(t)
+	c, srv := newClientWithTimeout(t, 100*time.Millisecond)
+	srv.InjectFault(fake.Fault{Method: http.MethodGet, Path: "/v3/domains", Status: http.StatusOK, Hang: true})
+
+	_, err := c.GetDomainByName(context.Background(), "corp")
+	g.Expect(errors.Is(err, context.DeadlineExceeded)).To(BeTrue(), "got %v", err)
+	g.Expect(err.Error()).To(HavePrefix("reading GET /domains?name=corp response: request did not complete within 100ms"))
+	g.Expect(matchesSentinel(err)).To(BeFalse())
+}
+
+// A caller that cancelled its context keeps the cancellation error, without
+// the timeout's name, and no request leaves the client.
+func TestRequestTimeout_CancelledCallerIsNotATimeout(t *testing.T) {
+	g := NewGomegaWithT(t)
+	c, srv := newClientWithTimeout(t, 100*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := c.GetDomainByName(ctx, "corp")
+	g.Expect(errors.Is(err, context.Canceled)).To(BeTrue(), "got %v", err)
+	g.Expect(err.Error()).NotTo(ContainSubstring("request did not complete within"))
+	g.Expect(srv.Requests()).To(BeEmpty())
+}
+
+// A caller whose own deadline fires before the request timeout keeps the
+// deadline error without the timeout's name.
+func TestRequestTimeout_CallerDeadlineIsNotATimeout(t *testing.T) {
+	g := NewGomegaWithT(t)
+	c, srv := newClientWithTimeout(t, 5*time.Second)
+	srv.InjectFault(fake.Fault{Method: http.MethodPost, Path: "/v3/auth/tokens", Hang: true})
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	_, err := c.GetDomainByName(ctx, "corp")
+	g.Expect(errors.Is(err, context.DeadlineExceeded)).To(BeTrue(), "got %v", err)
+	g.Expect(err.Error()).NotTo(ContainSubstring("request did not complete within"))
+}
+
+// deadlineDoer is an HTTPDoer that answers the token request with a token and
+// every other request with an empty domain list. It records how far away
+// each request's deadline was when the request arrived, and whether the token
+// request's context was done when the API request arrived.
+type deadlineDoer struct {
+	// unendingTokenBody gives the token response a body that ends only when
+	// the token request's context is done.
+	unendingTokenBody     bool
+	deadlines             []time.Duration
+	tokenCtx              context.Context
+	tokenCtxDoneBeforeAPI bool
+}
+
+func (d *deadlineDoer) Do(req *http.Request) (*http.Response, error) {
+	left := time.Duration(-1)
+	if deadline, ok := req.Context().Deadline(); ok {
+		left = time.Until(deadline)
+	}
+	d.deadlines = append(d.deadlines, left)
+	if req.URL.Path == "/v3/auth/tokens" {
+		d.tokenCtx = req.Context()
+		var body io.Reader = strings.NewReader("")
+		if d.unendingTokenBody {
+			body = ctxReader{ctx: req.Context()}
+		}
+		return &http.Response{
+			StatusCode: http.StatusCreated,
+			Header:     http.Header{"X-Subject-Token": []string{"stub-token"}},
+			Body:       io.NopCloser(body),
+		}, nil
+	}
+	d.tokenCtxDoneBeforeAPI = d.tokenCtx != nil && d.tokenCtx.Err() != nil
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(`{"domains":[]}`)),
+	}, nil
+}
+
+var stubCreds = identity.Credentials{Username: "admin", Password: adminPassword}
+
+// The token request and the API request each carry a deadline of their own
+// that the default timeout sets, and the token request's deadline is
+// released before the API request is sent.
+func TestRequestTimeout_EachRequestGetsItsOwnDeadline(t *testing.T) {
+	g := NewGomegaWithT(t)
+	doer := &deadlineDoer{}
+	c := identity.NewHTTPClient("http://keystone.test/v3", stubCreds, doer)
+
+	_, err := c.GetDomainByName(context.Background(), "corp")
+	g.Expect(errors.Is(err, identity.ErrNotFound)).To(BeTrue(), "got %v", err)
+	g.Expect(doer.deadlines).To(HaveLen(2))
+	for i, left := range doer.deadlines {
+		g.Expect(left).To(BeNumerically(">", 5*time.Second), "request %d", i+1)
+		g.Expect(left).To(BeNumerically("<=", 10*time.Second), "request %d", i+1)
+	}
+	g.Expect(doer.tokenCtxDoneBeforeAPI).To(BeTrue(), "the token request's context is done before the API request")
+}
+
+// ctxReader blocks every Read until ctx is done and then returns ctx's error,
+// as the body of a response that never ends does.
+type ctxReader struct{ ctx context.Context }
+
+func (r ctxReader) Read([]byte) (int, error) {
+	<-r.ctx.Done()
+	return 0, r.ctx.Err()
+}
+
+// A token response whose body never ends holds the call only until the token
+// request's deadline, and the API request follows it.
+func TestAuthenticate_UnfinishedTokenResponseBodyEndsAtTheDeadline(t *testing.T) {
+	g := NewGomegaWithT(t)
+	doer := &deadlineDoer{unendingTokenBody: true}
+	c := identity.NewHTTPClientWithRequestTimeout("http://keystone.test/v3", stubCreds, doer, 100*time.Millisecond)
+
+	start := time.Now()
+	_, err := c.GetDomainByName(context.Background(), "corp")
+	g.Expect(time.Since(start)).To(BeNumerically("<", time.Second))
+	g.Expect(errors.Is(err, identity.ErrNotFound)).To(BeTrue(), "got %v", err)
+	g.Expect(doer.deadlines).To(HaveLen(2), "the API request follows the token request")
+}
+
+// A request timeout of zero or less falls back to RequestTimeout.
+func TestNewHTTPClient_ZeroRequestTimeoutFallsBackToDefault(t *testing.T) {
+	NewGomegaWithT(t).Expect(identity.RequestTimeout).To(Equal(10 * time.Second))
+	for _, timeout := range []time.Duration{0, -1} {
+		t.Run(timeout.String(), func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			doer := &deadlineDoer{}
+			c := identity.NewHTTPClientWithRequestTimeout("http://keystone.test/v3", stubCreds, doer, timeout)
+
+			_, err := c.GetDomainByName(context.Background(), "corp")
+			g.Expect(errors.Is(err, identity.ErrNotFound)).To(BeTrue(), "got %v", err)
+			g.Expect(doer.deadlines).To(HaveLen(2))
+			for i, left := range doer.deadlines {
+				g.Expect(left).To(BeNumerically(">", 5*time.Second), "request %d", i+1)
+				g.Expect(left).To(BeNumerically("<=", 10*time.Second), "request %d", i+1)
+			}
+		})
+	}
+}
+
+// A client with a nil doer bounds its requests through the context, not by
+// setting a Timeout on the process-wide http.DefaultClient.
+func TestNewHTTPClient_NilDoerLeavesDefaultClientUntouched(t *testing.T) {
+	g := NewGomegaWithT(t)
+	c, srv := newClientWithTimeout(t, 100*time.Millisecond)
+	srv.InjectFault(fake.Fault{Method: http.MethodPost, Path: "/v3/auth/tokens", Hang: true})
+
+	_, err := c.GetDomainByName(context.Background(), "corp")
+	g.Expect(errors.Is(err, context.DeadlineExceeded)).To(BeTrue(), "got %v", err)
+	g.Expect(http.DefaultClient.Timeout).To(BeZero())
 }
