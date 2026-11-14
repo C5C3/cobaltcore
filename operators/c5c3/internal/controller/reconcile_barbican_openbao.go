@@ -69,10 +69,12 @@ import (
 // instance's, and both live in the same namespace on the same cluster.
 
 // defaultOpenBaoVersion is the OpenBao image tag the projected instance runs. The
-// image resolves to docker.io/openbao/openbao:<version>; the static seal needs
-// >= 2.4.0. Renovate tracks this pin, so the assignment stays a single-line string
-// literal.
-const defaultOpenBaoVersion = "2.6.2"
+// image resolves to docker.io/openbao/openbao:<version>. It must stay >= 2.7: the
+// Barbican image sends the X-Vault-Index of a write back with every read of the
+// secret, and 2.7 is the first release that returns one (the static seal alone
+// needs >= 2.4.0). Renovate tracks this pin, so the assignment stays a single-line
+// string literal. OpenBao 2.7 needs openbao-operator 0.5.1 or newer.
+const defaultOpenBaoVersion = "2.7.2"
 
 const (
 	// barbicanOpenBaoNameSuffix is appended to barbicanName(cp) to derive the
