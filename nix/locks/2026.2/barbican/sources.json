@@ -4,6 +4,7 @@
   "hash": "sha256-5RrjNZhSdhX9RKadTl3+9UlrsfGF9MPacdy4Ry5ZNx8=",
   "project": "barbican",
   "patches": [
-    "patches/barbican/2026.2/0001-retry-a-clean-up-batch-that-conflicts-with-a-concurrent-write.patch"
+    "patches/barbican/2026.2/0001-retry-a-clean-up-batch-that-conflicts-with-a-concurrent-write.patch",
+    "patches/barbican/2026.2/0002-carry-the-openbao-storage-index-from-a-write-to-its-reads.patch"
   ]
 }
