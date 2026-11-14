@@ -3503,7 +3503,11 @@ domain (`DomainAlreadyExists`); `Adopt` resolves by name and never mutates.
 `Manage` writes it with a merge patch directly after the create instead of with
 the end-of-pass status update: that update is optimistic, and one lost to a
 conflict left the backend at `DomainAlreadyExists` for the domain it had just
-created.
+created. Every HTTP request of the identity client, the token request included,
+runs under a 10-second timeout (`identity.RequestTimeout`). A request without
+an answer ends as a failed call: on the normal path the controller reports it
+as `IdentityAPIError` and retries, and during deletion it records a Warning
+event and retries after 30 seconds.
 
 For **OIDC** backends the flow continues (gated on `DomainReady=True`): the
 controller upserts the three keystone federation API objects with real drift
