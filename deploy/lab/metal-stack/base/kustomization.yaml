@@ -37,7 +37,7 @@
 # sets KUBERNETES_SERVICE_HOST in every new pod to the API server's DNS name,
 # so that pods bypass the node-local apiserver-proxy. The stack's
 # NetworkPolicies expect the address instead:
-#   - openbao-operator 0.4.2 reads the variable as an IP address to derive
+#   - openbao-operator 0.5.3 reads the variable as an IP address to derive
 #     the API-server egress of the policy it renders over an OpenBaoCluster.
 #     A name makes the read fail, its fallback (`get` on Service
 #     default/kubernetes) is outside the operator's RBAC, and the instance

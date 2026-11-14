@@ -230,9 +230,9 @@
       "matchStrings": [
         "tag: \"(?<currentValue>[^\"]+)\"\\n\\s*digest: \"(?<currentDigest>sha256:[a-f0-9]{64})\""
       ],
-      "depNameTemplate": "ghcr.io/dc-tec/charts/openbao-operator",
+      "depNameTemplate": "ghcr.io/kubebao/charts/openbao-operator",
       "datasourceTemplate": "docker",
-      "packageNameTemplate": "ghcr.io/dc-tec/charts/openbao-operator",
+      "packageNameTemplate": "ghcr.io/kubebao/charts/openbao-operator",
       "versioningTemplate": "docker"
     },
     {
@@ -763,7 +763,7 @@
     {
       "matchManagers": ["custom.regex"],
       "matchFileNames": ["deploy/flux-system/sources/openbao-operator.yaml"],
-      "matchPackageNames": ["ghcr.io/dc-tec/charts/openbao-operator"],
+      "matchPackageNames": ["ghcr.io/kubebao/charts/openbao-operator"],
       "automerge": false,
       "minimumReleaseAge": "3 days",
       "groupName": "openbao-operator chart"

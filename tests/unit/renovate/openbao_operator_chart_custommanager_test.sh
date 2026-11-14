@@ -6,10 +6,11 @@
 # Verify the openbao-operator chart is delivered under a content pin, and that
 # the pin is Renovate-tracked.
 #
-# The chart is unsigned, so no Flux spec.verify policy can gate it, and the
+# Whether Flux can verify the sigstore bundles the publisher attaches to the
+# chart is not established, so no Flux spec.verify policy gates it, and the
 # operator holds cluster-wide RBAC over the namespace that stores the instance
 # seal key. An exact chart.spec.version on a HelmRepository does NOT gate that:
-# `0.4.2` on oci://ghcr.io/dc-tec/charts is a mutable tag, Flux tracks the
+# `0.5.3` on oci://ghcr.io/kubebao/charts is a mutable tag, Flux tracks the
 # resolved artifact digest rather than the tag string, and a re-pushed tag
 # therefore upgrades the release on its own within one interval — no Git change,
 # no reviewer. Only an OCIRepository ref.digest closes it.
@@ -17,9 +18,9 @@
 # The second half is what keeps the pin from becoming a freeze: Renovate's
 # native flux manager is switched off for this file by a packageRule, because
 # the customManager moves the pair in one match, so without that customManager
-# the operator would sit on 0.4.2 forever with no update signal. It must
-# capture the tag and the digest in ONE matchString so Renovate rewrites both
-# in the same reviewed PR; capturing the tag alone would leave the digest
+# the operator would sit on its pinned tag forever with no update signal. It
+# must capture the tag and the digest in ONE matchString so Renovate rewrites
+# both in the same reviewed PR; capturing the tag alone would leave the digest
 # behind and Flux would keep pulling the old artifact.
 #
 # A hand-edit can still split the pair, and no file-local assertion can see it:
@@ -44,7 +45,7 @@ RENOVATE_FILE="$PROJECT_ROOT/renovate.json"
 SOURCE_FILE="$PROJECT_ROOT/deploy/flux-system/sources/openbao-operator.yaml"
 RELEASE_FILE="$PROJECT_ROOT/deploy/flux-system/releases/openbao-operator.yaml"
 
-CHART_PACKAGE="ghcr.io/dc-tec/charts/openbao-operator"
+CHART_PACKAGE="ghcr.io/kubebao/charts/openbao-operator"
 SOURCE_PATH="deploy/flux-system/sources/openbao-operator.yaml"
 
 # Read the customManager entry once; every test that needs it re-reads through
@@ -62,7 +63,7 @@ test_source_is_digest_pinned_ocirepository() {
   assert_file_contains "source declares kind OCIRepository" \
     "$SOURCE_FILE" "kind: OCIRepository"
   assert_file_contains "source url addresses the chart artifact itself" \
-    "$SOURCE_FILE" "url: oci://ghcr.io/dc-tec/charts/openbao-operator"
+    "$SOURCE_FILE" "url: oci://ghcr.io/kubebao/charts/openbao-operator"
   assert_file_contains "source selects the Helm chart layer unaltered" \
     "$SOURCE_FILE" "operation: copy"
 

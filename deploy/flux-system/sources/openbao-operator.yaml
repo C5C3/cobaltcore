@@ -2,18 +2,18 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# OCIRepository for the dc-tec/openbao-operator chart. Every other chart in this
-# stack rides an OCI-type HelmRepository; this one does not, because it is the
-# one chart that has to pin CONTENT rather than a version.
+# OCIRepository for the kubebao/openbao-operator chart. Every other chart in
+# this stack rides an OCI-type HelmRepository; this one does not, because it is
+# the one chart that has to pin CONTENT rather than a version.
 #
-# `0.4.2` on oci://ghcr.io/dc-tec/charts is a MUTABLE tag. A HelmRepository plus
-# an exact chart.spec.version gates version drift only: Flux resolves the tag on
-# every interval and tracks the resulting artifact DIGEST, so re-pushing the tag
-# with different bytes produces a new revision and the HelmRelease upgrades
-# itself — no Git change, no reviewer, cluster-wide operator RBAC over the
-# namespace that holds the instance seal key. spec.verify is not an option
-# either: the publisher attaches a SLSA provenance attestation but no cosign
-# signature, so a verify policy would have nothing to check.
+# `0.5.3` on oci://ghcr.io/kubebao/charts is a MUTABLE tag. A HelmRepository
+# plus an exact chart.spec.version gates version drift only: Flux resolves the
+# tag on every interval and tracks the resulting artifact DIGEST, so re-pushing
+# the tag with different bytes produces a new revision and the HelmRelease
+# upgrades itself — no Git change, no reviewer, cluster-wide operator RBAC over
+# the namespace that holds the instance seal key. spec.verify is not the control
+# either: whether Flux can verify the sigstore bundles the publisher attaches is
+# not established, so the digest pin stays the control.
 #
 # ref.digest closes that: it takes precedence over every other ref field, so
 # Flux pulls this exact manifest and a re-pushed tag cannot change what runs.
@@ -35,12 +35,12 @@ spec:
   interval: 1h
   # Unlike a HelmRepository, the url of an OCIRepository is the chart artifact
   # itself, not the registry namespace it lives in.
-  url: oci://ghcr.io/dc-tec/charts/openbao-operator
+  url: oci://ghcr.io/kubebao/charts/openbao-operator
   # `copy` hands the chart tarball to helm-controller unaltered, which is what a
   # HelmRelease chartRef consumes; the default `extract` would unpack it.
   layerSelector:
     mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
     operation: copy
   ref:
-    tag: "0.4.2"
-    digest: "sha256:54406de2e67e62df4119e61b38efd61a82b6bb2954b1f8ff7e7f90fd03249638"
+    tag: "0.5.3"
+    digest: "sha256:3da12c3dd3f8083ab56888ad84de3224dff859400a7716c22db7bb3e24599ff6"

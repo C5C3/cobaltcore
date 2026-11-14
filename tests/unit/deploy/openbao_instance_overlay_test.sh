@@ -187,9 +187,10 @@ test_operator_release_runs_multi_tenant() {
   # namespaces cluster-wide and stamps restricted Pod Security labels onto every
   # onboarded namespace, openstack included.
   assert_eq "the provisioner is denied every Namespace mutation" "external" "$psl_mode"
-  # tenancy.mode only shapes the chart's own output. The controller derives its
-  # tenancy from WATCH_NAMESPACE, which no chart template sets, so any value
-  # reintroduced here pins it to one namespace and strands every other one.
+  # The controller derives its tenancy from WATCH_NAMESPACE, which the chart
+  # sets in single mode only, so tenancy.mode: multi is what leaves it unset,
+  # and any value reintroduced here pins it to one namespace and strands every
+  # other one.
   assert_not_contains "no WATCH_NAMESPACE pins the controller to a single namespace" \
     "$values" "WATCH_NAMESPACE"
 

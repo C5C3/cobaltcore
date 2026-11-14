@@ -829,7 +829,7 @@ management cluster whatever `targetClusterRef` says.
 | --- | --- |
 | mariadb-operator | The `mariadb-operator-crds` chart on `https://mariadb-operator.github.io/mariadb-operator` |
 | external-secrets | The `external-secrets` chart on `https://charts.external-secrets.io`, which bundles its CRDs |
-| openbao-operator | The digest-pinned chart artifact `oci://ghcr.io/dc-tec/charts/openbao-operator` |
+| openbao-operator | The digest-pinned chart artifact `oci://ghcr.io/kubebao/charts/openbao-operator` |
 | rabbitmq-cluster-operator | The upstream `rabbitmq/cluster-operator` Git repository at tag `v2.22.5`, applied as a Flux Kustomization over `config/installation` |
 
 The RabbitMQ Cluster Operator is installed in full there, controller included.

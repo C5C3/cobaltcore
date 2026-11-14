@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# openbao-operator (dc-tec/openbao-operator) manages OpenBaoCluster instance
+# openbao-operator (kubebao/openbao-operator) manages OpenBaoCluster instance
 # CRs: static-seal auto-unseal, cert-manager TLS, declarative self-init, raft
 # snapshots, upgrade strategies. It delivers the per-service OpenBao instances
 # the Barbican secret store builds on and the in-repo proving instance
@@ -14,17 +14,18 @@
 # so this release dependsOn cert-manager (mirroring garage-operator).
 #
 # ACCEPTED RISK: openbao-operator is a young, single-maintainer, pre-1.0
-# (v0.4.x) project, and unlike garage-operator it sits in the PRODUCTION DATA
+# (v0.5.x) project, and unlike garage-operator it sits in the PRODUCTION DATA
 # PATH of every future Barbican secret store. The bet is mitigated by the thin
 # consumed surface (one OpenBaoCluster CR shape), the operator-independent
 # brownfield attachment path on the shared instance, and the open fallback of
 # an in-repo openbao-helm-derived StatefulSet projection. Accepted with issue
 # #803 for the Barbican onboarding (#804).
 #
-# The chart carries no cosign signature Flux can verify, so no spec.verify
-# policy can gate it. It is therefore consumed through a DIGEST-PINNED
-# OCIRepository (deploy/flux-system/sources/openbao-operator.yaml) rather than
-# through a HelmRepository plus a version constraint as with garage-operator.
+# Whether Flux can verify the sigstore bundles the publisher attaches to the
+# chart is not established, so no spec.verify policy gates it. It is therefore
+# consumed through a DIGEST-PINNED OCIRepository
+# (deploy/flux-system/sources/openbao-operator.yaml) rather than through a
+# HelmRepository plus a version constraint as with garage-operator.
 # garage-operator's `>=x <1.0.0` range would install every future 0.x release of
 # an individual-owned GHCR namespace within one interval; an exact chart version
 # would still upgrade on its own whenever that tag is re-pushed with different
@@ -59,10 +60,11 @@ spec:
   # into the Barbican service namespace of every ControlPlane, and those
   # namespaces are created at runtime, so no single watched namespace covers
   # them. Multi-tenant mode deploys the provisioner next to the controller and
-  # lets the controller reconcile in every onboarded namespace. tenancy.mode
-  # only shapes the chart's own output: the controller derives its tenancy from
-  # the WATCH_NAMESPACE environment variable, which no chart template sets, so
-  # an unset controller.extraEnv is what actually runs it multi-tenant.
+  # lets the controller reconcile in every onboarded namespace. The controller
+  # derives its tenancy from the WATCH_NAMESPACE environment variable, which
+  # the chart sets in single mode only, so tenancy.mode: multi is what leaves it
+  # unset. A value set through controller.extraEnv would pin the controller to
+  # one namespace.
   #
   # namespacePodSecurityLabels.mode: external bounds what that costs in RBAC.
   # Under the chart default (enforce) the provisioner holds update and patch on
