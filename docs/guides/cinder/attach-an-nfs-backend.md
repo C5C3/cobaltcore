@@ -37,16 +37,8 @@ child is `Ready` in `openstack` with `nfs1` and `nfsbk` attached. Every resource
 name in the examples below is one that devstack produces.
 :::
 
-::: warning Set storage on the ControlPlane, never on the projected children
-The `controlplane-cinder` Cinder CR, the `CinderBackend` `nfs1` and the
-`CinderBackupBackend` `nfsbk` are **projected** by the c5c3-operator. A child you
-edit, or delete, by hand is reverted (or recreated) on the next reconcile.
-Change `services.cinder` on the `ControlPlane` CR and let the operator project
-it down; that block is the single source of truth for the projected storage.
-:::
-
-- The `OS_*` environment variables from the tutorial's token-issue step, so the
-  `openstack` client reaches the ControlPlane's Keystone.
+Export the `OS_*` environment variables from the tutorial's token-issue step so
+the `openstack` client reaches the ControlPlane's Keystone.
 
 ## Step 1: The kind NFS stack
 
@@ -78,8 +70,11 @@ nfs-server.openstack.svc.cluster.local:/backups
 A `path` of `/exports/volumes` resolves to `/exports/exports/volumes` on the
 server and the mount fails.
 
-The stack is kind-only and opt-in. For the chart pin, the server image, and the
-reasons it stays out of the default flow, see
+The in-cluster NFS-Ganesha container is privileged, and the stack is intended
+for the opt-in kind and metal-stack lab deployments. Any pod that can reach TCP
+2049 can read and write both exports as root. Production clusters provide their
+own NFS server and CSI mounter. For the chart pin, server image, and security
+posture, see
 [NFS storage stack](../../reference/infrastructure/infrastructure-manifests.md#nfs-storage-stack-opt-in).
 
 ## Step 2: Read the attached backend
@@ -99,8 +94,11 @@ nfs1   True    NFS    controlplane-cinder   8m
 The entry name reaches the satellite unprefixed. Cinder keys every volume by the
 backend it was created on, so a rename would strand the volumes already there.
 
-`READY` turns `True` only after the volume Deployment of the backend mounts its
-section. The figure shows the steps in between, and
+`READY` turns `True` when the backend's credentials (if required) are ready and
+its rendered section is projected into the volume Deployment. This does not
+confirm that the service is available; check `VolumeServicesReady` on the Cinder
+for the availability of its projected volume services. The figure shows the
+steps in between, and
 [The handshake](../../reference/backend/kubernetes-packages.md#satellite-handshake)
 lists them with what differs per kind.
 
@@ -156,6 +154,14 @@ nfs-server.openstack.svc.cluster.local:/volumes /var/lib/cinder/mnt/6f3cb55ed3b4
 asserts the same path on the Deployment's `volumeMounts`.
 
 ## Step 3: Attach a second backend
+
+::: warning Set storage on the ControlPlane, never on the projected children
+The `controlplane-cinder` Cinder CR, the `CinderBackend` `nfs1` and the
+`CinderBackupBackend` `nfsbk` are **projected** by the c5c3-operator. A child you
+edit, or delete, by hand is reverted (or recreated) on the next reconcile.
+Change `services.cinder` on the `ControlPlane` CR and let the operator project
+it down; that block is the single source of truth for the projected storage.
+:::
 
 A second backend needs a second export. Create the directory on the server with
 the ownership and mode the driver needs:
@@ -231,10 +237,10 @@ and `cinder-volume` has created the file. The file is on the new export:
 kubectl exec -n openstack deploy/nfs-server -- ls -l /exports/volumes-b
 ```
 
-No backend is the default one. The operator renders no `default_volume_type`, so
-cinder keeps its own `__DEFAULT__` type for a volume created without `--type`,
-and the scheduler places such a volume on whichever backend has room. A type
-like `to-nfs2` is what pins a volume to one of them.
+The operator renders no `default_volume_type`, so Cinder uses its
+`__DEFAULT__` type when a volume is created without `--type`. That type does not
+select a specific backend. To pin a volume to one, create a type such as
+`to-nfs2` with its `volume_backend_name` property.
 
 ## Step 4: Detach it again
 
