@@ -202,6 +202,52 @@ section: `default` (matched case-insensitively, which covers the upstream
 `DEFAULT`), `database`, `keystone_authtoken`, `secretstore`, `vault_plugin`,
 `queue`, `oslo_policy`, `oslo_middleware`, and `healthcheck`.
 
+## Read-after-write consistency
+
+An OpenBao server on more than one replica answers reads on its standby nodes,
+and a standby that has not applied a write yet answers the read of that secret
+with "not found". The Barbican image closes that gap with the storage index
+OpenBao returns for a write:
+
+- The vault plugin records the `X-Vault-Index` header of the write response in
+  the `vault_index` row of `secret_store_metadata`, next to the `key_id` row it
+  already writes. Storing a secret and generating a symmetric key or a key pair
+  all record it, and both halves of a key pair carry the index of the second
+  write, which covers the first.
+- Every read of that secret sends the index back together with
+  `X-Vault-Inconsistent: forward-active-node`. A standby that has applied the
+  index answers the read itself. One that has not forwards it to the active
+  node.
+- castellan logs in with the AppRole right before a request whenever its cached
+  token is missing or expired. The first request after that login carries the
+  login's index in place of the secret's: OpenBao accepts one index per
+  request, and the login's is the later one.
+
+The headers need OpenBao 2.7 or newer on the server. The instances this
+repository provisions run a 2.7 release: the dedicated one through
+`defaultOpenBaoVersion` in
+`operators/c5c3/internal/controller/reconcile_barbican_openbao.go`, the kind
+proving instance through `spec.version` in
+`deploy/kind/infrastructure/openbao-instance.yaml`. A server that returns no
+index gets no `vault_index` row, and its reads carry no header. HashiCorp Vault
+Community never returns one, but its standbys forward every request to the
+active node, so its reads always see the write. OpenBao before 2.7 answers
+reads on its standbys: a store on more than one replica of such a server can
+answer a read with HTTP 500 ("Secret payload retrieval failure seen") right
+after the write, until the standby has caught up.
+[Attach an External OpenBao](../../guides/barbican/attach-external-openbao.md#_1-what-the-server-must-carry)
+lists what a multi-node brownfield server needs instead.
+
+Secrets stored before the image carried the index have no `vault_index` row and
+are read from whichever node receives the request. An image without it ignores
+the row, so rolling the image back needs no data change. An index longer than
+the 255 characters of the `value` column, or one that is not printable ASCII
+without whitespace, is not recorded, and the API logs a WARNING that names the
+key ID. The behaviour comes from a downstream source patch
+([Container Images](../ci-cd/container-images.md#barbican)), and
+`tests/e2e/c5c3/full-controlplane-keystone` asserts the row after its secret
+round trip.
+
 ## Default-Store Semantics
 
 One attached, credential-ready store must be marked `isDefault`, and no more
