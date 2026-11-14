@@ -55,7 +55,8 @@ condition readouts. On the devstack, the server stand-in is
 
 ## 1. What the server must carry
 
-Three things, provisioned by you.
+Three things, provisioned by you, and a fourth for a server with more than one
+node.
 
 ::: warning Not the shared management OpenBao
 The devstack's other OpenBao, the management instance in the `shared-services`
@@ -124,6 +125,20 @@ IDs in this mode. The replacement procedure, under the AppRole Auth heading of t
 [OpenBao Bootstrap reference](../../reference/infrastructure/openbao-bootstrap.md#approle-auth),
 is the control: it reads the stable role ID, mints a replacement secret ID
 straight into the Secret, and destroys the accessor of the one it replaced.
+
+**Reads that see the write before them, on more than one node.** OpenBao
+answers reads on its standby nodes, and a standby that has not applied a write
+yet answers the read of that secret with "not found", which Barbican reports as
+HTTP 500. The Barbican image sends the storage index of a write with every later
+read of that secret, and OpenBao 2.7 or newer forwards such a read to the active
+node until the standby has caught up. A server with more than one node must run
+OpenBao 2.7 or newer, or `url` must reach only nodes that read their own writes:
+a single node, the active node, or a cluster that sets
+`disable_standby_reads = true` in its server configuration. A HashiCorp Vault
+Community cluster meets the requirement as is: its standbys forward every
+request to the active node.
+[Read-after-write consistency](../../reference/barbican/barbican-secret-store-crd.md#read-after-write-consistency)
+describes the index and what happens without it.
 
 ## 2. Credentials and optional CA bundle
 
@@ -277,6 +292,13 @@ A Vault server attaches through the same fields, and the projected store keeps
 `type: OpenBao`. The type selects Barbican's `vault_plugin`, which speaks the
 plain Vault HTTP API that OpenBao stays compatible with, so the two servers are
 interchangeable from Barbican's side and do not warrant a second enum value.
+
+Vault Community returns no storage index, so Barbican records none and sends
+none with its reads. Its standby nodes forward every request to the active node,
+which makes a multi-node Vault Community cluster an endpoint of the kind the
+fourth requirement of section 1 names. A cluster whose standbys answer reads
+themselves, such as Vault Enterprise with performance standbys, is not tested
+here; point `url` at its active node.
 
 ## Troubleshooting
 
