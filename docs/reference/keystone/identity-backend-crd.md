@@ -453,6 +453,11 @@ lists the five steps and what differs per kind.
 | `Ready` | True | `AllReady` | Every sub-condition of the backend's type is True: two for LDAP, four for OIDC and SAML. |
 | `Ready` | False | `NotAllReady` | At least one sub-condition is not True. |
 
+An `IdentityAPIError` message that contains `request did not complete within
+10s` means a request of the identity client got no complete answer within its
+10-second timeout, for example because Keystone accepted the connection and did
+not answer.
+
 Once `DomainReady`, `FederationObjectsReady`, or `MappingsReady` has reached
 True, the transient-observation reasons (`WaitingForKeystoneAPI`,
 `AdminSecretUnavailable`, `IdentityAPIError`) never demote it back to False:
@@ -495,6 +500,10 @@ finalizer:
    the finalizer releases with a log line. When the admin credential is no
    longer available, it releases with the Warning event `DomainDeleteFailed`.
    Neither holds the backend hostage, and the domain is retained.
+5. **Retry on failure.** When a teardown call fails, an unanswered one
+   included, the controller records the Warning event
+   `FederationTeardownFailed` or `DomainDeleteFailed` and retries after 30
+   seconds. The finalizer stays on the backend until a retry succeeds.
 
 ## Immutability and Validation Summary
 
