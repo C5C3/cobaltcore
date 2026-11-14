@@ -1700,7 +1700,8 @@ tests/e2e/c5c3/
 │   ├── 06-fake-compute.yaml            nova-compute built out of the published compute contract
 │   ├── 07-hypervisor-operator-verify-job.yaml  Calls as the hypervisor operator's user
 │   ├── 08-patch-upgrade.yaml           Link 8's merge patch (the target release)
-│   └── extraconfig-edit.sh             Link 7e, sourced by the step 1 script (inline, it passes the 128 KiB argument cap)
+│   ├── extraconfig-edit.sh             Link 7e, sourced by the step 1 script (inline, it passes the 128 KiB argument cap)
+│   └── secret-store-checks.sh          The verify Job's vault_index and OpenBao sizing checks, sourced for the same cap
 ├── healthcheck/
 │   ├── chainsaw-test.yaml              KeystoneReady and Ready wait for the Keystone API
 │   └── 00-controlplane-cr.yaml         Keystone-only ControlPlane (cp; ephemeral namespace)
