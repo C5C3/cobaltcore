@@ -22,9 +22,9 @@ store, which is a separate concern and is untouched here.
 ## What changes
 
 - **Before:** the Barbican DB password is a long-lived value copied from an
-  OpenBao KV path (`openstack/barbican/{namespace}/{name}/db`) into the
-  `{name}-barbican-db-credentials` Secret. Nothing seeds that path, so on the
-  static branch an operator writes it and rotates it by hand.
+  OpenBao KV path (`openstack/barbican/{namespace}/{controlplane}/db`) into the
+  `{controlplane}-barbican-db-credentials` Secret. Nothing seeds that path, so
+  on the static branch an operator writes it and rotates it by hand.
 - **After:** the c5c3 operator projects a per-ControlPlane
   [`VaultDynamicSecret`](https://external-secrets.io/) generator that reads
   short-lived credentials from the OpenBao database engine
@@ -60,18 +60,16 @@ ControlPlane is `controlplane` in `openstack`, so its projected Barbican is
 manages.
 :::
 
-- The ControlPlane declares `spec.services.barbican`. Without it the operator
-  projects no Barbican child and no DB credential of either kind. See
-  [Run Barbican on a Dedicated OpenBao](./barbican-dedicated-openbao.md).
-- The OpenBao `database` secrets engine is mounted at `database/mariadb` (the
-  `setup-secret-engines.sh` bootstrap step). A greenfield cluster already has it;
-  on a brownfield cluster, re-apply the bootstrap scripts (see below).
-- cert-manager and its `openbao-ca-issuer` ClusterIssuer are installed. They
-  issue the per-ControlPlane mTLS client certificate the generator presents to
-  the OpenBao listener.
-- The External Secrets Operator can request ServiceAccount tokens
-  (`serviceaccounts/token` `create`) so the generator can authenticate to OpenBao
-  as the `barbican-db-creds` ServiceAccount.
+The ControlPlane must declare `spec.services.barbican`; otherwise, the operator
+projects no Barbican child or DB credential. See
+[Run Barbican on a Dedicated OpenBao](./barbican-dedicated-openbao.md). The
+OpenBao `database` secrets engine must be mounted at `database/mariadb` by the
+`setup-secret-engines.sh` bootstrap step; greenfield clusters already have it,
+while brownfield clusters need the bootstrap scripts re-applied below.
+cert-manager and its `openbao-ca-issuer` ClusterIssuer must also be installed
+to issue the generator's mTLS client certificate, and the External Secrets
+Operator needs `create` access to `serviceaccounts/token` to authenticate the
+generator as the `barbican-db-creds` ServiceAccount.
 
 ## Migration steps
 
@@ -102,8 +100,11 @@ The engine role for a tenant only exists once its MariaDB is Ready and
 `setup-database-tenant.sh` has configured the connection and role against it:
 
 ```bash
-# BAO_TOKEN must be exported; <namespace>/<controlplane> identify the tenant.
-bash deploy/openbao/bootstrap/setup-database-tenant.sh <namespace> <controlplane>
+# BAO_TOKEN must be exported. Replace these with the ControlPlane namespace/name.
+CONTROLPLANE_NAMESPACE=openstack
+CONTROLPLANE_NAME=controlplane
+bash deploy/openbao/bootstrap/setup-database-tenant.sh \
+  "${CONTROLPLANE_NAMESPACE}" "${CONTROLPLANE_NAME}"
 ```
 
 When the ControlPlane declares `spec.services.barbican` on the shared managed
@@ -167,7 +168,11 @@ On a cluster that ran the static path, delete the credential Secret once to
 remove the old value before ESO syncs the engine-issued credential:
 
 ```bash
-kubectl delete secret <controlplane>-barbican-db-credentials -n <namespace>
+# Use Barbican's service namespace; it is openstack on the Quick Start.
+BARBICAN_NAMESPACE=openstack
+CONTROLPLANE_NAME=controlplane
+kubectl delete secret "${CONTROLPLANE_NAME}-barbican-db-credentials" \
+  -n "${BARBICAN_NAMESPACE}"
 ```
 
 The ExternalSecret is updated in place (same name, same target Secret). Until
@@ -212,14 +217,22 @@ Once the ControlPlane reports `BarbicanReady=True` on the dynamic path:
    long-lived `<controlplane>-barbican` login the engine no longer uses):
 
    ```bash
-   kubectl delete user,grant <barbican-cr-name> -n <namespace> --ignore-not-found
+   # Set BARBICAN_NAMESPACE to Barbican's service namespace.
+   BARBICAN_NAMESPACE=openstack
+   CONTROLPLANE_NAME=controlplane
+   BARBICAN_CR_NAME="${CONTROLPLANE_NAME}-barbican"
+   kubectl delete user,grant "${BARBICAN_CR_NAME}" \
+     -n "${BARBICAN_NAMESPACE}" --ignore-not-found
    ```
 
 2. Remove the retired static KV secret, if step 3 ever seeded it:
 
    ```bash
    # Inside the OpenBao pod, or with a bao client configured for it.
-   bao kv metadata delete kv-v2/openstack/barbican/<namespace>/<controlplane>/db
+   BARBICAN_NAMESPACE=openstack
+   CONTROLPLANE_NAME=controlplane
+   bao kv metadata delete \
+     "kv-v2/openstack/barbican/${BARBICAN_NAMESPACE}/${CONTROLPLANE_NAME}/db"
    ```
 
 ## Rollback
