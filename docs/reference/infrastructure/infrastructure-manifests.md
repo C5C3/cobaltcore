@@ -655,6 +655,32 @@ Renovate keeps that pin from becoming a freeze. Its native Flux manager reads
 in `renovate.json` that rewrites the tag and the digest in the same pull request. The
 entry never automerges: every bump of this operator is a human decision.
 
+**Upgrading.** On an existing deployment, upgrade the `openbao-operator` release to
+0.5.3 before you roll out a c5c3-operator whose `defaultOpenBaoVersion` is 2.7.2. The
+upstream 0.5.1 release notes require the operator upgrade before an instance moves to
+OpenBao 2.7, and what a 0.4.2 operator does with a 2.7 instance is not verified. Nothing
+enforces the order: the `c5c3-operator` HelmRelease has no `dependsOn` on this release.
+The kind path keeps it, because the overlay applies `openbao-instance` with
+`paused: true` and `hack/deploy-infra.sh` un-pauses it only after every Helm release,
+this one included, is ready. The upgrade from chart 0.4.2 changes three things. The manager and
+helper images come from `ghcr.io/kubebao/`. The provisioner requests 64Mi of memory with
+a 128Mi limit, where 0.4.2 set 32Mi and 64Mi. The 0.5.3 `OpenBaoCluster` CRD stores
+`spec.resources`, which the 0.4.2 schema pruned, so the dedicated instance a
+ControlPlane projects runs under the `secretStore` sizing of its profile from then on.
+The version change replaces that instance's pod, and the new pod also carries the init
+container of the new operator, which the 0.5.3 release notes require after a manager
+upgrade.
+
+**Rolling back.** The openbao-operator does not downgrade OpenBao. It refuses a
+`spec.version` below the instance's `status.currentVersion`, records `DowngradeBlocked`
+in `status.workload.lastError`, and leaves the instance's StatefulSet as it is. A
+c5c3-operator rolled back to a build whose `defaultOpenBaoVersion` is 2.6.2, by hand or
+by the upgrade remediation of the `c5c3-operator` HelmRelease, projects 2.6.2 onto every
+dedicated instance that already runs 2.7.2. Those instances keep running 2.7.2, and the
+openbao-operator reconciles nothing else of their workload until a c5c3-operator that
+projects 2.7.2 or newer runs again. The way back from such a rollback is a forward fix
+of the c5c3-operator, not a lower `spec.version`.
+
 ### OpenBao
 
 **File:** `deploy/flux-system/releases/openbao/helmrelease.yaml`
@@ -1408,7 +1434,7 @@ on. All live in the `openstack` namespace except the cluster-scoped ClusterRoleB
 | `Certificate` | `cert-manager.io/v1` | `openbao-instance-tls-ca` | Delivers the trust-domain CA into the fixed-name Secret the operator reads (data key `ca.crt`) |
 | `ServiceAccount` | `v1` | `openbao-instance-provisioner` | Client identity the Kubernetes-auth role `provisioner` binds to |
 | `ClusterRoleBinding` | `rbac.authorization.k8s.io/v1` | `openbao-instance-auth-delegator` | Grants `system:auth-delegator` to the operator-created instance ServiceAccount `openbao-instance-serviceaccount` |
-| `OpenBaoCluster` | `openbao.org/v1alpha1` | `openbao-instance` | Profile `Development`, version `2.6.2`, one replica, 1Gi raft storage, TLS mode `External`, static seal, self-init enabled, applied `paused`, API-server egress patched in at deploy time |
+| `OpenBaoCluster` | `openbao.org/v1alpha1` | `openbao-instance` | Profile `Development`, version `2.7.2`, one replica, 1Gi raft storage, TLS mode `External`, static seal, self-init enabled, applied `paused`, API-server egress patched in at deploy time |
 
 **Tenant.** `deploy/kind/infrastructure/openbao-tenant.yaml` declares the
 `OpenBaoTenant` `openstack` that admits the `openstack` namespace to the multi-tenant
