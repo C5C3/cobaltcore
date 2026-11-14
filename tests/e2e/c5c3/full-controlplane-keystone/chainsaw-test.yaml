@@ -153,7 +153,13 @@
 #                        request with the generated shared secret, all succeed
 #                        using the materialised admin clouds.yaml (proves the
 #                        minted, pushed, re-materialised application credential
-#                        authenticates and the services work).
+#                        authenticates and the services work). After the Job,
+#                        barbican.secret_store_metadata holds more vault_index
+#                        rows than before it (the OpenBao storage index the
+#                        Barbican image records for a write and sends with the
+#                        read), the dedicated OpenBaoCluster returns
+#                        spec.resources.limits.memory, every container of its
+#                        pod runs under that limit, and none was OOMKilled.
 #   7d. Hypervisor op. — the auth Secret ("…-nova-hypervisor-operator-auth")
 #                        carries exactly the seven keys of the hypervisor
 #                        operator's chart values; the K-ORC fixtures of
@@ -563,6 +569,12 @@ spec:
               -o "jsonpath={.metadata.ownerReferences[?(@.kind=='ControlPlane')].name}" 2>/dev/null || true
           }
 
+          # cp_sql, VAULT_INDEX_SQL and the two secret store checks that
+          # run_openstack_verify makes after its Job. They live in
+          # secret-store-checks.sh beside this file: inline, they take this
+          # script past the 128 KiB Linux allows one argument.
+          . ./secret-store-checks.sh
+
           # Both ends of Link 8's release hop, read from the fixtures: the
           # start release from the ControlPlane CR, the target from the merge
           # patch. The assertions below follow them; the keystone client pins
@@ -681,6 +693,12 @@ spec:
           # k-orc-clouds-yaml Secret materialised there.
           run_openstack_verify() {
             echo "== openstack token issue + catalog list (cloud: admin) =="
+            # The vault_index rows Barbican holds before the Job, so that the
+            # check after it counts the rows this Job's writes added. Link 8e
+            # runs the Job again on the next release's image, and the rows of
+            # the first run are still there: Barbican soft-deletes the metadata
+            # of a deleted secret.
+            VAULT_INDEX_ROWS_BEFORE="$(cp_sql "${VAULT_INDEX_SQL}")"
             kubectl delete job cp-openstack-verify -n "${CP_NS}" --ignore-not-found
             kubectl apply -f 01-openstack-verify-job.yaml
             # The Job runs dozens of openstack CLI calls in sequence (token issue,
@@ -765,6 +783,12 @@ spec:
               || { echo "ERROR: the signed metadata request did not answer 200 with the server's uuid, or a wrong signature was not refused"; exit 1; }
             grep -q "OK: compute round-trip" <<<"${VERIFY_LOGS}" \
               || { echo "ERROR: the compute round-trip did not boot and remove a server"; exit 1; }
+
+            # The storage index the Job's Barbican writes recorded, and the
+            # sizing the dedicated OpenBao instance runs under
+            # (secret-store-checks.sh).
+            assert_vault_index_rows_added "${VAULT_INDEX_ROWS_BEFORE}"
+            assert_secret_store_sizing
           }
 
           # Link 7c's port-event check, run again by Link 8e after the release hop.
