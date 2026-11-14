@@ -102,7 +102,7 @@ the page embeds. A change to a diagram updates both files in the same commit.
 | `test-chaos-patterns` | The six step patterns of the chaos suites, each a numbered chain | [Test Patterns](../reference/testing/chaos-e2e-tests.md#test-patterns) |
 | `deploy-flux-dependencies` | The HelmReleases of the production base in four layers by `dependsOn`, the three Flux Kustomizations with the one `dependsOn` between them, and the two dependencies on a Flux Kustomization that no manifest declares | [Dependency Order](../reference/infrastructure/infrastructure-manifests.md#dependency-order), [Layering](../architecture/index.md#layering), [Dependency Chain](../reference/backend/keystone-operator-packaging.md#dependency-chain) |
 | `deploy-infra-run` | The eight steps of `make deploy-infra` with the waits between them, the two cluster modes and the step each opt-in changes | [Deployment Sequence](../reference/infrastructure/e2e-deployment.md#deployment-sequence), [Deployment](../reference/infrastructure/infrastructure-manifests.md#deployment), [Step 3 of the Quick Start (Extended)](../quick-start-extended.md#step-3-deploy-the-infrastructure-stack) |
-| `deploy-overlay-inheritance` | Which kustomize overlay under `deploy/` takes which as its base, from production over kind to the lab, and who applies each | [Kustomize Overlay Structure](../reference/infrastructure/e2e-deployment.md#kustomize-overlay-structure), [Lab overlay](../reference/infrastructure/infrastructure-manifests.md#lab-overlay) |
+| `deploy-overlay-inheritance` | The public stage catalog and compatibility aliases, retained aggregate roots, customization examples, and sibling kind and metal-stack overlays over shared bases with Namespace ownership | [Kustomize Overlay Structure](../reference/infrastructure/e2e-deployment.md#kustomize-overlay-structure), [Lab overlay](../reference/infrastructure/infrastructure-manifests.md#lab-overlay) |
 | `deploy-keystone-operator-helmrelease` | How the Flux helm-controller installs the keystone-operator HelmRelease, in seven steps from the dependsOn check to the first reconcile | [Data Flow](../reference/backend/keystone-operator-packaging.md#data-flow) |
 | `conventions-legend` | The notation for frames, objects, arrows, sequences, state machines, markers, outside actors, nodes, browser hops and images | [Notation legend](./architecture-diagrams.md#notation-legend) |
 
@@ -129,6 +129,8 @@ one of them is a change to its entry in the script that draws it
 or `rest_figs.py`), followed by a run of that script, which rewrites both files
 of every pair it owns. A hand edit to a generated pair is lost on the next run.
 `rest_figs.py` also generates the SAML login sequence, `service-saml-login`.
+`deploy_overlays.py` generates `deploy-overlay-inheritance`; regenerate only
+that pair with `python3 hack/docs-figures/deploy_overlays.py`.
 
 A new diagram follows the same pattern. Put the pair into `docs/diagrams/`
 under a name from [File names](#file-names). On a page directly under `docs/`

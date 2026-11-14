@@ -234,7 +234,7 @@ API pod stages the download:
 
 ```bash
 openstack --insecure image import --method web-download \
-  --uri https://download.cirros-cloud.net/0.6.3/cirros-0.6.3-x86_64-disk.img filter-demo
+  --uri https://github.com/cirros-dev/cirros/releases/download/0.6.3/cirros-0.6.3-x86_64-disk.img filter-demo
 for _ in $(seq 60); do
   [ "$(openstack --insecure image show filter-demo -f value -c status)" = active ] && break
   sleep 5

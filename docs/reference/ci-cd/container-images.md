@@ -2016,7 +2016,7 @@ openstack-hypervisor-operator (hvo) from `cobaltcore-dev`, compiled by Nix from
 a pinned commit of its upstream `main` branch with the patches under
 `images/openstack-hypervisor-operator/patches/` applied. The hypervisor package
 of issue #1142 deploys it with the upstream Helm chart of the same commit:
-`deploy/lab/metal-stack/hypervisor/hvo-release.yaml` runs it on the
+`deploy/overlays/metal-stack/hypervisor/hvo-release.yaml` runs it on the
 metal-stack lab (see
 [Lab hypervisors](../infrastructure/infrastructure-manifests.md#lab-hypervisors)).
 
@@ -2198,7 +2198,7 @@ commit of its upstream `main` branch with the patches under
 `images/kvm-node-agent/patches/` applied. The agent runs on every hypervisor
 node: it reports libvirt's state into the node's `Hypervisor` and installs the
 node's libvirt TLS files under the host's `/etc/pki`.
-`deploy/lab/metal-stack/hypervisor/kna-release.yaml` runs it with the upstream
+`deploy/overlays/metal-stack/hypervisor/kna-release.yaml` runs it with the upstream
 Helm chart of the same commit (see
 [Lab hypervisors](../infrastructure/infrastructure-manifests.md#lab-hypervisors)).
 
@@ -2306,7 +2306,7 @@ weekly and without automerge (see
 request fails `nix-lock-check` until `make nix-lock` writes `hash` and
 `vendorHash` for the new commit. Outside the Nix build and `hack/nix-lock.sh`,
 `hack/ci-resolve-kna-commit.sh` is the only parser of the pin in CI. The lab's
-chart ref in `deploy/lab/metal-stack/hypervisor/sources.yaml` moves with the pin
+chart ref in `deploy/overlays/metal-stack/hypervisor/sources.yaml` moves with the pin
 by hand, and `tests/unit/deploy/metal_stack_hypervisor_test.sh` fails while the
 chart's short SHA differs from it. A new commit on which the patch no longer
 applies fails the build in the patch phase; the patch is then re-cut against the

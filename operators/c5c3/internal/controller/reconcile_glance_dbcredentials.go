@@ -22,7 +22,7 @@ import (
 
 const (
 	// glanceDBDynamicVaultRole is the OpenBao Kubernetes-auth role the Glance
-	// generator authenticates against (see deploy/openbao/bootstrap/setup-auth.sh);
+	// generator authenticates against (see deploy/bases/shared-openbao/bootstrap/setup-auth.sh);
 	// it is bound to the glance-db-dynamic policy scoping reads to the per-tenant
 	// creds path.
 	glanceDBDynamicVaultRole = "glance-db"
@@ -68,7 +68,7 @@ func glanceDBCredentialRemoteKeyFor(cp *c5c3v1alpha1.ControlPlane) string {
 // it actually live in — so it is collision-free (namespaces are cluster-unique)
 // and the glance-db-dynamic policy can scope reads by the caller's
 // service_account_namespace with an EXACT match. It MUST stay in sync with the
-// role-name derivation in deploy/openbao/bootstrap/setup-database-tenant.sh —
+// role-name derivation in deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh —
 // the operator reads credentials from a role that script provisions as
 // glance-<glance-ns>.
 func glanceDBDynamicRoleFor(cp *c5c3v1alpha1.ControlPlane) string {

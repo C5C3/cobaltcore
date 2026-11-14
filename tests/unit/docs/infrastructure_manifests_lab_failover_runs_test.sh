@@ -43,7 +43,7 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 DOC="${INFRA_MANIFESTS_DOC:-$PROJECT_ROOT/docs/reference/infrastructure/infrastructure-manifests.md}"
 CHAOS_DOC="$PROJECT_ROOT/docs/reference/testing/chaos-e2e-tests.md"
-LAB_CR="$PROJECT_ROOT/deploy/lab/metal-stack/controlplane/controlplane-lab.yaml"
+LAB_CR="$PROJECT_ROOT/deploy/overlays/metal-stack/controlplane/controlplane-lab.yaml"
 LF_SH="$PROJECT_ROOT/hack/lab-failover.sh"
 LF_DIR="$PROJECT_ROOT/tests/lab-failover"
 

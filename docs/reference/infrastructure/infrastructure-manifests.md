@@ -8,67 +8,34 @@ quadrant: infrastructure
 Reference documentation for the FluxCD infrastructure manifests. These manifests
 define HelmRepository sources, HelmRelease operators, and infrastructure custom resources
 that provision the shared platform services required by OpenStack operators. Deployment is
-split into two phases: base resources (namespaces, sources, releases) and CRD-dependent
-infrastructure resources (applied after operators install their CRDs).
+composed from bases for Flux, operators, TLS, shared OpenBao, ESO and the
+ControlPlane operator. Their manifests and bootstrap assets live directly in
+`deploy/bases/`; environment choices live in `deploy/overlays/`.
+See [deployment order](https://github.com/C5C3/cobaltcore/blob/main/deploy/README.md#deployment-order) for readiness
+and bootstrap gates, and [path migration](https://github.com/C5C3/cobaltcore/blob/main/deploy/README.md#path-migration)
+for imports from the previous layout.
 
 ## Directory Layout
 
 ```text
 deploy/
-└── flux-system/
-    ├── kustomization.yaml                Base kustomize overlay (namespaces, FluxInstance, sources, releases)
-    ├── namespaces.yaml                   Namespace resources for all components
-    ├── fluxinstance.yaml                 FluxInstance CR driving the flux-operator
-    ├── sources/                          Flux sources (HelmRepository, OCIRepository, GitRepository)
-    │   ├── cert-manager.yaml             Jetstack Helm chart registry
-    │   ├── mariadb-operator.yaml         MariaDB Operator Helm chart registry
-    │   ├── external-secrets.yaml         External Secrets Operator Helm chart registry
-    │   ├── openbao.yaml                  OpenBao Helm chart registry
-    │   ├── openbao-operator.yaml         OpenBao Operator OCI chart artifact (digest-pinned OCIRepository)
-    │   ├── c5c3-charts.yaml              C5C3 shared OCI chart registry
-    │   ├── k-orc.yaml                    K-ORC GitRepository (commit pinned)
-    │   ├── rabbitmq-cluster-operator.yaml RabbitMQ Cluster Operator GitRepository (tag + commit pinned)
-    │   ├── messaging-topology-operator.yaml RabbitMQ Messaging Topology Operator GitRepository (tag + commit pinned)
-    │   ├── prometheus-community.yaml     Prometheus Community OCI chart registry
-    │   └── garage-operator.yaml          Garage Operator OCI chart registry
-    ├── releases/                         HelmRelease CRs and three Flux Kustomizations
-    │   ├── cert-manager.yaml             cert-manager
-    │   ├── prometheus-operator-crds.yaml Prometheus Operator CRDs
-    │   ├── mariadb-operator-crds.yaml    MariaDB Operator CRDs
-    │   ├── mariadb-operator.yaml         MariaDB Operator
-    │   ├── external-secrets.yaml         External Secrets Operator
-    │   ├── memcached-operator.yaml       Memcached Operator (from c5c3-charts)
-    │   ├── openbao.yaml                  OpenBao HA Raft cluster
-    │   ├── openbao-operator.yaml         OpenBao Operator (per-service OpenBao instances)
-    │   ├── garage-operator.yaml          Garage Operator
-    │   ├── keystone-operator.yaml        Keystone Operator (from c5c3-charts)
-    │   ├── horizon-operator.yaml         Horizon Operator (from c5c3-charts)
-    │   ├── glance-operator.yaml          Glance Operator (from c5c3-charts)
-    │   ├── placement-operator.yaml       Placement Operator (from c5c3-charts)
-    │   ├── barbican-operator.yaml        Barbican Operator (from c5c3-charts)
-    │   ├── ovn-operator.yaml             OVN Operator (from c5c3-charts)
-    │   ├── neutron-operator.yaml         Neutron Operator (from c5c3-charts)
-    │   ├── cinder-operator.yaml          Cinder Operator (from c5c3-charts)
-    │   ├── nova-operator.yaml            Nova Operator (from c5c3-charts)
-    │   ├── k-orc.yaml                    K-ORC (Flux Kustomization over config/default)
-    │   ├── rabbitmq-cluster-operator.yaml RabbitMQ Cluster Operator (Flux Kustomization over config/installation)
-    │   ├── messaging-topology-operator.yaml RabbitMQ Messaging Topology Operator (Flux Kustomization over config/installation)
-    │   └── c5c3-operator.yaml            c5c3-operator ControlPlane orchestrator (from c5c3-charts)
-    └── infrastructure/                   CRD-dependent infrastructure resources
-        ├── kustomization.yaml            Infrastructure kustomization, also lists ../../eso
-        ├── cluster-issuer.yaml           Self-signed ClusterIssuer (requires cert-manager CRDs)
-        ├── db-ca-issuer.yaml             OpenStack DB CA Certificate + ClusterIssuer
-        ├── ovn-ca-issuer.yaml            OVN CA Certificate + ClusterIssuer
-        ├── mariadb.yaml                  MariaDB Galera cluster for OpenStack (with TLS)
-        ├── memcached.yaml                Memcached cluster for OpenStack
-        ├── garage.yaml                   Garage object store (GarageCluster, GarageBuckets, GarageKey)
-        ├── openbao-ca-issuer.yaml        OpenBao CA Certificate + ClusterIssuer
-        ├── openbao-tls-cert.yaml         OpenBao server Certificate
-        └── openbao-client-tls-cert.yaml  OpenBao client Certificates
+  bases/
+    flux/                     FluxInstance
+    operators/                namespaces, sources and controller releases
+    tls/                      certificate and issuer manifests
+    shared-openbao/            server release, bootstrap/ and policies/
+    eso-store/                 shared ClusterSecretStore
+    controlplane-operator/     c5c3 HelmRelease
+    infrastructure/            reference database, cache and object store
+    target-cluster-access/     target access Helm chart
+    devstack/                  shared development compositions
+    <addon>/                   shared optional components
+  overlays/{kind,metal-stack}/ environment resources and patches
+  examples/                    compositions to copy
 ```
 
-The proving `OpenBaoCluster` instance is **not** part of this tree. It is CI/dev-only and
-lives at `deploy/kind/infrastructure/openbao-instance.yaml` — see
+The proving `OpenBaoCluster` belongs to the shared development base, not the
+reusable reference-infrastructure stage. It lives at `deploy/bases/devstack/infrastructure/openbao-instance.yaml` — see
 [OpenBao Proving Instance](#openbao-proving-instance).
 
 All YAML files carry the SPDX Apache-2.0 license header (3 lines: copyright, blank
@@ -115,11 +82,11 @@ one accepted co-tenant and holds neither grant; do not add a workload or a
 Secret-reading `Role` here without treating it as a security review.
 
 The `chaos-mesh` namespace is **not** part of the production base. It is created
-inline by the kind-only opt-in overlay at `deploy/kind/chaos-mesh/` when
+by the shared `deploy/bases/chaos-mesh/` base, selected through `deploy/overlays/kind/chaos-mesh/` when
 `WITH_CHAOS_MESH=true make deploy-infra` is used, and by the lab overlay
-`deploy/lab/metal-stack/chaos-mesh/`, which takes that overlay as its base, under
+`deploy/overlays/metal-stack/chaos-mesh/`, which independently imports the same shared base, under
 `EXTERNAL_CLUSTER=true`. See
-[Chaos Mesh (kind-only opt-in)](#chaos-mesh-kind-only-opt-in) and
+[Chaos Mesh (development opt-in)](#chaos-mesh-development-opt-in) and
 [Lab Chaos Mesh](#lab-chaos-mesh) below.
 
 **Note:** The `install.createNamespace: true` setting on HelmReleases instructs FluxCD's
@@ -171,7 +138,7 @@ rather than resolving it — delete the retired stack once the new one serves.
 
 ## FluxInstance
 
-**File:** `deploy/flux-system/fluxinstance.yaml`
+**File:** `deploy/bases/flux/fluxinstance.yaml`
 
 A single `FluxInstance` CR drives the
 [flux-operator](https://github.com/controlplaneio-fluxcd/flux-operator), which replaces
@@ -200,7 +167,7 @@ installation state.
 | `cluster.networkPolicy` | `false` | No NetworkPolicies applied to flux-system (kind overlay assumes a permissive default; production overlays opt in) |
 
 **No `spec.sync` block.** The kind Quick Start applies Helm sources and releases
-directly via `kubectl apply -k deploy/kind/base/`, so the `FluxInstance` here does not
+directly via `kubectl apply -k deploy/overlays/kind/base/`, so the `FluxInstance` here does not
 carry a `GitRepository` sync. Production overlays that want continuous reconciliation
 from Git add a `spec.sync` block on top of this base, with the overlay technique
 that [Sizing and placement overrides](#sizing-and-placement-overrides) uses.
@@ -261,10 +228,10 @@ cannot hand different bytes to a controller that runs with cluster-wide RBAC.
 This source is applied by a Flux `Kustomization` as well; see
 [RabbitMQ Cluster Operator](#rabbitmq-cluster-operator).
 
-The `chaos-mesh` HelmRepository ships in the kind-only opt-in overlay at
-`deploy/kind/chaos-mesh/source.yaml` — it is intentionally absent
-from `deploy/flux-system/{sources,kustomization.yaml}`. See
-[Chaos Mesh (kind-only opt-in)](#chaos-mesh-kind-only-opt-in).
+The `chaos-mesh` HelmRepository ships in the shared opt-in base at
+`deploy/bases/chaos-mesh/source.yaml` — it is intentionally absent
+from `deploy/bases/operators/{sources,kustomization.yaml}`. See
+[Chaos Mesh (development opt-in)](#chaos-mesh-development-opt-in).
 
 The `c5c3-charts`, `prometheus-community`, and `garage-operator` repositories are
 OCI-type sources (`spec.type: oci`). `c5c3-charts` hosts internally-built operator
@@ -306,7 +273,7 @@ entry, and the two dotted arrows are dependencies that no manifest can
 declare. The table lists every entry of every release, in the order of the
 layers.
 
-![The install order of the Flux resources of deploy/flux-system, in four layers. Layer 1 declares no dependency: cert-manager, mariadb-operator-crds and prometheus-operator-crds. Layer 2 waits for cert-manager: mariadb-operator, which also waits for mariadb-operator-crds, memcached-operator, which also waits for prometheus-operator-crds, external-secrets, garage-operator, openbao, openbao-operator and ovn-operator. Layer 3 is keystone-operator, which waits for mariadb-operator, memcached-operator and external-secrets. Layer 4 waits for keystone-operator: horizon-operator, glance-operator, placement-operator, cinder-operator, nova-operator, barbican-operator, which also waits for openbao-operator, neutron-operator, which also waits for ovn-operator, and c5c3-operator. A solid arrow is a dependsOn entry of a HelmRelease, and the one solid arrow between Flux Kustomizations says that the Kustomization messaging-topology-operator waits for the Kustomization rabbitmq-cluster-operator. Two dotted arrows are dependencies that no manifest declares, because each crosses between a HelmRelease and a Flux Kustomization: the Kustomization rabbitmq-cluster-operator needs the CRDs of cert-manager and retries until they exist, and c5c3-operator starts only once the Kustomization k-orc has installed the K-ORC CRDs.](../../diagrams/deploy-flux-dependencies.svg)
+![The install order of the Flux resources of deploy/bases/operators, in four layers. Layer 1 declares no dependency: cert-manager, mariadb-operator-crds and prometheus-operator-crds. Layer 2 waits for cert-manager: mariadb-operator, which also waits for mariadb-operator-crds, memcached-operator, which also waits for prometheus-operator-crds, external-secrets, garage-operator, openbao, openbao-operator and ovn-operator. Layer 3 is keystone-operator, which waits for mariadb-operator, memcached-operator and external-secrets. Layer 4 waits for keystone-operator: horizon-operator, glance-operator, placement-operator, cinder-operator, nova-operator, barbican-operator, which also waits for openbao-operator, neutron-operator, which also waits for ovn-operator, and c5c3-operator. A solid arrow is a dependsOn entry of a HelmRelease, and the one solid arrow between Flux Kustomizations says that the Kustomization messaging-topology-operator waits for the Kustomization rabbitmq-cluster-operator. Two dotted arrows are dependencies that no manifest declares, because each crosses between a HelmRelease and a Flux Kustomization: the Kustomization rabbitmq-cluster-operator needs the CRDs of cert-manager and retries until they exist, and c5c3-operator starts only once the Kustomization k-orc has installed the K-ORC CRDs.](../../diagrams/deploy-flux-dependencies.svg)
 
 | Release | `dependsOn` |
 | --- | --- |
@@ -375,14 +342,14 @@ manager instead requires those CRDs to be present at startup.
 FluxCD resolves this dependency graph and installs operators in the correct order.
 If cert-manager is not ready, dependent operators are held in a pending state.
 
-The kind-only `chaos-mesh` HelmRelease (`deploy/kind/chaos-mesh/`) also
+The optional `chaos-mesh` HelmRelease (`deploy/overlays/kind/chaos-mesh/`) also
 declares `dependsOn: cert-manager` but is only installed when
 `WITH_CHAOS_MESH=true make deploy-infra` is used. Production overlays do not
-install it. See [Chaos Mesh (kind-only opt-in)](#chaos-mesh-kind-only-opt-in).
+install it. See [Chaos Mesh (development opt-in)](#chaos-mesh-development-opt-in).
 
 ### cert-manager
 
-**File:** `deploy/flux-system/releases/cert-manager.yaml`
+**File:** `deploy/bases/operators/releases/cert-manager.yaml`
 
 | Property | Value |
 | --- | --- |
@@ -421,14 +388,14 @@ release sets no `spec.timeout`, so helm-controller's default release timeout
 of 5 minutes bounds the wait. When the check does not pass in that time, the
 install fails. The release has no install remediation, so it stays failed and
 not `Ready`, the terminal state the install comment in
-`deploy/flux-system/releases/external-secrets.yaml` describes. Every dependent
+`deploy/bases/operators/releases/external-secrets.yaml` describes. Every dependent
 release waits at `dependsOn`, so the release that reports the failure is
 cert-manager itself. `tests/unit/deploy/cert_manager_release_test.sh` pins the
 value in the three renders.
 
 ### Prometheus Operator CRDs
 
-**File:** `deploy/flux-system/releases/prometheus-operator-crds.yaml`
+**File:** `deploy/bases/operators/releases/prometheus-operator-crds.yaml`
 
 | Property | Value |
 | --- | --- |
@@ -444,7 +411,7 @@ controller, which unconditionally watches ServiceMonitor resources via Owns().
 
 ### MariaDB Operator CRDs
 
-**File:** `deploy/flux-system/releases/mariadb-operator-crds.yaml`
+**File:** `deploy/bases/operators/releases/mariadb-operator-crds.yaml`
 
 | Property | Value |
 | --- | --- |
@@ -460,7 +427,7 @@ mariadb-operator so CRDs are available for the operator and for infrastructure C
 
 ### MariaDB Operator
 
-**File:** `deploy/flux-system/releases/mariadb-operator.yaml`
+**File:** `deploy/bases/operators/releases/mariadb-operator.yaml`
 
 | Property | Value |
 | --- | --- |
@@ -479,7 +446,7 @@ mariadb-operator so CRDs are available for the operator and for infrastructure C
 
 ### External Secrets Operator
 
-**File:** `deploy/flux-system/releases/external-secrets.yaml`
+**File:** `deploy/bases/operators/releases/external-secrets.yaml`
 
 | Property | Value |
 | --- | --- |
@@ -498,14 +465,14 @@ mariadb-operator so CRDs are available for the operator and for infrastructure C
 | `certController.enabled` | `true` | Manage webhook TLS certificates |
 
 The production ESO kustomization renders one store,
-`ClusterSecretStore/openbao-cluster-store` (`deploy/eso/`). It serves the
+`ClusterSecretStore/openbao-cluster-store` (`deploy/bases/eso-store/`). It serves the
 namespaces `openstack` and `shared-services`: standalone service CRs that set
-no `spec.secretStoreRef`, and the static ExternalSecrets of the kind overlay.
+no `spec.secretStoreRef`, and the static ExternalSecrets of the shared development base.
 A ControlPlane does not use it by default. The c5c3-operator provisions a
 namespaced `SecretStore/openbao-tenant-store` in every ControlPlane namespace
 (`reconcileESOTenantStore`) and routes the ControlPlane and its children
 through it. `spec.secretStoreRef` on the ControlPlane is the opt-out for a
-store you manage yourself, and `deploy/openbao/bootstrap/setup-eso-tenant.sh`
+store you manage yourself, and `deploy/bases/shared-openbao/bootstrap/setup-eso-tenant.sh`
 provisions the same store by hand for a standalone namespace (see the
 [OpenBao bootstrap reference](./openbao-bootstrap.md#setup-eso-tenant-sh) and the
 [multi-tenant deployment guide](../../guides/multi-tenant-deployment.md#per-controlplane-secret-stores-and-openbao-identities)).
@@ -516,7 +483,7 @@ The figure shows both stores and the paths that run through them.
 
 ### Memcached Operator
 
-**File:** `deploy/flux-system/releases/memcached-operator.yaml`
+**File:** `deploy/bases/operators/releases/memcached-operator.yaml`
 
 | Property | Value |
 | --- | --- |
@@ -539,7 +506,7 @@ OCI registry (`oci://ghcr.io/c5c3/charts`), not a dedicated HelmRepository. The
 
 ### Garage Operator
 
-**File:** `deploy/flux-system/releases/garage-operator.yaml`
+**File:** `deploy/bases/operators/releases/garage-operator.yaml`
 
 | Property | Value |
 | --- | --- |
@@ -567,7 +534,7 @@ this layer.
 
 ### OpenBao Operator
 
-**File:** `deploy/flux-system/releases/openbao-operator.yaml`
+**File:** `deploy/bases/operators/releases/openbao-operator.yaml`
 
 | Property | Value |
 | --- | --- |
@@ -624,7 +591,7 @@ controller waits for the `openbao-operator-tenant-rolebinding` RoleBinding that 
 onboarding creates and pauses every reconcile in that namespace. It logs that pause at
 `V(1)`, so the visible symptom is an `OpenBaoCluster` that keeps an empty status and
 never gets a `StatefulSet`. The c5c3 operator creates a tenant for each service
-namespace it projects into, and the kind overlay carries a static one for the proving
+namespace it projects into, and the shared development base carries a static one for the proving
 instance (see [OpenBao Proving Instance](#openbao-proving-instance)).
 
 **Accepted risk (decided 2026-08-05):** openbao-operator is a young, single-maintainer,
@@ -649,14 +616,14 @@ Pinning `spec.ref.digest` on the OCIRepository is what makes every change to wha
 here a reviewed commit.
 
 Renovate keeps that pin from becoming a freeze. Its native Flux manager reads
-`deploy/flux-system/`, but a packageRule switches it off for
+`deploy/bases/operators/`, but a packageRule switches it off for
 `sources/openbao-operator.yaml`: the pin is tracked by an explicit `customManagers` entry
 in `renovate.json` that rewrites the tag and the digest in the same pull request. The
 entry never automerges: every bump of this operator is a human decision.
 
 ### OpenBao
 
-**File:** `deploy/flux-system/releases/openbao/helmrelease.yaml`
+**File:** `deploy/bases/shared-openbao/helmrelease.yaml`
 
 | Property | Value |
 | --- | --- |
@@ -699,20 +666,20 @@ Kubernetes-token auth method (`auth.kubernetes`) is unchanged and runs
 | `injector.enabled` | `false` | Disable the Vault/Bao agent injector |
 
 **Client certificates.** The two client `Certificate` resources are
-declared in `deploy/flux-system/infrastructure/tls/openbao-client-tls-cert.yaml`
-and registered in `deploy/flux-system/infrastructure/tls/kustomization.yaml`
+declared in `deploy/bases/tls/openbao-client-tls-cert.yaml`
+and registered in `deploy/bases/tls/kustomization.yaml`
 immediately after `openbao-tls-cert.yaml`, so cert-manager reconciles them
 *before* the OpenBao StatefulSet and `ClusterSecretStore` consume them
 (first-apply ordering, see also "Apply ordering" notes below):
 
 | Certificate | Secret (namespace) | Consumer | Reference |
 | --- | --- | --- | --- |
-| `openbao-client-tls` | `openbao-client-tls` (`shared-services`) | OpenBao pods — Raft `retry_join` + in-pod `bao` exec | StatefulSet volume `client-tls` mounted at `/openbao/client-tls`; env vars `VAULT_CLIENT_CERT` / `VAULT_CLIENT_KEY` in every exec wrapper (`deploy/openbao/bootstrap/common.sh`, `init-unseal.sh`, `hack/deploy-infra.sh`) |
-| `eso-openbao-client-tls` | `eso-openbao-client-tls` (`shared-services`) | ESO `ClusterSecretStore/openbao-cluster-store` | `spec.provider.vault.tls.certSecretRef` / `keySecretRef` in `deploy/eso/clustersecretstore.yaml`; `auth.kubernetes` block (mountPath `kubernetes/management`, role `eso-management`) is unchanged — mTLS is purely transport-layer |
+| `openbao-client-tls` | `openbao-client-tls` (`shared-services`) | OpenBao pods — Raft `retry_join` + in-pod `bao` exec | StatefulSet volume `client-tls` mounted at `/openbao/client-tls`; env vars `VAULT_CLIENT_CERT` / `VAULT_CLIENT_KEY` in every exec wrapper (`deploy/bases/shared-openbao/bootstrap/common.sh`, `init-unseal.sh`, `hack/deploy-infra.sh`) |
+| `eso-openbao-client-tls` | `eso-openbao-client-tls` (`shared-services`) | ESO `ClusterSecretStore/openbao-cluster-store` | `spec.provider.vault.tls.certSecretRef` / `keySecretRef` in `deploy/bases/eso-store/clustersecretstore.yaml`; `auth.kubernetes` block (mountPath `kubernetes/management`, role `eso-management`) is unchanged — mTLS is purely transport-layer |
 
 Both client certs are issued from the same `openbao-ca-issuer` as
 `openbao-tls` (a CA-type ClusterIssuer defined in
-`deploy/flux-system/infrastructure/tls/openbao-ca-issuer.yaml` and itself
+`deploy/bases/tls/openbao-ca-issuer.yaml` and itself
 bootstrapped by `selfsigned-cluster-issuer`). Sharing one CA is what makes the
 listener's `tls_client_ca_file = /openbao/tls/ca.crt` validate every presented
 client cert — a SelfSigned issuer would mint each Certificate as its own root
@@ -725,7 +692,7 @@ operator interface, and the runnable mTLS-enforcement probe.
 
 ### Keystone Operator
 
-**File:** `deploy/flux-system/releases/keystone-operator.yaml`
+**File:** `deploy/bases/operators/releases/keystone-operator.yaml`
 
 | Property | Value |
 | --- | --- |
@@ -760,13 +727,13 @@ Flux merges `valuesFrom` first and `spec.values` on top per-key, so
 
 ### K-ORC (OpenStack Resource Controller)
 
-**File:** `deploy/flux-system/releases/k-orc.yaml`
+**File:** `deploy/bases/operators/releases/k-orc.yaml`
 
 | Property | Value |
 | --- | --- |
 | Kind | `Kustomization` (`kustomize.toolkit.fluxcd.io/v1`) |
 | Target namespace | `orc-system` (the upstream installer self-namespaces) |
-| Source | `k-orc` `GitRepository` ([pinned main commit](https://github.com/C5C3/cobaltcore/blob/main/deploy/flux-system/sources/k-orc.yaml)) |
+| Source | `k-orc` `GitRepository` ([pinned main commit](https://github.com/C5C3/cobaltcore/blob/main/deploy/bases/operators/sources/k-orc.yaml)) |
 | Path | `./config/default` |
 | Image | `quay.io/orc/openstack-resource-controller:branch-main`, pulled by digest |
 | Dependencies | None |
@@ -812,7 +779,7 @@ pick up the new URL at once.
 
 c5c3-operator chart 0.18.0 relies on the missing-endpoint eviction and no longer
 restarts K-ORC. Upgrade K-ORC to commit `da276e44` or later before or together
-with the chart, by applying `deploy/flux-system/` of the same checkout again (see
+with the chart, by applying `deploy/bases/operators/` of the same checkout again (see
 [Deployment](#deployment)). The `c5c3-operator` HelmRelease floats the chart
 version and the image tag, while the K-ORC pin moves only when that directory is
 applied. With an older K-ORC, a service registered after K-ORC's first login
@@ -869,7 +836,7 @@ raise the cap with a `spec.patches` entry on the `k-orc` Kustomization.
 
 ### RabbitMQ Cluster Operator
 
-**File:** `deploy/flux-system/releases/rabbitmq-cluster-operator.yaml`
+**File:** `deploy/bases/operators/releases/rabbitmq-cluster-operator.yaml`
 
 | Property | Value |
 | --- | --- |
@@ -939,7 +906,7 @@ double-quoted), which
 
 ### RabbitMQ Messaging Topology Operator
 
-**File:** `deploy/flux-system/releases/messaging-topology-operator.yaml`
+**File:** `deploy/bases/operators/releases/messaging-topology-operator.yaml`
 
 | Property | Value |
 | --- | --- |
@@ -1003,7 +970,7 @@ guard the YAML shape the managers anchor on.
 
 ### c5c3-operator
 
-**File:** `deploy/flux-system/releases/c5c3-operator/helmrelease.yaml`
+**File:** `deploy/bases/controlplane-operator/helmrelease.yaml`
 
 | Property | Value |
 | --- | --- |
@@ -1074,8 +1041,8 @@ OCIRepository.
 `sources/rabbitmq-cluster-operator.yaml`), not a HelmRelease backed by a
 HelmRepository.
 
-The kind-only `chaos-mesh` HelmRelease ships in the opt-in overlay at
-`deploy/kind/chaos-mesh/release.yaml`, with its own local
+The optional `chaos-mesh` HelmRelease ships in the opt-in overlay at
+`deploy/bases/chaos-mesh/release.yaml`, with its own local
 `source.yaml`. It is intentionally absent from this always-on table because
 production overlays do not install it.
 
@@ -1088,7 +1055,7 @@ after the corresponding operator HelmReleases install their Helm charts.
 
 ### Self-Signed ClusterIssuer
 
-**File:** `deploy/flux-system/infrastructure/tls/cluster-issuer.yaml`
+**File:** `deploy/bases/tls/cluster-issuer.yaml`
 
 | Property | Value |
 | --- | --- |
@@ -1111,7 +1078,7 @@ each server accepts every client certificate of its own CA.
 
 ### OpenStack DB CA Issuer
 
-**File:** `deploy/flux-system/infrastructure/tls/db-ca-issuer.yaml`
+**File:** `deploy/bases/tls/db-ca-issuer.yaml`
 
 Provisions the dedicated cert-manager CA that anchors the OpenStack database trust
 domain. The file declares two resources:
@@ -1148,7 +1115,7 @@ For the end-to-end TLS path the issuer participates in, see the
 
 ### OVN CA Issuer
 
-**File:** `deploy/flux-system/infrastructure/tls/ovn-ca-issuer.yaml`
+**File:** `deploy/bases/tls/ovn-ca-issuer.yaml`
 
 Provisions the cert-manager CA that anchors the OVN database trust domain. The file
 declares two resources:
@@ -1179,7 +1146,7 @@ is rejected by the ovn-operator's TLS sub-reconciler.
 
 ### MariaDB Galera Cluster
 
-**File:** `deploy/flux-system/infrastructure/mariadb.yaml`
+**File:** `deploy/bases/infrastructure/mariadb.yaml`
 
 | Property | Value |
 | --- | --- |
@@ -1219,17 +1186,17 @@ services connect to `openstack-db-primary`, and each service CR gets a
 ([Managed database routes](../keystone/keystone-crd.md#managed-database-routes)).
 
 The root password is sourced from a Kubernetes Secret (`mariadb-root-password`, key
-`password`). The production stack ships **no** `ExternalSecret` for it — a non-kind Flux
+`password`). The production stack ships **no** `ExternalSecret` for it — a production Flux
 MariaDB baseline is expected to provide the `mariadb-root-password` Secret itself. On
-kind, a kind-only overlay shim
-(`deploy/kind/infrastructure/mariadb-root-password-externalsecret.yaml`) materialises it
+both development environments, a shared devstack shim
+(`deploy/bases/devstack/infrastructure/mariadb-root-password-externalsecret.yaml`) materialises it
 from the OpenBao path `infrastructure/mariadb` so the single-node Quick Start stays
 self-contained.
 
 > **Non-Goal — operator-owned root credential.** Unlike the Keystone admin password
 > (which the c5c3-operator now projects per ControlPlane as a dedicated
 > `ExternalSecret`), the MariaDB **root** password is deliberately **not**
-> operator-owned. Provisioning it is left to the MariaDB baseline — the kind shim above,
+> operator-owned. Provisioning it is left to the MariaDB baseline — the development shim above,
 > or a production Flux baseline — keeping the operator off the database superuser
 > credential path.
 
@@ -1259,7 +1226,7 @@ client certificate from the referenced MariaDB:
 | `spec.tls.listenerCertIssuerRef` (MaxScale CR) | `openstack-db-ca-issuer` (ClusterIssuer, `cert-manager.io`) | Issue the client-listener certificate from the shared DB CA. Without the ref, mariadb-operator provisions the self-signed CA `openstack-db-maxscale-ca` and signs the listener certificate with it |
 | `spec.tls.adminCertIssuerRef` (MaxScale CR) | `openstack-db-ca-issuer` (ClusterIssuer, `cert-manager.io`) | Issue the admin REST API and GUI certificate from the shared DB CA |
 
-The rendered YAML in `deploy/flux-system/infrastructure/mariadb.yaml` is:
+The rendered YAML in `deploy/bases/infrastructure/mariadb.yaml` is:
 
 ```yaml
 spec:
@@ -1331,7 +1298,7 @@ To turn the path on for a `Keystone` CR, follow the
 
 ### Memcached Cluster
 
-**File:** `deploy/flux-system/infrastructure/memcached.yaml`
+**File:** `deploy/bases/infrastructure/memcached.yaml`
 
 | Property | Value |
 | --- | --- |
@@ -1351,7 +1318,7 @@ shipped by the [memcached-operator](https://github.com/C5C3/memcached-operator) 
 
 ### Garage Object Store
 
-**File:** `deploy/flux-system/infrastructure/garage.yaml`
+**File:** `deploy/bases/infrastructure/garage.yaml`
 
 Four instance CRs (API group `garage.rajsingh.info`) declare the S3 object store the
 [garage-operator](#garage-operator) manages. All live in the `shared-services` namespace:
@@ -1367,10 +1334,10 @@ Four instance CRs (API group `garage.rajsingh.info`) declare the S3 object store
 `replication.factor: 1`, a single storage tier, `network.service.type: ClusterIP`, and
 the S3 API on `:3900` with SigV4 region `garage` (path-style addressing — virtual-host
 style would need wildcard DNS). No `spec.image` is set, so the Garage version rides the
-operator/chart releases. The kind overlay
-(`deploy/kind/infrastructure/kustomization.yaml`) patches the storage tier to a single
-node with small PVCs on the `standard` storage class, mirroring the MariaDB/Memcached
-single-node kind footprint. This is a **CI/dev fixture** — plain HTTP in-cluster, single
+operator/chart releases. The shared development base
+(`deploy/bases/devstack/infrastructure/kustomization.yaml`) patches the storage tier to a
+single node with small PVCs, mirroring its MariaDB/Memcached footprint. Kind selects
+`standard` storage; metal-stack uses the cluster default. This is a **CI/dev fixture** — plain HTTP in-cluster, single
 tier; production-grade multi-node/zone-aware guidance is out of scope.
 
 **Credential flow — OpenBao stays the single source of truth.** No key material is read
@@ -1382,8 +1349,8 @@ namespace gets its own ExternalSecret on the same OpenBao path.
    `bootstrap/openstack/garage/s3-credentials` (see the
    [OpenBao bootstrap reference](./openbao-bootstrap.md#write-bootstrap-secrets-sh)). The
    `openstack` segment names the consuming tenant, not the namespace Garage runs in.
-2. Kind-only ExternalSecrets
-   (`deploy/kind/infrastructure/garage-{admin-token,s3-credentials}-externalsecret.yaml`)
+2. Shared development ExternalSecrets
+   (`deploy/bases/devstack/infrastructure/garage-{admin-token,s3-credentials}-externalsecret.yaml`)
    materialize them through the shared `openbao-cluster-store`: `garage-admin-token` and
    one `garage-s3-credentials` copy into `shared-services`, beside the CRs that read them,
    and a second `garage-s3-credentials` copy into `openstack`.
@@ -1395,7 +1362,7 @@ namespace gets its own ExternalSecret on the same OpenBao path.
 
 ### OpenBao Proving Instance
 
-**File:** `deploy/kind/infrastructure/openbao-instance.yaml`
+**File:** `deploy/bases/devstack/infrastructure/openbao-instance.yaml`
 
 Five resources declare the proving instance: the single-replica `OpenBaoCluster` that the
 [openbao-operator](#openbao-operator) manages, plus the TLS and RBAC objects it depends
@@ -1409,7 +1376,7 @@ on. All live in the `openstack` namespace except the cluster-scoped ClusterRoleB
 | `ClusterRoleBinding` | `rbac.authorization.k8s.io/v1` | `openbao-instance-auth-delegator` | Grants `system:auth-delegator` to the operator-created instance ServiceAccount `openbao-instance-serviceaccount` |
 | `OpenBaoCluster` | `openbao.org/v1alpha1` | `openbao-instance` | Profile `Development`, version `2.6.2`, one replica, 1Gi raft storage, TLS mode `External`, static seal, self-init enabled, applied `paused`, API-server egress patched in at deploy time |
 
-**Tenant.** `deploy/kind/infrastructure/openbao-tenant.yaml` declares the
+**Tenant.** `deploy/bases/devstack/infrastructure/openbao-tenant.yaml` declares the
 `OpenBaoTenant` `openstack` that admits the `openstack` namespace to the multi-tenant
 operator. It lives in `openbao-operator-system` and targets `openstack` from there,
 because the chart's admission policy accepts `spec.quota` and `spec.limitRange` only on
@@ -1447,20 +1414,20 @@ The LimitRange shapes only the pods admitted after it changes: a running pod kee
 limits it was admitted with until it restarts. A kind cluster created before the tenant moved keeps its old
 `openstack/openstack` tenant beside the new one, so recreate it.
 
-The instance runs in every kind deploy, so the primitives a managed Barbican secret store
+The instance runs in both development environments, so the primitives a managed Barbican secret store
 needs are exercised with no Barbican attached: static-seal auto-unseal, cert-manager TLS
 in External mode, declarative self-init, and the AppRole and Kubernetes-auth methods a
 service and its operator log in with.
 
-**Why it is kind-only.** Everything above is a proving posture, not a production one. The
+**Why it stays in the development base.** Everything above is a proving posture, not a production one. The
 `Development` profile is what keeps the instance on a single node — one replica, so no
 PodDisruptionBudget and no anti-affinity — and the static seal keeps its key material in
 a Secret in the shared `openstack` namespace. `Hardened`, the profile that forces an
 external-KMS unseal and three replicas, is the production control, and this instance
 deliberately opts out of it to exercise the static-seal path. Shipping that from
-`deploy/flux-system/infrastructure/` would put it, a cluster-scoped RBAC binding, and a
-self-initialized AppRole with no consumer into every production deployment. Only the
-[openbao-operator](#openbao-operator) itself ships in the production base. The dedicated
+`deploy/bases/infrastructure/` would put it, a cluster-scoped RBAC binding, and a
+self-initialized AppRole with no consumer into every production deployment. Both kind and metal-stack select the shared devstack instance. The reusable
+operator stage ships only the [openbao-operator](#openbao-operator) controller. The dedicated
 instance a ControlPlane projects for a managed Barbican secret store carries the same
 proving-grade `Development` profile; a `Hardened` production-shaped instance is still
 future work.
@@ -1504,7 +1471,7 @@ reason the instance stays out of the production overlay.
    `bootstrap/openstack/openbao-instance/unseal-key` (key `key`), behind the
    `write_secret_if_missing` guard.
 2. The ExternalSecret
-   `deploy/kind/infrastructure/openbao-instance-unseal-key-externalsecret.yaml` reads that
+   `deploy/bases/devstack/infrastructure/openbao-instance-unseal-key-externalsecret.yaml` reads that
    path through the shared `openbao-cluster-store` and materializes the Secret
    `openbao-instance-unseal-key` in `openstack`. It is `refreshPolicy: CreatedOnce`: the
    Secret is materialized once and never converged again. Its target is
@@ -1599,7 +1566,7 @@ itself sets `automountServiceAccountToken: false`, since every consumer mints ex
 **Shared names with the brownfield leg.** The mount, policy, and role names (`barbican/`,
 `barbican-secretstore`, `barbican`) match the ones the bootstrap scripts provision on the
 shared management OpenBao (`enable_barbican_kv` in `setup-secret-engines.sh`,
-`deploy/openbao/policies/barbican-secretstore.hcl`, and the `barbican` AppRole role in
+`deploy/bases/shared-openbao/policies/barbican-secretstore.hcl`, and the `barbican` AppRole role in
 `setup-auth.sh`; see the
 [OpenBao bootstrap reference](./openbao-bootstrap.md#setup-secret-engines-sh)). A
 deployment that attaches Barbican to the shared instance instead of a dedicated one
@@ -1665,12 +1632,11 @@ reconcile. The operator then forces a re-push (`c5c3.io/push-cacert-hash`), so
 the Secret in OpenBao no longer carries the key. The PushSecret's
 `deletionPolicy` is `Delete`: the OpenBao key leaves with the ControlPlane.
 
-**No `orc-system` copy** — the static `deploy/eso/externalsecrets/k-orc-clouds-yaml.yaml`
-manifest that previously declared K-ORC's global default `clouds.yaml` mount has been
-removed. K-ORC authenticates **per resource** via each CR's `CloudCredentialsRef`,
+**No `orc-system` copy** — there is no static ExternalSecret for a global
+K-ORC `clouds.yaml` mount. K-ORC authenticates **per resource** via each CR's `CloudCredentialsRef`,
 resolved in the control-plane namespace, so no cluster-global default mount is needed.
 The `orc-system` Namespace itself is retained (co-declared in
-`deploy/flux-system/namespaces.yaml`) because the K-ORC installer's own resources land
+`deploy/bases/operators/namespaces.yaml`) because the K-ORC installer's own resources land
 there — it no longer hosts a `clouds.yaml` copy.
 
 On a fresh cluster the bootstrap `clouds.yaml` at the per-CR OpenBao key is seeded
@@ -1681,7 +1647,7 @@ so the ExternalSecrets can materialise before any credential is minted. Once the
 c5c3-operator mints the admin Application Credential the same PushSecret overwrites
 the key with the App-Cred-based `clouds.yaml`.
 
-**OpenBao policy** — `deploy/openbao/policies/eso-tenant.hcl`
+**OpenBao policy** — `deploy/bases/shared-openbao/policies/eso-tenant.hcl`
 
 This per-tenant policy grants the write path for each ControlPlane's admin
 credential PushSecret. Because the admin credential path is keyed per
@@ -1713,45 +1679,43 @@ SecretStore auth path these manifests ride on, see
 
 ## Kustomization
 
-Deployment is split into two kustomize overlays to separate base resources from
-CRD-dependent infrastructure resources:
+Deployment uses staged bases to keep operator installation separate from
+CRD-dependent infrastructure and bootstrap:
 
 ### Base Kustomization
 
-**File:** `deploy/flux-system/kustomization.yaml`
+**File:** `deploy/bases/operators/kustomization.yaml`
 
-The base kustomization uses `apiVersion: kustomize.config.k8s.io/v1beta1` and includes
-namespaces, the FluxInstance CR, HelmRepository sources, and HelmRelease operators.
-These resources depend on no CRD that an operator of this stack installs. The Flux
-kinds among them need the flux-operator, which registers the `FluxInstance` kind and,
-once it has reconciled the instance, the Flux toolkit kinds.
+The operator base owns namespaces, sources and controller reconciliation objects.
+Flux must already be ready. The Flux runtime, shared OpenBao server, TLS and
+ControlPlane operator each have their own base and lifecycle gate.
 
-**Resource count:** 35 files producing 55 Kubernetes resources.
+**Resource count:** 32 files producing 52 Kubernetes resources.
 
 | Category | Count | Resources |
 | --- | --- | --- |
 | Namespace | 21 | cert-manager, mariadb-system, external-secrets, monitoring, memcached-system, openstack, shared-services, keystone-system, horizon-system, glance-system, placement-system, barbican-system, ovn-system, neutron-system, cinder-system, nova-system, c5c3-system, garage-system, orc-system, openbao-operator-system, rabbitmq-system |
-| FluxInstance | 1 | flux (drives the flux-operator) |
 | HelmRepository | 7 | cert-manager, mariadb-operator, external-secrets, openbao, c5c3-charts, prometheus-community, garage-operator |
 | OCIRepository | 1 | openbao-operator |
 | GitRepository | 3 | k-orc, rabbitmq-cluster-operator, messaging-topology-operator |
-| HelmRelease | 19 | cert-manager, mariadb-operator-crds, prometheus-operator-crds, mariadb-operator, memcached-operator, external-secrets, garage-operator, openbao, openbao-operator, ovn-operator, keystone-operator, horizon-operator, glance-operator, placement-operator, cinder-operator, nova-operator, barbican-operator, neutron-operator, c5c3-operator |
+| HelmRelease | 17 | cert-manager, mariadb-operator-crds, prometheus-operator-crds, mariadb-operator, memcached-operator, external-secrets, garage-operator, openbao-operator, ovn-operator, keystone-operator, horizon-operator, glance-operator, placement-operator, cinder-operator, nova-operator, barbican-operator, neutron-operator |
 | Kustomization | 3 | k-orc, rabbitmq-cluster-operator, messaging-topology-operator |
-| **Total** | **55** | |
+| **Total** | **52** | |
 
 The `chaos-mesh` HelmRepository, HelmRelease, and Namespace ship in the
-kind-only opt-in overlay at `deploy/kind/chaos-mesh/` and are not
+shared opt-in base at `deploy/bases/chaos-mesh/` and are not
 counted here.
 
 ### Infrastructure Kustomization
 
-**File:** `deploy/flux-system/infrastructure/kustomization.yaml`
+**File:** `deploy/bases/infrastructure/kustomization.yaml`
 
 The infrastructure kustomization includes CRD-dependent resources that require their
 operator CRDs to be installed first. This kustomization must be applied after the base
 kustomization and after operators have finished installing their CRDs.
 
-**Resource count:** 9 manifests and the `../../eso` kustomization, producing 17
+**Resource count:** three instance manifests plus the `../tls` and
+`../eso-store` kustomizations, producing 17
 Kubernetes resources (the `db-ca-issuer.yaml`, `ovn-ca-issuer.yaml`, and
 `openbao-ca-issuer.yaml` manifests declare two resources each: a CA Certificate and the
 CA-type ClusterIssuer that signs from it; `garage.yaml` declares four;
@@ -1765,17 +1729,17 @@ CA-type ClusterIssuer that signs from it; `garage.yaml` declares four;
 | MariaDB | 1 | `openstack-db` (requires mariadb-operator CRDs; TLS enabled per [MariaDB Galera Cluster](#mariadb-galera-cluster)) |
 | Memcached | 1 | `openstack-memcached` (requires memcached-operator CRDs) |
 | GarageCluster / GarageBucket / GarageKey | 4 | `garage`, `glance-images`, `glance-images-2`, `glance-s3` (require garage-operator CRDs; see [Garage Object Store](#garage-object-store)) |
-| ClusterSecretStore | 1 | `openbao-cluster-store`, from `deploy/eso/` |
+| ClusterSecretStore | 1 | `openbao-cluster-store`, from `deploy/bases/eso-store/` |
 | **Total** | **17** | |
 
 The proving instance's own five resources (two Certificates, a ServiceAccount, a
-ClusterRoleBinding, and the `OpenBaoCluster`) are not counted here: they ship in the kind
-overlay — see [OpenBao Proving Instance](#openbao-proving-instance).
+ClusterRoleBinding, and the `OpenBaoCluster`) are not counted here: they ship in the shared
+development base — see [OpenBao Proving Instance](#openbao-proving-instance).
 
 
 ## Deployment
 
-The two steps below apply the two kustomizations by hand. `make deploy-infra`
+The examples below show the operator and reference-instance stages. `make deploy-infra`
 applies the same two phases, on the kind or the lab overlay, as its Step 3 and
 Step 5, and runs the waits and the OpenBao bootstrap around them. The figure
 shows that run. [Deployment Sequence](e2e-deployment.md#deployment-sequence)
@@ -1783,31 +1747,34 @@ describes each numbered step, and
 [Steps and phases](e2e-deployment.md#steps-and-phases) maps the step and phase
 numbers of the two pages.
 
-![The run of make deploy-infra as eight numbered steps from top to bottom, with the opt-ins beside the step each one changes. Before Step 1 the script runs its preflight checks and, in kind mode, loads the kernel modules some opt-ins need. Step 1 forks: kind mode creates the cluster from hack/kind-config.yaml or keeps the one that exists, and EXTERNAL_CLUSTER=true creates none and checks the cluster of the current context. Step 2 installs the flux-operator, the Namespaces and the FluxInstance, waits for the FluxInstance to be Ready, and installs the Gateway API and Envoy Gateway CRDs. Step 3 applies the base overlay, deploy/kind/base or base/ of EXTERNAL_OVERLAY. Step 4 waits for the releases in four phases: cert-manager and its webhook, the four TLS prerequisites, the infrastructure releases, and the Kustomization rabbitmq-cluster-operator. Once the operator CRDs are registered, Step 5 applies the infrastructure overlay and waits for the Gateway openstack-gw to be Programmed. Step 6 waits for the OpenBao pods to run. Step 7 initialises, unseals and configures OpenBao and waits for its pods to be Ready. Step 8 waits for the ExternalSecrets keystone-admin, keystone-db and mariadb-root-password. After Step 8 the script waits for the proving OpenBao instance, for Garage and, without a ControlPlane, for the MariaDB openstack-db. The opt-in boxes: KIND_HOST_PORT, KIND_CONFIG, SKIP_KIND_CREATE and WITH_REGISTRY_CACHE act on the cluster creation. WITH_CHAOS_MESH, WITH_PROMETHEUS, WITH_DIZZY, WITH_NFS, WITH_CEPH, WITH_METRICS_SERVER and WITH_VPA each add an overlay in Step 3 and a release to the wait of Step 4. WITH_CEPH also applies ceph/cluster in Step 5 and, after Step 8, waits for the Ceph cluster and syncs its client keys. WITH_CONTROLPLANE resumes the service-operator releases in Step 3, leaves MariaDB, Memcached and the three ExternalSecrets out of Step 5, skips the wait of Step 8, and ends with the operator stack Ready and a dry-run of the ControlPlane admitted. WITH_MESSAGING adds a RabbitMQ broker after Step 5.](../../diagrams/deploy-infra-run.svg)
+![The run of make deploy-infra as eight numbered steps from top to bottom, with the opt-ins beside the step each one changes. Before Step 1 the script runs its preflight checks and, in kind mode, loads the kernel modules some opt-ins need. Step 1 forks: kind mode creates the cluster from hack/kind-config.yaml or keeps the one that exists, and EXTERNAL_CLUSTER=true creates none and checks the cluster of the current context. Step 2 installs the flux-operator, the Namespaces and the FluxInstance, waits for the FluxInstance to be Ready, and installs the Gateway API and Envoy Gateway CRDs. Step 3 applies the base overlay, deploy/overlays/kind/base or base/ of EXTERNAL_OVERLAY. Step 4 waits for the releases in four phases: cert-manager and its webhook, the four TLS prerequisites, the infrastructure releases, and the Kustomization rabbitmq-cluster-operator. Once the operator CRDs are registered, Step 5 applies the infrastructure overlay and waits for the Gateway openstack-gw to be Programmed. Step 6 waits for the OpenBao pods to run. Step 7 initialises, unseals and configures OpenBao and waits for its pods to be Ready. Step 8 waits for the ExternalSecrets keystone-admin, keystone-db and mariadb-root-password. After Step 8 the script waits for the proving OpenBao instance, for Garage and, without a ControlPlane, for the MariaDB openstack-db. The opt-in boxes: KIND_HOST_PORT, KIND_CONFIG, SKIP_KIND_CREATE and WITH_REGISTRY_CACHE act on the cluster creation. WITH_CHAOS_MESH, WITH_PROMETHEUS, WITH_DIZZY, WITH_NFS, WITH_CEPH, WITH_METRICS_SERVER and WITH_VPA each add an overlay in Step 3 and a release to the wait of Step 4. WITH_CEPH also applies ceph/cluster in Step 5 and, after Step 8, waits for the Ceph cluster and syncs its client keys. WITH_CONTROLPLANE resumes the service-operator releases in Step 3, leaves MariaDB, Memcached and the three ExternalSecrets out of Step 5, skips the wait of Step 8, and ends with the operator stack Ready and a dry-run of the ControlPlane admitted. WITH_MESSAGING adds a RabbitMQ broker after Step 5.](../../diagrams/deploy-infra-run.svg)
 
 ### Step 1: Apply base resources
 
+After installing flux-operator, apply the namespaces and runtime, wait for Flux,
+then apply the operator base:
+
 ```bash
-kubectl apply -k deploy/flux-system/
+kubectl apply -f deploy/bases/operators/namespaces.yaml
+kubectl apply -k deploy/bases/flux/
+kubectl wait fluxinstance/flux -n flux-system --for=condition=Ready --timeout=600s
+kubectl apply -k deploy/bases/operators/
 ```
 
-On a cluster where `FluxInstance/flux` is not Ready yet, the sources and releases
-fail with `no matches for kind "HelmRepository"`: the flux-operator registers the
-Flux toolkit CRDs only when it reconciles the instance. Apply `namespaces.yaml` and
-`fluxinstance.yaml` first and wait for the instance, as Step 2 of
-`hack/deploy-infra.sh` does.
-
-This applies 55 resources: 21 namespaces, 1 FluxInstance, 11 sources
-(7 HelmRepository, 1 OCIRepository, 3 GitRepository), 19 HelmReleases and
+This applies 52 resources from the operator base: 21 namespaces, 11 sources
+(7 HelmRepository, 1 OCIRepository, 3 GitRepository), 17 HelmReleases and
 3 Flux Kustomizations (K-ORC, the RabbitMQ Cluster Operator and the RabbitMQ
-Messaging Topology Operator). FluxCD resolves the dependency graph between
-HelmReleases and installs operators in the correct order. Wait for all operators to
-finish installing before proceeding to step 2.
+Messaging Topology Operator). FluxCD resolves controller dependencies.
+
+Wait for controller CRDs and admission webhooks before applying their resources.
+TLS, the shared OpenBao server, bootstrap, ESO and the ControlPlane operator follow
+as separate stages; use the [deployment order](https://github.com/C5C3/cobaltcore/blob/main/deploy/README.md#deployment-order).
+`make deploy-infra` performs these gates for the development environments.
 
 ### Step 2: Apply infrastructure resources
 
 ```bash
-kubectl apply -k deploy/flux-system/infrastructure/
+kubectl apply -k deploy/bases/infrastructure/
 ```
 
 This applies the CRD-dependent resources: the `selfsigned-cluster-issuer`
@@ -1831,7 +1798,7 @@ fail — wait for the operators to finish installing and retry.
 > works.
 
 > **Expected transient failure:** The MariaDB cluster references a
-> `rootPasswordSecretKeyRef` Secret (`mariadb-root-password`). On kind, the overlay
+> `rootPasswordSecretKeyRef` Secret (`mariadb-root-password`). In the development overlays, the shared base
 > shim materialises it from OpenBao via the External Secrets Operator; in production a
 > Flux MariaDB baseline must provide it. Until that Secret exists, the
 > mariadb-operator will enter a failed reconciliation loop with
@@ -1841,8 +1808,8 @@ fail — wait for the operators to finish installing and retry.
 ### Validate manifests locally
 
 ```bash
-kustomize build deploy/flux-system/
-kustomize build deploy/flux-system/infrastructure/
+kustomize build deploy/bases/operators/
+kustomize build deploy/bases/infrastructure/
 ```
 
 These commands render the manifest output without applying it. Use them to verify YAML
@@ -1858,12 +1825,12 @@ syntax and resource inclusion before deployment.
 
 ## Sizing and placement overrides
 
-The manifests under `deploy/flux-system/` ship the components' own sizing and no
+The manifests under `deploy/bases/operators/` ship the components' own sizing and no
 node placement. A deployer changes both with a kustomize overlay per apply phase
 and leaves the shipped files untouched. `deploy/examples/sizing-overlay/` is an
 example of such an overlay. No script applies it, and
 `tests/unit/deploy/sizing_overlay_example_test.sh` renders it and pins every
-field it patches. The kind devstack's `deploy/kind/base/` is an overlay built
+field it patches. The kind devstack's `deploy/overlays/kind/base/` is an overlay built
 the same way.
 
 ### Recipe
@@ -1875,9 +1842,9 @@ the same way.
 2. Point the base entry in each phase's `resources` list at its base; the
    `priorityclass.yaml` entry stays as it is. Inside a checkout of this
    repository a relative path works. Elsewhere, use a remote base pinned to a
-   commit: `https://github.com/C5C3/cobaltcore//deploy/flux-system?ref=<commit>`
+   commit: `https://github.com/C5C3/cobaltcore//deploy/bases/operators?ref=<commit>`
    for the base phase and
-   `https://github.com/C5C3/cobaltcore//deploy/flux-system/infrastructure?ref=<commit>`
+   `https://github.com/C5C3/cobaltcore//deploy/bases/infrastructure?ref=<commit>`
    for the infrastructure phase. When you move `<commit>` later, compare each
    copied `spec.chart.spec.version` with the base's at the new commit. The
    patch replaces the whole range, so an upper bound the base has moved past
@@ -1930,8 +1897,8 @@ The infrastructure phase, `deploy/examples/sizing-overlay/infrastructure/kustomi
 
 ### Where each workload is sized
 
-One row per entry of `deploy/flux-system/kustomization.yaml` and
-`deploy/flux-system/infrastructure/kustomization.yaml` that runs pods:
+One row per entry of `deploy/bases/operators/kustomization.yaml` and
+`deploy/bases/infrastructure/kustomization.yaml` that runs pods:
 
 | Entry | Kind | Field to patch | Sizing keys |
 | --- | --- | --- | --- |
@@ -2104,19 +2071,19 @@ internally-built charts to `oci://ghcr.io/c5c3/charts`.
 
 ## Kind Overlay Demo Addons
 
-The kind overlay (`deploy/kind/base/kustomization.yaml`) layers a small set of
-kind-only demo manifests on top of the production base. These files live under
-`deploy/kind/base/` and are **not** referenced from `deploy/flux-system/kustomization.yaml`,
-so they never reach production clusters. The section below catalogues these addons;
-earlier kind-only manifests (Headlamp, OpenBao UI patch) are documented in the Quick Start.
+The kind and metal-stack base overlays import development UI and gateway
+controller manifests from `deploy/bases/devstack/base/`. These are **not**
+referenced from `deploy/bases/operators/kustomization.yaml`, so production consumers
+of that root do not install them. The section below catalogues these addons;
+Headlamp and the development OpenBao UI patch are documented in the Quick Start.
 Chaos Mesh ships as a
-separate **opt-in** kind overlay at `deploy/kind/chaos-mesh/` — applied only when
+separate **opt-in** kind overlay at `deploy/overlays/kind/chaos-mesh/` — applied only when
 `WITH_CHAOS_MESH=true` is set on `make deploy-infra`; see
-[Chaos Mesh (kind-only opt-in)](#chaos-mesh-kind-only-opt-in) below.
+[Chaos Mesh (development opt-in)](#chaos-mesh-development-opt-in) below.
 
 ### Flux Web UI ResourceSet
 
-**File:** `deploy/kind/base/flux-web.yaml`
+**File:** `deploy/bases/devstack/base/flux-web.yaml`
 
 A single `ResourceSet` CR drives the flux-operator's bundled
 [Flux Web UI](https://fluxoperator.dev/web-ui/) as a demo surface for the kind
@@ -2143,14 +2110,14 @@ Quick Start (Step 4a). The `ResourceSet` renders two sibling resources — an
 
 **Version tracking.** The `spec.inputs[0].version` SemVer range is updated
 automatically by a Renovate `customManager` entry in `renovate.json` that
-targets `deploy/kind/base/flux-web.yaml` and pulls release metadata from
+targets `deploy/bases/devstack/base/flux-web.yaml` and pulls release metadata from
 `controlplaneio-fluxcd/flux-operator` GitHub releases. The customManager shares
 the same `packageRules` as `hack/deploy-infra.sh` — major upgrades are
 disabled, minor/patch upgrades auto-merge after a three-day `minimumReleaseAge`
 cooldown.
 
-**Production opt-out.** `deploy/flux-system/kustomization.yaml` deliberately
-does **not** list `deploy/kind/base/flux-web.yaml`. The flux-operator Web UI
+**Production opt-out.** `deploy/bases/operators/kustomization.yaml` deliberately
+does **not** list `deploy/bases/devstack/base/flux-web.yaml`. The flux-operator Web UI
 ships without token authentication, without TLS termination, and without an
 Ingress story — it is safe as a localhost port-forward demo on a single-node
 kind cluster, not as a shared-cluster surface. Production overlays can opt
@@ -2167,34 +2134,31 @@ Headlamp by rendering the three flux-operator-specific CRDs (`ResourceSet`,
 `ResourceSetInputProvider`, `FluxReport`) that the generic Headlamp Flux
 plugin does not know about.
 
-### Chaos Mesh (kind-only opt-in)
+### Chaos Mesh (development opt-in)
 
-**File:** `deploy/kind/chaos-mesh/kustomization.yaml`
+**File:** `deploy/overlays/kind/chaos-mesh/kustomization.yaml`
 
 [Chaos Mesh](https://chaos-mesh.org/) ships as a separate **opt-in** kind
 overlay. The default `make deploy-infra` flow does **not** install
 it — first-run deployments skip the privileged `chaos-daemon` DaemonSet, the
 `chaos-mesh` namespace, and the upstream HelmRepository / HelmRelease pair so
 that developers who never run chaos E2E suites pay zero install cost. The
-production `deploy/flux-system/` overlay also does not install Chaos Mesh.
+production `deploy/bases/operators/` overlay also does not install Chaos Mesh.
 
-The overlay is self-contained: the `HelmRepository` lives in
-`deploy/kind/chaos-mesh/source.yaml` and the `HelmRelease` in
-`deploy/kind/chaos-mesh/release.yaml` (both relocated from the former
-`deploy/flux-system/{sources,releases}/chaos-mesh.yaml` locations). The
-overlay bundles them with:
+The shared Chaos Mesh base contains its own inputs: the `HelmRepository` lives in
+`deploy/bases/chaos-mesh/source.yaml` and the `HelmRelease` in
+`deploy/bases/chaos-mesh/release.yaml` (both outside the default operator catalog). The
+kind and metal-stack overlays compose that base with:
 
 | Property | Value |
 | --- | --- |
 | Target namespace | `chaos-mesh` (created inline with the privileged PodSecurity label required by `chaos-daemon`'s host PID/network access) |
 | Chart | `chaos-mesh` |
 | Version constraint | `>=2.6.0 <3.0.0` |
-| Source | `chaos-mesh` HelmRepository (`deploy/kind/chaos-mesh/source.yaml`) |
+| Source | `chaos-mesh` HelmRepository (`deploy/bases/chaos-mesh/source.yaml`) |
 | Dependencies | `cert-manager` in `cert-manager` namespace |
 
-**Kind-tuning patch** (relocated here from
-`deploy/kind/base/kustomization.yaml` because kustomize requires the patch
-target to live in the same overlay):
+**Shared development tuning** in `deploy/bases/chaos-mesh/kustomization.yaml`:
 
 | Helm value | Override | Purpose |
 | --- | --- | --- |
@@ -2206,14 +2170,12 @@ target to live in the same overlay):
 
 These overrides diverge intentionally from the upstream chart defaults
 (dashboard enabled, larger resource requests, auto-detected runtime), which
-target multi-node production clusters. Because the patch and the
-HelmRelease both live in the kind-only overlay, production environments that
-opt into Chaos Mesh start from the upstream defaults instead of inheriting
-the kind-tuning values.
+target multi-node production clusters. Both development overlays inherit these values from the shared base.
+Production consumers that need upstream defaults can install the chart directly.
 
-**No load-restrictor flag required.** The overlay has no parent-directory
-`../../` references — every resource (`namespace.yaml`, `source.yaml`,
-`release.yaml`) lives under `deploy/kind/chaos-mesh/`. Kustomize's default
+**No load-restrictor flag required.** The overlay imports the directory base
+`deploy/bases/chaos-mesh`, whose raw resources (`namespace.yaml`, `source.yaml`,
+`release.yaml`) are local to that base. Kustomize's default
 `LoadRestrictionsRootOnly` security check is therefore satisfied without
 `--load-restrictor=LoadRestrictionsNone`, which matters because kubectl's
 embedded kustomize does not expose that flag (kubernetes/kubectl#948) and
@@ -2227,40 +2189,45 @@ WITH_CHAOS_MESH=true make deploy-infra
 
 This is the prerequisite for `make e2e-chaos`. See
 [Chaos E2E Tests](../testing/chaos-e2e-tests.md) for the full workflow. The
-metal-stack lab deploys Chaos Mesh from its own overlay on top of this one,
+metal-stack lab deploys Chaos Mesh from its own overlay over the same shared base,
 with a namespace filter and a pod that loads the kernel modules; see
 [Lab Chaos Mesh](#lab-chaos-mesh).
 
-### kube-prometheus-stack (kind-only opt-in)
+### kube-prometheus-stack (development opt-in)
 
-**File:** `deploy/kind/prometheus/kustomization.yaml`
+**Files:** `deploy/overlays/kind/prometheus/kustomization.yaml` (standalone compatibility root),
+`deploy/overlays/kind/prometheus-managed/kustomization.yaml` (composed deploy flow)
 
 [`kube-prometheus-stack`](https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack)
 ships as a separate **opt-in** kind overlay. The default
-`make deploy-infra` flow does **not** install it — the `monitoring`
-namespace stays absent, and Prometheus / Grafana / the prometheus-operator
-pods do not consume any of the kind node's CPU or memory budget unless a
-contributor explicitly opts in. The production `deploy/flux-system/` overlay
+`make deploy-infra` flow does **not** install it. The base already declares
+`monitoring` for the Prometheus Operator CRDs; Prometheus / Grafana / the
+prometheus-operator pods do not consume any of the kind node's CPU or memory
+budget unless a contributor explicitly opts in. The production `deploy/bases/operators/` overlay
 also does not install the stack: production clusters are expected to run
 their own Prometheus and widen its `serviceMonitorSelector` to pick up the
 keystone-operator chart's `ServiceMonitor` (see
 [Enable Keystone Operator Metrics](../../guides/keystone/enable-keystone-operator-metrics.md)
 for that wiring path).
 
-The overlay is self-contained: the `Namespace` and `HelmRelease` live in
-`deploy/kind/prometheus/namespace.yaml` and
-`deploy/kind/prometheus/release.yaml`, and the upstream `prometheus-community`
-HelmRepository in `deploy/flux-system/sources/prometheus-community.yaml` is
+The standalone root retains its `Namespace` and `HelmRelease` in
+`deploy/overlays/kind/prometheus/namespace.yaml` and
+`deploy/bases/prometheus/release.yaml`, and the upstream `prometheus-community`
+HelmRepository in `deploy/bases/operators/sources/prometheus-community.yaml` is
 **reused** (it is already present for the `prometheus-operator-crds`
 HelmRelease in the production base, so no new source manifest is added to
-the production tree). The overlay bundles the resources with:
+the production tree). The standalone and managed kind roots both import
+`deploy/bases/prometheus`; only the standalone root adds the Namespace.
+`make deploy-infra` uses the managed root in kind mode, so the devstack base
+remains the sole Namespace owner. The lab imports the shared base directly. The standalone root remains available to direct consumers that need the
+Namespace. Both roots use the same chart settings:
 
 | Property | Value |
 | --- | --- |
-| Target namespace | `monitoring` (created inline; no PodSecurity label override required) |
+| Target namespace | `monitoring` (owned by the platform base in composed flows; the standalone root includes it) |
 | Chart | `kube-prometheus-stack` |
 | Version constraint | `>=65.0.0 <70.0.0` |
-| Source | `prometheus-community` HelmRepository (reused from `deploy/flux-system/sources/`) |
+| Source | `prometheus-community` HelmRepository (reused from `deploy/bases/operators/sources/`) |
 | Dependencies | `cert-manager` in `cert-manager` namespace |
 
 **Kind-tuned values** (deliberately too lean for a real workload — they exist
@@ -2288,18 +2255,19 @@ labels. Grafana's sidecar discovers the labelled ConfigMap on startup and
 imports it into the **Dashboards → Keystone Operator** entry without any
 manual API call. Because the dashboard JSON lives outside the overlay
 directory, `hack/deploy-infra.sh` performs an idempotent copy
-into `deploy/kind/prometheus/keystone-operator.json` immediately before
+into `deploy/bases/prometheus/keystone-operator.json` immediately before
 `kubectl apply -k` runs — this satisfies kustomize's default
-`LoadRestrictionsRootOnly` constraint (the overlay has no `../` references)
-without requiring `--load-restrictor=LoadRestrictionsNone`.
+`LoadRestrictionsRootOnly` constraint: the generator reads a local file,
+and the managed and lab roots import directories. No caller needs
+`--load-restrictor=LoadRestrictionsNone`.
 
 **Local validation (`make stage-prometheus-dashboard`).** The staged
-`deploy/kind/prometheus/keystone-operator.json` is git-ignored — the
+`deploy/bases/prometheus/keystone-operator.json` is git-ignored — the
 canonical file lives only at `operators/keystone/dashboards/keystone-operator.json`.
-Developers who want to run `kustomize build deploy/kind/prometheus/`,
-`kubectl apply -k deploy/kind/prometheus/`, or `chainsaw lint` against the
-overlay **without** running `WITH_PROMETHEUS=true make deploy-infra` first
-must stage the dashboard manually:
+Developers who want to render or apply `deploy/overlays/kind/prometheus/`,
+`deploy/overlays/kind/prometheus-managed/` or the lab Prometheus overlay, or run
+`chainsaw lint` against the overlay **without** running
+`WITH_PROMETHEUS=true make deploy-infra` first must stage the dashboard manually:
 
 ```bash
 make stage-prometheus-dashboard
@@ -2338,14 +2306,12 @@ walkthrough — port-forward, default Grafana credentials, the bundled
 `Keystone Operator` dashboard, and a Prometheus targets sanity-check — see
 [Extended Quick Start — Step 4c](../../quick-start-extended.md#step-4c-grafana-ui).
 
-**Posture summary.** Reviewers checking new kind-only opt-ins should treat
-this entry as a parallel of the `Chaos Mesh (kind-only opt-in)` example
-above: the production omission is explicit, the opt-in flag has a single
-documented name (`WITH_PROMETHEUS`), and the kind overlay is self-contained
-under `deploy/kind/prometheus/` so the production kustomization root is
-untouched. The
-[`document-intentional-environment-divergence-in-overlays`](https://github.com/c5c3/cobaltcore/blob/main/.planwerk/review_patterns/document-intentional-environment-divergence-in-overlays.md)
-review pattern catalogues the full surface area.
+**Posture summary.** The default operator catalog omits the stack, and the
+opt-in flag is `WITH_PROMETHEUS`. The chart and dashboard resources live in
+`deploy/bases/prometheus/`. Both environments import that base; the kind
+`prometheus-managed/` composition and the lab overlay leave Namespace ownership
+to their base stage. The standalone kind `prometheus/` entry point adds the
+Namespace for manual use.
 
 The metal-stack lab runs the same stack with its metrics on a volume, the
 scrape jobs a Gardener shoot can feed, and a dashboard for the hypervisor
@@ -2353,13 +2319,13 @@ operator; see [Lab Prometheus stack](#lab-prometheus-stack).
 
 ### metrics-server (kind-only opt-in)
 
-**File:** `deploy/kind/metrics-server/kustomization.yaml`
+**File:** `deploy/overlays/kind/metrics-server/kustomization.yaml`
 
 [`metrics-server`](https://github.com/kubernetes-sigs/metrics-server) ships as
 a separate **opt-in** kind overlay. The default `make deploy-infra` flow does
 **not** install it — the `kube-system` metrics-server stays absent so the
 default Quick Start does not spend the kind node's budget on a component most
-tutorials do not need. The production `deploy/flux-system/` overlay also does
+tutorials do not need. The production `deploy/bases/operators/` overlay also does
 not install it: managed distributions ship their own metrics-server, and
 production clusters bring their own.
 
@@ -2373,8 +2339,8 @@ from the resource-metrics API, and without a metrics-server it reports
 `unknown/80%` and never scales.
 
 The overlay is self-contained: the `HelmRepository` and `HelmRelease` live in
-`deploy/kind/metrics-server/source.yaml` and
-`deploy/kind/metrics-server/release.yaml`. Unlike the chaos-mesh and
+`deploy/overlays/kind/metrics-server/source.yaml` and
+`deploy/overlays/kind/metrics-server/release.yaml`. Unlike the chaos-mesh and
 kube-prometheus-stack overlays it ships **no** `Namespace` — the chart defaults
 to `priorityClassName: system-cluster-critical`, which only resolves in the
 pre-existing `kube-system` Namespace, so the HelmRelease targets `kube-system`
@@ -2395,7 +2361,7 @@ directly.
 | `args` | `["--kubelet-insecure-tls"]` | kind's kubelets serve `/metrics/resource` with a self-signed certificate metrics-server cannot verify against the cluster CA; skipping verification lets scrapes succeed. This replaces the runtime `kubectl patch` the autoscaling recipe previously documented — never set it on a production cluster with properly issued kubelet certificates |
 
 When `WITH_METRICS_SERVER=true`, `hack/deploy-infra.sh` runs
-`kubectl apply -k deploy/kind/metrics-server` in Step 3 and appends
+`kubectl apply -k deploy/overlays/kind/metrics-server` in Step 3 and appends
 `metrics-server` to the Phase 3 HelmRelease wait list. Both actions are gated
 strictly on the flag; the chart values are never modified, which keeps the
 production posture unchanged.
@@ -2409,15 +2375,15 @@ WITH_METRICS_SERVER=true make deploy-infra
 **Posture summary.** Same shape as the two entries above: the production
 omission is explicit, the opt-in flag has a single documented name
 (`WITH_METRICS_SERVER`), and the kind overlay is self-contained under
-`deploy/kind/metrics-server/` so the production kustomization root is untouched.
+`deploy/overlays/kind/metrics-server/` so the production kustomization root is untouched.
 
 ### VPA recommender (kind-only opt-in)
 
-**File:** `deploy/kind/vpa/kustomization.yaml`
+**File:** `deploy/overlays/kind/vpa/kustomization.yaml`
 
 The [VerticalPodAutoscaler](https://github.com/kubernetes/autoscaler/tree/master/vertical-pod-autoscaler)
 recommender ships as a separate opt-in kind overlay. Neither the default
-`make deploy-infra` flow nor the production `deploy/flux-system/` overlay
+`make deploy-infra` flow nor the production `deploy/bases/operators/` overlay
 installs it.
 
 It has two consumers. The first is the
@@ -2467,7 +2433,7 @@ Namespace, and the `HelmRepository` lives in `flux-system`.
 pod from its start, whether or not a VPA selects it yet.
 
 When `WITH_VPA=true`, `hack/deploy-infra.sh` sets `WITH_METRICS_SERVER=true`,
-runs `kubectl apply -k deploy/kind/vpa` in Step 3 right after the
+runs `kubectl apply -k deploy/overlays/kind/vpa` in Step 3 right after the
 metrics-server overlay, and appends `vertical-pod-autoscaler` to the Phase 3
 HelmRelease wait list. The banner prints the flag as `VPA recommender`.
 Once the MariaDB CRD is established, the script also removes the scale
@@ -2488,18 +2454,19 @@ On an external cluster, which refuses `WITH_VPA=true`,
 WITH_VPA=true make deploy-infra
 ```
 
-### dizzy load/chaos stack (kind-only opt-in)
+### dizzy load/chaos stack (development opt-in)
 
-**File:** `deploy/kind/dizzy/kustomization.yaml`
+**File:** `deploy/overlays/kind/dizzy/kustomization.yaml`
 
 [dizzy](https://github.com/B42Labs/dizzy) is a scenario-driven load and
 consistency tester for OpenStack control planes. Its VictoriaMetrics + Grafana
 observability stack ships as a separate **opt-in** kind overlay. The default
 `make deploy-infra` flow does **not** install it — the `dizzy` namespace stays
 absent, and neither VictoriaMetrics nor Grafana runs unless a contributor opts
-in. The production `deploy/flux-system/` overlay ships none of it.
+in. The production `deploy/bases/operators/` overlay ships none of it.
 
-The overlay is self-contained, seven tracked files under `deploy/kind/dizzy/`:
+The kind overlay imports `deploy/bases/dizzy/` and adds its local route.
+The shared base owns these files except for the kind-specific `httproute.yaml`:
 
 | File | Purpose |
 | --- | --- |
@@ -2513,23 +2480,23 @@ The overlay is self-contained, seven tracked files under `deploy/kind/dizzy/`:
 
 Both HelmRepositories (`victoria-metrics`, `grafana`) are declared into the
 `flux-system` namespace, where Flux resolves HelmRelease sourceRefs, even though
-the two source files live inside the kind-only overlay. That keeps
-`deploy/flux-system/**` untouched while the overlay stays self-contained.
+the two source files live inside the shared base. That keeps
+`deploy/bases/operators/**` untouched while the overlay stays self-contained.
 
-**Dashboard staging (`hack/dizzy.sh stage-dashboards`).** The overlay's
+**Dashboard staging (`hack/dizzy.sh stage-dashboards`).** The shared base's
 `configMapGenerator` wraps three dizzy dashboard JSONs, but
-`deploy/kind/dizzy/dashboards/` is git-ignored; the dashboards are a
+`deploy/bases/dizzy/dashboards/` is git-ignored; the dashboards are a
 version-pinned dizzy asset staged from the release tarball, so the tree tracks
 none of them. `hack/dizzy.sh stage-dashboards` copies them out of that tarball
 (cached under `_output/dizzy/<version>/`) before `kubectl apply -k` runs.
 `WITH_DIZZY=true make deploy-infra` performs the staging automatically; a raw
-`kustomize build deploy/kind/dizzy` on a fresh checkout fails until
+`kustomize build deploy/overlays/kind/dizzy` on a fresh checkout fails until
 `stage-dashboards` has populated the directory.
 
 **Gateway wiring.** Two pieces are present even without `WITH_DIZZY`: the
 `https-dizzy` listener on Gateway `openstack-gw`
-(`deploy/kind/base/openstack-gateway.yaml`) and the `dizzy-nip-io-tls`
-Certificate (`deploy/kind/infrastructure/dizzy-nip-io-tls-certificate.yaml`).
+(`deploy/overlays/kind/base/openstack-gateway.yaml`) and the `dizzy-nip-io-tls`
+Certificate (`deploy/overlays/kind/infrastructure/dizzy-nip-io-tls-certificate.yaml`).
 The listener admits routes from the `dizzy` namespace through a namespace
 selector on the automatic `kubernetes.io/metadata.name` label, so no
 ReferenceGrant is required. This is the repo's first cross-namespace-admitting
@@ -2555,23 +2522,23 @@ runs the same stack with its metrics on a volume; see
 
 **Posture summary.** Same shape as the entries above: the production omission is
 explicit, the opt-in flag has a single documented name (`WITH_DIZZY`), and the
-kind overlay is self-contained under `deploy/kind/dizzy/` so the production
-kustomization root ships none of it.
+kind and metal-stack overlays import `deploy/bases/dizzy/` explicitly;
+the default operator catalog ships none of it.
 
 ### NFS storage stack (opt-in)
 
-**File:** `deploy/kind/nfs/kustomization.yaml`
+**File:** `deploy/overlays/kind/nfs/kustomization.yaml`
 
 The NFS storage stack, an in-cluster NFSv4 server plus the
 [csi-driver-nfs](https://github.com/kubernetes-csi/csi-driver-nfs) mounter,
 ships as a separate **opt-in** kind overlay for the Cinder e2e suites of
 [#979](https://github.com/c5c3/cobaltcore/issues/979). The default
-`make deploy-infra` flow does **not** install it. Unlike the other opt-ins of
-this section it is not kind-only: the metal-stack lab builds its
-[Lab NFS stack](#lab-nfs-stack) on this overlay. Production omits it for two
+`make deploy-infra` flow does **not** install it. Kind and metal-stack independently compose
+`deploy/bases/nfs/`; the lab adds its own storage and node preparation in
+[Lab NFS stack](#lab-nfs-stack). Production omits it for two
 reasons: users bring their own NFS server (a `CinderBackend` takes a `server`
 and a `path` per backend), and the mounter is a prerequisite of the target
-cluster. Shipping `csi-driver-nfs` from `deploy/flux-system/releases/` would
+cluster. Shipping `csi-driver-nfs` from `deploy/bases/operators/releases/` would
 put a privileged `hostNetwork` DaemonSet into every production deployment for
 a service no production cluster runs yet.
 
@@ -2580,12 +2547,12 @@ privileged container, and on a Linux host the deploy script loads `nfs` and
 `nfsv4` for the mounter through sudo. An always-on manifest would put a
 privileged pod into the default Quick Start and ask every run for sudo.
 
-The overlay is self-contained: `source.yaml`, `release.yaml` and
-`nfs-server.yaml` are all local to `deploy/kind/nfs/`. It ships **no**
+The shared base owns `source.yaml`, `release.yaml` and `nfs-server.yaml`
+under `deploy/bases/nfs/`. The kind overlay imports it and patches local storage. It ships **no**
 `Namespace`. The HelmRelease targets the pre-existing `kube-system`, because
 the chart defaults to `priorityClassName: system-cluster-critical`, which
 resolves in no other Namespace. The server lands in the pre-existing
-`openstack`, which `deploy/flux-system/namespaces.yaml` reserves for
+`openstack`, which `deploy/bases/operators/namespaces.yaml` reserves for
 components that exist only to run the operators standalone. `shared-services`
 is not used: it is the trust zone holding `openbao-init-keys`, with Garage as
 its one accepted co-tenant.
@@ -2709,7 +2676,7 @@ with, on the host before the cluster is created, best-effort through the same
 loader as `WITH_OVN_KERNEL_MODULES` (Linux only, root or passwordless sudo,
 otherwise a warning). The server needs no module. Under `EXTERNAL_CLUSTER=true`
 it loads nothing on the host and applies the overlay's `nfs/` in place of
-`deploy/kind/nfs`, whose pods load the modules on the nodes; see
+`deploy/overlays/kind/nfs`, whose pods load the modules on the nodes; see
 [Lab NFS stack](#lab-nfs-stack). On a cluster whose
 `CSIDriver/nfs.csi.k8s.io` lists no `Ephemeral` lifecycle mode it deletes that
 object, because the field is immutable and the chart's patch would otherwise
@@ -2731,7 +2698,7 @@ forced reconcile. The wait is on the recreated object's
 `spec.volumeLifecycleModes`, not only on its existence: a remediation rollback
 racing the delete puts the pre-`Ephemeral` object back, which an
 existence-only check would accept.
-In kind mode it applies `deploy/kind/nfs` in Step 3 and waits for the
+In kind mode it applies `deploy/overlays/kind/nfs` in Step 3 and waits for the
 `nfs-server` Deployment to roll out; a failed rollout is an error that stops
 the run and names the logs of `prepare-exports` and `nfs-server`, because a
 server that does not come up must not end in a green summary. It appends `csi-driver-nfs`
@@ -2750,7 +2717,7 @@ shares mount under `restricted` PodSecurity.
 
 **Posture summary.** Same shape as the entries above: the production omission
 is explicit, the opt-in flag has a single documented name (`WITH_NFS`), and
-the kind overlay is self-contained under `deploy/kind/nfs/`. The
+both environment overlays explicitly import the shared `deploy/bases/nfs/` base. The
 non-production posture is recorded in the header of `nfs-server.yaml`: a
 privileged server, because Ganesha reads the filesystem UUID behind its file
 handles from the device node, `sec=sys` with `No_Root_Squash` and no client
@@ -2769,10 +2736,10 @@ pod spec alone. PodSecurity does not bound that. In a namespace that is not
 `nfs-health` probe mounts them. The metal-stack lab carries the same posture,
 as [Lab NFS stack](#lab-nfs-stack) states.
 
-### Message bus (kind-only opt-in)
+### Message bus (development opt-in)
 
-**Files:** `deploy/kind/messaging/kustomization.yaml`,
-`deploy/kind/messaging/shared-rabbitmq.yaml`
+**Files:** `deploy/overlays/kind/messaging/kustomization.yaml`,
+`deploy/bases/messaging/shared-rabbitmq.yaml`
 
 One `RabbitmqCluster` named `shared-rabbitmq` in `openstack`, for the
 standalone Cinder e2e suites of
@@ -2780,7 +2747,7 @@ standalone Cinder e2e suites of
 ControlPlane suites of #989. The RabbitMQ Cluster Operator that reconciles it
 is not part of the overlay: it reaches every cluster this script provisions
 through the Flux Kustomization in
-`deploy/flux-system/releases/rabbitmq-cluster-operator.yaml`. Only the broker
+`deploy/bases/operators/releases/rabbitmq-cluster-operator.yaml`. Only the broker
 instance is opt-in, and the default `make deploy-infra` flow creates none.
 
 Production ships no equivalent object. A production `ControlPlane` declares
@@ -2824,7 +2791,7 @@ resulting `controlplane-keystone-messaging` Secret into both of its bus-consumin
 children, Neutron and Cinder.
 
 **Deploy-infra wiring.** With `WITH_MESSAGING=true`, `hack/deploy-infra.sh`
-applies `deploy/kind/messaging` after Step 5, where both prerequisites are
+applies `deploy/bases/messaging` in either environment after Step 5, where both prerequisites are
 settled: the `openstack` namespace from the Step 3 base overlay and the
 `rabbitmqclusters.rabbitmq.com` CRD from the Phase 3b operator wait. It then
 waits for `rabbitmqcluster/shared-rabbitmq` to report `AllReplicasReady`. The
@@ -2841,12 +2808,12 @@ WITH_MESSAGING=true make deploy-infra
 
 **Posture summary.** Same shape as the entries above: the production omission
 is explicit, the opt-in flag has a single documented name (`WITH_MESSAGING`),
-and the kind overlay is self-contained under `deploy/kind/messaging/`.
+and `deploy/overlays/kind/messaging/` remains a manual entry point to the shared base.
 
 ### Glance large-upload listener
 
-**Files:** `deploy/kind/base/openstack-gateway.yaml`,
-`deploy/kind/infrastructure/glance-upload-nip-io-tls-certificate.yaml`
+**Files:** `deploy/overlays/kind/base/openstack-gateway.yaml`,
+`deploy/overlays/kind/infrastructure/glance-upload-nip-io-tls-certificate.yaml`
 
 **Gateway wiring.** Gateway `openstack-gw` carries a fifth HTTPS listener,
 `https-glance-upload`, on the hostname `glance-upload.127-0-0-1.nip.io`. It
@@ -2867,10 +2834,10 @@ the Glance CR the suite applies, and deletes it again when the suite cleans up.
 
 ## Metal-stack lab
 
-`deploy/lab/metal-stack/` holds the manifests of the CobaltCore OpenStack lab on
+`deploy/overlays/metal-stack/` holds the manifests of the CobaltCore OpenStack lab on
 a metal-stack cluster, planned in
 [#1138](https://github.com/c5c3/cobaltcore/issues/1138).
-`deploy/flux-system/kustomization.yaml` does not reference the tree.
+`deploy/bases/operators/kustomization.yaml` does not reference the tree.
 `hack/deploy-infra.sh` applies its `base/` and `infrastructure/` under
 `EXTERNAL_CLUSTER=true` (see [Lab overlay](#lab-overlay)), its `ceph/` and
 `ceph/cluster/` when `WITH_CEPH=true` is set (see [Lab Ceph](#lab-ceph)), its
@@ -2899,7 +2866,7 @@ The figure shows what those manifests add up to: the cluster-wide parts of
 
 ### Node probe
 
-**File:** `deploy/lab/metal-stack/probe/kustomization.yaml`
+**File:** `deploy/overlays/metal-stack/probe/kustomization.yaml`
 
 The node probe is the prerequisite check of the lab. The
 [Quick Start (metal-stack)](../../quick-start-metal-stack.md#cp-probe) has a
@@ -2922,7 +2889,7 @@ installs nothing, so the probe needs no egress beyond the image pull.
 redirection other than `2>/dev/null`.
 
 ```bash
-kubectl apply -k deploy/lab/metal-stack/probe
+kubectl apply -k deploy/overlays/metal-stack/probe
 kubectl wait --for=condition=complete job/node-probe -n default --timeout=5m
 kubectl logs -n default job/node-probe
 kubectl delete job -n default node-probe
@@ -2933,7 +2900,7 @@ worker, pin it to each node in turn, with the same wait, logs and delete after
 every run. The delete is needed because a Job's pod template is immutable:
 
 ```bash
-yq '.spec.template.spec.nodeName = "<node>"' deploy/lab/metal-stack/probe/node-probe.yaml | kubectl apply -f -
+yq '.spec.template.spec.nodeName = "<node>"' deploy/overlays/metal-stack/probe/node-probe.yaml | kubectl apply -f -
 ```
 
 `ttlSecondsAfterFinished: 3600` removes the Job, and its logs with it, an hour
@@ -2942,7 +2909,7 @@ never completes and has to be deleted by hand; the Job keeps each run bounded.
 
 | Property | Value |
 | --- | --- |
-| Target namespace | `default`. The probe runs before `deploy/flux-system/namespaces.yaml` has created `openstack` or `shared-services`, and the metal-stack shoot enforces no PodSecurity level on `default` |
+| Target namespace | `default`. The probe runs before `deploy/bases/operators/namespaces.yaml` has created `openstack` or `shared-services`, and the metal-stack shoot enforces no PodSecurity level on `default` |
 | Image | `docker.io/library/debian:bookworm-slim`, digest-pinned. A Renovate `customManager` refreshes the digest (automerged after 3 days); Renovate never moves the `bookworm-slim` codename tag, so a Debian release change is a manual edit |
 | Runs as | one Job with `backoffLimit: 0`, one privileged container, the host root read-only at `/host` |
 | Dependencies | none |
@@ -2965,7 +2932,7 @@ never completes and has to be deleted by hand; the Job keeps each run bounded.
 
 The values a lab-ready node shows come from the 2026-09-29 survey in
 [#1138](https://github.com/c5c3/cobaltcore/issues/1138). The header comment of
-`deploy/lab/metal-stack/probe/node-probe.yaml` lists them in the probe's own
+`deploy/overlays/metal-stack/probe/node-probe.yaml` lists them in the probe's own
 output format, from a run on the survey's node on 2026-10-04 that includes the
 NFS lines, the Chaos Mesh module lines and the containerd socket lines. The
 survey's NIC lines show the pod's own `eth0`; the probe reads the host's sysfs
@@ -2984,7 +2951,7 @@ replaced node starts without them. Both workers printed
 [comment on #1219](https://github.com/c5c3/cobaltcore/issues/1219#issuecomment-5981396257)
 holds the output of both workers.
 
-**File:** `deploy/lab/metal-stack/probe/nfs-module-load.yaml`
+**File:** `deploy/overlays/metal-stack/probe/nfs-module-load.yaml`
 
 The NFS module load test answers the one question of #1193 the probe cannot:
 whether a pod can load the NFS modules on a lab worker. It is one Job,
@@ -3015,12 +2982,12 @@ one volume. Renovate moves the reference in the pull request that moves the
 DaemonSet's.
 
 The probe's `kustomization.yaml` leaves the file out of `resources`, so
-`kubectl apply -k deploy/lab/metal-stack/probe` stays read-only. The load test
+`kubectl apply -k deploy/overlays/metal-stack/probe` stays read-only. The load test
 is applied by file, pinned to one node:
 
 ```bash
 kubectl delete job -n default nfs-module-load --ignore-not-found
-yq '.spec.template.spec.nodeName = "<node>"' deploy/lab/metal-stack/probe/nfs-module-load.yaml | kubectl apply -f -
+yq '.spec.template.spec.nodeName = "<node>"' deploy/overlays/metal-stack/probe/nfs-module-load.yaml | kubectl apply -f -
 kubectl wait --for=condition=complete job/nfs-module-load -n default --timeout=5m
 kubectl logs -n default job/nfs-module-load
 kubectl delete job -n default nfs-module-load
@@ -3041,16 +3008,15 @@ needs no module, and the probe's `nfsd` lines describe the node alone.
 
 ### Lab overlay
 
-**Files:** `deploy/lab/metal-stack/base/kustomization.yaml`,
-`deploy/lab/metal-stack/infrastructure/kustomization.yaml`
+**Files:** `deploy/overlays/metal-stack/base/kustomization.yaml`,
+`deploy/overlays/metal-stack/infrastructure/kustomization.yaml`
 
 `hack/deploy-infra.sh` applies these two kustomizations in Steps 3 and 5 when
-it deploys onto the lab. They take `deploy/kind/base` and
-`deploy/kind/infrastructure` as their base, so the lab inherits what the kind
-overlay patches:
+it deploys onto the lab. They import `deploy/bases/devstack/base` and
+`deploy/bases/devstack/infrastructure`, the same shared bases as kind. These supply:
 
-- Envoy Gateway and its GatewayClass `envoy`;
-- headlamp and flux-web, the optional addons of the kind base;
+- the Envoy Gateway controller;
+- headlamp and flux-web;
 - the standalone OpenBao, the suspended service-operator releases at one
   replica, and the single-replica MariaDB, Memcached and Garage;
 - the Flux controller requests.
@@ -3058,16 +3024,16 @@ overlay patches:
 The Gateway is the lab's own: its proxy Service, its listener and its
 certificate differ from kind's, see [Public Gateway](#public-gateway).
 
-The figure shows that chain from the production manifests over the kind
-overlay to the lab, and who applies each directory.
+The figure shows the shared bases and their sibling environment overlays,
+and who applies each directory.
 [Kustomize Overlay Structure](e2e-deployment.md#kustomize-overlay-structure)
 lists every directory with its base.
 
-![The kustomize overlays under deploy/ in three columns: production, kind and the lab on metal-stack. An arrow runs from a directory to the overlay that takes it as its base. deploy/flux-system is the base of deploy/kind/base, which is the base of deploy/lab/metal-stack/base. deploy/flux-system/infrastructure, which includes deploy/eso, is the base of deploy/kind/infrastructure, which is the base of deploy/lab/metal-stack/infrastructure. The kind overlays add Envoy Gateway, the Gateway, the certificates and the ExternalSecrets and patch the stack down to one node. The lab overlays remove the storage class, label the Namespaces, give the Gateway one listener on *.nip.io, and replace the kind EnvoyProxy and certificates with a LoadBalancer EnvoyProxy and the lab CA. The four opt-in directories chaos-mesh, dizzy, nfs and prometheus exist under deploy/kind, and the lab directory of the same name takes each as its base. The lab hypervisor-fixtures take the kind hypervisor-operator-fixtures as their base. Without a base are metrics-server, vpa, messaging, controlplane and fake-compute under deploy/kind, and controlplane, probe, migration-ports, dizzy-soak, hypervisor, controlplane-nfs, ceph and ceph/cluster under the lab. A person applies the two production directories, the fixtures, the controlplane directories, fake-compute and the lab directories without a base with kubectl, except dizzy-soak, which make dizzy-soak-start applies, and ceph and ceph/cluster, which make deploy-infra applies in Steps 3 and 5 under WITH_CEPH=true. make deploy-infra applies the base overlay in Step 3 and the infrastructure overlay in Step 5, from the kind column or, under EXTERNAL_CLUSTER=true, from the lab column. deploy/examples/sizing-overlay is a template for a production overlay of the same shape. Deployment repositories can reconcile five Flux stages independently and package the OpenBao bootstrap scripts and policies as ConfigMaps.](../../diagrams/deploy-overlay-inheritance.svg)
+![Deployment composition: canonical bases own their manifests directly, including Flux, operators, TLS, shared OpenBao, ESO and target-cluster access. Both kind and metal-stack independently import the shared devstack controller and infrastructure bases plus shared addon bases. Kind adds local gateway, NodePort and storage settings; metal-stack adds public gateway, Gardener metadata, persistence and node preparation. Prometheus has one shared chart/dashboard base without a Namespace; the standalone kind entry point adds its Namespace. Arrows point from a base to its consumers, not between environments, and do not imply readiness order.](../../diagrams/deploy-overlay-inheritance.svg)
 
-The patches remove the kind pin `standard` from the OpenBao, MariaDB and
-Garage volumes. The lab has a `standard` class too, so the pin would bind to it
-by coincidence. These volumes and the proving `OpenBaoCluster` name no class
+The shared bases leave the OpenBao, MariaDB and Garage storage class unset;
+kind adds its `standard` pin in its own overlays. The lab volumes and the
+proving `OpenBaoCluster` name no class
 and bind to the cluster's default class, `premium` on `forge`. No
 metrics-server or VPA release is rendered, because the platform runs both.
 
@@ -3110,7 +3076,7 @@ answer proves the address, the name and the certificate.
 The deploy runs against the current kubeconfig context and never switches it.
 It refuses four opt-ins that are bound to kind, `WITH_VPA`,
 `WITH_METRICS_SERVER`, `WITH_REGISTRY_CACHE` and `WITH_OVN_KERNEL_MODULES`
-(`WITH_MESSAGING`, which applies `deploy/kind/messaging` unchanged, and
+(`WITH_MESSAGING`, which applies `deploy/bases/messaging`, and
 `WITH_NFS`, `WITH_CEPH`, `WITH_CHAOS_MESH` and `WITH_DIZZY` aside, which apply
 `nfs/`, `ceph/` with `ceph/cluster/`, `chaos-mesh/` and `dizzy/`),
 checks the cluster for a default StorageClass, for the absence of a
@@ -3118,7 +3084,7 @@ checks the cluster for a default StorageClass, for the absence of a
 `spec.network.dnsEndpointIPs` for a host-networked resolver) and for a Ready
 node, and prints the Gateway's hostnames and the command that saves the lab CA
 when it completes. Under `WITH_PROMETHEUS=true` it applies `prometheus/` in place of
-`deploy/kind/prometheus`, and it refuses that flag for an overlay without one.
+`deploy/overlays/kind/prometheus-managed`, and it refuses that flag for an overlay without one.
 `WITH_CEPH=true` has no kind overlay: the kind mode refuses it, and this mode
 accepts it only for an overlay with both `ceph/` and `ceph/cluster/`.
 The teardown removes the stack in finalizer order and leaves the
@@ -3136,10 +3102,10 @@ platform's namespaces and CRDs alone. Both are described in
 
 ### Public Gateway
 
-**Files:** `deploy/lab/metal-stack/base/kustomization.yaml` (its last two
-patches), `deploy/lab/metal-stack/infrastructure/envoy-public.yaml`,
-`deploy/lab/metal-stack/infrastructure/lab-ca.yaml`,
-`deploy/lab/metal-stack/infrastructure/gateway-certificate.yaml`
+**Files:** `deploy/overlays/metal-stack/base/kustomization.yaml` (its last two
+patches), `deploy/overlays/metal-stack/infrastructure/envoy-public.yaml`,
+`deploy/overlays/metal-stack/infrastructure/lab-ca.yaml`,
+`deploy/overlays/metal-stack/infrastructure/gateway-certificate.yaml`
 
 The lab publishes the Gateway `openstack-gw` on a public address, so every
 API, Horizon and the console proxy are used from anywhere over HTTPS. The kind
@@ -3225,9 +3191,9 @@ but the address.
 
 ### Lab NFS stack
 
-**Files:** `deploy/lab/metal-stack/nfs/kustomization.yaml`,
-`deploy/lab/metal-stack/nfs/client-modules-daemonset.yaml`,
-`deploy/lab/metal-stack/nfs/client-policy.yaml`
+**Files:** `deploy/overlays/metal-stack/nfs/kustomization.yaml`,
+`deploy/overlays/metal-stack/nfs/client-modules-daemonset.yaml`,
+`deploy/overlays/metal-stack/nfs/client-policy.yaml`
 
 The NFS server and the `csi-driver-nfs` mounter of
 [NFS storage stack](#nfs-storage-stack-opt-in), for the metal-stack
@@ -3237,14 +3203,13 @@ Cinder runs on the [Lab Ceph](#lab-ceph) without it. The
 quick start applies, adds the NFS volume backend `nfs1` on the share
 `/volumes`; the share `/backups` stays unused, because the backups go to Ceph.
 `hack/deploy-infra.sh` applies the directory in Step 3 when `WITH_NFS=true` is
-set beside `EXTERNAL_CLUSTER=true`, in place of `deploy/kind/nfs`:
+set beside `EXTERNAL_CLUSTER=true`, in place of `deploy/overlays/kind/nfs`:
 
 ```bash
 EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_CEPH=true WITH_NFS=true make deploy-infra
 ```
 
-The kustomization takes `deploy/kind/nfs` as its base, the way the
-[Lab overlay](#lab-overlay) takes the kind base, and adds the DaemonSet
+The kustomization imports `deploy/bases/nfs` and adds the DaemonSet
 `nfs-client-modules`. Its render holds six objects and no Namespace. The two
 differences from kind follow the decisions D2 and D3 of
 [#1193](https://github.com/c5c3/cobaltcore/issues/1193); the load test of the
@@ -3256,7 +3221,7 @@ outside the kustomization: the deploy script applies the NetworkPolicy of
 
 | Property | Value |
 | --- | --- |
-| Export claim | `nfs-server-exports`, 100Gi, `ReadWriteOnce` (D3), with no storage class. The patch removes the kind pin `standard`, so the claim binds to the cluster's default class like the volumes of the [Lab overlay](#lab-overlay). D3 named `premium`, which is the default class of `forge`. One volume holds both exports, so 100Gi bounds every volume of `nfs1` together. The kind claim asks for 5Gi on `standard` |
+| Export claim | `nfs-server-exports`, 100Gi, `ReadWriteOnce` (D3), with no storage class. The shared base leaves the class unset, so the claim binds to the cluster's default class like the volumes of the [Lab overlay](#lab-overlay). D3 named `premium`, which is the default class of `forge`. One volume holds both exports, so 100Gi bounds every volume of `nfs1` together. The kind claim asks for 5Gi on `standard` |
 | Server and shares | as on kind: the server pod with `prepare-exports` and NFS-Ganesha on `ghcr.io/kubernetes-sigs/nfs-ganesha:V6.5` by digest, its client records on the export claim, the Service on 2049, and the shares `nfs-server.openstack.svc.cluster.local:/volumes` and `:/backups`. The server loads no module |
 | Mounter | as on kind: the `csi-driver-nfs` HelmRelease in `kube-system`, chart `4.13.4` with its three values. The chart's `kubeletDir`, `/var/lib/kubelet`, is the lab's kubelet root |
 | `nfs` and `nfsv4` | the DaemonSet `nfs-client-modules` in `openstack`, on every node, tolerating every taint as `csi-nfs-node` does (D2). A privileged init container `load` loads both, as root, with a read-only root filesystem and the node's `/lib/modules` mounted read-only, and an unprivileged container `hold` keeps the pod running, so the load repeats after a reboot. Both run `ghcr.io/c5c3/libvirt:<tag>@sha256:<digest>`, the pinned image of `host-prepare` in [Lab hypervisors](#lab-hypervisors), pulled `IfNotPresent`; Renovate moves the reference in the pull request that moves the DaemonSet's. `csi-nfs-node` and `nova-compute` mount the shares through the node's kernel, and the chart and the nova-operator render them, so neither can carry an init container from this repository |
@@ -3389,18 +3354,18 @@ in the [comment on #1260](https://github.com/C5C3/cobaltcore/issues/1260#issueco
 
 ### Lab Ceph
 
-**Files:** `deploy/lab/metal-stack/ceph/kustomization.yaml`,
-`deploy/lab/metal-stack/ceph/namespace.yaml`,
-`deploy/lab/metal-stack/ceph/source.yaml`,
-`deploy/lab/metal-stack/ceph/release.yaml`,
-`deploy/lab/metal-stack/ceph/csi-clientprofile-crd.yaml`,
-`deploy/lab/metal-stack/ceph/cluster/kustomization.yaml`,
-`deploy/lab/metal-stack/ceph/cluster/cluster.yaml`,
-`deploy/lab/metal-stack/ceph/cluster/pools.yaml`,
-`deploy/lab/metal-stack/ceph/cluster/clients.yaml`,
-`deploy/lab/metal-stack/ceph/cluster/toolbox.yaml`,
-`deploy/lab/metal-stack/ceph/cluster/keys-push.yaml`,
-`deploy/lab/metal-stack/ceph/cluster/keys-pull.yaml`
+**Files:** `deploy/overlays/metal-stack/ceph/kustomization.yaml`,
+`deploy/overlays/metal-stack/ceph/namespace.yaml`,
+`deploy/overlays/metal-stack/ceph/source.yaml`,
+`deploy/overlays/metal-stack/ceph/release.yaml`,
+`deploy/overlays/metal-stack/ceph/csi-clientprofile-crd.yaml`,
+`deploy/overlays/metal-stack/ceph/cluster/kustomization.yaml`,
+`deploy/overlays/metal-stack/ceph/cluster/cluster.yaml`,
+`deploy/overlays/metal-stack/ceph/cluster/pools.yaml`,
+`deploy/overlays/metal-stack/ceph/cluster/clients.yaml`,
+`deploy/overlays/metal-stack/ceph/cluster/toolbox.yaml`,
+`deploy/overlays/metal-stack/ceph/cluster/keys-push.yaml`,
+`deploy/overlays/metal-stack/ceph/cluster/keys-pull.yaml`
 
 A Ceph deployed by Rook for the metal-stack lab
 ([#1344](https://github.com/c5c3/cobaltcore/issues/1344), a package of
@@ -3573,16 +3538,16 @@ operator that is gone first leaves both, and they hold the namespace in
 
 ### Lab Chaos Mesh
 
-**Files:** `deploy/lab/metal-stack/chaos-mesh/kustomization.yaml`,
-`deploy/lab/metal-stack/chaos-mesh/modules-daemonset.yaml`
+**Files:** `deploy/overlays/metal-stack/chaos-mesh/kustomization.yaml`,
+`deploy/overlays/metal-stack/chaos-mesh/modules-daemonset.yaml`
 
 The fault injection of
 [#1219](https://github.com/c5c3/cobaltcore/issues/1219) for the metal-stack
 lab ([#1221](https://github.com/c5c3/cobaltcore/issues/1221)): the
-[Chaos Mesh](#chaos-mesh-kind-only-opt-in) of the kind overlay, scoped to the
+[Chaos Mesh](#chaos-mesh-development-opt-in) of the kind overlay, scoped to the
 namespaces the lab declares. `hack/deploy-infra.sh` applies the directory in
 Step 3 when `WITH_CHAOS_MESH=true` is set beside `EXTERNAL_CLUSTER=true`, in
-place of `deploy/kind/chaos-mesh`. The flag composes onto the deploy command
+place of `deploy/overlays/kind/chaos-mesh`. The flag composes onto the deploy command
 of the [Quick Start (metal-stack)](../../quick-start-metal-stack.md), which
 does not need it:
 
@@ -3590,7 +3555,7 @@ does not need it:
 EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_CEPH=true WITH_CHAOS_MESH=true make deploy-infra
 ```
 
-The kustomization takes `deploy/kind/chaos-mesh` as its base and adds the
+The kustomization takes `deploy/bases/chaos-mesh` as its base and adds the
 DaemonSet `chaos-mesh-modules`. Its render holds four objects: the Namespace
 `chaos-mesh`, the HelmRepository, the HelmRelease and the DaemonSet. The first
 three rows below are its differences from kind; the namespace filter and the
@@ -3627,7 +3592,7 @@ exits 1, and its pod stays in `Init`.
 
 **Scope.** The [Lab overlay](#lab-overlay) annotates every Namespace of its
 base render with `chaos-mesh.org/inject: enabled`, and
-`deploy/lab/metal-stack/migration-ports/namespace.yaml` annotates
+`deploy/overlays/metal-stack/migration-ports/namespace.yaml` annotates
 `hypervisor-system`, which Part 2 of the quick start applies, whether Chaos
 Mesh is deployed or not (D2 of #1219). Three groups carry no annotation, so no
 experiment selects their pods:
@@ -3998,7 +3963,7 @@ broker and single-member Raft clusters, so none of these faults has run
 before. Per D2 of [#1386](https://github.com/c5c3/cobaltcore/issues/1386) the
 runs are lab-only: no CI job, nightly or gate runs them. They test the operators
 the lab installs from the charts published from `main`
-(`deploy/flux-system/releases/c5c3-operator/helmrelease.yaml`); the suites and the script
+(`deploy/bases/controlplane-operator/helmrelease.yaml`); the suites and the script
 come from the branch that runs them.
 
 Each suite is a Chainsaw test that drives the workload and consistency harness
@@ -4181,16 +4146,16 @@ No lab run of the failover suites is recorded yet.
 
 ### Lab dizzy stack
 
-**File:** `deploy/lab/metal-stack/dizzy/kustomization.yaml`
+**File:** `deploy/overlays/metal-stack/dizzy/kustomization.yaml`
 
 The metrics stack of a dizzy soak for the metal-stack lab
 ([#1225](https://github.com/c5c3/cobaltcore/issues/1225), from the dizzy
 findings of [#1219](https://github.com/c5c3/cobaltcore/issues/1219)): the
 VictoriaMetrics and Grafana of the
-[dizzy load/chaos stack](#dizzy-load-chaos-stack-kind-only-opt-in), with the
+[dizzy load/chaos stack](#dizzy-load-chaos-stack-development-opt-in), with the
 metrics on a volume. `hack/deploy-infra.sh` applies the directory in Step 3
 when `WITH_DIZZY=true` is set beside `EXTERNAL_CLUSTER=true`, in place of
-`deploy/kind/dizzy`. The flag composes onto the deploy command of the
+`deploy/overlays/kind/dizzy`. The flag composes onto the deploy command of the
 [Quick Start (metal-stack)](../../quick-start-metal-stack.md), which does not
 need it:
 
@@ -4198,8 +4163,8 @@ need it:
 EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_CEPH=true WITH_DIZZY=true make deploy-infra
 ```
 
-The kustomization takes `deploy/kind/dizzy` as its one resource, so its render
-holds the seven objects of the kind overlay: the Namespace `dizzy`, the
+The kustomization imports `deploy/bases/dizzy`, so its render
+holds the same seven shared objects as kind: the Namespace `dizzy`, the
 HelmRepositories `victoria-metrics` and `grafana`, the HelmReleases
 `dizzy-victoria-metrics` and `dizzy-grafana`, the HTTPRoute `dizzy-grafana`
 and the ConfigMap `grafana-dashboards`. The first two rows below are its
@@ -4209,14 +4174,14 @@ differences from kind; the storage follows the decision D7 of #1219.
 | --- | --- |
 | Namespace label | `apiserver-proxy.networking.gardener.cloud/inject: disable` on `dizzy`, the lab's rule for every namespace it declares (see [Lab overlay](#lab-overlay)). The namespace carries no `chaos-mesh.org/inject` annotation: the stack measures a soak under faults, so no experiment of the [Lab Chaos Mesh](#lab-chaos-mesh) selects its pods |
 | VictoriaMetrics | the StatefulSet `dizzy-victoria-metrics-server` keeps its metrics on the claim `server-volume-dizzy-victoria-metrics-server-0`, 10Gi on the cluster's default class, behind the headless ClusterIP Service `dizzy-victoria-metrics-server` on port 8428. On kind it keeps them in an emptyDir and publishes NodePort 30428 |
-| Inherited from kind | both HelmRepositories and both chart ranges; `retentionPeriod: 30d` and the two `opentelemetry.*` arguments of VictoriaMetrics; the Grafana release with anonymous Viewer access, the provisioned `victoriametrics` datasource and the three dashboards, without a volume; the HTTPRoute on the listener `https-dizzy`; the dashboard ConfigMap |
+| Shared base | both HelmRepositories and both chart ranges; `retentionPeriod: 30d` and the two `opentelemetry.*` arguments of VictoriaMetrics; the Grafana release with anonymous Viewer access, the provisioned `victoriametrics` datasource and the three dashboards, without a volume; the HTTPRoute with no listener restriction; the dashboard ConfigMap |
 | Namespaces | `dizzy` for the two releases, the HTTPRoute and the ConfigMap, `flux-system` for the HelmRepositories |
 | Pinned by | `tests/unit/deploy/metal_stack_dizzy_test.sh` |
 
 In this mode the deploy script's preflight accepts `WITH_DIZZY=true` only for
 an overlay with `dizzy/kustomization.yaml` and refuses any other before it
 contacts the cluster. Step 3 stages the three dashboards into
-`deploy/kind/dizzy/dashboards/` with `hack/dizzy.sh stage-dashboards`, which
+`deploy/bases/dizzy/dashboards/` with `hack/dizzy.sh stage-dashboards`, which
 the lab overlay reads as well, and applies `<overlay>/dizzy`. It calls no
 `docker port`. Phase 3 waits for both HelmReleases, as on kind; the
 VictoriaMetrics release is Ready once its claim is bound. The completion
@@ -4270,7 +4235,7 @@ deleted.
 
 #### Lab dizzy soak
 
-**Files:** `deploy/lab/metal-stack/dizzy-soak/kustomization.yaml`,
+**Files:** `deploy/overlays/metal-stack/dizzy-soak/kustomization.yaml`,
 `identity.yaml`, `rbac.yaml`, `reports-pvc.yaml`, `job.yaml`, `scenario.yaml`
 
 The long-running dizzy soak of the lab
@@ -4427,18 +4392,18 @@ No lab run of this stack is recorded yet.
 
 ### Lab Prometheus stack
 
-**Files:** `deploy/lab/metal-stack/prometheus/kustomization.yaml`,
-`deploy/lab/metal-stack/prometheus/hypervisor-operator.json`
+**Files:** `deploy/overlays/metal-stack/prometheus/kustomization.yaml`,
+`deploy/overlays/metal-stack/prometheus/hypervisor-operator.json`
 
 The kube-prometheus-stack of the metal-stack lab
 ([#1226](https://github.com/c5c3/cobaltcore/issues/1226), from the Prometheus
 findings of [#1219](https://github.com/c5c3/cobaltcore/issues/1219)): the
 Prometheus and Grafana of the
-[kube-prometheus-stack (kind-only opt-in)](#kube-prometheus-stack-kind-only-opt-in),
+[kube-prometheus-stack (development opt-in)](#kube-prometheus-stack-development-opt-in),
 with the metrics on a volume, the scrape jobs a Gardener shoot can feed, and a
 dashboard for openstack-hypervisor-operator (hvo). `hack/deploy-infra.sh`
 applies the directory in Step 3 when `WITH_PROMETHEUS=true` is set beside
-`EXTERNAL_CLUSTER=true`, in place of `deploy/kind/prometheus`. The flag
+`EXTERNAL_CLUSTER=true`, in place of `deploy/overlays/kind/prometheus-managed`. The flag
 composes onto the deploy command of the
 [Quick Start (metal-stack)](../../quick-start-metal-stack.md), which does not
 need it:
@@ -4447,15 +4412,15 @@ need it:
 EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_CEPH=true WITH_PROMETHEUS=true make deploy-infra
 ```
 
-The kustomization takes `deploy/kind/prometheus` as its one resource, deletes
-its Namespace and patches its HelmRelease. Its render holds three objects in
-`monitoring`: the HelmRelease `kube-prometheus-stack` and the ConfigMaps
+The kustomization takes `deploy/bases/prometheus` as its one resource
+and patches its HelmRelease. The shared base omits the Namespace; the standalone kind overlay adds it. The lab render holds
+three objects in `monitoring`: the HelmRelease `kube-prometheus-stack` and the ConfigMaps
 `keystone-operator-dashboard` and `hypervisor-operator-dashboard`. The
 storage follows the decision D7 of #1219.
 
 | Property | Kind | Lab |
 | --- | --- | --- |
-| Namespace `monitoring` | declared by the overlay, without labels | not in the render. The base overlay declares it with the label `apiserver-proxy.networking.gardener.cloud/inject: disable` and the annotation `chaos-mesh.org/inject: enabled` (see [Lab overlay](#lab-overlay)), and a second apply of the kind Namespace would remove both |
+| Namespace `monitoring` | omitted by `prometheus-managed`; the standalone `prometheus` root still includes it | not in the render. The base overlay declares it with the label `apiserver-proxy.networking.gardener.cloud/inject: disable` and the annotation `chaos-mesh.org/inject: enabled` (see [Lab overlay](#lab-overlay)), and a second apply of the kind Namespace would remove both |
 | Scrape jobs | the chart's defaults | `kubeEtcd`, `kubeScheduler`, `kubeControllerManager` and `kubeProxy` off. Gardener runs etcd, the scheduler and the controller manager in the seed. The chart's kube-proxy Service selects `k8s-app: kube-proxy`, while the shoot's kube-proxy pods carry `app: kubernetes` and `role: proxy`. Each of the four Services in `kube-system` would select nothing. `apiserver`, `coredns` and `kubelet` stay on |
 | Retention | `6h` | `7d`, bounded by `retentionSize: 8GB` |
 | Storage | emptyDir | a volume claim template of 10Gi, `ReadWriteOnce`, without a `storageClassName` |
@@ -4463,7 +4428,7 @@ storage follows the decision D7 of #1219.
 | Prometheus memory | request `256Mi`, limit `512Mi`, sized for one kind node | request `1Gi`, limit `2Gi`: the lab scrapes three kubelets with cAdvisor, and the request follows that working set |
 | Dashboards | `keystone-operator` | `keystone-operator` and `hypervisor-operator` |
 
-Everything else is the kind overlay's: the chart range `>=65.0.0 <70.0.0`,
+Both overlays inherit the remaining settings from the shared base: the chart range `>=65.0.0 <70.0.0`,
 the dependency on `cert-manager`, `crds.enabled: false`, Alertmanager,
 node-exporter and kube-state-metrics off, the open ServiceMonitor selectors,
 Prometheus's CPU request, Grafana's resources, and Grafana without a volume,
@@ -4497,7 +4462,7 @@ loads the 10 alerts that step 4 of the run lists.
 In this mode the deploy script's preflight accepts `WITH_PROMETHEUS=true` only
 for an overlay with `prometheus/kustomization.yaml` and refuses any other
 before it contacts the cluster. Step 3 stages the Keystone dashboard into
-`deploy/kind/prometheus/keystone-operator.json`, which the lab overlay reads
+`deploy/bases/prometheus/keystone-operator.json`, which the lab overlay reads
 through its resource, applies `<overlay>/prometheus`, and logs
 `Prometheus overlay <overlay>/prometheus applied (WITH_PROMETHEUS=true).`.
 Without the staged file the render fails, as on kind. Phase 3 waits for the
@@ -4539,7 +4504,7 @@ Endpoints, EndpointSlices, pods and Ingresses cluster-wide, as the ClusterRole
 **Teardown.** `EXTERNAL_CLUSTER=true make teardown-infra` removes the stack in
 its step 3, after the base overlay and while the helm-controller still runs
 (see [E2E Deployment](e2e-deployment.md#make-teardown-infra)). It deletes the
-HelmRelease by the file `deploy/kind/prometheus/release.yaml`, so the
+HelmRelease by the file `deploy/bases/prometheus/release.yaml`, so the
 helm-controller uninstalls the chart, then the claims in `monitoring`, which
 Helm and the Prometheus Operator leave behind, then the Service and the
 Endpoints `kube-prometheus-stack-kubelet` in `kube-system`. Where the default
@@ -4603,7 +4568,7 @@ query() {
   curl -fsS http://localhost:9090/api/v1/query --data-urlencode "query=$1" --data-urlencode "time=${2:-$(date +%s)}" |
     jq '.data.result | length'
 }
-jq -r '.panels[].targets[].expr' deploy/lab/metal-stack/prometheus/hypervisor-operator.json |
+jq -r '.panels[].targets[].expr' deploy/overlays/metal-stack/prometheus/hypervisor-operator.json |
   while IFS= read -r expr; do echo "$(query "$expr") ${expr}"; done
 curl -fsS http://localhost:9090/api/v1/rules |
   jq -r '.data.groups[] | select(.file | test("openstack-hypervisor-operator-(operator|eviction)-alerts")) | .rules[] | [.name, .health] | @tsv'
@@ -4641,7 +4606,7 @@ What a run shows:
 
 | Step | Expected |
 | --- | --- |
-| 1 | three `NotFound` lines; the deploy exits 0 and logs `Prometheus overlay <clone>/deploy/lab/metal-stack/prometheus applied (WITH_PROMETHEUS=true).` |
+| 1 | three `NotFound` lines; the deploy exits 0 and logs `Prometheus overlay <clone>/deploy/overlays/metal-stack/prometheus applied (WITH_PROMETHEUS=true).` |
 | 2 | the HelmRelease `Ready` and its chart version; the label `apiserver-proxy.networking.gardener.cloud/inject: disable` and the annotation `chaos-mesh.org/inject: enabled`; one claim `Bound` with 10Gi on the class `kubectl get storageclass` marks `(default)`; at most `service/kube-prometheus-stack-coredns` and `service/kube-prometheus-stack-kubelet`; the ServiceMonitor `hypervisor-operator` and the PrometheusRules `openstack-hypervisor-operator-operator-alerts` and `openstack-hypervisor-operator-eviction-alerts` |
 | 3 | a target `up` in each of `keystone-system`, `horizon-system`, `glance-system`, `placement-system`, `barbican-system`, `ovn-system`, `neutron-system`, `cinder-system` and `nova-system`; the target of the job `hypervisor-operator-controller-manager-metrics-service` `up` without a last error; no target `down` |
 | 4 | a count above 0 for the reconciliation rate and the workqueue depth; the 10 alerts of the two rules, each `ok` |
@@ -4667,10 +4632,10 @@ No lab run of this stack is recorded yet.
 
 ### Lab ControlPlane
 
-**Files:** `deploy/lab/metal-stack/controlplane/kustomization.yaml`,
-`deploy/lab/metal-stack/controlplane/ovncentral.yaml`,
-`deploy/lab/metal-stack/controlplane/controlplane-lab.yaml`,
-`deploy/lab/metal-stack/controlplane-nfs/kustomization.yaml`
+**Files:** `deploy/overlays/metal-stack/controlplane/kustomization.yaml`,
+`deploy/overlays/metal-stack/controlplane/ovncentral.yaml`,
+`deploy/overlays/metal-stack/controlplane/controlplane-lab.yaml`,
+`deploy/overlays/metal-stack/controlplane-nfs/kustomization.yaml`
 
 The kustomization is the `OVNCentral` of Step 3 and the ControlPlane CR of
 Step 4 of the
@@ -4860,7 +4825,7 @@ objects, so every block names `minReplicas`, `null` where the case has none.
 | V6 | `InPlaceOrRecreate`, the same VPA, patched | 1 | `100m` | the same UID and restart count, and `100m` as the spec's and the running request |
 
 V5 and V6 apply the VPA by hand. The lab installs the operators from the
-charts published from `main` (`deploy/flux-system/releases/c5c3-operator/helmrelease.yaml`),
+charts published from `main` (`deploy/bases/controlplane-operator/helmrelease.yaml`),
 and a release older than the mode refuses it in a ControlPlane block, so the
 two cases do not depend on the release the lab runs. The VPA
 `lab-placement-inplace` is the one `BuildVPA` renders for the mode, under a
@@ -5184,9 +5149,9 @@ exited 0 and left the platform's namespaces alone and no VPA outside
 
 ### Lab hypervisors
 
-**Files:** `deploy/lab/metal-stack/hypervisor-fixtures/kustomization.yaml`,
-`deploy/lab/metal-stack/hypervisor/kustomization.yaml` and the seven manifests
-it lists, `deploy/lab/metal-stack/migration-ports/kustomization.yaml` and the
+**Files:** `deploy/overlays/metal-stack/hypervisor-fixtures/kustomization.yaml`,
+`deploy/overlays/metal-stack/hypervisor/kustomization.yaml` and the seven manifests
+it lists, `deploy/overlays/metal-stack/migration-ports/kustomization.yaml` and the
 two manifests it lists
 
 `hypervisor-fixtures/` and `hypervisor/` turn every labelled worker of the lab
@@ -5205,7 +5170,7 @@ on its own before the [node port check](#node-port-check).
 
 | File | Content |
 | --- | --- |
-| `hypervisor-fixtures/kustomization.yaml` | The kind fixtures of `deploy/kind/hypervisor-operator-fixtures/` without `VolumeType/hvo-premium`, `Network/hvo-smoke-test` and `Subnet/hvo-smoke-test`: only hvo's smoke test uses them, and every lab `Hypervisor` skips it through the node label `cobaltcore.cloud.sap/node-hypervisor-lifecycle=skip-tests`. The domain `cc3test` and the project `test`, which hvo scopes a token to at start, stay, and so do the flavor ID `1` (1 vCPU, 256 MiB, 1 GiB) and the image `cirros-kvm` the run boots |
+| `hypervisor-fixtures/kustomization.yaml` | The kind fixtures of `deploy/overlays/kind/hypervisor-operator-fixtures/` without `VolumeType/hvo-premium`, `Network/hvo-smoke-test` and `Subnet/hvo-smoke-test`: only hvo's smoke test uses them, and every lab `Hypervisor` skips it through the node label `cobaltcore.cloud.sap/node-hypervisor-lifecycle=skip-tests`. The domain `cc3test` and the project `test`, which hvo scopes a token to at start, stay, and so do the flavor ID `1` (1 vCPU, 256 MiB, 1 GiB) and the image `cirros-kvm` the run boots |
 | `migration-ports/namespace.yaml` | Namespace `hypervisor-system`, with the lab's Gardener opt-out label |
 | `migration-ports/reservation-daemonset.yaml` | DaemonSet `migration-port-reservation` in `hypervisor-system`, on every node: it reserves QEMU's migration ports (see [Migration port reservation](#migration-port-reservation)) |
 | `hypervisor/kustomization.yaml` | Takes `../migration-ports` as a resource, so the hypervisor overlay applies the namespace and the reservation too and the teardown removes both with it |
@@ -5499,7 +5464,7 @@ migration](../nova/novacompute-crd.md#live-migration)).
 A lab whose hypervisors were applied with the PrometheusRules on but without
 the version-label patch carries the release `Stalled=True` with
 `RetriesExceeded` and no PrometheusRule in `openstack`. Applying
-`deploy/lab/metal-stack/hypervisor` again is enough: the release's new
+`deploy/overlays/metal-stack/hypervisor` again is enough: the release's new
 generation clears helm-controller's failure count, and helm-controller
 upgrades the failed release, which creates both rules.
 
@@ -5558,7 +5523,7 @@ log keeps growing, and show that a live migration dials libvirt over TLS:
 nodes=($(kubectl get nodes -o jsonpath='{.items[*].metadata.name}'))
 
 # the images; the libvirt keeper tag still names the digest the DaemonSet pins
-libvirt_image="$(yq '.spec.template.spec.containers[0].image' deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml)"
+libvirt_image="$(yq '.spec.template.spec.containers[0].image' deploy/overlays/metal-stack/hypervisor/libvirt-daemonset.yaml)"
 [ "$(docker buildx imagetools inspect "${libvirt_image%@*}" --format '{{json .Manifest.Digest}}' | tr -d '"')" = "${libvirt_image#*@}" ]
 docker manifest inspect "ghcr.io/c5c3/openstack-hypervisor-operator:sha-$(hack/ci-resolve-hvo-commit.sh)" >/dev/null
 docker manifest inspect "ghcr.io/c5c3/kvm-node-agent:sha-$(hack/ci-resolve-kna-commit.sh)" >/dev/null
@@ -5747,7 +5712,7 @@ domain_cpu
 # D. back to the manifests, and away
 openstack --insecure server delete --wait cpu-a
 openstack --insecure server list --all-projects
-kubectl apply -k deploy/lab/metal-stack/hypervisor
+kubectl apply -k deploy/overlays/metal-stack/hypervisor
 kubectl patch novacompute lab -n openstack --type merge \
   -p '{"spec":{"updateStrategy":{"type":"RollingUpdate"}}}'
 wait_pool
@@ -5865,7 +5830,7 @@ Docker-built keeper to the first Nix keeper, once `main` has minted it:
    [Quick Start (metal-stack)](../../quick-start-metal-stack.md)) and
    live-migrate one (Step 8).
 3. Apply the overlay with the pull request's pins,
-   `kubectl apply -k deploy/lab/metal-stack/hypervisor`. The DaemonSet is
+   `kubectl apply -k deploy/overlays/metal-stack/hypervisor`. The DaemonSet is
    `OnDelete`, so nothing restarts.
 4. On one node, live-migrate its servers away and delete its libvirt pod. Once
    the pod is Ready, `virsh version` prints libvirt 12.2.0 and QEMU 10.2.4.
@@ -5930,7 +5895,7 @@ A port is `closed` when the connect fails, `listener bind failed` when the
 destination's listener could not bind it, and `no result` when the client
 produced no line for it before the client wait ran out. The migration range
 sits in Linux's ephemeral port range, so an outgoing connection on the node can
-hold one of its ports. `deploy/lab/metal-stack/migration-ports` reserves the
+hold one of its ports. `deploy/overlays/metal-stack/migration-ports` reserves the
 range on every node, which keeps new connections off it. The listener tries a
 port it cannot bind again every second for `NODE_PORTS_BIND_TIMEOUT` seconds
 before it reports it. A port a connection took before the reservation stays
@@ -5942,7 +5907,7 @@ frees it.
 | --- | --- | --- |
 | `NODE_PORTS_TCP` | `16514 49152-49215` | Space-separated ports and inclusive ranges (65 ports by default) |
 | `NODE_PORTS_NAMESPACE` | `default` | Namespace of the Pods |
-| `NODE_PORTS_IMAGE` | the `image:` of `deploy/lab/metal-stack/probe/node-probe.yaml` | Image with `bash`, `perl` and `timeout`; the check exits 2 when it is unset and the probe manifest is missing |
+| `NODE_PORTS_IMAGE` | the `image:` of `deploy/overlays/metal-stack/probe/node-probe.yaml` | Image with `bash`, `perl` and `timeout`; the check exits 2 when it is unset and the probe manifest is missing |
 | `NODE_PORTS_NODE_SELECTOR` | empty (every node) | Label selector limiting the nodes |
 | `NODE_PORTS_CONNECT_TIMEOUT` | `5` | Seconds per connect |
 | `NODE_PORTS_BIND_TIMEOUT` | `10` | Seconds the listener keeps retrying a port it cannot bind, once per second. The wait for the listeners' `listening` line adds it to `NODE_PORTS_POD_TIMEOUT` |
@@ -5956,7 +5921,7 @@ frees it.
 
 #### Migration port reservation
 
-**Files:** `deploy/lab/metal-stack/migration-ports/kustomization.yaml`,
+**Files:** `deploy/overlays/metal-stack/migration-ports/kustomization.yaml`,
 `namespace.yaml` and `reservation-daemonset.yaml` beside it
 
 The kernel picks the local port of an outgoing connection from

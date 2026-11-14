@@ -160,7 +160,7 @@ test_filter_covers_the_suite_and_the_chart() {
   # The chart's assigned Role is what the c5c3-operator writes the orders'
   # status and Secrets through on the target.
   assert_contains "the filter lists the target-cluster chart" \
-    "$block" "deploy/target-cluster/**"
+    "$block" "deploy/bases/target-cluster-access/**"
   assert_not_contains "the filter does not carry the hack scripts" \
     "$block" "hack/**"
 }

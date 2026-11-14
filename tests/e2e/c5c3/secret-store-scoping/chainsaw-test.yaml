@@ -150,7 +150,7 @@ spec:
 
           # ── 1. Provision the per-tenant identity ────────────────────────────
           # Chainsaw runs scripts with the test directory as CWD.
-          ../../../../deploy/openbao/bootstrap/setup-eso-tenant.sh "${TENANT_NS}"
+          ../../../../deploy/bases/shared-openbao/bootstrap/setup-eso-tenant.sh "${TENANT_NS}"
 
           # ── 2. The namespaced SecretStore must reach Ready ──────────────────
           # A Ready store proves the eso-tenant role + policy + mTLS authenticate

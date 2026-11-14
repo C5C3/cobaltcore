@@ -624,7 +624,7 @@ current context to the new cluster, and the second command switches it back.
 
 ```bash
 helm install --kube-context kind-cobaltcore-target \
-  target-cluster-access deploy/target-cluster/target-cluster-access \
+  target-cluster-access deploy/bases/target-cluster-access \
   -n c5c3-access --create-namespace \
   --set 'namespaces={openstack}' \
   --set 'assignedNamespaces={workflow}'

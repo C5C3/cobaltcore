@@ -15,7 +15,7 @@
 #     captures the commit hack/ci-resolve-kna-commit.sh resolves
 #   - a paired digest packageRule does NOT automerge: a pin move can leave the
 #     patch under images/kvm-node-agent/patches/ unappliable, and the lab's
-#     chart reference in deploy/lab/metal-stack/hypervisor/sources.yaml has to
+#     chart reference in deploy/overlays/metal-stack/hypervisor/sources.yaml has to
 #     move with it. Every upstream main commit is a new digest, so the rule
 #     batches them weekly behind a 3-day cooldown. The PR also fails
 #     nix-lock-check until make nix-lock writes the hash and vendorHash of

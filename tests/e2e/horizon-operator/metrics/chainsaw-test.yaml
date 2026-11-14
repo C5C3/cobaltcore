@@ -14,7 +14,7 @@
 # DEPLOYMENT NOTE — why this test installs its own Helm release:
 # The horizon-operator HelmRelease at horizon-system/horizon-operator is
 # intentionally suspended in the kind CI overlay (see
-# deploy/kind/base/kustomization.yaml: "horizon-operator: suspend Flux
+# deploy/overlays/kind/base/kustomization.yaml: "horizon-operator: suspend Flux
 # management in kind"). The operator that actually runs in the cluster is
 # installed by hack/ci-deploy-operator.sh, which `helm install`s the chart
 # into the default namespace with a locally built dev image. Patching the
@@ -28,7 +28,7 @@
 # ServiceMonitor and marks the target Up) is exercised by the WITH_PROMETHEUS
 # kind bring-up documented in the guide, not by this suite: the e2e cluster
 # only installs prometheus-operator-crds (see
-# deploy/flux-system/releases/prometheus-operator-crds.yaml) and does NOT run a
+# deploy/bases/operators/releases/prometheus-operator-crds.yaml) and does NOT run a
 # Prometheus instance, so there is no /api/v1/targets endpoint to poll. The
 # structural ServiceMonitor assertion below (CRD shape, labels, selector,
 # endpoints port/path/interval) is what this cluster can honestly verify.

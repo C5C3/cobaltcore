@@ -31,7 +31,7 @@ source "${SOAK_SCRIPT_DIR}/dizzy.sh"
 
 # The overlay root, resolved as hack/teardown-infra.sh resolves it: relative
 # to REPO_ROOT unless absolute.
-EXTERNAL_OVERLAY="${EXTERNAL_OVERLAY:-deploy/lab/metal-stack}"
+EXTERNAL_OVERLAY="${EXTERNAL_OVERLAY:-deploy/overlays/metal-stack}"
 case "${EXTERNAL_OVERLAY}" in
   /*) OVERLAY_ROOT="${EXTERNAL_OVERLAY}" ;;
   *) OVERLAY_ROOT="${REPO_ROOT}/${EXTERNAL_OVERLAY}" ;;
@@ -108,7 +108,7 @@ Settings (environment):
                               http://<DIZZY_CP_NAME>-keystone.<DIZZY_CP_NAMESPACE>.svc:5000/v3).
   DIZZY_CP_NAME               ControlPlane name (default controlplane).
   DIZZY_CP_NAMESPACE          ControlPlane namespace (default openstack).
-  EXTERNAL_OVERLAY            overlay root (default deploy/lab/metal-stack).
+  EXTERNAL_OVERLAY            overlay root (default deploy/overlays/metal-stack).
   DIZZY_SOAK_NAMESPACES       platform namespaces to sample, space-separated
                               (default every namespace but kube-system,
                               kube-public, kube-node-lease, default and dizzy).

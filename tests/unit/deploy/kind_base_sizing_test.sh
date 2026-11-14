@@ -17,7 +17,7 @@
 #     under a 512Mi memory limit;
 #   - FluxInstance/flux carries one spec.kustomize.patches entry per Flux
 #     controller, each a JSON6902 add of 25m at the CPU request;
-#   - deploy/flux-system/ (production) keeps two operator replicas, OpenBao's
+#   - deploy/bases/operators/ (production) keeps two operator replicas, OpenBao's
 #     250m and a FluxInstance without spec.kustomize.
 #
 # Usage: bash tests/unit/deploy/kind_base_sizing_test.sh
@@ -34,8 +34,8 @@ SKIP=0
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
-KIND_BASE_DIR="$PROJECT_ROOT/deploy/kind/base"
-FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/flux-system"
+KIND_BASE_DIR="$PROJECT_ROOT/deploy/overlays/kind/base"
+FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/bases/operators"
 
 SERVICE_OPERATORS="keystone horizon glance placement barbican ovn neutron cinder nova"
 FLUX_CONTROLLERS="source-controller kustomize-controller helm-controller notification-controller"
@@ -45,7 +45,17 @@ FLUX_CONTROLLERS="source-controller kustomize-controller helm-controller notific
 # a failed build.
 render() {
   local dir="$1" out="$2" err
-  if ! err="$(kustomize build "$dir" 2>&1 >"$out")"; then
+  if ! err="$(
+    {
+      kustomize build "$dir" || exit
+      if [[ "$dir" == "$FLUX_SYSTEM_DIR" ]]; then
+        for stage in flux shared-openbao controlplane-operator; do
+          printf '\n---\n'
+          kustomize build "$PROJECT_ROOT/deploy/bases/$stage" || exit
+        done
+      fi
+    } 2>&1 >"$out"
+  )"; then
     echo "  FAIL: kustomize build $dir failed:"
     echo "$err" | head -20
     return 1
@@ -162,7 +172,7 @@ test_flux_controllers() {
 # ---------------------------------------------------------------------------
 test_production_unchanged() {
   local file="$1"
-  echo "Test: deploy/flux-system/ keeps the production sizing"
+  echo "Test: deploy/bases/operators/ keeps the production sizing"
 
   assert_eq "production keystone-operator keeps two replicas" \
     "2" "$(field "$file" "$(helmrelease keystone-operator)" '.spec.values.replicas')"

@@ -96,7 +96,7 @@ spec:
             openstack/cinder/openstack/standalone/db)"
           bao_exec bao kv put -mount=kv-v2 "openstack/cinder/${TENANT_NS}/pss/db" \
             username="${DB_USER}" password="${DB_PASS}" >/dev/null
-          ../../../../deploy/openbao/bootstrap/setup-eso-tenant.sh "${TENANT_NS}"
+          ../../../../deploy/bases/shared-openbao/bootstrap/setup-eso-tenant.sh "${TENANT_NS}"
     # One vhost per suite: the RPC topics are named after the deployment, so two
     # suites on one vhost would share the scheduler and volume-service queues.
     # See ../broker-vhost.sh. The Secret lands in the labelled namespace beside

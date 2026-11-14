@@ -7,7 +7,7 @@
 # Managed mode throughout: the schema neutron_ks_outage on the openstack-db
 # MariaDB cluster, the openstack-memcached cache, the ESO-synced neutron-db
 # credentials and the pre-seeded keystone-admin service-user password (both
-# from deploy/kind/infrastructure). The broker Secret and the OVN control
+# from deploy/overlays/kind/infrastructure). The broker Secret and the OVN control
 # plane come from the two sibling fixtures.
 #
 # keystoneEndpoint points at the Keystone of 00-keystone-cr.yaml, the Keystone

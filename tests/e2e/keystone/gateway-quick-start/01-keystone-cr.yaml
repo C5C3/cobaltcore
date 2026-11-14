@@ -7,9 +7,9 @@
 # Unlike tests/e2e/keystone/httproute/01-keystone-cr.yaml (which points
 # at a fictitious Gateway and relies on the test suite patching
 # HTTPRoute status by hand), this CR is pinned to the real
-# `openstack-gw` Gateway installed by `deploy/kind/base/openstack-gateway.yaml`
+# `openstack-gw` Gateway installed by `deploy/overlays/kind/base/openstack-gateway.yaml`
 # and the real Envoy Gateway controller installed by
-# `deploy/kind/base/envoy-gateway.yaml`. The hostname MUST match the
+# `deploy/bases/devstack/base/envoy-gateway.yaml`. The hostname MUST match the
 # Gateway listener hostname AND the dnsName on
 # `Certificate/keystone-nip-io-tls` so that the listener's TLS Secret
 # matches the SNI the client will present.

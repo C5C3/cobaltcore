@@ -10,13 +10,13 @@
 #   - From an existing keystone-dbtls Deployment pod, MariaDB reports a non-empty
 #     Ssl_cipher in SHOW STATUS — proving the live connection is encrypted.
 #   - A plaintext connection (no ssl_*) is rejected by MariaDB/MaxScale when
-#     deploy/flux-system/infrastructure/mariadb.yaml sets spec.tls.required=true.
+#     deploy/bases/infrastructure/mariadb.yaml sets spec.tls.required=true.
 #
 # Scope gating — runtime presence check (+ the chaos-mesh-health pattern):
 #
-# Production (deploy/flux-system/infrastructure/mariadb.yaml) enables TLS via
+# Production (deploy/bases/infrastructure/mariadb.yaml) enables TLS via
 # serverCertIssuerRef/clientCertIssuerRef on a full Galera+MaxScale cluster.
-# The kind overlay (deploy/kind/infrastructure/kustomization.yaml) patches
+# The kind overlay (deploy/overlays/kind/infrastructure/kustomization.yaml) patches
 # spec.tls.enabled=false because Galera+MaxScale are disabled in the single-node
 # shape this CI runs on, so MariaDB cannot terminate TLS against the shared
 # openstack-db-ca-issuer. The chainsaw assertions below would time out at
@@ -77,8 +77,8 @@ spec:
             -o jsonpath='{.spec.tls.enabled}' 2>/dev/null || true)
           if [ "${TLS_ENABLED}" != "true" ]; then
             echo "SKIP: MariaDB openstack-db has spec.tls.enabled != true (got '${TLS_ENABLED}')."
-            echo "      Production (deploy/flux-system/infrastructure/mariadb.yaml) enables TLS;"
-            echo "      the kind overlay (deploy/kind/infrastructure/kustomization.yaml) disables"
+            echo "      Production (deploy/bases/infrastructure/mariadb.yaml) enables TLS;"
+            echo "      the kind overlay (deploy/overlays/kind/infrastructure/kustomization.yaml) disables"
             echo "      it for single-node Galera/MaxScale constraints. Re-enable spec.tls in the"
             echo " kind overlay (and Galera/MaxScale) to exercise the full path here."
             exit 0
@@ -170,7 +170,7 @@ spec:
           echo "OK: Live database connection is encrypted (Ssl_cipher=${CIPHER})"
 
           # ── Step 4: Assert plaintext rejected (only when tls.required=true) ─
-          # MariaDB spec.tls.required=true (deploy/flux-system/infrastructure/ mariadb.yaml) forces the server to reject any connection
+          # MariaDB spec.tls.required=true (deploy/bases/infrastructure/ mariadb.yaml) forces the server to reject any connection
           # that does not negotiate TLS. We connect from inside the keystone
           # container using pymysql.connect() WITHOUT the ssl={} kwarg; the
           # connection MUST fail.
@@ -246,7 +246,7 @@ spec:
           kubectl get secret keystone-dbtls-db-connection -n openstack \
             -o go-template='{{range $k, $_ := .data}}{{$k}}{{"\n"}}{{end}}' 2>&1 || true
           # The keystone-operator's namespace differs between deployment paths:
-          # under Flux (deploy/flux-system/releases/keystone-operator.yaml) it
+          # under Flux (deploy/bases/operators/releases/keystone-operator.yaml) it
           # lives in openstack, but the CI E2E suite installs it via
           # hack/ci-deploy-operator.sh's `helm install` with no -n flag, so the
           # pod lands in default (cf. tests/e2e-chaos/operator-pod-kill/

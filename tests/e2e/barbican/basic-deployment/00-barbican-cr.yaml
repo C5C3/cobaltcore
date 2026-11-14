@@ -6,7 +6,7 @@
 # Managed mode: database via clusterRef to openstack-db (schema barbican_basic),
 # cache via clusterRef to openstack-memcached. The database credentials come from
 # the ESO-synced barbican-db Secret and the service-user password from the
-# pre-seeded keystone-admin Secret (both deploy/kind/infrastructure). Barbican
+# pre-seeded keystone-admin Secret (both deploy/overlays/kind/infrastructure). Barbican
 # exits at start-up without a secret store, so 01-barbican-secretstore.yaml
 # attaches one before Ready can settle.
 apiVersion: barbican.openstack.c5c3.io/v1alpha1

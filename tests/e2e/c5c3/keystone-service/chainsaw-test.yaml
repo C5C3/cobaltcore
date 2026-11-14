@@ -186,7 +186,7 @@ spec:
           #
           # An argument is readable in two places an environment variable is
           # not, which is why hack/deploy-infra.sh and
-          # deploy/openbao/bootstrap/init-unseal.sh both keep a stdin variant of
+          # deploy/bases/shared-openbao/bootstrap/init-unseal.sh both keep a stdin variant of
           # their exec helper: kubectl encodes every element of the remote
           # command as a repeated `command=` query parameter and the API server
           # records that request URI in its audit log, and the expanded argument
@@ -198,10 +198,10 @@ spec:
           # every 5s for up to 120s.
           #
           # The export stays, and is load-bearing: the two
-          # deploy/openbao/bootstrap scripts this suite runs below read the
+          # deploy/bases/shared-openbao/bootstrap scripts this suite runs below read the
           # token from their environment (${BAO_TOKEN:?}), and their own exec
           # helper still passes it positionally.
-          # deploy/openbao/bootstrap/common.sh carries the TODO for closing that
+          # deploy/bases/shared-openbao/bootstrap/common.sh carries the TODO for closing that
           # path repo-wide. /proc/<pid>/environ is owner-readable, so the export
           # is the smaller of the two exposures.
           export BAO_TOKEN
@@ -571,7 +571,7 @@ spec:
           # so an ephemeral plane seeds its own. The script is idempotent:
           # everything it writes goes through write_secret_if_missing.
           KORC_CONTROLPLANES="${CP_NS}/${CP_NAME}" \
-            ../../../../deploy/openbao/bootstrap/write-bootstrap-secrets.sh
+            ../../../../deploy/bases/shared-openbao/bootstrap/write-bootstrap-secrets.sh
           echo "OK: the per-CR admin-password path is seeded."
 
           # ── Apply the ControlPlane ────────────────────────────────────────
@@ -583,7 +583,7 @@ spec:
           # The database-engine role is keyed on the SERVICE namespace, so it has
           # to be onboarded for this plane's namespace before the dynamic DB
           # credential can be issued.
-          ../../../../deploy/openbao/bootstrap/setup-database-tenant.sh "${CP_NS}" "${CP_NAME}"
+          ../../../../deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh "${CP_NS}" "${CP_NAME}"
           echo "OK: OpenBao database-engine tenant onboarded."
 
           wait_cp_condition DBCredentialsReady 300

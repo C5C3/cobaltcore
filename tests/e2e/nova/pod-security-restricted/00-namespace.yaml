@@ -30,7 +30,7 @@
 # reconcile onto the same shared users: no SET PASSWORD race.
 #
 # The key names are the ones the Nova reads: username and password, as in the
-# kind-only shims deploy/kind/infrastructure/nova-api-db-externalsecret.yaml and
+# kind-only shims deploy/bases/devstack/infrastructure/nova-api-db-externalsecret.yaml and
 # nova-db-externalsecret.yaml.
 ---
 apiVersion: v1

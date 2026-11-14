@@ -42,7 +42,7 @@ does not fail them:
   cross-reference `make sync-crds` prepends, not with SPDX.
 - **Helm charts** — every chart (the ten operator charts, the two
   `operators/shared/helm/` library charts, and
-  `deploy/target-cluster/target-cluster-access/`) ships its YAML
+  `deploy/bases/target-cluster-access/`) ships its YAML
   header-less; `operators/neutron/helm/neutron-operator/tests/role_test.yaml`
   and `operators/ovn/helm/ovn-operator/tests/role_test.yaml` are the only
   exceptions.

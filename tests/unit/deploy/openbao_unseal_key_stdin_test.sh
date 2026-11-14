@@ -5,7 +5,7 @@
 
 # Verify that neither unseal implementation ever passes a Shamir share as a
 # command-line argument: the production bring-up path
-# deploy/openbao/bootstrap/init-unseal.sh and the single-replica kind path
+# deploy/bases/shared-openbao/bootstrap/init-unseal.sh and the single-replica kind path
 # hack/deploy-infra.sh::openbao_init_unseal.
 #
 # A share on the remote command line is readable twice. `kubectl exec` encodes
@@ -27,7 +27,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-INIT_UNSEAL_SH="$PROJECT_ROOT/deploy/openbao/bootstrap/init-unseal.sh"
+INIT_UNSEAL_SH="$PROJECT_ROOT/deploy/bases/shared-openbao/bootstrap/init-unseal.sh"
 DEPLOY_INFRA_SH="$PROJECT_ROOT/hack/deploy-infra.sh"
 
 PASS=0

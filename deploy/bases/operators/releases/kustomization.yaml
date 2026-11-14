@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Operator reconciliation objects only. Shared OpenBao and c5c3 are separate stages.
+# Includes Flux Kustomizations as well as HelmReleases.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - cert-manager.yaml
+  - prometheus-operator-crds.yaml
+  - mariadb-operator-crds.yaml
+  - mariadb-operator.yaml
+  - external-secrets.yaml
+  - memcached-operator.yaml
+  - keystone-operator.yaml
+  - horizon-operator.yaml
+  - glance-operator.yaml
+  - placement-operator.yaml
+  - barbican-operator.yaml
+  - ovn-operator.yaml
+  - neutron-operator.yaml
+  - cinder-operator.yaml
+  - nova-operator.yaml
+  - k-orc.yaml
+  - garage-operator.yaml
+  - openbao-operator.yaml
+  - rabbitmq-cluster-operator.yaml
+  - messaging-topology-operator.yaml

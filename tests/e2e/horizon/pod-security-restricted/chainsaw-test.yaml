@@ -56,7 +56,7 @@ spec:
             bootstrap/openstack/controlplane-horizon/secret-key)"
           bao_exec bao kv put -mount=kv-v2 "bootstrap/${TENANT_NS}/pss/secret-key" \
             secret-key="${SECRET_KEY}" >/dev/null
-          ../../../../deploy/openbao/bootstrap/setup-eso-tenant.sh "${TENANT_NS}"
+          ../../../../deploy/bases/shared-openbao/bootstrap/setup-eso-tenant.sh "${TENANT_NS}"
     - apply:
         file: 01-externalsecret.yaml
     - assert:

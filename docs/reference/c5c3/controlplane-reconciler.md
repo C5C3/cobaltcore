@@ -703,7 +703,7 @@ resolves to nothing fails loud rather than waiting forever. See
 #### Egress and TLS posture
 
 K-ORC — not the c5c3-operator — is what dials the external Keystone. It is
-installed by the Flux Kustomization `deploy/flux-system/releases/k-orc.yaml` into
+installed by the Flux Kustomization `deploy/bases/operators/releases/k-orc.yaml` into
 the `orc-system` namespace, and the operator never opens an OpenStack connection
 itself: everything stays K-ORC-mediated.
 
@@ -4872,7 +4872,7 @@ bao kv put kv-v2/openstack/keystone/<ns>/<name>/credential-keys value=<value>
 ```
 
 **Re-apply the OpenBao ACLs.** Re-run
-`deploy/openbao/bootstrap/setup-policies.sh` (the kind/dev path; also invoked by
+`deploy/bases/shared-openbao/bootstrap/setup-policies.sh` (the kind/dev path; also invoked by
 `hack/deploy-infra.sh`), or for production clusters managed outside the bootstrap
 flow apply the updated policy files directly with `bao policy write …`:
 

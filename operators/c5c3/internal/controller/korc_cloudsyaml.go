@@ -173,7 +173,7 @@ func buildAppCredCloudsYAML(
 // domain keys).
 //
 // In MANAGED mode it mirrors the bootstrap seed
-// (deploy/openbao/bootstrap/write-bootstrap-secrets.sh) so the in-cluster and
+// (deploy/bases/shared-openbao/bootstrap/write-bootstrap-secrets.sh) so the in-cluster and
 // operator-owned credentials are byte-compatible. External mode has no shell seed
 // at all — the operator-owned document is the only one.
 //

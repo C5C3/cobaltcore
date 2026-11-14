@@ -1391,17 +1391,25 @@ test_runs_on_ubuntu_latest() {
   assert_contains "verify-kna-image uses matrix runner expression" "$kna_verify_runner" "matrix.runner"
 }
 
-# --- Fork PRs rejected in build-libvirt ---
-test_fork_pr_rejection_step_exists() {
-  echo "Test: fork PR rejection step exists in build-libvirt"
+# --- Fork PRs build and verify locally without registry access ---
+test_fork_pr_local_builds() {
+  echo "Test: every Nix image build supports local validation of fork PRs"
 
-  # step name is "Reject fork PRs".
-  local reject_step_if
-  reject_step_if=$(yq_raw '.jobs["build-libvirt"]["steps"][] | select(.name == "Reject fork PRs") | .if' "$WORKFLOW" || true)
-
-  assert_contains "Reject fork PRs step exists with pull_request condition" "$reject_step_if" "pull_request"
-  assert_contains "Reject fork PRs step checks head repo full_name" "$reject_step_if" "github.event.pull_request.head.repo.full_name"
-  assert_contains "Reject fork PRs step compares against github.repository" "$reject_step_if" "github.repository"
+  local job path step
+  for job in build-tempest build-keystone-federation-proxy build-backup-shifter \
+    build-libvirt build-ovn build-hvo build-kna build-service-images build-nova-compute-image; do
+    path=".jobs[\"$job\"]"
+    step="$path.steps[] | select(.uses == \"./.github/actions/build-nix-image\")"
+    assert_not_contains "$job does not reject fork PRs" \
+      "$(yq_raw "$path" "$WORKFLOW")" 'github.event.pull_request.head.repo.full_name'
+    assert_eq "$job skips registry login on PRs" "github.event_name != 'pull_request'" \
+      "$(yq_raw "$path.steps[] | select(.uses == \"./.github/actions/setup-docker-registry\") | .if" "$WORKFLOW")"
+    assert_eq "$job selects local build mode on PRs" \
+      '${{ github.event_name != '\''pull_request'\'' && '\''true'\'' || '\''false'\'' }}' \
+      "$(yq_raw "$step | .with[\"push-by-digest\"]" "$WORKFLOW")"
+    assert_contains "$job supplies an inline verification script" \
+      "$(yq_raw "$step | .with[\"verify-script\"]" "$WORKFLOW")" 'tests/container-images/verify_'
+  done
 }
 
 # --- Version-only tag restricted to main branch ---
@@ -2249,7 +2257,7 @@ test_runs_on_ubuntu_latest
 echo ""
 test_run_blocks_use_env_vars
 echo ""
-test_fork_pr_rejection_step_exists
+test_fork_pr_local_builds
 echo ""
 test_version_tag_restricted_to_main
 echo ""

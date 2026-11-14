@@ -1049,7 +1049,7 @@ test_otlp_endpoint_is_the_grafana_datasource() {
   echo "Test: the OTLP endpoint is the VictoriaMetrics Service the Grafana datasource reads"
 
   local datasource endpoint
-  datasource="$(sed -n 's/^[[:space:]]*url: \(http:[^[:space:]]*\)$/\1/p' "$PROJECT_ROOT/deploy/kind/dizzy/release-grafana.yaml" | head -n 1)"
+  datasource="$(sed -n 's/^[[:space:]]*url: \(http:[^[:space:]]*\)$/\1/p' "$PROJECT_ROOT/deploy/bases/dizzy/release-grafana.yaml" | head -n 1)"
   endpoint="$(sed -n 's/^OTLP_ENDPOINT="\(.*\)"$/\1/p' "$RUNNER_SH")"
   assert_not_empty "the Grafana release names a datasource URL" "$datasource"
   assert_eq "the endpoint is the datasource URL plus the OTLP path" "${datasource}/opentelemetry/v1/metrics" "$endpoint"

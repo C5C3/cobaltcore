@@ -65,7 +65,7 @@ const serviceAccountPasswordGenerationAnnotation = "cobaltcore.c5c3.io/password-
 
 // serviceAccountPasswordTakeoverAnnotation marks a managed User created under
 // adoption consent whose password the operator has not applied yet. The user
-// actuator of the K-ORC build deploy/flux-system/sources/k-orc.yaml pins
+// actuator of the K-ORC build deploy/bases/operators/sources/k-orc.yaml pins
 // (internal/controllers/user/actuator.go, reconcilePassword) calls UpdateUser
 // only once status.resource.appliedPasswordRef is set, so whichever passwordRef
 // it records first, it records without a write. A user K-ORC matched in Keystone

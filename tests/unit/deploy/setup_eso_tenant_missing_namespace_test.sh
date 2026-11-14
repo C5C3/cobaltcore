@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify deploy/openbao/bootstrap/setup-eso-tenant.sh fails loudly when the
+# Verify deploy/bases/shared-openbao/bootstrap/setup-eso-tenant.sh fails loudly when the
 # tenant namespace cannot be read, instead of applying the ServiceAccount /
 # Certificate / SecretStore into a missing namespace (which would surface a less
 # actionable error later). Mirrors setup_database_tenant_missing_controlplane_test.sh.
@@ -14,7 +14,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SCRIPT_UNDER_TEST="$PROJECT_ROOT/deploy/openbao/bootstrap/setup-eso-tenant.sh"
+SCRIPT_UNDER_TEST="$PROJECT_ROOT/deploy/bases/shared-openbao/bootstrap/setup-eso-tenant.sh"
 
 PASS=0
 FAIL=0

@@ -112,7 +112,7 @@ bao kv put kv-v2/bootstrap/openstack/controlplane-keystone/admin password=<new-p
 > `controlplane-keystone-admin-credentials` ExternalSecret reads
 > (`remoteRef.key: bootstrap/openstack/controlplane-keystone/admin`,
 > `property: password`) and the path
-> `deploy/openbao/bootstrap/write-bootstrap-secrets.sh` seeds. If your deployment
+> `deploy/bases/shared-openbao/bootstrap/write-bootstrap-secrets.sh` seeds. If your deployment
 > uses a different KV mount or path, substitute it here and in step 2's
 > ExternalSecret name accordingly.
 
@@ -340,7 +340,7 @@ condition transitions, and smoke check are identical.
 
 ::: warning The kind shim reads the default-identity path
 On the kind Quick Start, the `keystone-admin` ExternalSecret is a standalone
-shim (`deploy/kind/infrastructure/keystone-admin-externalsecret.yaml`). It reads
+shim (`deploy/bases/devstack/infrastructure/keystone-admin-externalsecret.yaml`). It reads
 the default ControlPlane identity's per-CR path,
 `bootstrap/openstack/controlplane-keystone/admin`. Its path does not change with
 the standalone CR's name. On the standalone kind devstack, write the new

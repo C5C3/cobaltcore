@@ -366,8 +366,8 @@ for v in ${VERSIONS}; do
 done
 
 header "Decision points (global — review, not per-release TODOs)"
-printf '  [INFO] default ControlPlane release: deploy/kind/controlplane/controlplane.yaml -> %s\n' \
-  "$(sed -nE 's/.*openStackRelease:[[:space:]]*"([^"]+)".*/\1/p' deploy/kind/controlplane/controlplane.yaml | first)"
+printf '  [INFO] default ControlPlane release: deploy/overlays/kind/controlplane/controlplane.yaml -> %s\n' \
+  "$(sed -nE 's/.*openStackRelease:[[:space:]]*"([^"]+)".*/\1/p' deploy/overlays/kind/controlplane/controlplane.yaml | first)"
 printf '  [INFO] deploy-infra image preload: hack/deploy-infra.sh cp_release -> %s\n' \
   "$(sed -nE 's/.*cp_release="([^"]+)".*/\1/p' hack/deploy-infra.sh | first)"
 grep -oHE '\$\{[A-Z_]+:-[0-9]{4}\.[12]\}' hack/*.sh 2>/dev/null \
@@ -378,10 +378,10 @@ tempest_cfg="$(noncomment hack/ci-run-tempest.sh | sed -nE 's/^CONFIG_DIR=.*-([0
 printf '  [INFO] CONFIG_DIR fallback slug: hack/ci-run-tempest.sh -> %s\n' "${tempest_cfg:-<unparsed>}"
 tempest_svc="$(noncomment hack/ci-run-tempest.sh | sed -nE 's/^SERVICE_K8S_NAME=.*-([0-9]{4})-([12])\}.*/\1.\2/p' | first)"
 printf '  [INFO] SERVICE_K8S_NAME fallback slug: hack/ci-run-tempest.sh -> %s\n' "${tempest_svc:-<unparsed>}"
-fake_compute="$(noncomment deploy/kind/fake-compute/fake-compute.yaml | grep -oE 'ghcr\.io/c5c3/nova:[0-9]{4}\.[12]' | sed 's/.*://' | tr '\n' ' ' || true)"
-printf '  [INFO] fake compute nova image tags: deploy/kind/fake-compute/fake-compute.yaml -> %s\n' "${fake_compute:-<unparsed>}"
-for lab in deploy/lab/metal-stack/controlplane/controlplane-lab.yaml \
-           deploy/lab/metal-stack/hypervisor/compute.yaml; do
+fake_compute="$(noncomment deploy/overlays/kind/fake-compute/fake-compute.yaml | grep -oE 'ghcr\.io/c5c3/nova:[0-9]{4}\.[12]' | sed 's/.*://' | tr '\n' ' ' || true)"
+printf '  [INFO] fake compute nova image tags: deploy/overlays/kind/fake-compute/fake-compute.yaml -> %s\n' "${fake_compute:-<unparsed>}"
+for lab in deploy/overlays/metal-stack/controlplane/controlplane-lab.yaml \
+           deploy/overlays/metal-stack/hypervisor/compute.yaml; do
   lab_release="$(first_pin openStackRelease "${lab}")"
   printf '  [INFO] lab manifest openStackRelease: %s -> %s\n' "${lab}" "${lab_release:-<unparsed>}"
 done

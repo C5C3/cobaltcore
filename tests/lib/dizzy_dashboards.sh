@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Shared guard for the tests that render an overlay reading the git-ignored
-# deploy/kind/dizzy/dashboards/ (tests/unit/deploy/dizzy_overlay_test.sh,
+# deploy/bases/dizzy/dashboards/ (tests/unit/deploy/dizzy_overlay_test.sh,
 # tests/unit/deploy/metal_stack_dizzy_test.sh).
 #
 # A developer may have real dashboards staged there (hack/dizzy.sh
@@ -16,7 +16,7 @@
 #
 # Source this after PROJECT_ROOT is set.
 
-DASHBOARDS_DIR="$PROJECT_ROOT/deploy/kind/dizzy/dashboards"
+DASHBOARDS_DIR="$PROJECT_ROOT/deploy/bases/dizzy/dashboards"
 DASHBOARD_FILES=(overview.json api-operations.json time-to-ready.json)
 
 # Backup location for a developer's pre-existing dashboards/ dir, empty when

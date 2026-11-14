@@ -12,7 +12,7 @@
 #
 # /usr/share/cirros/ holds the cirros 0.6.3 disk the guest suite of
 # tests/e2e-nova-libvirt/guest-dataplane/ boots, so no CI run downloads it.
-# Its URL and sha256 are the ones deploy/kind/hypervisor-operator-fixtures/
+# Its URL and sha256 are the ones deploy/overlays/kind/hypervisor-operator-fixtures/
 # image.yaml pins, and tests/unit/images/tempest_cirros_pin_test.sh fails
 # until both files carry the same pair.
 #
@@ -29,7 +29,7 @@ serviceImage {
   description = "OpenStack Tempest API testing framework";
 
   rootLinks."usr/share/cirros/cirros-0.6.3-x86_64-disk.img" = pkgs.fetchurl {
-    url = "https://download.cirros-cloud.net/0.6.3/cirros-0.6.3-x86_64-disk.img";
+    url = "https://github.com/cirros-dev/cirros/releases/download/0.6.3/cirros-0.6.3-x86_64-disk.img";
     sha256 = "7d6355852aeb6dbcd191bcda7cd74f1536cfe5cbf8a10495a7283a8396e4b75b";
   };
 

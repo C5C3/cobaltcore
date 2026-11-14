@@ -11,7 +11,7 @@
 #
 # The root password comes from the Secret the live MariaDB CR's
 # spec.rootPasswordSecretKeyRef names, the way
-# deploy/openbao/bootstrap/setup-database-tenant.sh resolves it. Like that
+# deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh resolves it. Like that
 # script, it passes the password over stdin: the mariadb client reads it as
 # MYSQL_PWD, so it is on no command line, neither kubectl's on the runner nor
 # the client's inside the pod.

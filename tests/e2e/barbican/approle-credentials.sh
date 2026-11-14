@@ -8,7 +8,7 @@
 # and the CA bundle that authenticates the OpenBao server.
 #
 # The proving instance is the OpenBaoCluster openbao-instance in the openstack
-# namespace (deploy/kind/infrastructure/openbao-instance.yaml). Its self-init
+# namespace (deploy/bases/devstack/infrastructure/openbao-instance.yaml). Its self-init
 # provisions the barbican/ KV mount, the barbican AppRole, and a
 # Kubernetes-auth role "provisioner" bound to the ServiceAccount
 # openbao-instance-provisioner with audience openbao-instance. Self-init revokes

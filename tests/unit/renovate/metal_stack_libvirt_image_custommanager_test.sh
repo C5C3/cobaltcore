@@ -26,7 +26,7 @@
 #     carries no pin.
 #
 # This is the regression test the check-renovate-coverage skill requires for
-# every customManager; that skill's audit does not scan deploy/lab/, so this
+# every customManager; that skill's audit does not scan deploy/overlays/metal-stack/, so this
 # test is what keeps the manager honest. It does NOT run
 # renovate-config-validator itself: the sibling
 # fluxoperator_custommanager_test.sh already exercises that authoritative gate
@@ -51,17 +51,17 @@ RENOVATE_FILE="$PROJECT_ROOT/renovate.json"
 LIBVIRT_PACKAGE="ghcr.io/c5c3/libvirt"
 
 # Each manifest and the number of libvirt image: lines it carries.
-MANIFESTS="deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml 3
-deploy/lab/metal-stack/probe/nfs-module-load.yaml 1
-deploy/lab/metal-stack/nfs/client-modules-daemonset.yaml 2
-deploy/lab/metal-stack/chaos-mesh/modules-daemonset.yaml 2"
+MANIFESTS="deploy/overlays/metal-stack/hypervisor/libvirt-daemonset.yaml 3
+deploy/overlays/metal-stack/probe/nfs-module-load.yaml 1
+deploy/overlays/metal-stack/nfs/client-modules-daemonset.yaml 2
+deploy/overlays/metal-stack/chaos-mesh/modules-daemonset.yaml 2"
 
 # libvirt_manager — the docker-datasource customManagers entry that targets
 # the libvirt DaemonSet, compact JSON, or nothing.
 libvirt_manager() {
   jq -c '.customManagers[]
     | select(.datasourceTemplate == "docker")
-    | select((.managerFilePatterns // []) | join(",") | contains("deploy/lab/metal-stack/hypervisor/libvirt-daemonset"))' \
+    | select((.managerFilePatterns // []) | join(",") | contains("deploy/overlays/metal-stack/hypervisor/libvirt-daemonset"))' \
     "$RENOVATE_FILE" | head -1
 }
 
@@ -158,7 +158,7 @@ test_allowed_versions() {
   allowed="${allowed#/}"
   allowed="${allowed%/}"
   pinned_tag="$(grep -hoE 'image: ghcr\.io/c5c3/libvirt:[^@[:space:]]+' \
-    "$PROJECT_ROOT/deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml" | head -1 | sed 's/.*libvirt://')"
+    "$PROJECT_ROOT/deploy/overlays/metal-stack/hypervisor/libvirt-daemonset.yaml" | head -1 | sed 's/.*libvirt://')"
 
   local version want got
   # The Docker-built keepers stay in GHCR as the lab's rollback target, but

@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify the fake-compute opt-in overlay the ControlPlane quick start applies:
-#   1. deploy/kind/fake-compute/{kustomization,fake-compute}.yaml exist with
+#   1. deploy/overlays/kind/fake-compute/{kustomization,fake-compute}.yaml exist with
 #      SPDX headers.
 #   2. The kustomization's resources list names fake-compute.yaml and nothing
 #      else, and the file names no parent-directory path (kubectl's embedded
@@ -21,7 +21,7 @@
 #      in openstack and nothing else (kustomize, yq).
 #   7. Nothing applies the overlay by default: no non-comment line of
 #      hack/deploy-infra.sh names fake-compute, and kustomize build of
-#      deploy/flux-system and deploy/kind/base render no
+#      deploy/bases/operators and deploy/overlays/kind/base render no
 #      controlplane-fake-compute object (kustomize).
 #
 # Checks 4-6 and the kustomize half of check 7 are counted as SKIP when yq or
@@ -43,9 +43,9 @@ SKIP=0
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 DEPLOY_INFRA_SCRIPT="$PROJECT_ROOT/hack/deploy-infra.sh"
-FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/flux-system"
-KIND_BASE_DIR="$PROJECT_ROOT/deploy/kind/base"
-OVERLAY_DIR="$PROJECT_ROOT/deploy/kind/fake-compute"
+FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/bases/operators"
+KIND_BASE_DIR="$PROJECT_ROOT/deploy/overlays/kind/base"
+OVERLAY_DIR="$PROJECT_ROOT/deploy/overlays/kind/fake-compute"
 OVERLAY_KUSTOMIZATION="$OVERLAY_DIR/kustomization.yaml"
 OVERLAY_MANIFEST="$OVERLAY_DIR/fake-compute.yaml"
 FAKE_COMPUTE_FIXTURE="${FAKE_COMPUTE_FIXTURE:-$PROJECT_ROOT/tests/e2e/c5c3/full-controlplane-keystone/06-fake-compute.yaml}"
@@ -74,7 +74,7 @@ count_fake_compute_objects() {
 
 # --- Test 1: overlay files exist with SPDX headers ---
 test_overlay_files_exist_with_spdx() {
-  echo "Test: deploy/kind/fake-compute/{kustomization,fake-compute}.yaml exist with SPDX headers"
+  echo "Test: deploy/overlays/kind/fake-compute/{kustomization,fake-compute}.yaml exist with SPDX headers"
 
   local f
   for f in "$OVERLAY_KUSTOMIZATION" "$OVERLAY_MANIFEST"; do
@@ -217,7 +217,7 @@ test_secret_references() {
 
 # --- Test 6: kustomize build renders the two objects in openstack ---
 test_kustomize_build_renders_overlay() {
-  echo "Test: kustomize build deploy/kind/fake-compute renders the ConfigMap and the Deployment in openstack"
+  echo "Test: kustomize build deploy/overlays/kind/fake-compute renders the ConfigMap and the Deployment in openstack"
 
   if ! have kustomize; then
     echo "  SKIP: kustomize not installed (1 check skipped)"
@@ -250,7 +250,7 @@ test_kustomize_build_renders_overlay() {
 
 # --- Test 7: the default overlays render no fake compute ---
 test_default_overlays_render_no_fake_compute() {
-  echo "Test: hack/deploy-infra.sh, deploy/flux-system and deploy/kind/base apply no fake compute"
+  echo "Test: hack/deploy-infra.sh, deploy/bases/operators and deploy/overlays/kind/base apply no fake compute"
 
   # deploy-infra.sh applies its kind overlays with kubectl apply -k directly,
   # not through the two kustomizations below. Comments may name the overlay;

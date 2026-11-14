@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Chainsaw E2E test for a managed BarbicanSecretStore against the proving
-# OpenBaoCluster openbao-instance (deploy/kind/infrastructure/openbao-instance.yaml).
+# OpenBaoCluster openbao-instance (deploy/bases/devstack/infrastructure/openbao-instance.yaml).
 #
 # Managed mode is the only mode in which the operator writes to OpenBao. It
 # authenticates as the instance's provisioner ServiceAccount, checks the mount

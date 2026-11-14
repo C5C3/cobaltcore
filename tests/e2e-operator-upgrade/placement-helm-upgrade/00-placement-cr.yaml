@@ -13,7 +13,7 @@
 # placement_basic), cache via clusterRef to openstack-memcached. The database
 # credentials come from the ESO-synced placement-db Secret and the service-user
 # password from the pre-seeded keystone-admin Secret (both
-# deploy/kind/infrastructure). Placement owns no store backend, so the CR is the
+# deploy/overlays/kind/infrastructure). Placement owns no store backend, so the CR is the
 # only fixture the suite applies.
 # region placement-cr
 apiVersion: placement.openstack.c5c3.io/v1alpha1

@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify the two contracts deploy/eso/clustersecretstore.yaml carries that no
+# Verify the two contracts deploy/bases/eso-store/clustersecretstore.yaml carries that no
 # other check enforces:
 #
 #   - The c5c3 operator's openBaoDefaultServer / openBaoDefaultKubernetesMount
@@ -38,7 +38,7 @@ SKIP=0
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
-STORE_FILE="$PROJECT_ROOT/deploy/eso/clustersecretstore.yaml"
+STORE_FILE="$PROJECT_ROOT/deploy/bases/eso-store/clustersecretstore.yaml"
 CONTROLLER_FILE="$PROJECT_ROOT/operators/c5c3/internal/controller/reconcile_dbcredentials.go"
 
 # The reviewed conditions array, as compact JSON.

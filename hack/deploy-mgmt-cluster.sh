@@ -67,7 +67,7 @@ FLUX_OPERATOR_VERSION="v0.61.0"
 
 # The Flux source/release pairs applied to this cluster, in dependency order.
 # Each entry is `<source file>|<release file>|<namespace>/<release name>`,
-# relative to deploy/flux-system/. A plain indexed array of pipe-delimited
+# relative to deploy/bases/operators/. A plain indexed array of pipe-delimited
 # tuples keeps this bash 3.2-compatible (matching the deploy-infra.sh
 # convention).
 FLUX_RELEASES=(
@@ -244,8 +244,8 @@ main() {
   log "=== Step 2/3: Install flux-operator + apply FluxInstance ==="
   kubectl apply -f \
     "https://github.com/controlplaneio-fluxcd/flux-operator/releases/download/${FLUX_OPERATOR_VERSION}/install.yaml"
-  kubectl apply -f "${REPO_ROOT}/deploy/flux-system/namespaces.yaml"
-  kubectl apply -f "${REPO_ROOT}/deploy/flux-system/fluxinstance.yaml"
+  kubectl apply -f "${REPO_ROOT}/deploy/bases/operators/namespaces.yaml"
+  kubectl apply -f "${REPO_ROOT}/deploy/bases/flux/fluxinstance.yaml"
   wait_for_fluxinstance "${HELMRELEASE_TIMEOUT}"
   log "flux-operator installed and FluxInstance/flux is Ready."
 
@@ -258,14 +258,14 @@ main() {
   log "=== Step 3/3: Apply Flux sources and releases ==="
   local entry
   for entry in "${FLUX_RELEASES[@]}"; do
-    kubectl apply -f "${REPO_ROOT}/deploy/flux-system/${entry%%|*}"
+    kubectl apply -f "${REPO_ROOT}/deploy/bases/operators/${entry%%|*}"
     local rest="${entry#*|}"
-    kubectl apply -f "${REPO_ROOT}/deploy/flux-system/${rest%%|*}"
+    kubectl apply -f "${REPO_ROOT}/deploy/bases/operators/${rest%%|*}"
   done
-  kubectl apply -f "${REPO_ROOT}/deploy/flux-system/sources/rabbitmq-cluster-operator.yaml"
-  kubectl apply -f "${REPO_ROOT}/deploy/flux-system/releases/rabbitmq-cluster-operator.yaml"
-  kubectl apply -f "${REPO_ROOT}/deploy/flux-system/sources/messaging-topology-operator.yaml"
-  kubectl apply -f "${REPO_ROOT}/deploy/flux-system/releases/messaging-topology-operator.yaml"
+  kubectl apply -f "${REPO_ROOT}/deploy/bases/operators/sources/rabbitmq-cluster-operator.yaml"
+  kubectl apply -f "${REPO_ROOT}/deploy/bases/operators/releases/rabbitmq-cluster-operator.yaml"
+  kubectl apply -f "${REPO_ROOT}/deploy/bases/operators/sources/messaging-topology-operator.yaml"
+  kubectl apply -f "${REPO_ROOT}/deploy/bases/operators/releases/messaging-topology-operator.yaml"
   reconcile_helmrepository_sources
 
   # cert-manager first and on its own: hack/ci-deploy-operator.sh depends on its
@@ -326,8 +326,8 @@ main() {
     rabbit_image_seen=true
     if [[ "${rabbit_image}" != *"@sha256:"* ]]; then
       log "ERROR: a rabbitmq-system image is not digest-pinned: ${rabbit_image}"
-      log "       The spec.images override in deploy/flux-system/releases/rabbitmq-cluster-operator.yaml"
-      log "       or deploy/flux-system/releases/messaging-topology-operator.yaml no longer matches"
+      log "       The spec.images override in deploy/bases/operators/releases/rabbitmq-cluster-operator.yaml"
+      log "       or deploy/bases/operators/releases/messaging-topology-operator.yaml no longer matches"
       log "       the image name upstream's ./config/installation resolves to."
       exit 1
     fi

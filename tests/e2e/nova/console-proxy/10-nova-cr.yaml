@@ -8,7 +8,7 @@
 # on the openstack-db MariaDB cluster (cell0 is derived as
 # nova_vnc_cell0), the openstack-memcached cache, the ESO-synced
 # nova-api-db and nova-db credentials and the pre-seeded keystone-admin
-# service-user password (all from deploy/kind/infrastructure).
+# service-user password (all from deploy/overlays/kind/infrastructure).
 #
 # The bus is the per-suite vhost broker-vhost.sh writes into
 # nova-vnc-messaging. Managed messaging is not usable here: the URL it
@@ -31,7 +31,7 @@
 # hands a client names the address a browser outside the cluster reaches. The
 # hostname matches the https-nova-console listener of the kind overlay's
 # openstack-gw Gateway and the dnsName of that listener's Certificate
-# (deploy/kind/base/openstack-gateway.yaml), so the SNI the curl presents finds
+# (deploy/overlays/kind/base/openstack-gateway.yaml), so the SNI the curl presents finds
 # both. The block carries no path: the console page and the WebSocket that
 # follows it are both served from the root of that hostname, which is why the
 # webhook accepts only an empty path or "/" there.

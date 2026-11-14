@@ -10,7 +10,7 @@
 # which Cinder it attaches to.
 #
 # This one takes the /volumes export the kind NFS server pre-creates
-# (deploy/kind/nfs/nfs-server.yaml). Its sibling takes /volumes-b, so the two
+# (deploy/bases/nfs/nfs-server.yaml). Its sibling takes /volumes-b, so the two
 # resolve to different mount directories and a volume placed on one is visible
 # from that pod alone.
 apiVersion: cinder.openstack.c5c3.io/v1alpha1

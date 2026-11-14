@@ -7,7 +7,7 @@
 # openstack-db (schema barbican_release_upgrade), cache via clusterRef to
 # openstack-memcached. The database credentials come from the ESO-synced
 # barbican-db Secret and the service-user password from the pre-seeded
-# keystone-admin Secret (both deploy/kind/infrastructure). A single replica keeps
+# keystone-admin Secret (both deploy/overlays/kind/infrastructure). A single replica keeps
 # the rollout observable when 02-patch-upgrade.yaml bumps the release to 2026.2.
 apiVersion: barbican.openstack.c5c3.io/v1alpha1
 kind: Barbican

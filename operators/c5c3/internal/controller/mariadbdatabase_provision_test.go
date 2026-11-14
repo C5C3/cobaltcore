@@ -429,7 +429,7 @@ func TestMariaDBDatabase_Provision_OpenBaoError(t *testing.T) {
 				reasonMariaDBDatabaseOpenBaoError)
 			if tc.wantPrefix {
 				g.Expect(cond.Message).To(HavePrefix("the operator's OpenBao login or policy is missing; re-run " +
-					"deploy/openbao/bootstrap/setup-auth.sh, setup-policies.sh and setup-database-tenant.sh: openbao: 403"))
+					"deploy/bases/shared-openbao/bootstrap/setup-auth.sh, setup-policies.sh and setup-database-tenant.sh: openbao: 403"))
 			} else {
 				g.Expect(cond.Message).To(HavePrefix("openbao: 400"))
 			}

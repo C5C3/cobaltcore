@@ -4283,7 +4283,7 @@ func declaredDedicatedBackingServices(cp *ControlPlane) []dedicatedBackingServic
 //
 //   - A dedicated MANAGED database may not use credentialsMode Dynamic. The
 //     OpenBao database engine has exactly one connection and role per NAMESPACE
-//     (deploy/openbao/bootstrap/setup-database-tenant.sh), bootstrapped against
+//     (deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh), bootstrapped against
 //     the SHARED cluster, so no engine role exists that could issue credentials
 //     for a dedicated instance — an admitted Dynamic dedicated database would
 //     wedge on an ExternalSecret that can never sync. Static is the supported

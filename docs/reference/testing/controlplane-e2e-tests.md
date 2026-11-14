@@ -406,7 +406,7 @@ paths any other chassis or metadata agent would share.
    container restart each start a new K-ORC process, which logs in with the full
    catalog and so needs no refresh. It then applies
    `fixtures.yaml` of the example overlay
-   `deploy/kind/hypervisor-operator-fixtures/` (not its `image.yaml`, so CI
+   `deploy/overlays/kind/hypervisor-operator-fixtures/` (not its `image.yaml`, so CI
    downloads no cirros image), waits up to 10 minutes for every K-ORC
    resource in that file to report `Available`, and repeats the start-time check.
    `07-hypervisor-operator-verify-job.yaml` follows, a Job that
@@ -1604,7 +1604,7 @@ message.
 | `ovn` | Applies the OVNCentral and waits for `Ready` | 600 s (`OVN_TIMEOUT`) |
 | `apply` | Applies the ControlPlane | None |
 | `mariadb` | Waits for `mariadb/openstack-db` to exist with `kubectl wait --for=create`, then waits for `Ready` | 600 s for both (`MARIADB_TIMEOUT`) |
-| `onboard` | Reads the root token from Secret `openbao-init-keys` in `shared-services` and runs `deploy/openbao/bootstrap/setup-database-tenant.sh openstack controlplane` with the token in `BAO_TOKEN`. Fails with `ERROR: cannot read Secret shared-services/openbao-init-keys` or `ERROR: Secret shared-services/openbao-init-keys carries no root_token` before the script runs | None |
+| `onboard` | Reads the root token from Secret `openbao-init-keys` in `shared-services` and runs `deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh openstack controlplane` with the token in `BAO_TOKEN`. Fails with `ERROR: cannot read Secret shared-services/openbao-init-keys` or `ERROR: Secret shared-services/openbao-init-keys carries no root_token` before the script runs | None |
 | `ready` | Waits for the ControlPlane's `Ready` | 1800 s (`READY_TIMEOUT`) |
 
 The `mariadb` stage waits for the MariaDB to exist first because the page's

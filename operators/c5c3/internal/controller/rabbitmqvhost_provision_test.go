@@ -186,7 +186,7 @@ func TestRabbitMQVhostProvision_TopologyOperatorNotInstalled(t *testing.T) {
 	cond := rvVhostReady(t, h)
 	g.Expect(cond.Reason).To(Equal(reasonRabbitMQVhostTopologyOperatorNotInstalled))
 	g.Expect(cond.Message).To(Equal("the cluster serves no vhosts.rabbitmq.com; install the RabbitMQ Messaging " +
-		"Topology Operator (deploy/flux-system/releases/messaging-topology-operator.yaml)"))
+		"Topology Operator (deploy/bases/operators/releases/messaging-topology-operator.yaml)"))
 
 	ok, leg, err := h.reconciler().provisionVhost(context.Background(), order, rvControlPlane(""), "")
 	g.Expect(err).NotTo(HaveOccurred())

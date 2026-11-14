@@ -21,7 +21,7 @@
 # nothing here proves traffic actually reaches the Glance API. The real-Gateway
 # leg now lives in the sibling tests/e2e/glance/gateway-quick-start-smoke/
 # suite, which drives kind host :443 → NodePort → Envoy Gateway (the
-# `https-glance` listener in deploy/kind/base/openstack-gateway.yaml) →
+# `https-glance` listener in deploy/overlays/kind/base/openstack-gateway.yaml) →
 # HTTPRoute → Service → pod, mirroring the keystone and horizon
 # gateway-quick-start-smoke suites.
 #

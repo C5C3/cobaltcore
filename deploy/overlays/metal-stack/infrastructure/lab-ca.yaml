@@ -1,0 +1,68 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The lab CA: a self-signed root that cert-manager keeps in the Secret
+# cert-manager/lab-ca, and the ClusterIssuer lab-ca-issuer that signs with it.
+# The issuer signs one certificate, the Gateway's openstack-gw-tls for
+# *.<a-b-c-d>.nip.io (gateway-certificate.yaml), which hack/deploy-infra.sh
+# issues in Step 5.
+#
+# Why a CA and not one self-signed certificate per hostname, as on kind: a
+# workstation that trusts the root once trusts every hostname of the lab, in
+# the OpenStack CLI (OS_CACERT) and in a browser, where Horizon and the noVNC
+# console of nova-console.<a-b-c-d>.nip.io would otherwise each need their own
+# exception. The console's WebSocket fails without a word when its host is not
+# trusted. Let's Encrypt is no option on nip.io: the domain is not on the
+# Public Suffix List, so every user of nip.io shares one limit of 50
+# certificates a week.
+#
+# The root's key lives in this cluster, so whoever can read Secrets in
+# cert-manager can sign with it. The name constraint limits the damage on a
+# workstation that trusts the root: its signature counts for names under
+# nip.io alone, which browsers, OpenSSL and the macOS trust store enforce. The
+# constraint is critical, so a client that cannot evaluate it refuses the
+# root. NameConstraints is a beta feature of cert-manager since 1.17, on by
+# default; the chart range of deploy/bases/operators/releases/cert-manager.yaml
+# resolves to a newer release.
+#
+# The teardown deletes the cert-manager.io CRDs and the namespace
+# cert-manager, and the root with them; the next deploy creates a new one,
+# which a workstation has to trust again (docs/quick-start-metal-stack.md,
+# Part 1, Step 7).
+#
+# A ClusterIssuer of kind ca reads its Secret from cert-manager's cluster
+# resource namespace, the chart's default being cert-manager's own namespace,
+# hence the root's namespace.
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: lab-ca
+  namespace: cert-manager
+spec:
+  isCA: true
+  commonName: CobaltCore metal-stack lab CA
+  secretName: lab-ca
+  duration: 8760h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: selfsigned-cluster-issuer
+    kind: ClusterIssuer
+    group: cert-manager.io
+  nameConstraints:
+    critical: true
+    permitted:
+      dnsDomains:
+        - nip.io
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: lab-ca-issuer
+spec:
+  ca:
+    secretName: lab-ca

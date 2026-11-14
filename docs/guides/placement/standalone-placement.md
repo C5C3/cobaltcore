@@ -58,7 +58,7 @@ kind overlay ships the `placement-operator` HelmRelease suspended. Applying the
 release manifest clears the suspension and lets Flux install the chart:
 
 ```bash
-kubectl apply -f deploy/flux-system/releases/placement-operator.yaml
+kubectl apply -f deploy/bases/operators/releases/placement-operator.yaml
 kubectl wait helmrelease/placement-operator -n placement-system \
   --for=condition=Ready --timeout=300s
 ```

@@ -7,7 +7,7 @@
 # the suite addresses through [volume] backend_names in tempest.conf.
 #
 # The export is the /volumes directory the kind NFS server pre-creates
-# (deploy/kind/nfs/nfs-server.yaml). This leg is alone on its cluster, so the
+# (deploy/bases/nfs/nfs-server.yaml). This leg is alone on its cluster, so the
 # name needs no suite prefix the way the tests/e2e/cinder/ fixtures do.
 apiVersion: cinder.openstack.c5c3.io/v1alpha1
 kind: CinderBackend

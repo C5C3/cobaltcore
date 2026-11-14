@@ -5,7 +5,7 @@
 # Namespace fixture for the Placement Gateway quick-start smoke test.
 #
 # The `openstack` namespace is already created by the kind overlay
-# (`deploy/kind/base/`) because it holds the Gateway/Certificate objects wired
+# (`deploy/overlays/kind/base/`) because it holds the Gateway/Certificate objects wired
 # in `openstack-gateway.yaml` and the managed backing services the Placement API
 # depends on (`openstack-db`, `openstack-memcached`). We still apply it here
 # defensively so the suite is self-contained — chainsaw's `apply` is idempotent

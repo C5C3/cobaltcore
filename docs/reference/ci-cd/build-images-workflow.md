@@ -90,9 +90,10 @@ filters name. They name `tests/lib/uwsgi.sh`, and so does the `base` filter: the
 uWSGI import and graceful-shutdown checks that the verify scripts of keystone,
 glance, placement, barbican, neutron, cinder, nova and horizon source.
 
-> **Fork PRs are not supported.** Fork PRs receive a read-only `GITHUB_TOKEN`
-> that cannot write packages. The workflow detects fork PRs and fails fast with a
-> clear error message.
+Pull requests, including forks, build images locally, scan them and run their
+verification scripts. These builds skip registry login and never push images or
+export publication digests. Registry publishing, manifest merging, signing and
+attestation run only on non-PR events. Forks use the binary cache read-only.
 
 ## Permissions
 
@@ -1094,7 +1095,7 @@ rebuild QEMU, Ceph or glibc while libvirt keeps its version. A version that is n
 prune's keep pattern and Renovate's `allowedVersions` assume that shape. The
 Docker-built image before #1407 carried `<libvirt-package-version>-r<N>`, such as
 `10.0.0-2ubuntu8.19-r2`; the prune keeps those as the lab's rollback target. The lab
-manifests under `deploy/lab/metal-stack/` pin the current tag by digest (see
+manifests under `deploy/overlays/metal-stack/` pin the current tag by digest (see
 [Lab hypervisors](../infrastructure/infrastructure-manifests.md#lab-hypervisors)).
 
 ## Retention

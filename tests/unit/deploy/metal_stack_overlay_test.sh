@@ -5,10 +5,10 @@
 
 # Verify the metal-stack lab overlay that hack/deploy-infra.sh applies under
 # EXTERNAL_CLUSTER=true:
-#   1. deploy/lab/metal-stack/{base,infrastructure}/kustomization.yaml exist
+#   1. deploy/overlays/metal-stack/{base,infrastructure}/kustomization.yaml exist
 #      with SPDX headers. The base lists exactly one resource, the kind base
-#      (../../../kind/base); the infrastructure lists the kind infrastructure
-#      overlay (../../../kind/infrastructure), envoy-public.yaml and
+#      (../../../bases/devstack/base openstack-gateway.yaml); the infrastructure lists the kind infrastructure
+#      overlay (../../../bases/devstack/infrastructure), envoy-public.yaml and
 #      lab-ca.yaml, and not the template gateway-certificate.yaml.
 #   2. The base render carries the OpenBao HelmRelease in standalone mode
 #      with no storage class, the envoy-gateway HelmRelease, the nine
@@ -39,7 +39,7 @@
 #      the cluster's default class.
 #   5. The kind infrastructure overlay still renders MariaDB on `standard`,
 #      and the kind base annotates no Namespace for Chaos Mesh, so the lab
-#      overlay changed nothing under deploy/kind/.
+#      overlay changed nothing under deploy/overlays/kind/.
 #
 # Checks 2 to 5 are counted as SKIP when kustomize or yq is not on PATH; a
 # failing kustomize build counts them as FAIL and prints the build's error. An
@@ -61,11 +61,11 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/kustomize_render.sh
 source "$PROJECT_ROOT/tests/lib/kustomize_render.sh"
 
-LAB_DIR="$PROJECT_ROOT/deploy/lab/metal-stack"
+LAB_DIR="$PROJECT_ROOT/deploy/overlays/metal-stack"
 BASE_DIR="$LAB_DIR/base"
 INFRA_DIR="$LAB_DIR/infrastructure"
-KIND_INFRA_DIR="$PROJECT_ROOT/deploy/kind/infrastructure"
-KIND_BASE_DIR="$PROJECT_ROOT/deploy/kind/base"
+KIND_INFRA_DIR="$PROJECT_ROOT/deploy/overlays/kind/infrastructure"
+KIND_BASE_DIR="$PROJECT_ROOT/deploy/overlays/kind/base"
 
 SERVICE_OPERATORS="keystone horizon glance placement barbican ovn neutron cinder nova"
 
@@ -82,7 +82,7 @@ joined() {
 
 # --- Test 1: both kustomizations exist, carry SPDX and name the kind overlay ---
 test_files_have_spdx_and_one_resource() {
-  echo "Test: the lab kustomizations carry SPDX headers and take the kind overlay as their one resource"
+  echo "Test: the lab kustomizations carry SPDX headers and import the common base and their own gateway resources"
 
   local dir expected f
   for dir in base infrastructure; do
@@ -96,9 +96,11 @@ test_files_have_spdx_and_one_resource() {
       "$f" "SPDX-FileCopyrightText: Copyright 2026 SAP SE"
     assert_file_contains "$dir/kustomization.yaml has SPDX-License-Identifier: Apache-2.0" \
       "$f" "SPDX-License-Identifier: Apache-2.0"
-    expected="../../../kind/$dir"
+    expected="../../../bases/devstack/$dir"
     if [[ "$dir" == infrastructure ]]; then
       expected="$(printf '%s\n' "$expected" envoy-public.yaml lab-ca.yaml)"
+    else
+      expected="$(printf '%s\n' "$expected" openstack-gateway.yaml)"
     fi
     assert_eq "$dir/kustomization.yaml lists $(tr '\n' ' ' <<<"$expected")" \
       "$expected" "$(resource_entries "$f")"
@@ -112,7 +114,7 @@ test_files_have_spdx_and_one_resource() {
 
 # --- Test 2: the base render ---
 test_base_render() {
-  echo "Test: kustomize build deploy/lab/metal-stack/base"
+  echo "Test: kustomize build deploy/overlays/metal-stack/base"
 
   render "$BASE_DIR" 23 || return
 
@@ -162,7 +164,7 @@ test_base_render() {
   assert_eq "every rendered Namespace opts out of Gardener's KUBERNETES_SERVICE_HOST injection ($namespaces)" \
     "$namespaces" "$labelled"
   # The scope of the lab's Chaos Mesh, whose release filters by namespace
-  # (deploy/lab/metal-stack/chaos-mesh): every namespace the lab declares.
+  # (deploy/overlays/metal-stack/chaos-mesh): every namespace the lab declares.
   local annotated
   annotated="$(printf '%s\n' "$RENDERED" |
     yq -N -r 'select(.kind == "Namespace" and .metadata.annotations["chaos-mesh.org/inject"] == "enabled") | .metadata.name' - |
@@ -180,7 +182,7 @@ test_base_render() {
 
 # --- Test 3: the infrastructure render ---
 test_infrastructure_render() {
-  echo "Test: kustomize build deploy/lab/metal-stack/infrastructure"
+  echo "Test: kustomize build deploy/overlays/metal-stack/infrastructure"
 
   render "$INFRA_DIR" 15 || return
 
@@ -282,7 +284,7 @@ assert_no_class() {
 
 # --- Test 4: the kind overlay is unchanged ---
 test_kind_overlay_unchanged() {
-  echo "Test: kustomize build deploy/kind/infrastructure still renders MariaDB on standard"
+  echo "Test: kustomize build deploy/overlays/kind/infrastructure still renders MariaDB on standard"
 
   if render "$KIND_INFRA_DIR" 1; then
     assert_eq "the kind MariaDB stays on the standard class" "standard" \
