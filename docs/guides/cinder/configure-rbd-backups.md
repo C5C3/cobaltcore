@@ -10,16 +10,16 @@ SPDX-License-Identifier: Apache-2.0
 
 # How-to: Configure RBD Volume Backups
 
-An RBD backup target writes volume backups as RBD images into a Ceph pool. A
-backup of an RBD volume is then the difference between two snapshots rather
-than a full copy. This guide swaps the lab's projected backup target `cephbk`
-for a user-owned RBD target `rbdbk` on the same pool and user, backs up an RBD
-volume twice and restores it, backs up an NFS volume where the lab has one,
-rotates the backup key, and puts `cephbk` back. The operator creates no pool
-and no Ceph user; it renders the Ceph backup driver's section, the Ceph client
-configuration and the keyring into the backup service, and projects the keyring
-of every RBD volume backend beside them, because a backup reads its source
-volume with that backend's own user.
+An RBD backup target writes volume backups as RBD images into a Ceph pool. The
+first backup of an RBD volume is a full copy; later incremental backups contain
+the difference between snapshots. This guide swaps the lab's projected backup
+target `cephbk` for a user-owned RBD target `rbdbk` on the same pool and user,
+backs up an RBD volume twice and restores it, backs up an NFS volume where the
+lab has one, rotates the backup key, and puts `cephbk` back. The operator
+creates no pool and no Ceph user; it renders the Ceph backup driver's section,
+the Ceph client configuration and the keyring into the backup service, and
+projects the keyring of every RBD volume backend beside them, because a backup
+reads its source volume with that backend's own user.
 
 For the full field reference, see the
 [CinderBackupBackend CRD API Reference](../../reference/cinder/cinder-backup-backend-crd.md),
@@ -41,15 +41,34 @@ Follow that tutorial through Part 1, so a `ControlPlane` CR named
 `controlplane-cinder` Cinder child running, and the lab Ceph reports
 `HEALTH_OK`. Then attach the RBD volume backend `rbd1` with Steps 1 and 2 of
 [Attach an RBD Backend to Cinder](./attach-an-rbd-backend.md), which also
-create the volume type `rbd`. Every resource name in the examples below is one
-that devstack produces.
+create the volume type `rbd`. The pre-existing resources use the devstack's
+names; this guide creates the `rbdbk` target, test volumes and backups.
 :::
+
+The RBD target is a user-owned `CinderBackupBackend` that you attach to the
+projected `controlplane-cinder` by hand. The workstation needs GNU `timeout`,
+`sha256sum` and `base64` on its `PATH`. On macOS, install GNU coreutils and use
+`gtimeout`, `gsha256sum` and `gbase64 -d` in place of `timeout`, `sha256sum`
+and `base64 -d`. Keep the `OS_*` variables and `OS_CACERT` file from
+[Part 1, Step 7](../../quick-start-metal-stack.md#cp-verify). The default
+public Gateway needs no port-forward; if you deployed with
+`EXTERNAL_LOADBALANCER=false`, keep the port-forward from
+[Part 1, Step 3](../../quick-start-metal-stack.md#cp-deploy) running. If a
+bounded wait times out, stop and inspect the resource status before running
+later commands.
+
+---
+
+## Step 1: Detach the projected target
+
+Remove the entry from the `ControlPlane` CR. The c5c3-operator prunes the
+`CinderBackupBackend` it projected, and the Cinder deletes its backup
+Deployment:
 
 ::: warning The projected target is detached for the duration of this guide
 The lab's `ControlPlane` projects the RBD backup target `cephbk` on the pool
-`backups`, and a Cinder takes one backup target. The guide attaches a
-user-owned RBD target so Step 6 can restore the lab as it was: Step 1 removes
-the `backupBackend` entry from the `ControlPlane` CR and Step 6 puts it back. A
+`backups`, and a Cinder takes one backup target. This step removes the
+`backupBackend` entry from the `ControlPlane` CR; Step 6 puts it back. A
 `ControlPlane` can declare the other target itself, as
 [Switching the backup target on the ControlPlane](#switching-the-backup-target-on-the-controlplane)
 shows. Editing the projected `cephbk` by hand would be reverted on the next
@@ -62,19 +81,6 @@ the ones written through `rbdbk` stay reachable through `cephbk` once Step 6 has
 put it back. Step 6 still deletes the guide's own backups, to leave the pool as
 it was.
 :::
-
-The RBD target is a user-owned `CinderBackupBackend` that you attach to the
-projected `controlplane-cinder` by hand. The `openstack` commands use the
-`OS_*` variables and the `OS_CACERT` file of Part 1, Step 7 of the tutorial,
-with the Keystone port-forward of Step 6 running.
-
----
-
-## Step 1: Detach the projected target
-
-Remove the entry from the `ControlPlane` CR. The c5c3-operator prunes the
-`CinderBackupBackend` it projected, and the Cinder deletes its backup
-Deployment:
 
 ```bash
 kubectl -n openstack patch controlplane controlplane --type json \
@@ -96,10 +102,11 @@ without a target reports both conditions `True`.
 
 The lab Ceph has the pool `backups` and the Ceph user `cinder-backup`, whose key
 reaches `openstack` as the Secret `ceph-client-cinder-backup` with the raw key
-under `userKey`. The target names the pool, the user without its `client.`
-prefix, the monitor and the two networks Step 1 of the RBD backend guide read,
-and that Secret, the values `cephbk` carries. The examples use `10.244.0.0/16`
-and `10.96.0.0/12`: write the two your shoot prints.
+under `userKey`. The target uses the pool, user without its `client.` prefix,
+monitor and network CIDRs from Step 1 of
+[the RBD backend guide](./attach-an-rbd-backend.md), and the Secret values
+carried by `cephbk`. The lab uses pod network `10.240.0.0/13` and service
+network `10.248.0.0/18`; use the CIDRs printed by `shoot-info` on another shoot.
 
 ```bash
 kubectl apply -f - <<'EOF'
@@ -118,8 +125,8 @@ spec:
     monitors:
     - rook-ceph-mon-a.rook-ceph.svc.cluster.local
     networks:
-    - 10.244.0.0/16
-    - 10.96.0.0/12
+    - 10.240.0.0/13
+    - 10.248.0.0/18
     keySecretRef:
       name: ceph-client-cinder-backup
 EOF
@@ -245,36 +252,62 @@ and of `nfs-on-rbd`. The driver wrote it in pieces of `backup_ceph_chunk_size`,
 ## Step 5: Rotate the backup key
 
 A raised `keyGeneration` has Rook rotate the key of `cinder-backup`. The
-PushSecret and the ExternalSecret of the lab's hand-off carry it to
-`openstack/ceph-client-cinder-backup` within their one-minute refresh intervals.
+PushSecret and ExternalSecret each refresh every minute. Allow a few minutes for
+the new key to reach `openstack/ceph-client-cinder-backup`.
 The changed Secret re-renders the target's projection under a new name, and the
 backup service rolls onto it. The patch raises the generation it reads by one,
 so it rotates the key also where an earlier run raised it before:
 
 ```bash
+set -euo pipefail
 backup_secret() {
   kubectl -n openstack get deploy controlplane-cinder-backup \
     -o jsonpath='{.spec.template.spec.volumes[?(@.name=="backup")].secret.secretName}'
 }
 before=$(backup_secret)
+if [ -z "$before" ]; then
+  echo "FAIL: the backup Deployment does not reference a projection Secret" >&2
+  exit 1
+fi
 generation=$(kubectl -n rook-ceph get cephclient cinder-backup -o jsonpath='{.spec.security.cephx.keyGeneration}')
-[ -n "${generation}" ] && kubectl -n rook-ceph patch cephclient cinder-backup --type merge \
+if [ -z "$generation" ]; then
+  echo "FAIL: could not read the cinder-backup keyGeneration" >&2
+  exit 1
+fi
+kubectl -n rook-ceph patch cephclient cinder-backup --type merge \
   -p "{\"spec\":{\"security\":{\"cephx\":{\"keyGeneration\":$((generation + 1))}}}}"
-for _ in $(seq 60); do [ "$(backup_secret)" != "$before" ] && break; sleep 5; done
-echo "$before -> $(backup_secret)"
+after=""
+for _ in $(seq 60); do
+  after=$(backup_secret)
+  if [ -n "$after" ] && [ "$after" != "$before" ]; then
+    break
+  fi
+  sleep 5
+done
+if [ -z "$after" ] || [ "$after" = "$before" ]; then
+  echo "FAIL: the backup projection Secret did not change within five minutes" >&2
+  exit 1
+fi
+printf '%s -> %s\n' "$before" "$after"
 kubectl -n openstack rollout status deploy/controlplane-cinder-backup --timeout=300s
-kubectl -n openstack get secret ceph-client-cinder-backup -o jsonpath='{.data.userKey}' | base64 -d | sha256sum
-kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph auth get-key client.cinder-backup | sha256sum
+secret_hash=$(kubectl -n openstack get secret ceph-client-cinder-backup \
+  -o jsonpath='{.data.userKey}' | base64 -d | tr -d '\r\n' | sha256sum)
+ceph_hash=$(kubectl -n rook-ceph exec deploy/rook-ceph-tools -- \
+  ceph auth get-key client.cinder-backup | tr -d '\r\n' | sha256sum)
+if [ "$secret_hash" != "$ceph_hash" ]; then
+  echo "FAIL: the OpenStack Secret key does not match the key Ceph accepts" >&2
+  exit 1
+fi
+printf '%s\n' "$secret_hash"
 ```
 
-The `echo` prints two different projection Secret names, the rollout finishes,
-and the two digests are equal: the Secret carries the key Ceph accepts. An empty
-read of the generation patches nothing, and the `echo` then prints the same
-name twice. `cephbk`, which Step 6 puts back, reads the same Secret, so it
-starts on the rotated key. A backup taken now reaches `available` with the
-rotated key:
+The script fails if it cannot read a new projection Secret within five minutes
+or if the OpenStack Secret's key does not match the key Ceph accepts. `cephbk`,
+which Step 6 puts back, reads the same Secret, so it starts on the rotated key.
+A backup taken now reaches `available` with the rotated key:
 
 ```bash
+set -euo pipefail
 timeout 300 bash -c 'until openstack volume service list --service cinder-backup -f value -c State | grep -qx up; do sleep 5; done'
 openstack volume backup create --incremental --name rbdbk-rotated rbdbk-vol
 timeout 300 bash -c 'until [ "$(openstack volume backup show rbdbk-rotated -c status -f value)" = available ]; do sleep 2; done'
@@ -291,10 +324,20 @@ delete a backup an incremental one still depends on; `nfs-on-rbd` exists only
 when Step 4 ran. Then delete the RBD volume and the target:
 
 ```bash
+set -euo pipefail
+backups=$(openstack volume backup list -f value -c Name)
 for bk in rbdbk-rotated rbdbk-incr rbdbk-full nfs-on-rbd; do
-  if openstack volume backup show "$bk" >/dev/null 2>&1; then
+  if printf '%s\n' "$backups" | grep -Fxq "$bk"; then
     openstack volume backup delete "$bk"
-    timeout 300 bash -c "while openstack volume backup show $bk >/dev/null 2>&1; do sleep 2; done"
+    timeout 300 bash -c '
+      while :; do
+        backups=$(openstack volume backup list -f value -c Name) || exit 1
+        if ! printf "%s\n" "$backups" | grep -Fxq "$1"; then
+          exit 0
+        fi
+        sleep 2
+      done
+    ' _ "$bk"
   fi
 done
 openstack volume delete rbdbk-vol
@@ -341,6 +384,7 @@ deleted through it as before.
 | The backup pod logs `_setup_backup_driver` failed with `error connecting to the cluster` | The monitors, the networks or the key: the monitor name does not resolve, a network is missing from `spec.rbd.networks`, or Ceph refuses the key. The backup service does not repeat the setup on its own; delete its pod once the cause is fixed |
 | A backup fails with `Keyring path /etc/ceph/<cluster>.client.<user>.keyring is not readable` | The backup pod carries no keyring for the source volume's backend: that `CinderBackend` is not projected, so check its conditions |
 | A backup of an RBD volume fails to authenticate, and the Cinder carries a `CephKeyringConflict` event | Two sources project one keyring file with different keys; the event names which one the backup pod carries |
+| A volume, backup or restore wait times out | Stop at that step. Inspect the OpenStack resource status and the `controlplane-cinder-backup` pod logs before retrying. |
 | The apply is refused with `already has CinderBackupBackend` | The projected `cephbk` is still attached: Step 1 was skipped |
 | A restore or delete fails with `is not the backup service that was used to create this backup` | Another driver wrote the backup, for example an NFS target's; it is reachable again once a target of that driver is back |
 
@@ -359,7 +403,7 @@ kubectl -n openstack patch controlplane controlplane --type json -p '[{"op":"rep
   "name":"rbdbk","type":"RBD","rbd":{
     "pool":"backups","user":"cinder-backup",
     "monitors":["rook-ceph-mon-a.rook-ceph.svc.cluster.local"],
-    "networks":["10.244.0.0/16","10.96.0.0/12"],
+    "networks":["10.240.0.0/13","10.248.0.0/18"],
     "keySecretRef":{"name":"ceph-client-cinder-backup"}}}}]'
 kubectl -n openstack wait cinderbackupbackend/cephbk --for=delete --timeout=120s
 kubectl -n openstack wait --for=create cinderbackupbackend/rbdbk --timeout=120s
@@ -390,6 +434,7 @@ kubectl -n openstack patch controlplane controlplane --type json -p '[{"op":"rep
 kubectl -n openstack wait cinderbackupbackend/rbdbk --for=delete --timeout=120s
 kubectl -n openstack wait --for=create cinderbackupbackend/cephbk --timeout=120s
 kubectl -n openstack wait cinderbackupbackend/cephbk --for=condition=Ready --timeout=300s
+kubectl -n openstack wait deploy/controlplane-cinder-backup --for=condition=Available --timeout=300s
 ```
 
 ## Standalone Cinder, without a ControlPlane
