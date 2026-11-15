@@ -54,7 +54,7 @@ spec:
     spec:
       chart: rook-ceph
       # Pinned, not a range. Renovate's flux manager bumps it; see the header.
-      version: "v1.21.0"
+      version: "v1.21.2"
       sourceRef:
         kind: HelmRepository
         name: rook-release
