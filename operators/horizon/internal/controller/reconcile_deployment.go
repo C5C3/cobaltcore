@@ -288,11 +288,14 @@ const (
 // openstack_dashboard.wsgi directly (the module ships `application`), serves
 // the pre-built static assets via --static-map, and mirrors keystone's
 // always-on request logging. SIGTERM starts uWSGI's graceful shutdown with the
-// flags of the API operators (deployment.UWSGIGracefulShutdownArgs).
+// flags of the API operators (deployment.UWSGIGracefulShutdownArgs). uWSGI
+// keeps a connection open between requests (--http-keepalive, where
+// deployment.BuildUWSGICommand puts it), so a pooling proxy does not reuse a
+// connection that uWSGI closed right after a response.
 func uwsgiCommand() []string {
 	cmd := []string{
 		"uwsgi",
-		"--http", fmt.Sprintf(":%d", horizonAPIPort),
+		"--http", fmt.Sprintf(":%d", horizonAPIPort), "--http-keepalive",
 		"--module", "openstack_dashboard.wsgi",
 		"--master",
 		"--need-app",
