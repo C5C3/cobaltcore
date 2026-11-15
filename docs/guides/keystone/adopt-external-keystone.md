@@ -18,9 +18,11 @@ configures K-ORC to create and rotate the admin application credential and to
 manage service accounts declared as `KeystoneService` resources. It also asks
 K-ORC to import the existing admin identity, domain, identity service, region,
 and endpoints as unmanaged resources; those imports are not changed or deleted by
-the ControlPlane. When the ControlPlane is deleted, it removes resources it
-managed, including the generated credential and managed service accounts, while
-the existing Keystone installation and imported objects remain.
+the ControlPlane. A `KeystoneService` registration is a separate resource; delete
+each registration before its ControlPlane so its finalizer can remove managed
+service-account resources while the admin credential is still available. Deleting
+the ControlPlane removes its generated credential and its own K-ORC resources,
+while the existing Keystone installation and imported objects remain.
 
 Adoption has four phases. This guide covers the implemented first phase; the
 remaining phases are sketches. You can stop after any phase. See
@@ -113,8 +115,9 @@ Type your installation's real admin password at the prompt. On the kind devstack
 it is the fixture password `brownfield_admin_fixture_pw_0`, which the setup Job
 of the previous section gave `brownfield-admin`.
 
-Later requests authenticate with the application credential created from this
-password; no other step reads the password.
+After K-ORC creates the admin application credential, it uses that credential for
+later requests. Step 6 reads a newly rotated password to verify and update the
+Secret.
 
 ### 2. Apply the External-mode ControlPlane
 
@@ -231,20 +234,26 @@ kubectl -n brownfield get mariadbs,memcacheds,keystones,deployments
 ```
 
 Finally, verify that the generated credential authenticates against your
-installation. Read it from the Kubernetes Secret that External Secrets
-populates:
+installation. The Secret contains a credential-bearing `clouds.yaml`; do not
+print it. This command writes it to a private temporary file, runs the
+OpenStack client, then removes the file when the shell exits:
 
 ```bash
+set -euo pipefail
+umask 077
+CLOUDS_FILE=$(mktemp)
+trap 'rm -f "$CLOUDS_FILE"' EXIT
 kubectl -n brownfield get secret k-orc-clouds-yaml \
-  -o jsonpath='{.data.clouds\.yaml}' | base64 -d
+  -o jsonpath='{.data.clouds\.yaml}' | base64 -d > "$CLOUDS_FILE"
+OS_CLIENT_CONFIG_FILE="$CLOUDS_FILE" openstack --os-cloud admin catalog list
 ```
 
-Use that `clouds.yaml` with an OpenStack client (`openstack token issue`,
-`openstack catalog list`). The e2e suite does this in a Job; see
-[Tested by](#tested-by).
+`catalog list` verifies authentication without printing the token. The e2e suite
+uses the same client check in a Job; see [Tested by](#tested-by). If the endpoint
+uses a private CA, also set `OS_CACERT` to the CA file for the client command.
 
-On kind, OpenBao enforces mTLS. Browsing to it or using the `bao` CLI requires a
-client certificate; use the Kubernetes Secret shown above to read the credential.
+On kind, OpenBao enforces mTLS. This check reads the credential from its
+Kubernetes Secret and does not connect to OpenBao directly.
 
 ### 5. Register a service account
 
@@ -296,19 +305,27 @@ ControlPlane.
 [Register a Service the ControlPlane Does Not Manage](../register-a-foreign-service.md)
 walks that flow.
 
-The operator stores the generated password in OpenBao at
+The operator stores the generated password and `clouds.yaml` in OpenBao at
 `openstack/keystone/{namespace}/{name}/service-accounts/credentials`. The path is
-keyed by the `KeystoneService` CR, and External Secrets writes the value to a
-consumer Secret with the same name:
+keyed by the `KeystoneService` CR, and External Secrets writes both values to a
+consumer Secret with the same name. Do not print this Secret; use a private
+temporary file to test the cloud configuration:
 
 ```bash
+set -euo pipefail
+umask 077
+CLOUDS_FILE=$(mktemp)
+trap 'rm -f "$CLOUDS_FILE"' EXIT
 kubectl -n brownfield get secret nova-credentials \
-  -o jsonpath='{.data.clouds\.yaml}' | base64 -d
+  -o jsonpath='{.data.clouds\.yaml}' | base64 -d > "$CLOUDS_FILE"
+OS_CLIENT_CONFIG_FILE="$CLOUDS_FILE" openstack --os-cloud admin catalog list
 ```
 
-Readiness is reported on the registration itself (`Ready`, with `AccountReady`
-and `CatalogReady` beneath it), so one lagging registration is attributable
-without decoding the ControlPlane's aggregate condition.
+The fixture uses the cloud name `admin`; use the cloud name configured in your
+ControlPlane for another installation. Readiness is reported on the registration
+itself (`Ready`, with `AccountReady` and `CatalogReady` beneath it), so one
+lagging registration is attributable without decoding the ControlPlane's
+aggregate condition.
 
 ### 6. Rotating the admin password, out-of-band
 
@@ -370,7 +387,8 @@ to succeed.
     exit 1
   else
     printf '%s' "$PW" | kubectl -n brownfield create secret generic brownfield-admin-password \
-    --from-file=password=/dev/stdin --dry-run=client -o yaml | kubectl -n brownfield replace -f -
+      --from-file=password=/dev/stdin --dry-run=client -o yaml \
+      | kubectl -n brownfield apply --server-side -f -
   fi
   rotation_status=$?
   if [ "$rotation_status" -eq 0 ]; then
@@ -438,11 +456,12 @@ is `v1alpha1`, no conversion preserves the old value. Re-create a rotation
 request that still has `serviceAccount`; otherwise it reports `Ready=False` with
 reason `MissingKeystoneService`.
 
-Never copy the generated application credential into another Secret, a config
-file, or an environment variable. K-ORC deletes and revokes the previous
-credential before creating its replacement, with no grace period. Consumers
-must read the current value from the Kubernetes Secret or its OpenBao path when
-they use it.
+Do not persist the generated application credential in another Secret, a
+checked-in config file, or a long-lived environment variable. For temporary
+local verification, use the protected file in step 4 and remove it when the
+check finishes. K-ORC deletes and revokes the previous credential before
+creating its replacement, with no grace period. Consumers must read the current
+value from the Kubernetes Secret or its OpenBao path when they use it.
 
 ### 7. OpenBao paths in this mode
 
@@ -456,23 +475,34 @@ The full per-mode path catalog is in
 
 ### 8. Deletion
 
-Deleting the ControlPlane removes resources it created or adopted:
+Delete any rotation requests and every `KeystoneService` registration for this
+ControlPlane first. A registration has its own finalizer and uses the
+ControlPlane's admin credential to remove managed rows from Keystone. Deleting
+the ControlPlane first can leave that cleanup unable to finish.
 
 ```bash
+kubectl -n brownfield delete credentialrotation rotate-admin --ignore-not-found
+kubectl -n brownfield delete keystoneservice nova --ignore-not-found --timeout=10m
 kubectl -n brownfield delete controlplane controlplane-external
 ```
 
-- K-ORC's finalizer revokes the admin application credential, and the
-  OpenBao-backed Secrets are removed.
-- Managed service-account users and projects are deleted from Keystone,
-  including users marked `adopt: true`.
-- Unmanaged imports remain: the admin user, the domain, the region, the
-  catalog services and endpoints, and any project referenced with
-  `project.create: false`.
+- The `KeystoneService` finalizer removes its managed catalog rows, account, and
+  any project it created. Adopted users are deleted too. A project referenced
+  with `project.create: false` remains unmanaged.
+- The ControlPlane's K-ORC finalizer revokes its admin application credential,
+  removes its generated credential Secrets and OpenBao paths, and deletes the
+  Kubernetes import objects. Those unmanaged imports do not delete the external
+  admin user, domain, region, catalog services, or endpoints.
 - Your Keystone keeps serving tokens throughout.
 
 The `c5c3.io/orc-teardown` finalizer keeps the ControlPlane until K-ORC revokes
-the credential against the reachable Keystone.
+the admin credential against the reachable Keystone. The
+`brownfield-admin-password` Secret was created by you and remains after
+ControlPlane deletion; remove it when it is no longer needed:
+
+```bash
+kubectl -n brownfield delete secret brownfield-admin-password --ignore-not-found
+```
 
 ## See also
 
