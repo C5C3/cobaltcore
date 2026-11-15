@@ -143,6 +143,24 @@ func TestUWSGICommand_GracefulShutdown(t *testing.T) {
 	g.Expect(cmd[i+1 : i+1+len(want)]).To(Equal(want))
 }
 
+// Without --http-keepalive, uWSGI's HTTP router closes the connection right
+// after the response and sends no Connection: close, so a pooling proxy that
+// reuses it before the FIN arrives loses the request (Envoy answers 503 UC).
+// The bare flag follows the --http bind, where deployment.BuildUWSGICommand
+// renders it; a =<n> value would set an idle timer that no Horizon CR field
+// controls (design decision D5).
+func TestUWSGICommand_HTTPKeepAlive(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cmd := uwsgiCommand()
+
+	i := slices.Index(cmd, "--http")
+	g.Expect(i).To(BeNumerically(">=", 0), "the command must carry --http")
+	g.Expect(len(cmd)).To(BeNumerically(">=", i+3))
+	g.Expect(cmd[i+1 : i+3]).To(Equal([]string{":8080", "--http-keepalive"}))
+	g.Expect(cmd).NotTo(ContainElement(HavePrefix("--http-keepalive=")))
+}
+
 func TestBuildHorizonDeployment_NoHashAnnotationWhenDigestEmpty(t *testing.T) {
 	g := NewGomegaWithT(t)
 	h := testHorizon()

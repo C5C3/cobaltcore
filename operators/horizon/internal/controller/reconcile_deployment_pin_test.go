@@ -64,6 +64,7 @@ spec:
         - uwsgi
         - --http
         - :8080
+        - --http-keepalive
         - --module
         - openstack_dashboard.wsgi
         - --master
@@ -208,6 +209,7 @@ spec:
         - uwsgi
         - --http
         - :8080
+        - --http-keepalive
         - --module
         - openstack_dashboard.wsgi
         - --master
