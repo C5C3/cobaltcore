@@ -243,6 +243,56 @@ runs the operator's uWSGI command against a database address that refuses
 connections and asserts the 503 within ten seconds. The patches need no
 operator configuration. Upstream status: not yet proposed.
 
+**Source patch:**
+`patches/keystone/2026.1/0004-retry-login-writes-that-conflict-with-a-concurrent-login.patch`
+and its 2026.2 twin
+`patches/keystone/2026.2/0004-retry-login-writes-that-conflict-with-a-concurrent-login.patch`
+retry five writes on the login path that a concurrent login of the same user
+changed first (issue #1739). Upstream reads a row and writes it in a
+transaction of its own, without a retry, in `set_last_active_at` (the first
+login of a UTC day), `_record_failed_auth` (every wrong password) and
+`_reset_failed_auth` (the first good login after a wrong one). A federated
+login with mapped groups does the same in `add_user_to_group_expires` and
+`cleanup_stale_group_memberships`. Since the mariadb-operator chart 26.10.2
+(#1243), a fresh database runs MariaDB 12.3.3 with
+`innodb_snapshot_isolation=ON`. The second of two such transactions then fails
+with error 1020 ("Record has changed since last read"), which oslo.db raises as
+`DBConsistencyError`, a subclass of `DBDeadlock`, and `POST /v3/auth/tokens`
+answers 500. In
+[run 43608252970](https://github.com/C5C3/cobaltcore/actions/runs/43608252970),
+7 of 16 `keystone-pressure` runs stopped on that 500 while they primed their
+token pool with eight concurrent logins. A Docker rig with `mariadb:12.3.3`
+let eight threads call one method for one user at the same time, 160 calls in
+20 rounds. The published 2026.1 image failed 121 calls of `set_last_active_at`,
+105 of `_record_failed_auth`, 34 of `_reset_failed_auth`, 80 and 78 of
+`add_user_to_group_expires` (a renewal, a group added again) and 76 of
+`cleanup_stale_group_memberships`. It also counted only 55 of the 160 failed
+logins. With the patches no call failed, and 160 of 160 failed logins were
+counted. The patches add `retry_on_write_conflict`, one
+`oslo_db.api.wrap_db_retry(retry_on_deadlock=True)` instance, to
+`keystone/common/sql/core.py` and put it on the five methods. A retry opens a
+new transaction and reads what the other login committed. The first wait is
+0.05 s, each later one a random time below a bound that doubles from 0.1 s and
+is capped at 1 s, and `WRITE_CONFLICT_MAX_RETRIES = 10` limits the waits of one
+call to 6.55 s. oslo.db's default first wait of 1 s would hold one of the two
+uWSGI workers of a keystone-operator pod for a second per collision. A retry
+logs `Performing DB retry for function ...` at DEBUG only. When the retries run
+out, oslo.db logs `DB exceeded retry limit.` with the traceback at ERROR, and
+patch 0003 answers a JSON 500. `DBConnectionError`, `DBDuplicateEntry` and
+every other error are not retried. On a server that does not raise the
+conflict (MariaDB 11.4, or `innodb_snapshot_isolation=OFF`), concurrent failed
+logins are still under-counted, as before: the rig counted 60 of 160 on
+MariaDB 11.4.13. No existing upstream test moves; the patches add the helper
+`conflicting_writes` to `keystone/tests/unit/utils.py` and twelve tests to
+`ShadowUsersBackendTests`, `LockingOutUserTests` and `FederatedGroupCacheTest`.
+In three of them another login commits its write first, and the retry reads
+that write.
+`test_login_write_retry_patch_applied` in
+`tests/container-images/verify_keystone.sh` makes the first write transaction
+of each method raise `DBDeadlock` in the built image and asserts that the
+method opens a second one. The patches need no operator configuration.
+Upstream status: not yet proposed.
+
 ### horizon
 
 **Location:** `images/horizon/image.nix`, built from the lock

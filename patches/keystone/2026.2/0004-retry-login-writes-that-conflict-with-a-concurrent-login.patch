@@ -1,0 +1,567 @@
+SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+SPDX-License-Identifier: Apache-2.0
+
+Retry login writes that conflict with a concurrent login
+
+Five methods on keystone's login path read a row and write it in an
+outermost session_for_write of their own, and none of them is retried:
+`set_last_active_at` (the first login of a UTC day, password and
+federated), `add_user_to_group_expires` (once per mapped group of a
+federated login) and `cleanup_stale_group_memberships` (a federated
+login after the IdP dropped a group) in
+keystone/identity/shadow_backends/sql.py, and `_record_failed_auth`
+(every wrong password) and `_reset_failed_auth` (the first good login
+after a wrong one) in keystone/identity/backends/sql.py. Since the
+mariadb-operator chart 26.10.2 (C5C3/cobaltcore#1243) a fresh database
+of CobaltCore OpenStack runs MariaDB 12.3.3 with
+innodb_snapshot_isolation=ON, and the second of two such transactions
+of one user fails with error 1020 where MariaDB 11.4 let it wait and
+overwrite. oslo.db raises `DBConsistencyError`, a subclass of
+`DBDeadlock`, and POST /v3/auth/tokens answers 500, for example with
+"Record has changed since last read in table 'user'; try restarting
+transaction" on the UPDATE of user.last_active_at. The
+keystone-pressure job primes its token pool with eight concurrent
+logins and stopped on that 500 in 7 of 16 runs of
+https://github.com/C5C3/cobaltcore/actions/runs/43608252970 and in 11
+of 16 of https://github.com/C5C3/cobaltcore/actions/runs/43465529953.
+
+Measured on 2026-11-15 in a Docker rig (mariadb:12.3.3 and the
+published ghcr.io/c5c3/keystone:2026.1, keystone 29.0.0 with oslo.db
+18.0.0) in which 8 threads call one backend method for one user at the
+same time, 20 rounds, 160 calls per method; the rig and the probe are
+in C5C3/cobaltcore#1739. Without the patch:
+
+- set_last_active_at: 121 of 160 calls fail, in 20 of 20 rounds.
+- _record_failed_auth: 105 fail, and 55 of 160 failed logins are
+  counted.
+- _reset_failed_auth: 34 fail, in 12 of 20 rounds.
+- add_user_to_group_expires: 80 fail in 20 of 20 rounds when it renews
+  a membership, 78 in 19 of 20 when it adds a group again after a
+  removal.
+- cleanup_stale_group_memberships: 76 fail, in 20 of 20 rounds.
+
+Every failure is `DBConsistencyError` with MariaDB error 1020. The
+published 2026.2 image (keystone 30.0.0, oslo.db 18.1.1) fails the
+first three the same way (76, 93 and 49 of 160). With the patch no call
+fails and 160 of 160 failed logins are counted; the slowest call of
+the first three takes 0.14 s, 0.56 s and 0.35 s, and with 32 threads 0
+of 640 calls fail in each of them. On MariaDB 11.4.13
+(innodb_snapshot_isolation=OFF) no call fails without the patch, and
+100 of 160 concurrent failed logins are not counted: the old server
+lost the update that the new one refuses.
+
+The patch adds `retry_on_write_conflict` to keystone/common/sql/core.py,
+one oslo_db.api.wrap_db_retry instance with retry_on_deadlock=True, and
+puts it as the outermost decorator on the five methods, which change
+nothing else. keystone/common/sql/__init__.py re-exports core.py with
+`import *`, so both backends reach it as `sql.retry_on_write_conflict`.
+Each method opens its own outermost transaction, so a retry starts a
+new one with a new snapshot and reads what the other login committed:
+set_last_active_at and _reset_failed_auth find the value written and
+write nothing, _record_failed_auth increments the committed count, so
+every failed login is counted, add_user_to_group_expires renews the
+membership the other login added and returns False, and
+cleanup_stale_group_memberships finds no stale row and returns []. The
+login that won already reported the change, so shadow_federated_user
+still invalidates the user's cache once.
+
+The first wait is 0.05 s, each later one a random time below a bound
+that doubles from 0.1 s and is capped at 1 s, so the ten retries of
+WRITE_CONFLICT_MAX_RETRIES wait 0.05 + 0.1 + 0.2 + 0.4 + 0.8 + 5 x 1 =
+6.55 s at most. oslo.db's default first wait is 1 s: with plain
+wrap_db_retry(retry_on_deadlock=True) the slowest call of the first
+three methods took 1.09 s, 3.19 s and 1.24 s, and the keystone-operator
+runs 2 uWSGI processes with 1 thread per pod by default, so a waiting
+login blocks half a pod. The retry takes `DBDeadlock` (MySQL errors
+1213 and 1205) and its subclass `DBConsistencyError` (1020);
+`DBConnectionError`, `DBDuplicateEntry` and every other exception leave
+on their first occurrence. A retry is logged at DEBUG only ("Performing
+DB retry for function ..."), because a collision on the first logins of
+a day is normal operation. When the retries run out, oslo.db logs "DB
+exceeded retry limit." with the traceback at ERROR and re-raises, and
+the Flask handler of patch 0003 answers a JSON 500. The count and the
+intervals are constants, like the arguments of upstream's own
+wrap_db_retry uses.
+
+On a server that does not raise the conflict (MariaDB 11.4, or
+innodb_snapshot_isolation=OFF) concurrent failed logins are still
+under-counted, as before: the retry runs only on an error.
+
+Tests: no upstream test moves. No existing test asserts that a
+conflict escapes or how many transactions a method opens. The patch
+adds `conflicting_writes` to keystone/tests/unit/utils.py, a context
+manager that fails the first write transactions when they end, after
+the method's real body ran, and counts the transactions opened. Its
+`winner` argument commits the other login's write in a transaction of
+its own after the failure and before the retry. It adds twelve tests:
+
+- ShadowUsersBackendTests
+  (keystone/tests/unit/identity/shadow_users/test_backend.py, run by
+  ShadowUsersTests and its subclasses in
+  keystone/tests/unit/test_shadow_users.py):
+  test_set_last_active_at_retries_a_conflicting_write,
+  test_set_last_active_at_retries_a_changed_record (DBConsistencyError),
+  test_set_last_active_at_raises_after_the_last_retry (11 transactions,
+  waits of 0.05, 0.1, 0.2, 0.4 and 0.8 s and five of 1 s when every
+  random wait takes the top of its range, the row unchanged) and
+  test_set_last_active_at_does_not_retry_a_lost_connection.
+- LockingOutUserTests
+  (keystone/tests/unit/identity/test_backend_sql.py):
+  test_failed_auth_is_counted_once_after_a_conflicting_write,
+  test_concurrent_failed_logins_are_both_counted (the other login
+  counts its failure first, and the retry counts 2) and
+  test_failed_auth_reset_retries_a_conflicting_write.
+- FederatedGroupCacheTest
+  (keystone/tests/unit/test_user_group_cache_invalidation.py):
+  test_new_membership_retries_a_conflicting_write (True, one row),
+  test_membership_added_by_a_concurrent_login_is_renewed (the other
+  login adds the membership first: False, one row),
+  test_expiring_membership_renewal_retries_a_conflicting_write,
+  test_stale_membership_cleanup_retries_a_conflicting_write, which also
+  asserts one transaction and [] for a user without memberships, and
+  test_membership_removed_by_a_concurrent_login_is_not_reported (the
+  other login removes the membership first: [], no row).
+
+With only the test hunks applied, all but
+test_set_last_active_at_does_not_retry_a_lost_connection fail.
+
+Proof: test_login_write_retry_patch_applied in
+tests/container-images/verify_keystone.sh makes the first write
+transaction of each of the five methods raise `DBDeadlock` in the built
+image and asserts that the method opens a second one.
+
+The seven files carry the same blobs in keystone 29.0.0 and 30.0.0, and
+the twins under patches/keystone/2026.1/ and patches/keystone/2026.2/
+differ only in their Applies-to line.
+
+Applies to keystone 30.0.0 (2026.2).
+
+Upstream status: not yet proposed.
+
+diff --git a/keystone/common/sql/core.py b/keystone/common/sql/core.py
+index 2e34830..b01e6ed 100644
+--- a/keystone/common/sql/core.py
++++ b/keystone/common/sql/core.py
+@@ -22,6 +22,7 @@ CONF() because it sets up configuration options.
+ import datetime
+ import functools
+ 
++from oslo_db import api as oslo_db_api
+ from oslo_db import exception as db_exception
+ from oslo_db import options as db_options
+ from oslo_db.sqlalchemy import enginefacade
+@@ -640,3 +641,23 @@ def handle_conflicts(conflict_type='object'):
+         return wrapper
+ 
+     return decorator
++
++
++# Retries a write transaction that lost against a concurrent one:
++# DBDeadlock (MySQL errors 1213 and 1205) and its subclass
++# DBConsistencyError (MariaDB error 1020, "Record has changed since last
++# read", under innodb_snapshot_isolation=ON). Every other error leaves on
++# its first occurrence. The first wait is 0.05 s, each later one a random
++# time below a bound that doubles from 0.1 s and is capped at 1 s, so ten
++# retries wait at most 0.05 + 0.1 + 0.2 + 0.4 + 0.8 + 5 x 1 = 6.55 s.
++# Decorate a method whose outermost transaction is its own, so that a
++# retry starts a new transaction that reads the committed rows.
++WRITE_CONFLICT_MAX_RETRIES = 10
++
++retry_on_write_conflict = oslo_db_api.wrap_db_retry(
++    retry_interval=0.05,
++    max_retries=WRITE_CONFLICT_MAX_RETRIES,
++    inc_retry_interval=True,
++    max_retry_interval=1,
++    retry_on_deadlock=True,
++)
+diff --git a/keystone/identity/backends/sql.py b/keystone/identity/backends/sql.py
+index 3c29116..ab9c8ca 100644
+--- a/keystone/identity/backends/sql.py
++++ b/keystone/identity/backends/sql.py
+@@ -113,6 +113,7 @@ class Identity(base.IdentityDriverBase):
+                     self._reset_failed_auth(user_id)
+         return False
+ 
++    @sql.retry_on_write_conflict
+     def _record_failed_auth(self, user_id):
+         with sql.session_for_write() as session:
+             user_ref = session.get(model.User, user_id)
+@@ -121,6 +122,7 @@ class Identity(base.IdentityDriverBase):
+             user_ref.local_user.failed_auth_count += 1
+             user_ref.local_user.failed_auth_at = timeutils.utcnow()
+ 
++    @sql.retry_on_write_conflict
+     def _reset_failed_auth(self, user_id):
+         with sql.session_for_write() as session:
+             user_ref = session.get(model.User, user_id)
+diff --git a/keystone/identity/shadow_backends/sql.py b/keystone/identity/shadow_backends/sql.py
+index 3e2ca01..0ecbf81 100644
+--- a/keystone/identity/shadow_backends/sql.py
++++ b/keystone/identity/shadow_backends/sql.py
+@@ -160,6 +160,7 @@ class ShadowUsers(base.ShadowUsersDriverBase):
+                 raise exception.UserNotFound(user_id=unique_id)
+             return user_ref
+ 
++    @sql.retry_on_write_conflict
+     def set_last_active_at(self, user_id):
+         with sql.session_for_write() as session:
+             user_ref = session.get(model.User, user_id)
+@@ -231,6 +232,7 @@ class ShadowUsers(base.ShadowUsersDriverBase):
+             )
+             return [x.to_dict() for x in fed_user_refs]
+ 
++    @sql.retry_on_write_conflict
+     def add_user_to_group_expires(self, user_id, group_id):
+         def get_federated_user():
+             with sql.session_for_read() as session:
+@@ -266,6 +268,7 @@ class ShadowUsers(base.ShadowUsersDriverBase):
+                 )
+                 return True  # New membership added
+ 
++    @sql.retry_on_write_conflict
+     def cleanup_stale_group_memberships(
+         self, user_id, idp_id, current_group_ids
+     ):
+diff --git a/keystone/tests/unit/identity/shadow_users/test_backend.py b/keystone/tests/unit/identity/shadow_users/test_backend.py
+index c3ec2cf..64154e3 100644
+--- a/keystone/tests/unit/identity/shadow_users/test_backend.py
++++ b/keystone/tests/unit/identity/shadow_users/test_backend.py
+@@ -10,9 +10,11 @@
+ # License for the specific language governing permissions and limitations
+ # under the License.
+ 
++import datetime
+ from unittest import mock
+ import uuid
+ 
++from oslo_db import exception as db_exc
+ from oslo_utils import timeutils
+ 
+ from keystone.common import provider_api
+@@ -22,6 +24,7 @@ from keystone import exception
+ from keystone.identity.backends import sql_model as model
+ from keystone.identity.shadow_backends import sql as shadow_sql
+ from keystone.tests import unit
++from keystone.tests.unit import utils as test_utils
+ 
+ CONF = keystone.conf.CONF
+ PROVIDERS = provider_api.ProviderAPIs
+@@ -186,6 +189,69 @@ class ShadowUsersBackendTests:
+         user_ref = self._get_user_ref(user_auth['id'])
+         self.assertGreaterEqual(now, user_ref.last_active_at)
+ 
++    def test_set_last_active_at_retries_a_conflicting_write(self):
++        self._assert_set_last_active_at_retries(db_exc.DBDeadlock)
++
++    def test_set_last_active_at_retries_a_changed_record(self):
++        # oslo.db raises DBConsistencyError for MariaDB error 1020
++        self._assert_set_last_active_at_retries(db_exc.DBConsistencyError)
++
++    def test_set_last_active_at_raises_after_the_last_retry(self):
++        user = self._create_user(uuid.uuid4().hex)
++        last_active_at = self._age_last_active_at(user['id'])
++        # random.uniform returns the top of its range, the longest wait
++        with test_utils.conflicting_writes(
++            failures=sql.WRITE_CONFLICT_MAX_RETRIES + 1
++        ) as transactions, mock.patch('time.sleep') as sleep, mock.patch(
++            'random.uniform', side_effect=lambda low, high: high
++        ):
++            self.assertRaises(
++                db_exc.DBDeadlock,
++                PROVIDERS.shadow_users_api.set_last_active_at,
++                user['id'],
++            )
++        self.assertEqual(sql.WRITE_CONFLICT_MAX_RETRIES + 1, len(transactions))
++        # oslo.db's engine calls time.sleep(0) on every sqlite checkout
++        waits = [
++            call.args[0]
++            for call in sleep.call_args_list
++            if call.args and call.args[0]
++        ]
++        self.assertEqual([0.05, 0.1, 0.2, 0.4, 0.8, 1, 1, 1, 1, 1], waits)
++        user_ref = self._get_user_ref(user['id'])
++        self.assertEqual(last_active_at, user_ref.last_active_at)
++
++    def test_set_last_active_at_does_not_retry_a_lost_connection(self):
++        user = self._create_user(uuid.uuid4().hex)
++        with test_utils.conflicting_writes(
++            error=db_exc.DBConnectionError
++        ) as transactions:
++            self.assertRaises(
++                db_exc.DBConnectionError,
++                PROVIDERS.shadow_users_api.set_last_active_at,
++                user['id'],
++            )
++        self.assertEqual(1, len(transactions))
++
++    def _assert_set_last_active_at_retries(self, error):
++        user = self._create_user(uuid.uuid4().hex)
++        self._age_last_active_at(user['id'])
++        today = timeutils.utcnow().date()
++        with test_utils.conflicting_writes(error=error) as transactions:
++            PROVIDERS.shadow_users_api.set_last_active_at(user['id'])
++        self.assertEqual(2, len(transactions))
++        user_ref = self._get_user_ref(user['id'])
++        self.assertGreaterEqual(user_ref.last_active_at, today)
++        self.assertLessEqual(
++            user_ref.last_active_at, timeutils.utcnow().date()
++        )
++
++    def _age_last_active_at(self, user_id):
++        last_active_at = datetime.date(2000, 1, 1)
++        with sql.session_for_write() as session:
++            session.get(model.User, user_id).last_active_at = last_active_at
++        return last_active_at
++
+     def _add_nonlocal_user(self, nonlocal_user):
+         with sql.session_for_write() as session:
+             nonlocal_user_ref = model.NonLocalUser.from_dict(nonlocal_user)
+diff --git a/keystone/tests/unit/identity/test_backend_sql.py b/keystone/tests/unit/identity/test_backend_sql.py
+index a811e6a..c89b44f 100644
+--- a/keystone/tests/unit/identity/test_backend_sql.py
++++ b/keystone/tests/unit/identity/test_backend_sql.py
+@@ -27,6 +27,7 @@ from keystone.identity.backends import base
+ from keystone.identity.backends import resource_options as iro
+ from keystone.identity.backends import sql_model as model
+ from keystone.tests.unit import test_backend_sql
++from keystone.tests.unit import utils as test_utils
+ 
+ CONF = keystone.conf.CONF
+ PROVIDERS = provider_api.ProviderAPIs
+@@ -786,6 +787,49 @@ class LockingOutUserTests(test_backend_sql.SqlTests):
+                     password=uuid.uuid4().hex,
+                 )
+ 
++    def test_failed_auth_is_counted_once_after_a_conflicting_write(self):
++        with test_utils.conflicting_writes() as transactions:
++            self.assertRaises(
++                AssertionError,
++                PROVIDERS.identity_api.driver.authenticate,
++                self.user['id'],
++                uuid.uuid4().hex,
++            )
++        self.assertEqual(2, len(transactions))
++        self.assertEqual(1, self._failed_auth_count())
++
++    def test_concurrent_failed_logins_are_both_counted(self):
++        def other_failed_login(session):
++            user_ref = session.get(model.User, self.user['id'])
++            user_ref.local_user.failed_auth_count = 1
++
++        with test_utils.conflicting_writes(
++            winner=other_failed_login
++        ) as transactions:
++            self.assertRaises(
++                AssertionError,
++                PROVIDERS.identity_api.driver.authenticate,
++                self.user['id'],
++                uuid.uuid4().hex,
++            )
++        self.assertEqual(2, len(transactions))
++        self.assertEqual(2, self._failed_auth_count())
++
++    def test_failed_auth_reset_retries_a_conflicting_write(self):
++        self.assertRaises(
++            AssertionError,
++            PROVIDERS.identity_api.driver.authenticate,
++            self.user['id'],
++            uuid.uuid4().hex,
++        )
++        with test_utils.conflicting_writes() as transactions:
++            user = PROVIDERS.identity_api.driver.authenticate(
++                self.user['id'], self.password
++            )
++        self.assertEqual(self.user['id'], user['id'])
++        self.assertEqual(2, len(transactions))
++        self.assertEqual(0, self._failed_auth_count())
++
+     def _fail_auth_repeatedly(self, user_id):
+         wrong_password = uuid.uuid4().hex
+         for _ in range(CONF.security_compliance.lockout_failure_attempts):
+@@ -797,6 +841,11 @@ class LockingOutUserTests(test_backend_sql.SqlTests):
+                     password=wrong_password,
+                 )
+ 
++    def _failed_auth_count(self):
++        with sql.session_for_read() as session:
++            user_ref = session.get(model.User, self.user['id'])
++            return user_ref.local_user.failed_auth_count
++
+ 
+ class PasswordExpiresValidationTests(test_backend_sql.SqlTests):
+     def setUp(self):
+diff --git a/keystone/tests/unit/test_user_group_cache_invalidation.py b/keystone/tests/unit/test_user_group_cache_invalidation.py
+index 9ee95fe..f18314e 100644
+--- a/keystone/tests/unit/test_user_group_cache_invalidation.py
++++ b/keystone/tests/unit/test_user_group_cache_invalidation.py
+@@ -13,10 +13,15 @@
+ from unittest import mock
+ import uuid
+ 
++from oslo_utils import timeutils
++
+ from keystone.common import provider_api
++from keystone.common import sql
++from keystone.identity.backends import sql_model as model
+ from keystone.tests import unit
+ from keystone.tests.unit import default_fixtures
+ from keystone.tests.unit.ksfixtures import database
++from keystone.tests.unit import utils as test_utils
+ 
+ PROVIDERS = provider_api.ProviderAPIs
+ 
+@@ -219,3 +224,93 @@ class FederatedGroupCacheTest(unit.TestCase):
+             call_args = mock_cache_notification.call_args[0][0]
+             self.assertIn(self.user['id'], call_args)
+             self.assertIn('group membership changed', call_args)
++
++    def test_new_membership_retries_a_conflicting_write(self):
++        """Test that a new membership that lost a conflict is retried."""
++        with test_utils.conflicting_writes() as transactions:
++            result = PROVIDERS.shadow_users_api.add_user_to_group_expires(
++                self.user['id'], self.group1['id']
++            )
++        self.assertTrue(result)
++        self.assertEqual(2, len(transactions))
++        self.assertEqual([self.group1['id']], self._membership_group_ids())
++
++    def test_membership_added_by_a_concurrent_login_is_renewed(self):
++        """Test that a membership another login added first is renewed."""
++
++        def other_login(session):
++            session.add(
++                model.ExpiringUserGroupMembership(
++                    user_id=self.user['id'],
++                    group_id=self.group1['id'],
++                    idp_id=self.idp['id'],
++                    last_verified=timeutils.utcnow(),
++                )
++            )
++
++        with test_utils.conflicting_writes(winner=other_login) as transactions:
++            result = PROVIDERS.shadow_users_api.add_user_to_group_expires(
++                self.user['id'], self.group1['id']
++            )
++        self.assertFalse(result)
++        self.assertEqual(2, len(transactions))
++        self.assertEqual([self.group1['id']], self._membership_group_ids())
++
++    def test_expiring_membership_renewal_retries_a_conflicting_write(self):
++        """Test that a renewal that lost to another login is retried."""
++        PROVIDERS.shadow_users_api.add_user_to_group_expires(
++            self.user['id'], self.group1['id']
++        )
++        with test_utils.conflicting_writes() as transactions:
++            result = PROVIDERS.shadow_users_api.add_user_to_group_expires(
++                self.user['id'], self.group1['id']
++            )
++        self.assertFalse(result)
++        self.assertEqual(2, len(transactions))
++        self.assertEqual([self.group1['id']], self._membership_group_ids())
++
++    def test_stale_membership_cleanup_retries_a_conflicting_write(self):
++        """Test that a clean-up that lost to another login is retried."""
++        shadow_users_api = PROVIDERS.shadow_users_api
++        with test_utils.conflicting_writes(failures=0) as transactions:
++            removed = shadow_users_api.cleanup_stale_group_memberships(
++                self.user['id'], self.idp['id'], []
++            )
++        self.assertEqual([], removed)
++        self.assertEqual(1, len(transactions))
++
++        shadow_users_api.add_user_to_group_expires(
++            self.user['id'], self.group1['id']
++        )
++        with test_utils.conflicting_writes() as transactions:
++            removed = shadow_users_api.cleanup_stale_group_memberships(
++                self.user['id'], self.idp['id'], []
++            )
++        self.assertEqual([self.group1['id']], removed)
++        self.assertEqual(2, len(transactions))
++        self.assertEqual([], self._membership_group_ids())
++
++    def test_membership_removed_by_a_concurrent_login_is_not_reported(self):
++        """Test that a membership another login removed first is skipped."""
++        shadow_users_api = PROVIDERS.shadow_users_api
++        shadow_users_api.add_user_to_group_expires(
++            self.user['id'], self.group1['id']
++        )
++
++        def other_login(session):
++            query = session.query(model.ExpiringUserGroupMembership)
++            query.filter_by(user_id=self.user['id']).delete()
++
++        with test_utils.conflicting_writes(winner=other_login) as transactions:
++            removed = shadow_users_api.cleanup_stale_group_memberships(
++                self.user['id'], self.idp['id'], []
++            )
++        self.assertEqual([], removed)
++        self.assertEqual(2, len(transactions))
++        self.assertEqual([], self._membership_group_ids())
++
++    def _membership_group_ids(self):
++        with sql.session_for_read() as session:
++            query = session.query(model.ExpiringUserGroupMembership)
++            query = query.filter_by(user_id=self.user['id'])
++            return sorted(membership.group_id for membership in query)
+diff --git a/keystone/tests/unit/utils.py b/keystone/tests/unit/utils.py
+index 362112c..d8f4cd4 100644
+--- a/keystone/tests/unit/utils.py
++++ b/keystone/tests/unit/utils.py
+@@ -12,12 +12,18 @@
+ 
+ """Useful utilities for tests."""
+ 
++import contextlib
+ import functools
+ import os
+ import time
+ import unittest
++from unittest import mock
+ import uuid
+ 
++from oslo_db import exception as db_exc
++
++from keystone.common import sql
++
+ TZ = None
+ 
+ 
+@@ -107,3 +113,37 @@ def wip(message, expected_exception=Exception, bug=None):
+         return run_test
+ 
+     return _wip
++
++
++@contextlib.contextmanager
++def conflicting_writes(failures=1, error=db_exc.DBDeadlock, winner=None):
++    """Fail the first ``failures`` write transactions when they end.
++
++    A failing transaction is rolled back after the method's body ran.
++    ``winner``, when given, is then called with the session of a new
++    transaction that commits before the error leaves, the way the
++    concurrent login that won the conflict commits first.
++
++    Yields a list with one entry per write transaction opened.
++    """
++    real = sql.session_for_write
++    transactions = []
++
++    @contextlib.contextmanager
++    def session_for_write():
++        transactions.append(None)
++        failing = len(transactions) <= failures
++        try:
++            with real() as session:
++                yield session
++                if failing:
++                    session.flush()
++                    raise error()
++        except error:
++            if failing and winner is not None:
++                with real() as session:
++                    winner(session)
++            raise
++
++    with mock.patch.object(sql, 'session_for_write', session_for_write):
++        yield transactions
