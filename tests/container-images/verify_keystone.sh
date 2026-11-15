@@ -282,6 +282,71 @@ EOF
   assert_eq "a lost database answers 503 within the client timeout" "0" "$exit_code"
 }
 
+# --- Test 8: a login write that lost to a concurrent login is retried ---
+test_login_write_retry_patch_applied() {
+  echo "Test: a login write whose transaction raises DBDeadlock is retried"
+  # Proves the image build applied
+  # patches/keystone/<release>/0004-retry-login-writes-that-conflict-with-a-concurrent-login.patch
+  # (#1739). Five methods on the login path read a row and write it in a
+  # transaction of their own: set_last_active_at, add_user_to_group_expires
+  # and cleanup_stale_group_memberships of the shadow users backend, and
+  # _record_failed_auth and _reset_failed_auth of the identity backend. On
+  # MariaDB 12.3.3 the second of two concurrent logins of one user fails
+  # there with error 1020, which oslo.db raises as DBConsistencyError, a
+  # subclass of DBDeadlock. Each method is called once with a first write
+  # transaction that raises DBDeadlock: the patched image opens a second one,
+  # an unpatched image lets the error escape. The sessions are mocked and the
+  # retry's wait is patched, so neither a database nor a configuration file is
+  # needed. Stderr is echoed on failure so the reason is named.
+  local exit_code=0 err=""
+  err=$(docker run --rm "$IMAGE" \
+    /var/lib/openstack/bin/python -c \
+    'import sys
+from unittest import mock
+
+from oslo_db import exception as db_exc
+
+from keystone.common import sql
+from keystone.identity.backends import sql as identity_sql
+from keystone.identity.shadow_backends import sql as shadow_sql
+
+shadow = object.__new__(shadow_sql.ShadowUsers)
+identity = object.__new__(identity_sql.Identity)
+CALLS = (
+    ("set_last_active_at", lambda: shadow.set_last_active_at("u")),
+    ("add_user_to_group_expires",
+     lambda: shadow.add_user_to_group_expires("u", "g")),
+    ("cleanup_stale_group_memberships",
+     lambda: shadow.cleanup_stale_group_memberships("u", "i", [])),
+    ("_record_failed_auth", lambda: identity._record_failed_auth("u")),
+    ("_reset_failed_auth", lambda: identity._reset_failed_auth("u")),
+)
+for name, call in CALLS:
+    attempts = []
+
+    def session_for_write():
+        attempts.append(None)
+        if len(attempts) == 1:
+            raise db_exc.DBDeadlock()
+        return mock.MagicMock()
+
+    with mock.patch.object(sql, "session_for_write", session_for_write), \
+            mock.patch.object(sql, "session_for_read"), \
+            mock.patch("time.sleep"):
+        try:
+            call()
+        except db_exc.DBDeadlock:
+            sys.exit("%s lets a DBDeadlock escape: the write is not retried"
+                     % name)
+    if len(attempts) != 2:
+        sys.exit("%s opened %d write transactions, want 2"
+                 % (name, len(attempts)))' \
+    2>&1 > /dev/null) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "    $err"
+
+  assert_eq "every login write is retried after a DBDeadlock" "0" "$exit_code"
+}
+
 # --- Run all tests ---
 echo "=== keystone container verification tests ==="
 echo "Image: $IMAGE"
@@ -299,6 +364,8 @@ echo ""
 test_pymemcache_backend_bounded
 echo ""
 test_lost_database_patch_applied
+echo ""
+test_login_write_retry_patch_applied
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 
