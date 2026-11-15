@@ -88,7 +88,7 @@ jobs:
           ref: ${{ inputs.ref }}
       # setup-helm guarantees `helm` (registry login + pull) regardless of the
       # runner image, matching the helm-push job.
-      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
+      - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5
         with:
           version: ${{ env.HELM_VERSION }}
       - name: Create kind cluster
