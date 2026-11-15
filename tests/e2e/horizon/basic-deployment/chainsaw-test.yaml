@@ -12,6 +12,8 @@
 #   - The dashboard login page renders (HTTP 200) — this exercises Django
 #     URL routing, templates, and the offline-compression manifest without
 #     a live Keystone
+#   - The login page and the splash logo answer on one connection, which
+#     uWSGI keeps open with --http-keepalive
 #   - The horizon-operator release exports its reconcile families, with no
 #     error under an unmapped condition type
 #   - A Ready, unchanged horizon-basic gains no event on the CR in a 120 s
@@ -143,6 +145,11 @@ spec:
   # The splash logo the page links has to come back as image/svg+xml: uWSGI's
   # --static-map types the assets from the image's /etc/mime.types, and a
   # browser never renders an untyped SVG (#1624).
+  # Two more requests then fetch the login page and the splash logo on one
+  # connection, as a pooling proxy would; uWSGI keeps a connection open only
+  # with --http-keepalive (#1753). The check waits one second between the
+  # two, so the FIN uWSGI sends without the flag has arrived and the second
+  # request fails with RemoteDisconnected every time.
   - try:
     - script:
         timeout: 90s
@@ -173,6 +180,24 @@ spec:
           content_type = r.headers.get('Content-Type')
           assert content_type == 'image/svg+xml', 'GET %s -> Content-Type %r, want image/svg+xml' % (logo, content_type)
           print('splash logo OK, %s' % content_type)
+          import http.client
+          conn = http.client.HTTPConnection('horizon-basic.openstack.svc', 8080, timeout=10)
+          conn.request('GET', '/auth/login/')
+          r = conn.getresponse()
+          r.read()
+          assert r.status == 200, 'keep-alive: GET /auth/login/ -> HTTP %d' % r.status
+          sock = conn.sock
+          assert sock is not None, 'keep-alive: the first response ends the connection (HTTP/%d.%d, Connection: %r, Content-Length: %r)' % (r.version // 10, r.version % 10, r.getheader('Connection'), r.getheader('Content-Length'))
+          time.sleep(1)
+          try:
+              conn.request('GET', logo)
+              r = conn.getresponse()
+              r.read()
+          except (http.client.HTTPException, OSError) as exc:
+              raise SystemExit('keep-alive: second request on the same connection failed: %r' % exc) from exc
+          assert r.status == 200, 'keep-alive: GET %s -> HTTP %d' % (logo, r.status)
+          assert conn.sock is sock, 'keep-alive: the second response ends the connection (HTTP/%d.%d, Connection: %r, Content-Length: %r)' % (r.version // 10, r.version % 10, r.getheader('Connection'), r.getheader('Content-Length'))
+          print('keep-alive OK, two requests on one connection')
           "
     catch:
     - script:
