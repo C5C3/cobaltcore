@@ -17,6 +17,6 @@
 # review). A bump fails nix-lock-check until make nix-lock runs on its branch.
 cryptography==48.0.1
 pymemcache==4.0.0
-pymysql==1.2.3
+pymysql==1.2.4
 python-memcached==1.62
 uwsgi==2.0.31
