@@ -20,10 +20,11 @@ required for correct reconciliation.
 > pod itself**. For the per-CR policy that protects the Neutron API pods
 > (`spec.networkPolicy` on a `Neutron`), see the
 > [Neutron CRD API Reference](../../reference/neutron/neutron-crd.md). That
-> policy restricts ingress to TCP 9696 from the sources you list (at least one
-> is required, so an empty list is refused) and derives its egress from the CR:
-> DNS, the database, the Keystone endpoint's port, the cache, the two OVN
-> databases, and the broker port, with `additionalEgress` appended after them.
+> policy restricts ingress to TCP 9696 from the sources you list, the operator
+> namespace, and (when a Gateway is configured) its namespace. At least one
+> source must be listed. The policy derives egress from the CR: DNS, the
+> database, the Keystone endpoint's port, the cache, the two OVN databases, and
+> the broker port, with `additionalEgress` appended after them.
 
 ---
 
@@ -45,29 +46,50 @@ alongside the `controlplane-neutron` child it reconciles.
 2. The ControlPlane declares `spec.services.neutron`. Without it no
    `controlplane-neutron` child exists and the Step 2 verification has nothing
    to roll.
+3. The cluster's CNI enforces Kubernetes NetworkPolicy. Without an enforcing
+   plugin, creating this policy does not restrict traffic.
+4. The commands require `kubectl` and `jq`; direct Helm installations also
+   require `helm`. You need permission to list EndpointSlices in `default`;
+   check with `kubectl auth can-i list endpointslices.discovery.k8s.io -n default`.
 
 ## Step 1: Enable the policy
 
 The chart guards `networkPolicy.enabled=true` with a fail-closed check:
 `networkPolicy.kubeApiServer.cidrs` and `ports` must both be non-empty, or the
 template refuses to render. Gather the API server CIDRs and ports from the
-`kubernetes` **Endpoints**, which carry the real API server addresses. The
-`10.96.0.1` Service VIP that `kubectl get service kubernetes` reports is the
-wrong source: an enforcing CNI
-(Calico, Cilium, and kindnet on kind v0.32 and later) evaluates policy after the
-Service DNAT has rewritten a packet aimed at the VIP to one of those endpoint
-IPs, so a rule naming the VIP never matches:
+EndpointSlices for the `kubernetes` Service in `default`. Kubernetes leaves
+the order of Service DNAT and NetworkPolicy evaluation to the CNI. The kind
+devstack uses kindnet, which evaluates this rule after DNAT, so the Service VIP
+(often `10.96.0.1`) does not match; use the endpoint addresses instead. Verify
+the behavior of your CNI before applying this assumption to another cluster:
 
 ```bash
-kubectl get endpoints kubernetes -n default -o json \
-  | jq -r '.subsets[] | (.addresses[].ip) as $ip | (.ports[].port) as $p | "\($ip)/32 port=\($p)"'
+set -euo pipefail
+kubectl get endpointslices -n default \
+  -l kubernetes.io/service-name=kubernetes -o json \
+  | jq -er '
+      [
+        .items[] as $slice
+        | $slice.endpoints[]?
+        | select(.conditions.ready != false)
+        | .addresses[]? as $ip
+        | $slice.ports[]?.port as $p
+        | select($p != null)
+        | "\($ip)\(if ($ip | contains(":")) then "/128" else "/32" end) port=\($p)"
+      ] | unique as $peers
+      | if ($peers | length) == 0 then
+          error("no Kubernetes API server EndpointSlice addresses or ports found")
+        else $peers[] end'
 ```
 
-Record **every** endpoint IP the command prints. A kind
-devstack reports the one control-plane node's address on the kind bridge
-(`172.18.0.x`), but an HA control plane reports one per API server replica. The
-rule must cover all of them, or the operator loses its leader-election lease
-whenever it happens to be talking to an excluded replica.
+Record every unique CIDR and port the command prints. IPv4 addresses use
+`/32`; IPv6 addresses use `/128`. A kind devstack reports the one control-plane
+node's address on the kind bridge (for example, `172.18.0.2/32 port=6443`).
+An HA control plane reports an address for each API server replica, and a
+dual-stack cluster can report both address families. The rule must cover every
+address and port, or the operator can lose its leader-election lease when it
+talks to an excluded replica. The chart combines the CIDRs and ports in one
+rule, so each listed port is allowed to each listed address.
 
 On the tutorial devstacks the `neutron-operator` release is owned by Flux (a
 `HelmRelease`), so set the values by patching its `spec.values`. A raw
@@ -77,12 +99,45 @@ Substitute the CIDRs and ports from above; the single-CIDR list below stands in
 for the kind case of one control-plane node:
 
 ```bash
+set -euo pipefail
 kubectl patch helmrelease neutron-operator -n neutron-system --type=merge \
   -p '{"spec":{"values":{"networkPolicy":{"enabled":true,"kubeApiServer":{"cidrs":["172.18.0.2/32"],"ports":[6443]}}}}}'
 
 kubectl wait helmrelease/neutron-operator -n neutron-system \
   --for=condition=Ready --timeout=5m
 ```
+
+Run the patch and wait only when the HelmRelease is active. If it is suspended,
+the patch stores the values but does not render or apply a policy. Resume Flux
+only when it is the intended owner, then wait for the release to reconcile.
+
+::: details Helm-managed installations (non-Flux)
+For a release managed directly by Helm, enable the same values with a rolling
+`helm upgrade`. Pin the upgrade to the installed chart version:
+
+```bash
+set -euo pipefail
+CHART_VERSION=$(helm list -n neutron-system --filter '^neutron-operator$' -o json \
+  | jq -r '.[0].chart | sub("^neutron-operator-"; "")')
+if [ -z "$CHART_VERSION" ]; then
+  echo "Could not determine the installed neutron-operator chart version." >&2
+  exit 1
+fi
+helm upgrade neutron-operator oci://ghcr.io/c5c3/charts/neutron-operator \
+  --namespace neutron-system --version "$CHART_VERSION" --reuse-values \
+  --set networkPolicy.enabled=true \
+  --set 'networkPolicy.kubeApiServer.cidrs[0]=172.18.0.2/32' \
+  --set 'networkPolicy.kubeApiServer.ports[0]=6443'
+```
+
+Replace the example CIDR and port with the values from the EndpointSlice
+command. For an HA control plane, add an indexed `--set` entry for each
+additional CIDR and distinct port.
+
+Do **not** run this on the tutorial devstacks: Flux owns that release and
+reverts out-of-band Helm revisions on its next reconcile. Use the HelmRelease
+patch above instead.
+:::
 
 The rendered policy allows egress to the kube-apiserver, to DNS and to the
 Neutron API, and ingress to the webhook port. The chart adds the Neutron API
@@ -91,9 +146,10 @@ chart uses to append an egress rule of its own: TCP 9696 to every pod labelled
 `app.kubernetes.io/name: neutron` and
 `app.kubernetes.io/managed-by: neutron-operator`, in any namespace. It needs no
 value. The operator's health check GETs the Neutron API over the workload
-Service, and the CNI judges that connection after the Service DNAT, at the API
-pod and its port, so the rule selects the API pods by the labels the operator
-sets on them. One deployment shape does need more: with a `Neutron` or
+Service. On kindnet, the CNI evaluates this connection after Service DNAT, at
+the API pod and its port, so the rule selects the API pods by the labels the
+operator sets on them. Verify this behavior with other CNIs. One deployment
+shape does need more: with a `Neutron` or
 `NeutronMetadataAgent` placed on a registered target cluster, the operator talks
 to that cluster's API server too, so add its address and port to the same
 `kubeApiServer` lists.
@@ -145,16 +201,15 @@ kubectl -n neutron-system rollout restart deploy/neutron-operator
 kubectl -n neutron-system rollout status deploy/neutron-operator --timeout=5m
 ```
 
-What the restart shows depends on the CNI. A CNI that isolates a new pod before
-its containers start, as the
-[Kubernetes NetworkPolicy contract](https://kubernetes.io/docs/concepts/services-networking/network-policies/#pod-lifecycle)
-requires, judges the new pod's first API server connection: under a wrong
-`kubeApiServer` rule the rollout does not finish within the timeout and the new
-pod never turns `Ready`. kindnet adds a new pod to its policy set a moment after
-the pod starts. The operator opens its API server connection in that moment and
-keeps it, so on the kind devstack the rollout finishes and the pod turns `Ready`
-under a wrong rule too. On kind, only the fresh-connection check at the end of
-this step judges the rule.
+What the restart shows depends on the CNI. A CNI that enforces policy before a
+new pod's first API server connection can prevent the pod from renewing its
+leader-election lease; with a wrong `kubeApiServer` rule, the rollout can time
+out. Kubernetes leaves Service DNAT and policy-evaluation behavior to the CNI
+([NetworkPolicy behavior](https://kubernetes.io/docs/concepts/services-networking/network-policies/#behavior-of-to-and-from-selectors)).
+kindnet adds a new pod to its policy set a moment after the pod starts. The
+operator opens its API server connection in that moment and keeps it, so on the
+kind devstack the rollout can finish under a wrong rule. On kind, only the
+fresh-connection check at the end of this step judges the rule.
 
 When the rollout times out, see
 [Reconcile timeouts / leader-election churn](#reconcile-timeouts-leader-election-churn).
@@ -173,23 +228,55 @@ ControlPlane leaves it at the default, scales the API one replica above the size
 it runs at, and puts the count back:
 
 ```bash
+set -euo pipefail
 if CUR=$(kubectl get controlplane controlplane -n openstack \
      -o jsonpath='{.spec.sizing.neutron.api.replicas}') &&
    RUN=$(kubectl get deploy/controlplane-neutron -n openstack \
      -o jsonpath='{.spec.replicas}'); then
+  case "$RUN" in
+    ''|*[!0-9]*)
+      echo "Deployment replica count is not an integer: $RUN" >&2
+      exit 1
+      ;;
+  esac
+  case "$CUR" in
+    ''|*[!0-9]*) ;;
+    *)
+      echo "ControlPlane replica override is not an integer: $CUR" >&2
+      exit 1
+      ;;
+  esac
+
   NEW=$((RUN + 1))
 
-  kubectl patch controlplane controlplane -n openstack --type merge \
-    -p "{\"spec\":{\"sizing\":{\"neutron\":{\"api\":{\"replicas\":$NEW}}}}}"
-  kubectl wait deploy/controlplane-neutron -n openstack --timeout=5m \
-    --for=jsonpath='{.spec.replicas}'="$NEW"
-  kubectl rollout status deploy/controlplane-neutron -n openstack --timeout=5m
+  restore_replicas() {
+    kubectl patch controlplane controlplane -n openstack --type merge \
+      -p "{\"spec\":{\"sizing\":{\"neutron\":{\"api\":{\"replicas\":${CUR:-null}}}}}}"
+  }
 
-  # revert to the recorded count; null drops the override again
-  kubectl patch controlplane controlplane -n openstack --type merge \
-    -p "{\"spec\":{\"sizing\":{\"neutron\":{\"api\":{\"replicas\":${CUR:-null}}}}}}"
+  if ! kubectl patch controlplane controlplane -n openstack --type merge \
+       -p "{\"spec\":{\"sizing\":{\"neutron\":{\"api\":{\"replicas\":$NEW}}}}}"; then
+    echo "could not change the ControlPlane replica count" >&2
+    restore_replicas
+    exit 1
+  fi
+  if ! kubectl wait deploy/controlplane-neutron -n openstack --timeout=5m \
+       --for=jsonpath='{.spec.replicas}'="$NEW"; then
+    echo "the operator did not apply the requested replica count" >&2
+    restore_replicas
+    exit 1
+  fi
+  if ! kubectl rollout status deploy/controlplane-neutron -n openstack --timeout=5m; then
+    echo "the Neutron API Deployment did not finish rolling out" >&2
+    restore_replicas
+    exit 1
+  fi
+
+  # Restore the recorded count; null drops the override again.
+  restore_replicas
 else
   echo "could not read the replica counts; nothing was patched" >&2
+  exit 1
 fi
 ```
 
@@ -216,12 +303,13 @@ restarted pod has run for at least one minute. The block adds an ephemeral
 container to the operator pod. The container shares the pod's network, so the
 policy judges its connections as it judges the operator's. It runs the image
 of the Keystone API Deployment, which ships `python3` and which the devstack's
-single node already holds, and opens one new TCP connection to every address
-and port of the `kubernetes` Endpoints. The block waits up to three minutes
-for the check to end, then prints the state of the check container and its
-log:
+single node already holds, and opens one new TCP connection to every ready
+address and port in the EndpointSlices for the `kubernetes` Service. The block
+waits up to three minutes for the check to end, then prints the state of the
+check container and its log:
 
 ```bash
+set -euo pipefail
 CHECK='
 import socket, sys
 for ep in sys.argv[1:]:
@@ -241,8 +329,19 @@ if POD=$(kubectl -n neutron-system get pods \
    KS=$(kubectl -n openstack get keystones -o jsonpath='{.items[0].metadata.name}') &&
    IMG=$(kubectl -n openstack get deploy "${KS}" \
      -o jsonpath='{.spec.template.spec.containers[?(@.name=="keystone")].image}') &&
-   EPS=$(kubectl get endpoints kubernetes -n default -o json \
-     | jq -r '.subsets[] | (.addresses[].ip) as $ip | (.ports[].port) as $p | "\($ip):\($p)"') &&
+   SLICE=$(kubectl get endpointslices -n default \
+     -l kubernetes.io/service-name=kubernetes -o json) &&
+   EPS=$(echo "${SLICE}" | jq -er '
+     [
+       .items[] as $slice
+       | $slice.endpoints[]?
+       | select(.conditions.ready != false)
+       | .addresses[]? as $ip
+       | $slice.ports[]?.port as $port
+       | select($port != null)
+       | "\($ip):\($port)"
+     ] | unique
+     | if length == 0 then error("no ready Kubernetes API server endpoints found") else .[] end') &&
    [ -n "${POD}" ] && [ -n "${IMG}" ] && [ -n "${EPS}" ]; then
   NAME="apiserver-check-$(date +%s)"
   kubectl -n neutron-system debug "pod/${POD}" --image="${IMG}" --profile=restricted \
@@ -288,11 +387,10 @@ endpoint: the rule misses its address or its port. Any other message, such as
 broken; kindnet drops a denied connection without an answer. The ephemeral
 container exits after the check and stays in the pod's spec until the next
 rollout replaces the pod. Adding it needs the `patch` verb on
-`pods/ephemeralcontainers` in the operator's namespace. That verb lets its
-holder mount the operator's ServiceAccount token and act with the operator's
-rights, so run the check as a cluster admin and do not grant the verb to a
-separate verification role. `--profile=restricted` lets it start in a
-namespace that enforces the restricted Pod Security Standard.
+`pods/ephemeralcontainers` in the operator's namespace. This permission allows
+adding a container to the operator pod, so grant it only to cluster
+administrators, not a separate verification role. `--profile=restricted` lets
+it start in a namespace that enforces the restricted Pod Security Standard.
 
 When a line ends in `timed out`, see
 [Reconcile timeouts / leader-election churn](#reconcile-timeouts-leader-election-churn).
@@ -309,15 +407,15 @@ the fresh-connection check of the Verify step.
 
 **Diagnosis:** the egress allow-list does not match the API server the operator
 actually dials. Either `kubeApiServer.cidrs` is missing one or more of the
-current endpoint IPs (an HA control plane may have added a replica, or a
-control-plane node may have been replaced with a different IP), or your CNI maps
-the API server behind a port that is not in `kubeApiServer.ports`. A target
-cluster registered since the policy went on is the same failure with a different
-address.
+current EndpointSlice addresses (an HA control plane may have added a replica,
+or a control-plane node may have been replaced with a different IP), or your
+CNI maps the API server behind a port that is not in
+`kubeApiServer.ports`. A target cluster registered since the policy went on is
+the same failure with a different address.
 
 **Fix:** re-run the discovery command from Step 1 and update
-`networkPolicy.kubeApiServer.cidrs` to include **every** IP it returns, plus
-every port.
+`networkPolicy.kubeApiServer.cidrs` and `ports` to include every address and
+port it returns.
 
 ### Every Neutron and NeutronMetadataAgent write is rejected
 
@@ -332,8 +430,8 @@ and a validating webhook for each of the two kinds, all four with
 a cluster-wide rejection of every write to both kinds. Deletes pass: the rules
 list `CREATE` and `UPDATE` only, which is what keeps a down operator from
 blocking CR and namespace teardown. The usual cause is an API server that calls
-webhooks from an IP that is **not** in `endpoints/kubernetes`, for example
-because it sits behind a front-end proxy.
+webhooks from an IP that is **not** in the `kubernetes` Service's
+EndpointSlices, for example because it sits behind a front-end proxy.
 `networkPolicy.webhookClients.cidrs` falls back to `kubeApiServer.cidrs` when
 empty, which is wrong in that topology.
 
