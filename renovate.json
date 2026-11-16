@@ -1362,6 +1362,40 @@
       "groupName": "rook-ceph chart"
     },
     {
+      "matchManagers": ["flux"],
+      "matchFileNames": ["deploy/overlays/kind/frr-k8s/release.yaml"],
+      "matchPackageNames": ["frr-k8s", "quay.io/metallb/frr-k8s"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "description": "frr-k8s, a privileged hostNetwork DaemonSet pinned to one chart version with its controller image pinned by digest; the e2e-bgp-fabric job runs on the bump, and nothing automerges",
+      "matchManagers": ["flux"],
+      "matchFileNames": ["deploy/overlays/kind/frr-k8s/release.yaml"],
+      "matchPackageNames": ["frr-k8s", "quay.io/metallb/frr-k8s"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "automerge": false,
+      "minimumReleaseAge": "3 days",
+      "groupName": "frr-k8s"
+    },
+    {
+      "matchManagers": ["flux"],
+      "matchFileNames": ["deploy/overlays/kind/frr-k8s/release.yaml"],
+      "matchPackageNames": ["quay.io/frrouting/frr"],
+      "matchUpdateTypes": ["major", "minor"],
+      "enabled": false
+    },
+    {
+      "description": "The FRR image of frr-k8s is the chart's default FRR; its minor follows the chart default by hand in the pull request that moves the chart, so only its patch and digest move here",
+      "matchManagers": ["flux"],
+      "matchFileNames": ["deploy/overlays/kind/frr-k8s/release.yaml"],
+      "matchPackageNames": ["quay.io/frrouting/frr"],
+      "matchUpdateTypes": ["patch", "digest"],
+      "automerge": false,
+      "minimumReleaseAge": "3 days",
+      "groupName": "frr-k8s"
+    },
+    {
       "matchManagers": ["custom.regex"],
       "matchFileNames": ["tests/lab/bgp-fabric/bgp-fabric.clab.yml", "tests/lab/bgp-fabric/run.sh"],
       "matchPackageNames": ["quay.io/frrouting/frr", "ghcr.io/srl-labs/clab"],

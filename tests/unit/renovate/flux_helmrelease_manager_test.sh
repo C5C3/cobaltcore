@@ -21,7 +21,9 @@
 #     none)
 #   - the per-chart policies: bump plus automerged minor/patch for gateway-helm
 #     and headlamp, exact csi-driver-nfs and rook-ceph pins with majors
-#     disabled and minor/patch unmerged, one group
+#     disabled and minor/patch unmerged, the frr-k8s chart and its two images
+#     with majors (and the FRR minor) disabled and the rest unmerged in the
+#     group frr-k8s, one group
 #     each for the two mariadb-operator charts and for kube-prometheus-stack
 #     with prometheus-operator-crds
 #
@@ -543,6 +545,67 @@ test_rook_ceph_rules() {
     "rook-ceph chart" "$(jq -r '.groupName' <<<"$minor_rule")"
 }
 
+# rule_for <path> <package> <update type> — the first flux packageRule that names
+# the file, the package and the update type, as one line of JSON, or {}.
+rule_for() {
+  jq -c --arg path "$1" --arg pkg "$2" --arg type "$3" '[.packageRules[]
+    | select(
+        .matchManagers == ["flux"]
+        and ((.matchFileNames // []) | index($path)) != null
+        and (((.matchPackageNames // []) | index($pkg)) != null)
+        and (((.matchUpdateTypes // []) | index($type)) != null)
+      )][0] // {}' "$RENOVATE_FILE"
+}
+
+test_frr_k8s_rules() {
+  echo "Test: the frr-k8s chart and its two images keep their exact pins unmerged in one group"
+
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "  SKIP: jq not installed (16 checks skipped)"
+    SKIP=$((SKIP + 16))
+    return
+  fi
+
+  local path="deploy/overlays/kind/frr-k8s/release.yaml" chart controller frr version
+  chart="$(chart_of "$path")"
+  version="$(chart_versions "$path")"
+  # The flux manager names a values image by its repository: value.
+  controller="$(awk '/^[[:space:]]+repository:/ && $2 ~ /frr-k8s$/ { print $2; exit }' "$PROJECT_ROOT/$path")"
+  frr="$(awk '/^[[:space:]]+repository:/ && $2 ~ /\/frr$/ { print $2; exit }' "$PROJECT_ROOT/$path")"
+  assert_eq "$path carries the chart frr-k8s" "frr-k8s" "$chart"
+  assert_eq "its version is one exact version, not a range" "true" \
+    "$([[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && echo true || echo false)"
+  assert_eq "its controller image is quay.io/metallb/frr-k8s" "quay.io/metallb/frr-k8s" "$controller"
+  assert_eq "its FRR image is quay.io/frrouting/frr" "quay.io/frrouting/frr" "$frr"
+
+  local pkg type rule
+  # Majors of the chart and the controller image never move; their minor,
+  # patch and digest updates wait three days and are reviewed by hand.
+  for pkg in "$chart" "$controller"; do
+    rule="$(rule_for "$path" "$pkg" major)"
+    assert_eq "major $pkg updates are disabled" "false" "$(jq -r '.enabled | tostring' <<<"$rule")"
+    for type in minor patch digest; do
+      rule="$(rule_for "$path" "$pkg" "$type")"
+      assert_eq "$type $pkg updates are unmerged after 3 days in the group frr-k8s" \
+        "false|3 days|frr-k8s" \
+        "$(jq -r '"\(.automerge)|\(.minimumReleaseAge)|\(.groupName)"' <<<"$rule")"
+    done
+  done
+
+  # The FRR minor follows the chart's default by hand, so only its patch and
+  # digest move through Renovate.
+  for type in major minor; do
+    rule="$(rule_for "$path" "$frr" "$type")"
+    assert_eq "$type $frr updates are disabled" "false" "$(jq -r '.enabled | tostring' <<<"$rule")"
+  done
+  for type in patch digest; do
+    rule="$(rule_for "$path" "$frr" "$type")"
+    assert_eq "$type $frr updates are unmerged after 3 days in the group frr-k8s" \
+      "false|3 days|frr-k8s" \
+      "$(jq -r '"\(.automerge)|\(.minimumReleaseAge)|\(.groupName)"' <<<"$rule")"
+  done
+}
+
 test_crd_coupled_charts_grouped() {
   echo "Test: a chart and the CRD chart it runs against move in one PR"
 
@@ -581,6 +644,7 @@ test_one_owner_per_file
 test_floor_tracked_charts
 test_csi_driver_nfs_rules
 test_rook_ceph_rules
+test_frr_k8s_rules
 test_crd_coupled_charts_grouped
 
 echo ""
