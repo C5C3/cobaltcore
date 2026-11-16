@@ -31,7 +31,7 @@
       "id": 1,
       "type": "timeseries",
       "title": "Reconcile duration p50/p95/p99 per sub_reconciler",
-      "description": "p50/p95/p99 wall-clock duration of OVN sub-reconciler invocations, derived from ovn_operator_reconcile_duration_seconds_bucket. The label set spans both pipelines of this operator: TLS, Northbound, Southbound, Endpoints, Northd, Relay and Backup belong to OVNCentral, Central, Nodes, OVS, Controller and Maintenance to OVNChassis.",
+      "description": "p50/p95/p99 wall-clock duration of OVN sub-reconciler invocations, derived from ovn_operator_reconcile_duration_seconds_bucket. The label set spans both pipelines of this operator: TLS, Northbound, Southbound, Endpoints, Northd, Relay, Backup and VPA belong to OVNCentral; Central, ClientSecret, Nodes, OVS, Controller, ChassisVPA and Maintenance belong to OVNChassis.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
