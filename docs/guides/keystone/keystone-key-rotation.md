@@ -42,6 +42,7 @@ examples below is one that devstack produces.
 
 - A healthy Keystone CR (`Ready=True`): see [Observability & Diagnostics](../observability.md).
 - `kubectl` access to the CR's namespace (`openstack`).
+- The OpenSSL command-line tool (`openssl`) for the key fingerprints below.
 - The rotation CronJobs are already reconciled:
   `kubectl -n openstack get cronjob controlplane-keystone-fernet-rotate controlplane-keystone-credential-rotate` returns both.
 
@@ -73,8 +74,11 @@ lists the steps. `{name}` is `controlplane-keystone` here.
 
 ## 1. Trigger a manual rotation
 
-Rotations run on the `spec.fernet.rotationSchedule` / `spec.credentialKeys.rotationSchedule`
-cron schedule by default. Both default to `0 0 * * 0` (weekly, Sunday 00:00 UTC).
+Rotations run on the `spec.fernet.rotationSchedule` /
+`spec.credentialKeys.rotationSchedule` cron schedule by default. Both default
+to `0 0 * * 0` (weekly, Sunday at midnight). The CronJobs do not set
+`.spec.timeZone`, so Kubernetes interprets this schedule in the
+`kube-controller-manager`'s local time zone.
 To pause scheduled rotation during an incident without deleting the CronJob or
 any sibling resource, set `spec.fernet.suspend: true` (or
 `spec.credentialKeys.suspend: true`); clearing the flag resumes the schedule.
@@ -94,15 +98,23 @@ scheduled run then starts a fresh Job. To resume sooner, delete the stuck Job wi
 To trigger one on demand, create a one-shot Job from the CronJob template:
 
 ```bash
-kubectl -n openstack create job --from=cronjob/controlplane-keystone-fernet-rotate \
-  controlplane-keystone-fernet-rotate-manual-$(date +%s)
+# Record the current values before triggering the rotation.
+kubectl -n openstack get secret controlplane-keystone-fernet-keys \
+  -o jsonpath='{.metadata.resourceVersion}{"\n"}'
+kubectl -n openstack get secret controlplane-keystone-fernet-keys \
+  -o go-template='{{range $key, $value := .data}}{{$key}}={{$value}}{{"\n"}}{{end}}' \
+  | openssl dgst -sha256
+
+JOB=controlplane-keystone-fernet-rotate-manual-$(date +%s)
+kubectl -n openstack create job --from=cronjob/controlplane-keystone-fernet-rotate "$JOB"
+kubectl -n openstack get job "$JOB" --watch
 ```
 
-Watch the Job run to completion:
+Keep this terminal open so `$JOB` remains set. Press Ctrl+C when
+`COMPLETIONS` reaches `1/1`, then inspect the Job log:
 
 ```bash
-kubectl -n openstack get jobs -l job-name -w
-kubectl -n openstack logs job/controlplane-keystone-fernet-rotate-manual-<ts>
+kubectl -n openstack logs "job/$JOB"
 ```
 
 Expected log tail:
@@ -111,7 +123,7 @@ Expected log tail:
 Fernet keys staging Secret updated successfully
 ```
 
-At this point the CronJob has PATCHed the staging Secret with both the new
+At this point the rotation Job has PATCHed the staging Secret with both the new
 `data` map and the completion annotation. The operator processes it on its next
 reconcile.
 
@@ -154,7 +166,7 @@ operator's next reconcile, which typically closes the window in seconds.
 To catch it, watch the staging Secret during a rotation:
 
 ```bash
-kubectl -n openstack get secret controlplane-keystone-fernet-keys-rotation \
+kubectl -n openstack get secret controlplane-keystone-fernet-keys-rotation --watch \
   -o jsonpath='{.metadata.annotations.cobaltcore\.c5c3\.io/rotation-completed-at}{"\n"}'
 ```
 
@@ -168,7 +180,7 @@ deleted:
 After the operator applies the rotation, the staging Secret is deleted
 entirely:
 
-```bash
+```text
 $ kubectl -n openstack get secret controlplane-keystone-fernet-keys-rotation
 Error from server (NotFound): secrets "controlplane-keystone-fernet-keys-rotation" not found
 ```
@@ -205,29 +217,25 @@ kubectl -n openstack get events \
 
 ## 4. Confirm the production Secret data changed
 
-Capture the production Secret's `resourceVersion` and key fingerprints
-before and after to prove the apply went through:
+Repeat these commands after the operator applies the rotation. The
+`resourceVersion` should advance and the fingerprint should differ from the
+values recorded before the Job was created:
 
 ```bash
-# Before triggering rotation
 kubectl -n openstack get secret controlplane-keystone-fernet-keys \
   -o jsonpath='{.metadata.resourceVersion}{"\n"}'
 kubectl -n openstack get secret controlplane-keystone-fernet-keys \
-  -o jsonpath='{range .data.*}{@}{"\n"}{end}' | sha256sum
-
-# After: resourceVersion has advanced and the hash differs
-kubectl -n openstack get secret controlplane-keystone-fernet-keys \
-  -o jsonpath='{.metadata.resourceVersion}{"\n"}'
-kubectl -n openstack get secret controlplane-keystone-fernet-keys \
-  -o jsonpath='{range .data.*}{@}{"\n"}{end}' | sha256sum
+  -o go-template='{{range $key, $value := .data}}{{$key}}={{$value}}{{"\n"}}{{end}}' \
+  | openssl dgst -sha256
 ```
 
 Thanks to the kubelet's in-place Secret projection, running
 Keystone pods pick up the new keys on their next projection refresh
 (~60 seconds) without a Deployment rollout. A token minted before the
-rotation remains valid until its native TTL expires, because the old key
-is retained in the Secret's active window until it ages out over
-subsequent rotations.
+rotation remains verifiable only while its signing key stays in the Fernet
+repository. The rotation schedule and `spec.fernet.maxActiveKeys` determine
+how long old keys remain there; configure that retention period to cover the
+token lifetime, or tokens may become invalid before their TTL expires.
 
 ---
 
@@ -279,18 +287,9 @@ The recovery sequence is always:
 
 1. Fix the cause (CronJob image, script, or CR spec) so the next rotation
    will produce valid output.
-2. Force a fresh rotation. The operator already cleared the staged data on
-   rejection, so deleting the staging Secret by hand is optional
-   belt-and-suspenders:
-
-   ```bash
-   kubectl -n openstack delete secret controlplane-keystone-fernet-keys-rotation   # optional
-   kubectl -n openstack create job --from=cronjob/controlplane-keystone-fernet-rotate \
-     controlplane-keystone-fernet-rotate-recover-$(date +%s)
-   ```
-
-   The new Job PATCHes the (already-empty) staging Secret; the operator
-   validates and applies.
+2. Confirm no rotation Job is active, then follow step 1 to create a fresh
+   one-shot Job. The operator has already cleared the rejected staged data;
+   do not delete the staging Secret.
 3. Confirm apply by repeating steps 2-4 above.
 
 > **Production safety note.** The production Secret remains unchanged
