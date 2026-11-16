@@ -716,6 +716,53 @@ the patch, and `tests/e2e/c5c3/full-controlplane-keystone` finds the
 `vault_index` row in the database of a ControlPlane. Upstream status: not yet
 proposed.
 
+**Source patch:**
+`patches/barbican/2026.1/0004-retry-secret-metadata-writes-that-conflict-with-a-concurrent-write.patch`
+and its 2026.2 twin
+`patches/barbican/2026.2/0003-retry-secret-metadata-writes-that-conflict-with-a-concurrent-write.patch`
+retry a write to the user metadata of a secret that loses against a concurrent
+request. The twins differ in their `Applies to` line only. Three methods of
+`SecretUserMetadatumRepo` write the metadata: `create_replace_user_metadata`
+for `PUT /v1/secrets/{id}/metadata`, `create_replace_user_metadatum` for
+`POST /v1/secrets/{id}/metadata` and `PUT /v1/secrets/{id}/metadata/{key}`,
+and `delete_metadatum` for `DELETE /v1/secrets/{id}/metadata/{key}`. Each one
+deletes rows of `secret_user_metadata` and inserts the new ones in the
+transaction of the request, which `BarbicanTransactionHook` commits after the
+controller returns. Two requests for different new secrets can deadlock on a
+gap of the unique index `_secret_key_uc` (MySQL error 1213). In the playground
+cluster 2 of 197,531 metadata PUTs answered 500 this way. Two writes to the
+metadata of one secret fail with MariaDB error 1020 under
+`innodb_snapshot_isolation=ON`: in a local rig with eight concurrent writers,
+109 to 140 of 160 such calls failed on the published images. oslo.db raises
+`DBDeadlock` for 1213 and its subclass `DBConsistencyError` for 1020. Nothing
+retries either error, and `handle_exceptions` answers 500.
+
+The patch adds `retry_on_write_conflict` to `barbican/model/repositories.py`
+and decorates the three methods with it. On `DBDeadlock` the decorator rolls
+the session back, logs a WARNING with the method and the error class, and
+runs the method again in a new transaction through `oslo_db.api.wrap_db_retry`.
+The WARNING leaves out the exception text, because that text carries the SQL
+statement with the metadata values. The first wait is 0.05 seconds and the
+bound of each later wait doubles up to 1 second, so ten retries wait 6.55
+seconds at most. When the retries run out, oslo.db logs "DB exceeded retry
+limit." and the request answers 500 as before, with nothing of it stored. The
+deadlock still happens and `Innodb_deadlocks` still counts it; the patch runs
+the write again. In the rig no call failed with the patch, at 8 and at 32
+threads. The patch needs no operator configuration. No upstream test moves.
+The patch adds fifteen tests to
+`barbican/tests/model/repositories/test_repositories_secret_metadata.py`:
+retries after `DBDeadlock` and `DBConsistencyError` on the INSERT and on the
+DELETE, a concurrent request that commits first, the error after the last
+retry, and no retry of a lost connection, a duplicate entry or a missing
+reference. Four tests in `barbican/tests/api/controllers/test_secretmeta.py`,
+one per endpoint, send a request whose write fails once. Each checks the
+response, the stored metadata, and that the request wrote nothing before the
+repository method, because the rollback of the retry would discard such a
+write. `verify_barbican.sh` Test 11 makes
+the first INSERT or DELETE of each method raise `DBDeadlock` in the built
+image and expects the metadata to be stored. Upstream status: not yet
+proposed.
+
 **Final image properties:**
 
 - Runs as `openstack` user (UID 42424, GID 42424)
@@ -737,7 +784,8 @@ hard gate — it verifies the CLIs, importability, that the `vault_plugin` and
 the `None` sentinel, that uwsgi runs and imports `barbican`, that a database
 clean-up batch whose commit raises `DBDeadlock` is rolled back, retried and
 committed, that the storage index of an OpenBao write is recorded and sent
-back with the next read, non-root execution, and the absence of build tools. Both plugin halves are loaded through their entry-point metadata
+back with the next read, that a secret metadata write whose statement raises
+`DBDeadlock` is rolled back and run again, non-root execution, and the absence of build tools. Both plugin halves are loaded through their entry-point metadata
 rather than imported by module path, because that is how barbican and
 castellan resolve them at runtime — an import would go green off the `.py`
 file on disk while the runtime lookup raises stevedore `NoMatches`. The WSGI

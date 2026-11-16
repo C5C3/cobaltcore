@@ -5,6 +5,7 @@
   "project": "barbican",
   "patches": [
     "patches/barbican/2026.2/0001-retry-a-clean-up-batch-that-conflicts-with-a-concurrent-write.patch",
-    "patches/barbican/2026.2/0002-carry-the-openbao-storage-index-from-a-write-to-its-reads.patch"
+    "patches/barbican/2026.2/0002-carry-the-openbao-storage-index-from-a-write-to-its-reads.patch",
+    "patches/barbican/2026.2/0003-retry-secret-metadata-writes-that-conflict-with-a-concurrent-write.patch"
   ]
 }
