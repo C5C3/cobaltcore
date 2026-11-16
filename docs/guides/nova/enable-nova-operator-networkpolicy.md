@@ -43,33 +43,54 @@ Follow that tutorial through the `nova` block of Step 4 and the
 examples below is one that devstack produces.
 :::
 
-1. A running `nova-operator` Helm release (namespace `nova-system`).
-2. The ControlPlane declares `spec.services.nova`. Without it no
-   `controlplane-nova` child exists and the Step 2 verification has nothing to
-   roll.
+The `nova-operator` Helm release must be running in `nova-system`, and the
+cluster's CNI must enforce Kubernetes NetworkPolicy. The ControlPlane must
+declare `spec.services.nova` for the rollout check below; without it no
+`controlplane-nova` child exists. The commands require `kubectl` and `jq`; the
+Helm-managed path also requires `helm`. You need permission to list
+EndpointSlices in `default` (check with
+`kubectl auth can-i list endpointslices.discovery.k8s.io -n default`) and, for
+the fresh-connection check in Step 2, to create an ephemeral container in
+`nova-system` (`patch` on `pods/ephemeralcontainers`).
 
 ## Step 1: Enable the policy
 
 The chart guards `networkPolicy.enabled=true` with a fail-closed check:
 `networkPolicy.kubeApiServer.cidrs` and `ports` must both be non-empty, or the
 template refuses to render. Gather the API server CIDRs and ports from the
-`kubernetes` **Endpoints**, which carry the real API server addresses. The
-`10.96.0.1` Service VIP that `kubectl get service kubernetes` reports is the
-wrong source: an enforcing CNI
-(Calico, Cilium, and kindnet on kind v0.32 and later) evaluates policy after the
-Service DNAT has rewritten a packet aimed at the VIP to one of those endpoint
-IPs, so a rule naming the VIP never matches:
+EndpointSlices for the `kubernetes` Service in `default`. Kubernetes leaves
+the order of Service DNAT and NetworkPolicy evaluation to the CNI. The kind
+devstack uses kindnet, which evaluates this rule after DNAT, so the Service VIP
+does not match; use the endpoint addresses instead. Verify your CNI's behavior
+before applying this assumption to another cluster:
 
 ```bash
-kubectl get endpoints kubernetes -n default -o json \
-  | jq -r '.subsets[] | (.addresses[].ip) as $ip | (.ports[].port) as $p | "\($ip)/32 port=\($p)"'
+set -euo pipefail
+kubectl get endpointslices -n default \
+  -l kubernetes.io/service-name=kubernetes -o json \
+  | jq -er '
+      [
+        .items[] as $slice
+        | $slice.endpoints[]?
+        | select(.conditions.ready != false)
+        | .addresses[]? as $ip
+        | $slice.ports[]?.port as $p
+        | select($p != null)
+        | "\($ip)\(if ($ip | contains(":")) then "/128" else "/32" end) port=\($p)"
+      ] | unique as $peers
+      | if ($peers | length) == 0 then
+          error("no Kubernetes API server EndpointSlice addresses or ports found")
+        else $peers[] end'
 ```
 
-Record **every** endpoint IP the command prints. A kind
-devstack reports the one control-plane node's address on the kind bridge
-(`172.18.0.x`), but an HA control plane reports one per API server replica. The
-rule must cover all of them, or the operator loses its leader-election lease
-whenever it happens to be talking to an excluded replica.
+Record every unique CIDR and port the command prints. IPv4 addresses use
+`/32`; IPv6 addresses use `/128`. A kind devstack reports the control-plane
+node's address on the kind bridge (for example, `172.18.0.2/32 port=6443`).
+An HA control plane reports an address for each API server replica, and a
+dual-stack cluster can report both address families. The chart combines these
+lists in one rule, so each listed port is allowed to each listed address. The
+rule must cover every address and port, or the operator can lose its
+leader-election lease when it talks to an excluded replica.
 
 On the tutorial devstacks the `nova-operator` release is owned by Flux (a
 `HelmRelease`), so set the values by patching its `spec.values`. A raw
@@ -79,12 +100,43 @@ Substitute the CIDRs and ports from above; the single-CIDR list below stands in
 for the kind case of one control-plane node:
 
 ```bash
+set -euo pipefail
 kubectl patch helmrelease nova-operator -n nova-system --type=merge \
   -p '{"spec":{"values":{"networkPolicy":{"enabled":true,"kubeApiServer":{"cidrs":["172.18.0.2/32"],"ports":[6443]}}}}}'
 
 kubectl wait helmrelease/nova-operator -n nova-system \
   --for=condition=Ready --timeout=5m
 ```
+
+Run the patch and wait only when the HelmRelease is active. If it is suspended,
+the patch stores the values but does not render or apply a policy. Resume Flux
+only when it is the intended owner, then wait for the release to reconcile.
+
+::: details Helm-managed installations (non-Flux)
+For a release managed directly by Helm, enable the same values with a rolling
+`helm upgrade`. Pin the upgrade to the installed chart version:
+
+```bash
+set -euo pipefail
+CHART_VERSION="$(helm list -n nova-system --filter '^nova-operator$' -o json \
+  | jq -r '.[0].chart // "" | sub("^nova-operator-"; "")')"
+if [ -z "$CHART_VERSION" ]; then
+  echo "ERROR: could not find the nova-operator Helm release in nova-system." >&2
+  exit 1
+fi
+helm upgrade nova-operator oci://ghcr.io/c5c3/charts/nova-operator \
+  --namespace nova-system --version "$CHART_VERSION" --reuse-values \
+  --set networkPolicy.enabled=true \
+  --set 'networkPolicy.kubeApiServer.cidrs[0]=172.18.0.2/32' \
+  --set 'networkPolicy.kubeApiServer.ports[0]=6443'
+```
+
+Replace the example CIDR and port with values from the EndpointSlice command.
+For an HA control plane, add an indexed `--set` entry for each additional CIDR
+and distinct port. Do **not** run this on the tutorial devstacks: Flux owns that
+release and reverts out-of-band Helm revisions on its next reconcile. Use the
+HelmRelease patch above instead.
+:::
 
 The rendered policy allows egress to the kube-apiserver, to DNS, to the Nova
 API, to the Keystone API and to the Placement API, and ingress to the webhook
@@ -100,11 +152,14 @@ labelled `app.kubernetes.io/name: placement` and
 needs a value. The operator's health check GETs the Nova API. A `NovaCompute`
 pool authenticates against Keystone, calls the Nova API to manage its compute
 services and aggregates, and calls the Placement API to create and delete its
-custom traits. Each call goes through a Service, and the CNI judges the
-connection after the Service DNAT, at the pod and its port, so each rule selects
-the pods by the labels their operator sets on them. The Keystone and Placement
-rules therefore admit a `NovaCompute` call only when its URL reaches those pods
-in this cluster;
+custom traits. Each call goes through a Service. The CNI decides whether the
+policy sees the Service VIP or the backend pod after DNAT. On the kind devstack,
+kindnet evaluates the rule after DNAT, at the pod and its port, so the selectors
+match the real API pods there. Verify your CNI's behavior before relying on
+these selector rules elsewhere.
+
+The Keystone and Placement rules therefore admit a `NovaCompute` call only when
+its URL reaches those pods in this cluster;
 [NovaCompute calls to Keystone or Placement time out](#novacompute-calls-to-keystone-or-placement-time-out)
 covers the other topologies. Keystone answers on 5050
 when federation puts its OIDC sidecar in front of the API. One deployment shape
@@ -159,16 +214,15 @@ kubectl -n nova-system rollout restart deploy/nova-operator
 kubectl -n nova-system rollout status deploy/nova-operator --timeout=5m
 ```
 
-What the restart shows depends on the CNI. A CNI that isolates a new pod before
-its containers start, as the
-[Kubernetes NetworkPolicy contract](https://kubernetes.io/docs/concepts/services-networking/network-policies/#pod-lifecycle)
-requires, judges the new pod's first API server connection: under a wrong
-`kubeApiServer` rule the rollout does not finish within the timeout and the new
-pod never turns `Ready`. kindnet adds a new pod to its policy set a moment after
-the pod starts. The operator opens its API server connection in that moment and
-keeps it, so on the kind devstack the rollout finishes and the pod turns `Ready`
-under a wrong rule too. On kind, only the fresh-connection check at the end of
-this step judges the rule.
+What the restart shows depends on the CNI. A CNI that enforces policy before a
+new pod's first API server connection can prevent the pod from renewing its
+leader-election lease; with a wrong `kubeApiServer` rule, the rollout can time
+out. Kubernetes leaves Service DNAT and policy-evaluation behavior to the CNI
+([NetworkPolicy behavior](https://kubernetes.io/docs/concepts/services-networking/network-policies/#behavior-of-to-and-from-selectors)).
+kindnet adds a new pod to its policy set a moment after the pod starts. The
+operator opens its API server connection in that moment and keeps it, so on the
+kind devstack the rollout can finish under a wrong rule. On kind, only the
+fresh-connection check at the end of this step judges the rule.
 
 When the rollout times out, see
 [Reconcile timeouts / leader-election churn](#reconcile-timeouts-leader-election-churn).
@@ -234,12 +288,13 @@ restarted pod has run for at least one minute. The block adds an ephemeral
 container to the operator pod. The container shares the pod's network, so the
 policy judges its connections as it judges the operator's. It runs the image
 of the Keystone API Deployment, which ships `python3` and which the devstack's
-single node already holds, and opens one new TCP connection to every address
-and port of the `kubernetes` Endpoints. The block waits up to three minutes
-for the check to end, then prints the state of the check container and its
-log:
+single node already holds, and opens one new TCP connection to every ready
+address and port in the EndpointSlices for the `kubernetes` Service. The block
+waits up to three minutes for the check to end, then prints the state of the
+check container and its log:
 
 ```bash
+set -euo pipefail
 CHECK='
 import socket, sys
 for ep in sys.argv[1:]:
@@ -259,8 +314,21 @@ if POD=$(kubectl -n nova-system get pods \
    KS=$(kubectl -n openstack get keystones -o jsonpath='{.items[0].metadata.name}') &&
    IMG=$(kubectl -n openstack get deploy "${KS}" \
      -o jsonpath='{.spec.template.spec.containers[?(@.name=="keystone")].image}') &&
-   EPS=$(kubectl get endpoints kubernetes -n default -o json \
-     | jq -r '.subsets[] | (.addresses[].ip) as $ip | (.ports[].port) as $p | "\($ip):\($p)"') &&
+   EPS=$(kubectl get endpointslices -n default \
+     -l kubernetes.io/service-name=kubernetes -o json \
+     | jq -er '
+         [
+           .items[] as $slice
+           | $slice.endpoints[]?
+           | select(.conditions.ready != false)
+           | .addresses[]? as $ip
+           | $slice.ports[]?.port as $p
+           | select($p != null)
+           | "\($ip):\($p)"
+         ] | unique
+         | if length == 0 then
+             error("no ready Kubernetes API server EndpointSlice addresses or ports found")
+           else .[] end') &&
    [ -n "${POD}" ] && [ -n "${IMG}" ] && [ -n "${EPS}" ]; then
   NAME="apiserver-check-$(date +%s)"
   kubectl -n nova-system debug "pod/${POD}" --image="${IMG}" --profile=restricted \
@@ -306,11 +374,10 @@ endpoint: the rule misses its address or its port. Any other message, such as
 broken; kindnet drops a denied connection without an answer. The ephemeral
 container exits after the check and stays in the pod's spec until the next
 rollout replaces the pod. Adding it needs the `patch` verb on
-`pods/ephemeralcontainers` in the operator's namespace. That verb lets its
-holder mount the operator's ServiceAccount token and act with the operator's
-rights, so run the check as a cluster admin and do not grant the verb to a
-separate verification role. `--profile=restricted` lets it start in a
-namespace that enforces the restricted Pod Security Standard.
+`pods/ephemeralcontainers` in the operator's namespace. This permission allows
+adding a container to the operator pod, so grant it only to cluster
+administrators, not a separate verification role. `--profile=restricted` lets
+it start in a namespace that enforces the restricted Pod Security Standard.
 
 When a line ends in `timed out`, see
 [Reconcile timeouts / leader-election churn](#reconcile-timeouts-leader-election-churn).
@@ -388,10 +455,10 @@ kubectl apply -f nova-operator-keystone-egress.yaml
 
 The two selector labels are the chart's own (`operator-library.selectorLabels`),
 where the instance value is the Helm release name. Add a rule per address when
-Keystone and Placement resolve to different hosts. When an address is the
-LoadBalancer IP of a Gateway in this cluster, most CNIs judge the connection
-after the DNAT, as they do for a Service, so select the Gateway's data-plane
-pods and their container port in place of the `ipBlock`.
+Keystone and Placement resolve to different hosts. If an address is the
+LoadBalancer IP of a Gateway in this cluster, verify whether your CNI evaluates
+the policy before or after Gateway DNAT. If it evaluates after DNAT, select the
+Gateway's data-plane pods and their container port in place of the `ipBlock`.
 
 Apply this object only while the chart policy is on. It declares
 `policyTypes: [Egress]` and selects the operator pod, so on its own it turns
@@ -413,9 +480,10 @@ create and update, so an unreachable operator turns into a cluster-wide
 rejection of every write to the kind. Deletes pass: the rules list `CREATE` and
 `UPDATE` only, which is what keeps a down operator from blocking CR and
 namespace teardown. The usual cause is an API server that calls webhooks from an
-IP that is **not** in `endpoints/kubernetes`, for example because it sits behind
-a front-end proxy. `networkPolicy.webhookClients.cidrs` falls back to
-`kubeApiServer.cidrs` when empty, which is wrong in that topology.
+IP that is **not** in the `kubernetes` Service's EndpointSlices, for example
+because it sits behind a front-end proxy.
+`networkPolicy.webhookClients.cidrs` falls back to `kubeApiServer.cidrs` when
+empty, which is wrong in that topology.
 
 **Fix:** discover the actual caller IP (check the API-server audit log or the
 `kube-apiserver` Pod's `--advertise-address`) and set
