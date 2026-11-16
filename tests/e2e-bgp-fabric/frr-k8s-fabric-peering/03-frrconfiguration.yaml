@@ -1,0 +1,60 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The per-node FRRConfiguration of a compute node on the BGP fabric
+# (docs/reference/networking/bgp-node-substrate.md): one router in the VRF
+# "fabric" with the node's ASN, router ID and fabric loopbacks, and two
+# unnumbered eBGP sessions with BFD, one per uplink. NODE_NAME is a
+# placeholder the suite replaces with sed; a person replaces it by hand.
+#
+# `mode: all` announces the router's listed prefixes, not its RIB. The
+# sessions accept nothing but the two default routes.
+---
+apiVersion: frrk8s.metallb.io/v1beta1
+kind: FRRConfiguration
+metadata:
+  name: fabric-NODE_NAME
+  namespace: frr-k8s-system
+spec:
+  nodeSelector:
+    matchLabels:
+      kubernetes.io/hostname: NODE_NAME
+  bgp:
+    bfdProfiles:
+    - name: fabric
+      receiveInterval: 300
+      transmitInterval: 300
+      detectMultiplier: 3
+    routers:
+    - asn: 4200000001
+      id: 192.0.2.1
+      vrf: fabric
+      prefixes:
+      - 192.0.2.1/32
+      - 2001:db8::1/128
+      neighbors:
+      - interface: fab1
+        dynamicASN: external
+        bfdProfile: fabric
+        toAdvertise:
+          allowed:
+            mode: all
+        toReceive:
+          allowed:
+            mode: filtered
+            prefixes:
+            - prefix: 0.0.0.0/0
+            - prefix: ::/0
+      - interface: fab2
+        dynamicASN: external
+        bfdProfile: fabric
+        toAdvertise:
+          allowed:
+            mode: all
+        toReceive:
+          allowed:
+            mode: filtered
+            prefixes:
+            - prefix: 0.0.0.0/0
+            - prefix: ::/0

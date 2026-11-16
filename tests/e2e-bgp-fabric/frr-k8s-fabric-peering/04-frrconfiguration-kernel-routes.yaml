@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# What the typed FRRConfiguration API cannot say: announcing the kernel
+# routes of an OVN VRF (here the stand-in ovnvrf42) over the fabric sessions.
+# The typed part adds a router in ovnvrf42 and imports that VRF into the
+# fabric router. raw.rawConfig redistributes the kernel routes into the
+# ovnvrf42 router and widens the outbound lists frr-k8s generates for the two
+# sessions. frr-k8s names a session's outbound list
+# <neighbor ID>-allowed-<family>, the ID of an unnumbered neighbor in a VRF is
+# <interface>-<vrf>, and the generated entries start at seq 1, so seq 100
+# appends after them. NODE_NAME is a placeholder the suite replaces with sed.
+---
+apiVersion: frrk8s.metallb.io/v1beta1
+kind: FRRConfiguration
+metadata:
+  name: fabric-kernel-routes-NODE_NAME
+  namespace: frr-k8s-system
+spec:
+  nodeSelector:
+    matchLabels:
+      kubernetes.io/hostname: NODE_NAME
+  bgp:
+    routers:
+    - asn: 4200000001
+      vrf: ovnvrf42
+    - asn: 4200000001
+      vrf: fabric
+      imports:
+      - vrf: ovnvrf42
+  raw:
+    priority: 10
+    rawConfig: |
+      router bgp 4200000001 vrf ovnvrf42
+       address-family ipv4 unicast
+        redistribute kernel
+       exit-address-family
+       address-family ipv6 unicast
+        redistribute kernel
+       exit-address-family
+      exit
+      ip prefix-list fab1-fabric-allowed-ipv4 seq 100 permit 198.51.100.0/24 ge 32
+      ip prefix-list fab2-fabric-allowed-ipv4 seq 100 permit 198.51.100.0/24 ge 32
+      ipv6 prefix-list fab1-fabric-allowed-ipv6 seq 100 permit 2001:db8::/64 ge 128
+      ipv6 prefix-list fab2-fabric-allowed-ipv6 seq 100 permit 2001:db8::/64 ge 128

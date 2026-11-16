@@ -130,6 +130,11 @@ edit the numbered fixtures by hand; change the generator and re-run it.
   needs libvirtd on an amd64 node and runs in the non-blocking
   `e2e-nova-libvirt` job, so neither `make e2e` nor the blocking nova
   leg of `e2e-operator` may sweep it up.
+- `tests/e2e-bgp-fabric/` — the suite that peers a kind node with two
+  FRR Pods through frr-k8s lives **outside** `tests/e2e/` on purpose: it
+  needs the frr-k8s overlay (`WITH_FRR_K8S=true make deploy-infra`) and
+  the `vrf` kernel module on the host, and runs in the non-blocking
+  `e2e-bgp-fabric` job, so `make e2e` must not sweep it up.
 - `tests/tempest/` — Tempest API test configuration per service and
   release.
 

@@ -180,8 +180,9 @@ govulncheck:
 # sources), the library of the lab failover suites (tests/lab-failover/lib/),
 # the scripts of the libvirt suites (the guest suite's guest-lib.sh and the
 # POSIX sh guest-user-data.sh), the patch checks the hvo and kna manager
-# builds run (images/*/patch-checks.sh) and the BGP fabric lab (run.sh and the
-# POSIX sh setup.sh of every box under tests/lab/bgp-fabric/).
+# builds run (images/*/patch-checks.sh), the BGP fabric lab (run.sh and the
+# POSIX sh setup.sh of every box under tests/lab/bgp-fabric/) and the POSIX sh
+# fixture scripts of the BGP fabric suite (tests/e2e-bgp-fabric/).
 shellcheck:
 	@echo "Linting hack/*.sh..."
 	@shellcheck --severity=warning hack/*.sh
@@ -199,6 +200,8 @@ shellcheck:
 	@shellcheck --severity=warning images/*/patch-checks.sh
 	@echo "Linting the BGP fabric lab..."
 	@shellcheck --severity=warning tests/lab/bgp-fabric/*.sh tests/lab/bgp-fabric/*/*.sh
+	@echo "Linting the BGP fabric suite scripts..."
+	@shellcheck --severity=warning tests/e2e-bgp-fabric/*/*.sh
 
 .PHONY: chainsaw-lint
 # chainsaw-lint validates every Chainsaw test (tests/**/chainsaw-test.yaml) and
@@ -1025,6 +1028,28 @@ e2e-ovn-overlay:
 	@kubectl version --request-timeout=2s >/dev/null 2>&1 || { echo 'kubectl is not configured or no cluster is reachable' >&2; exit 1; }
 	@[ "$$(kubectl get nodes -l '!node-role.kubernetes.io/control-plane' -o name | wc -l | tr -d ' ')" -ge 2 ] || { echo 'the overlay suite needs a multi-node cluster; run KIND_CONFIG=hack/kind-config-multinode.yaml make deploy-infra first' >&2; exit 1; }
 	chainsaw test --config tests/e2e-ovn-overlay/chainsaw-config.yaml tests/e2e-ovn-overlay/
+
+.PHONY: e2e-bgp-fabric
+# e2e-bgp-fabric runs the suite under tests/e2e-bgp-fabric/ against a kind
+# cluster deployed with WITH_FRR_K8S=true. frr-k8s-fabric-peering labels one
+# node openstack.c5c3.io/frr-k8s=true, prepares a VRF "fabric" on it, starts
+# two FRR Pods as its leaf pair, applies the per-node FRRConfiguration and
+# asserts the sessions, BFD, the routes at both ends, the node's untouched
+# main table and the raw snippet that announces kernel routes. The suite
+# lives OUTSIDE tests/e2e/ because it needs the frr-k8s overlay and the `vrf`
+# kernel module on the host, neither of which `make e2e` asks for.
+#
+# The preflights are kept separate so a kubectl/cluster reachability failure
+# is not conflated with a cluster deployed without the overlay. The third
+# refuses any cluster with a node that kind did not create (providerID
+# kind://): the suite replaces the device fabric of the node it labels, which
+# on a compute cluster is the node's real fabric VRF. This target reproduces
+# the e2e-bgp-fabric CI job locally.
+e2e-bgp-fabric:
+	@kubectl version --request-timeout=2s >/dev/null 2>&1 || { echo 'kubectl is not configured or no cluster is reachable' >&2; exit 1; }
+	@kubectl get daemonset frr-k8s -n frr-k8s-system >/dev/null 2>&1 || { echo 'frr-k8s is not deployed; run WITH_FRR_K8S=true make deploy-infra first' >&2; exit 1; }
+	@kubectl get nodes -o json 2>/dev/null | jq -e '.items | length > 0 and all(.spec.providerID // "" | startswith("kind://"))' >/dev/null 2>&1 || { echo 'the BGP fabric suite rewires the network namespace of a node; it runs only against a kind cluster' >&2; exit 1; }
+	chainsaw test --config tests/e2e-bgp-fabric/chainsaw-config.yaml tests/e2e-bgp-fabric/
 
 .PHONY: e2e-nova-libvirt
 # e2e-nova-libvirt runs the two suites of tests/e2e-nova-libvirt/ against a

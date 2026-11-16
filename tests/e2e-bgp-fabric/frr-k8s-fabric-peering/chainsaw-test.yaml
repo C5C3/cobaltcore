@@ -1,0 +1,526 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the node side of the BGP fabric contract
+# (docs/reference/networking/bgp-fabric-contract.md) on frr-k8s, the per-node
+# FRR substrate (docs/reference/networking/bgp-node-substrate.md). One kind
+# node stands in for a compute node, and two FRR Pods stand in for its leaf
+# pair. The suite proves:
+#   - with no labelled node frr-k8s is inert: no DaemonSet pod, an
+#     FRRConfiguration is admitted and creates no session
+#   - the per-node FRRConfiguration of 03-frrconfiguration.yaml, through the
+#     typed API alone, brings up two unnumbered eBGP sessions with BFD in the
+#     VRF "fabric"
+#   - the node's /32 and /128 arrive at both peers with the node's ASN as the
+#     AS path, and the peers' defaults land in the VRF over both uplinks while
+#     the peers' baits 198.18.0.0/15 and 2001:db8:ffff::/48 do not
+#   - the node's main routing table stays untouched: same defaults, no BGP
+#     route, no route over the fabric devices
+#   - the raw snippet of 04-frrconfiguration-kernel-routes.yaml announces the
+#     kernel routes of a stand-in OVN VRF that its widened outbound lists
+#     allow, keeps the baits on the node, and reloads FRR without dropping a
+#     session
+#
+# spec.namespace is frr-k8s-system: upstream's README says the
+# FRRConfiguration instances must be created in the namespace frr-k8s runs in.
+# The namespace exists (the overlay creates it), so chainsaw neither creates
+# nor deletes it. spec.concurrent is false because the fixture Pods own the
+# node's network namespace.
+#
+# Every vtysh and `ip -j` read happens over kubectl exec with stderr
+# discarded (the FRR image ships no vtysh.conf and vtysh prints a notice for
+# it) and is parsed with jq on the runner. Later steps find the node again by
+# its label.
+#
+# The suite marks what it labels and applies with e2e.c5c3.io/bgp-fabric=true
+# (the node and both FRRConfigurations) and removes labels and
+# FRRConfigurations only through that marker. It refuses to start on a cluster
+# with a node that kind did not create (providerID kind://), and while a node
+# it did not mark carries openstack.c5c3.io/frr-k8s.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: frr-k8s-fabric-peering
+spec:
+  namespace: frr-k8s-system
+  concurrent: false
+  steps:
+  # ── Step 1: Guard, inert posture, label ─────────────────────────────────
+  # Refuses a node that kind did not create and a node that carries the label
+  # without the suite's marker, removes whatever a killed run left (the marked
+  # labels, both FRRConfigurations, the three Pods, the ConfigMap), asserts the
+  # inert posture, proves that an FRRConfiguration is admitted and does nothing
+  # while no node carries the label, and then labels the node.
+  - name: guard-inert-label
+    try:
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+          ds="$(kubectl get daemonset frr-k8s -n "$NAMESPACE" --ignore-not-found -o name)"
+          if [ -z "$ds" ]; then
+            echo "ERROR: DaemonSet frr-k8s-system/frr-k8s not found; deploy with WITH_FRR_K8S=true"
+            exit 1
+          fi
+          # The suite replaces the fabric devices of the node it labels, which
+          # on a compute cluster is the node's real VRF "fabric". This guard
+          # runs in the suite, so a direct chainsaw run has it too.
+          nonkind="$(kubectl get nodes -o json | jq -r '.items[]
+            | select((.spec.providerID // "") | startswith("kind://") | not)
+            | .metadata.name')"
+          if [ -n "$nonkind" ]; then
+            echo "ERROR: the suite rewires the network namespace of a node; it runs only against a kind cluster, but kind did not create these nodes:"
+            echo "$nonkind"
+            exit 1
+          fi
+          foreign="$(kubectl get nodes -l 'openstack.c5c3.io/frr-k8s,!e2e.c5c3.io/bgp-fabric' -o name)"
+          if [ -n "$foreign" ]; then
+            echo "ERROR: the suite labels its own node, but these nodes carry openstack.c5c3.io/frr-k8s already:"
+            echo "$foreign"
+            exit 1
+          fi
+
+          node="$(kubectl get nodes -o json | jq -r '[.items[]
+            | select([.spec.taints[]? | select(.effect == "NoSchedule")] | length == 0)
+            | .metadata.name][0] // empty')"
+          if [ -z "$node" ]; then
+            echo "ERROR: no schedulable node"
+            kubectl get nodes -o wide
+            exit 1
+          fi
+
+          # What a killed run left. The FRRConfigurations go first, while
+          # frr-k8s still runs on a labelled node, then the Pods (fabric-node's
+          # preStop hook deletes the devices), then the ConfigMap and the labels.
+          kubectl delete frrconfigurations.frrk8s.metallb.io -n "$NAMESPACE" \
+            -l e2e.c5c3.io/bgp-fabric=true --ignore-not-found --wait=true
+          kubectl delete pod fabric-node fabric-peer-1 fabric-peer-2 -n "$NAMESPACE" \
+            --ignore-not-found --wait=true --timeout=90s
+          kubectl delete configmap fabric-scripts -n "$NAMESPACE" --ignore-not-found
+          kubectl label nodes -l e2e.c5c3.io/bgp-fabric=true \
+            openstack.c5c3.io/frr-k8s- e2e.c5c3.io/bgp-fabric- >/dev/null
+
+          # Inert: no DaemonSet pod and no session state left. The
+          # statuscleaner removes the states of a node frr-k8s left.
+          last=""
+          for _ in $(seq 1 60); do
+            desired="$(kubectl get daemonset frr-k8s -n "$NAMESPACE" -o jsonpath='{.status.desiredNumberScheduled}')"
+            sessions="$(kubectl get bgpsessionstates.frrk8s.metallb.io -n "$NAMESPACE" -o name | wc -l | tr -d ' ')"
+            last="desiredNumberScheduled=${desired} BGPSessionStates=${sessions}"
+            if [ "$desired" = "0" ] && [ "$sessions" = "0" ]; then
+              break
+            fi
+            sleep 2
+          done
+          if [ "$last" != "desiredNumberScheduled=0 BGPSessionStates=0" ]; then
+            echo "ERROR: frr-k8s is not inert with no labelled node: ${last}"
+            exit 1
+          fi
+          # The statuscleaner serves the validating webhook; an apply before
+          # it answers fails with 'failed calling webhook
+          # "frrconfigurationsvalidationwebhook.metallb.io"'.
+          kubectl wait --for=condition=Available deployment/frr-k8s-statuscleaner \
+            -n "$NAMESPACE" --timeout=120s
+          echo "OK: inert, desiredNumberScheduled 0, no BGPSessionState, statuscleaner Available"
+
+          # Admitted and does nothing: with no labelled node the per-node
+          # configuration creates no session.
+          sed "s/NODE_NAME/${node}/g" 03-frrconfiguration.yaml \
+            | kubectl label --local -f - e2e.c5c3.io/bgp-fabric=true -o yaml \
+            | kubectl apply -n "$NAMESPACE" -f -
+          for _ in $(seq 1 15); do
+            sessions="$(kubectl get bgpsessionstates.frrk8s.metallb.io -n "$NAMESPACE" -o name | wc -l | tr -d ' ')"
+            if [ "$sessions" != "0" ]; then
+              echo "ERROR: ${sessions} BGPSessionState(s) appeared while no node carries the label"
+              exit 1
+            fi
+            sleep 1
+          done
+          kubectl delete frrconfigurations.frrk8s.metallb.io "fabric-${node}" -n "$NAMESPACE" --wait=true
+          echo "OK: an FRRConfiguration is admitted and creates no BGPSessionState"
+
+          kubectl label node "$node" openstack.c5c3.io/frr-k8s=true e2e.c5c3.io/bgp-fabric=true --overwrite
+          echo "OK: labelled ${node} with openstack.c5c3.io/frr-k8s=true and the suite's marker"
+    cleanup:
+    - script:
+        content: |
+          kubectl label nodes -l e2e.c5c3.io/bgp-fabric=true \
+            openstack.c5c3.io/frr-k8s- e2e.c5c3.io/bgp-fabric- >/dev/null
+          echo "OK: removed openstack.c5c3.io/frr-k8s and the suite's marker from the suite's node"
+  # ── Step 2: Prepare the node ────────────────────────────────────────────
+  # fabric-node creates the VRF "fabric" with the fabric loopbacks. It never
+  # becomes Ready on a kernel without the vrf module: node-prep.sh up exits 1
+  # with an ERROR line in the Pod log. The cleanup deletes the Pod before the
+  # ConfigMap, so the preStop hook runs while its script is mounted.
+  - name: node
+    try:
+    - script:
+        timeout: 1m
+        shell: bash
+        content: |
+          set -euo pipefail
+          kubectl create configmap fabric-scripts -n "$NAMESPACE" \
+            --from-file=node-prep.sh --from-file=peer.sh \
+            --from-file=peer-frr.conf --from-file=daemons
+    - apply:
+        file: 01-fabric-node.yaml
+    - script:
+        timeout: 3m
+        shell: bash
+        content: |
+          set -euo pipefail
+          if ! kubectl wait --for=condition=Ready pod/fabric-node -n "$NAMESPACE" --timeout=120s; then
+            echo "ERROR: fabric-node did not become Ready; its log:"
+            kubectl logs fabric-node -n "$NAMESPACE" 2>&1 || true
+            exit 1
+          fi
+          echo "OK: fabric-node prepared the VRF fabric"
+    cleanup:
+    - script:
+        content: |
+          kubectl delete pod fabric-node -n "$NAMESPACE" --ignore-not-found --wait=true --timeout=60s
+          kubectl delete configmap fabric-scripts -n "$NAMESPACE" --ignore-not-found
+  # ── Step 3: Start the two peers ─────────────────────────────────────────
+  - name: peers
+    try:
+    - apply:
+        file: 02-fabric-peers.yaml
+    - script:
+        timeout: 3m
+        shell: bash
+        content: |
+          set -euo pipefail
+          for pod in fabric-peer-1 fabric-peer-2; do
+            if ! kubectl wait --for=condition=Ready "pod/${pod}" -n "$NAMESPACE" --timeout=120s; then
+              echo "ERROR: ${pod} did not become Ready; its log:"
+              kubectl logs "$pod" -n "$NAMESPACE" 2>&1 || true
+              exit 1
+            fi
+          done
+          echo "OK: fabric-peer-1 and fabric-peer-2 run"
+  # ── Step 4: The DaemonSet runs on the labelled node ─────────────────────
+  - name: daemonset
+    try:
+    - script:
+        timeout: 4m
+        shell: bash
+        content: |
+          set -euo pipefail
+          kubectl rollout status daemonset/frr-k8s -n "$NAMESPACE" --timeout=180s
+          ready="$(kubectl get daemonset frr-k8s -n "$NAMESPACE" -o jsonpath='{.status.numberReady}')"
+          if [ "$ready" != "1" ]; then
+            echo "ERROR: DaemonSet frr-k8s has numberReady ${ready}, want 1"
+            exit 1
+          fi
+          echo "OK: DaemonSet frr-k8s numberReady 1"
+  # ── Step 5: Sessions from the typed API ─────────────────────────────────
+  - name: sessions
+    try:
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+          node="$(kubectl get nodes -l openstack.c5c3.io/frr-k8s=true -o jsonpath='{.items[0].metadata.name}')"
+          sed "s/NODE_NAME/${node}/g" 03-frrconfiguration.yaml \
+            | kubectl label --local -f - e2e.c5c3.io/bgp-fabric=true -o yaml \
+            | kubectl apply -n "$NAMESPACE" -f -
+
+          want='[{"peer":"fab1","vrf":"fabric","bgp":"Established","bfd":"Up"},{"peer":"fab2","vrf":"fabric","bgp":"Established","bfd":"Up"}]'
+          got=""
+          for _ in $(seq 1 120); do
+            got="$(kubectl get bgpsessionstates.frrk8s.metallb.io -n "$NAMESPACE" -o json \
+              | jq -c '[.items[].status | select(.vrf == "fabric")
+                  | {peer, vrf, bgp: .bgpStatus, bfd: .bfdStatus}] | sort_by(.peer)')"
+            if [ "$got" = "$want" ]; then
+              break
+            fi
+            sleep 2
+          done
+          if [ "$got" != "$want" ]; then
+            echo "ERROR: the sessions in VRF fabric are not both Established with BFD Up"
+            echo "  want: ${want}"
+            echo "  got:  ${got}"
+            exit 1
+          fi
+          echo "OK: fab1 and fab2 Established, BFD Up, in VRF fabric"
+
+          result="$(kubectl get frrnodestates.frrk8s.metallb.io "$node" -o json \
+            | jq -r '"\(.status.lastConversionResult) \(.status.lastReloadResult)"')"
+          if [ "$result" != "success success" ]; then
+            echo "ERROR: FRRNodeState ${node} reports conversion and reload '${result}', want 'success success'"
+            exit 1
+          fi
+          echo "OK: FRRNodeState ${node} lastConversionResult and lastReloadResult success"
+    cleanup:
+    - script:
+        content: |
+          kubectl get frrconfigurations.frrk8s.metallb.io -n "$NAMESPACE" \
+            -l e2e.c5c3.io/bgp-fabric=true -o name \
+            | grep -v '/fabric-kernel-routes-' \
+            | xargs -r kubectl delete -n "$NAMESPACE" --ignore-not-found --wait=true
+  # ── Step 6: The node's host routes at both peers ────────────────────────
+  - name: routes-at-peers
+    try:
+    - script:
+        timeout: 3m
+        shell: bash
+        content: |
+          set -euo pipefail
+          check() {
+            local pod="$1" family="$2" prefix="$3" got="" _
+            for _ in $(seq 1 60); do
+              got="$(kubectl exec -n "$NAMESPACE" "$pod" -c frr -- \
+                vtysh -c "show bgp ${family} unicast ${prefix} json" 2>/dev/null \
+                | jq -c '[((.paths // []) | length), (.paths[0].aspath.string // "")]' || true)"
+              if [ "$got" = '[1,"4200000001"]' ]; then
+                echo "OK: ${pod} holds ${prefix} with AS path 4200000001"
+                return 0
+              fi
+              sleep 2
+            done
+            echo "ERROR: ${pod} does not hold ${prefix} on one path with AS path 4200000001 (paths, AS path: ${got})"
+            exit 1
+          }
+          for pod in fabric-peer-1 fabric-peer-2; do
+            check "$pod" ipv4 192.0.2.1/32
+            check "$pod" ipv6 2001:db8::1/128
+          done
+  # ── Step 7: The defaults in the node's VRF, the bait kept out ───────────
+  - name: node-vrf
+    try:
+    - script:
+        timeout: 3m
+        shell: bash
+        content: |
+          set -euo pipefail
+          # The proto bgp default of one family in the VRF, as its protocol
+          # and its sorted next-hop devices.
+          default_of() {
+            kubectl exec -n "$NAMESPACE" fabric-node -- ip -j "$1" route show vrf fabric default 2>/dev/null \
+              | jq -c '[.[] | {protocol, devs: ([.nexthops[]?.dev, .dev] | map(select(. != null)) | sort)}]'
+          }
+          want='[{"protocol":"bgp","devs":["fab1","fab2"]}]'
+          for family in -4 -6; do
+            got=""
+            for _ in $(seq 1 60); do
+              got="$(default_of "$family" || true)"
+              if [ "$got" = "$want" ]; then
+                break
+              fi
+              sleep 2
+            done
+            if [ "$got" != "$want" ]; then
+              echo "ERROR: the ${family} default in VRF fabric is not proto bgp over fab1 and fab2"
+              echo "  want: ${want}"
+              echo "  got:  ${got}"
+              exit 1
+            fi
+            echo "OK: the ${family} default in VRF fabric is proto bgp over fab1 and fab2"
+          done
+
+          # Each peer has to send the node its bait of the family, or the
+          # bait's absence from the VRF proves no inbound filter.
+          for bait in "ipv4 -4 198.18.0.0/15" "ipv6 -6 2001:db8:ffff::/48"; do
+            set -- $bait
+            for pod in fabric-peer-1 fabric-peer-2; do
+              if ! kubectl exec -n "$NAMESPACE" "$pod" -c frr -- \
+                  vtysh -c "show bgp $1 unicast neighbors eth1 advertised-routes json" 2>/dev/null \
+                  | jq -e --arg p "$3" '.advertisedRoutes // {} | has($p)' >/dev/null; then
+                echo "ERROR: ${pod} does not advertise its bait $3 to the node"
+                exit 1
+              fi
+            done
+            held="$(kubectl exec -n "$NAMESPACE" fabric-node -- ip -j "$2" route show vrf fabric "$3" 2>/dev/null)"
+            if [ "$(jq 'length' <<<"$held")" != "0" ]; then
+              echo "ERROR: the bait $3 is in VRF fabric: ${held}"
+              exit 1
+            fi
+            echo "OK: both peers advertise the bait $3 to the node, and it stays out of VRF fabric"
+          done
+  # ── Step 8: The node's main table stays untouched ───────────────────────
+  # A whole-table diff is wrong here: kindnet adds a host route per Pod. The
+  # step compares the two defaults with the snapshots node-prep.sh up took,
+  # and looks for BGP routes and routes over the fabric devices.
+  - name: isolation
+    try:
+    - script:
+        timeout: 3m
+        shell: bash
+        content: |
+          set -euo pipefail
+          in_node() {
+            kubectl exec -n "$NAMESPACE" fabric-node -- "$@"
+          }
+          for family in 4 6; do
+            before="$(in_node cat "/tmp/default-v${family}.before")"
+            now="$(in_node ip "-${family}" route show default)"
+            if [ "$now" != "$before" ]; then
+              echo "ERROR: the IPv${family} default of the main table changed"
+              echo "  before: ${before}"
+              echo "  now:    ${now}"
+              exit 1
+            fi
+            bgp="$(in_node ip "-${family}" route show proto bgp)"
+            if [ -n "$bgp" ]; then
+              echo "ERROR: the IPv${family} main table holds BGP routes:"
+              echo "$bgp"
+              exit 1
+            fi
+            fabric="$(in_node ip "-${family}" route show | { grep -E '(^| )dev (fab1|fab2|fabric)( |$)' || true; })"
+            if [ -n "$fabric" ]; then
+              echo "ERROR: the IPv${family} main table holds routes over the fabric devices:"
+              echo "$fabric"
+              exit 1
+            fi
+            echo "OK: the IPv${family} main table keeps its default, holds no BGP route and no route over fab1, fab2 or fabric"
+          done
+  # ── Step 9: Kernel routes through the raw snippet ───────────────────────
+  - name: kernel-routes
+    try:
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+          node="$(kubectl get nodes -l openstack.c5c3.io/frr-k8s=true -o jsonpath='{.items[0].metadata.name}')"
+          # The four routes node-prep.sh kernel-routes creates in ovnvrf42.
+          real_v4=198.51.100.10/32 real_v6=2001:db8::10/128
+          bait_v4=203.0.113.10/32 bait_v6=2001:db8:0:1::10/128
+
+          # paths <pod> <container> <vrf, or "" for the default VRF> <family>
+          # <prefix>: the number of paths the speaker holds for the prefix. A
+          # failed read prints an ERROR and fails, so a caller assigns the
+          # result on a line of its own under set -e.
+          paths() {
+            local vrf="${3:+vrf $3 }" out
+            if ! out="$(kubectl exec -n "$NAMESPACE" "$1" -c "$2" -- \
+                vtysh -c "show bgp ${vrf}${4} unicast ${5} json" 2>/dev/null)" \
+                || ! jq -e '(.paths // []) | length' <<<"$out"; then
+              echo "ERROR: cannot read ${5} from ${1}" >&2
+              return 1
+            fi
+          }
+          # counters <peer pod>: [connectionsEstablished, connectionsDropped]
+          # of the peer's session to the node. The peer's bgpd keeps both
+          # across the node's reload, and a session that drops moves both.
+          counters() {
+            local out
+            if ! out="$(kubectl exec -n "$NAMESPACE" "$1" -c frr -- \
+                vtysh -c 'show bgp ipv4 unicast summary json' 2>/dev/null \
+                | jq -ec '.peers.eth1 | [.connectionsEstablished, .connectionsDropped] | select(all(. != null))')"; then
+              echo "ERROR: cannot read the connection counters of ${1}'s session to the node" >&2
+              return 1
+            fi
+            echo "$out"
+          }
+          before1="$(counters fabric-peer-1)"
+          before2="$(counters fabric-peer-2)"
+
+          kubectl exec -n "$NAMESPACE" fabric-node -- /bin/sh /config/node-prep.sh kernel-routes
+          sed "s/NODE_NAME/${node}/g" 04-frrconfiguration-kernel-routes.yaml \
+            | kubectl label --local -f - e2e.c5c3.io/bgp-fabric=true -o yaml \
+            | kubectl apply -n "$NAMESPACE" -f -
+
+          for pod in fabric-peer-1 fabric-peer-2; do
+            for route in "ipv4 $real_v4" "ipv6 $real_v6"; do
+              set -- $route
+              got=0
+              for _ in $(seq 1 90); do
+                got="$(paths "$pod" frr "" "$1" "$2" || echo 0)"
+                if [ "$got" -ge 1 ]; then
+                  break
+                fi
+                sleep 2
+              done
+              if [ "$got" -lt 1 ]; then
+                echo "ERROR: ${pod} does not hold the kernel route $2"
+                exit 1
+              fi
+              echo "OK: ${pod} holds the kernel route $2"
+            done
+          done
+
+          # The baits reach the fabric router through the import, or their
+          # absence at the peers proves no outbound filter: the peers' own
+          # inbound lists would drop both.
+          for route in "ipv4 $bait_v4" "ipv6 $bait_v6"; do
+            set -- $route
+            n="$(paths ds/frr-k8s frr fabric "$1" "$2")"
+            if [ "$n" = "0" ]; then
+              echo "ERROR: the bait $2 did not reach the fabric router"
+              exit 1
+            fi
+          done
+          for uplink in fab1 fab2; do
+            for family in ipv4 ipv6; do
+              advertised="$(kubectl exec -n "$NAMESPACE" ds/frr-k8s -c frr -- \
+                vtysh -c "show bgp vrf fabric ${family} unicast neighbors ${uplink} advertised-routes json" 2>/dev/null \
+                | jq -c '.advertisedRoutes // {} | keys')"
+              case "$family" in
+                ipv4) real=$real_v4 bait=$bait_v4 ;;
+                ipv6) real=$real_v6 bait=$bait_v6 ;;
+              esac
+              if ! jq -e --arg r "$real" --arg b "$bait" 'index($r) != null and index($b) == null' <<<"$advertised" >/dev/null; then
+                echo "ERROR: ${uplink} advertises ${advertised}, want ${real} and not ${bait}"
+                exit 1
+              fi
+            done
+          done
+          echo "OK: the fabric router holds both baits and advertises neither"
+
+          for pod in fabric-peer-1 fabric-peer-2; do
+            for route in "ipv4 $bait_v4" "ipv6 $bait_v6"; do
+              set -- $route
+              n="$(paths "$pod" frr "" "$1" "$2")"
+              if [ "$n" != "0" ]; then
+                echo "ERROR: ${pod} holds the bait $2"
+                exit 1
+              fi
+            done
+          done
+          echo "OK: neither peer holds ${bait_v4} or ${bait_v6}"
+
+          # The node's own connectionsDropped counts every drop since its bgpd
+          # started, and a bgpd restart resets it. The peers' counters from
+          # before the apply show what the reload did.
+          after1="$(counters fabric-peer-1)"
+          after2="$(counters fabric-peer-2)"
+          if [ "$after1" != "$before1" ] || [ "$after2" != "$before2" ]; then
+            echo "ERROR: a session to the node dropped across the reload"
+            echo "  [connectionsEstablished, connectionsDropped] at fabric-peer-1: before ${before1}, after ${after1}"
+            echo "  [connectionsEstablished, connectionsDropped] at fabric-peer-2: before ${before2}, after ${after2}"
+            exit 1
+          fi
+          echo "OK: the reload dropped no session (the peers' connection counters stay at ${after1} and ${after2})"
+    cleanup:
+    - script:
+        content: |
+          kubectl get frrconfigurations.frrk8s.metallb.io -n "$NAMESPACE" \
+            -l e2e.c5c3.io/bgp-fabric=true -o name \
+            | grep -E '/fabric-kernel-routes-' \
+            | xargs -r kubectl delete -n "$NAMESPACE" --ignore-not-found --wait=true
+  # On any failure: the fixture Pods, the frr-k8s containers, FRR's running
+  # configuration and the status objects.
+  catch:
+  - script:
+      timeout: 2m
+      shell: bash
+      content: |
+        for pod in fabric-node fabric-peer-1 fabric-peer-2; do
+          echo "=== Pod ${pod} ==="
+          kubectl describe pod "$pod" -n "$NAMESPACE" 2>&1 || true
+          kubectl logs "$pod" -n "$NAMESPACE" --tail=80 2>&1 || true
+        done
+        for container in frr controller; do
+          echo "=== frr-k8s container ${container} ==="
+          kubectl logs ds/frr-k8s -n "$NAMESPACE" -c "$container" --tail=120 2>&1 || true
+        done
+        echo "=== FRR running-config ==="
+        kubectl exec -n "$NAMESPACE" ds/frr-k8s -c frr -- vtysh -c 'show running-config' 2>&1 || true
+        echo "=== FRRNodeState ==="
+        kubectl get frrnodestates.frrk8s.metallb.io -o yaml 2>&1 || true
+        echo "=== BGPSessionStates ==="
+        kubectl get bgpsessionstates.frrk8s.metallb.io -n "$NAMESPACE" -o wide 2>&1 || true
