@@ -73,18 +73,22 @@ the last healthy pod; at `replicas == 1` it sets `maxUnavailable=1` instead,
 allowing eviction so a node drain cannot deadlock on a
 single-replica child.
 
+::: tip Load-driven autoscaling
 `spec.sizing.keystone.api.autoscaling` projects a `HorizontalPodAutoscaler` onto
 the Keystone child, which then scales between its bounds on load. The HPA needs
 metrics-server, so no sizing profile sets it. See
 [Advanced Configuration: Autoscaling (HPA)](./advanced-configuration.md#autoscaling-hpa).
+:::
 
 ---
 
 ## Upgrade the OpenStack release
 
+::: warning Back up the database first
 **Back up the database before starting an upgrade.** Recovery from a bad upgrade
 requires restoring the database because the schema migrations are not
 reversible.
+:::
 
 Before you patch, make the target-release images node-local. The devstack
 preloads only the `2026.1` Keystone image, while all six enabled service children
@@ -95,11 +99,7 @@ or their rollouts stall on image pulls:
 RELEASE=2026.2
 for operator in barbican glance horizon keystone neutron placement; do
   image="ghcr.io/c5c3/${operator}:${RELEASE}"
-  if [[ "${KIND_EXPERIMENTAL_PROVIDER:-docker}" == podman ]]; then
-    podman pull "$image"
-  else
-    docker pull "$image"
-  fi
+  docker pull "$image"
   kind load docker-image "$image" --name cobaltcore
 done
 ```
