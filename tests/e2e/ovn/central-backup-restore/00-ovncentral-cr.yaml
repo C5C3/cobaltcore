@@ -4,10 +4,9 @@
 
 # OVNCentral fixture for the central-backup-restore E2E test.
 #
-# One Raft member per database and one northd replica. The single Northbound
-# member is what makes the restore addressable: status.northbound.
-# internalDbAddress is a comma-separated list of member addresses, and
-# ovsdb-client takes one server.
+# One Raft member per database and one northd replica keep the fixture small.
+# The client accepts the comma-separated member addresses in
+# status.northbound.internalDbAddress for clustered database connections.
 #
 # The backup is suspended so the only snapshot on the volume is the one the
 # manual Job in step 2 writes. A schedule firing beside it would put a second
