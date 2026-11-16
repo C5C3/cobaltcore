@@ -54,11 +54,7 @@ the examples below resolve on the target: `openstack-db`,
    ```bash
    RELEASE=2026.1
    image="ghcr.io/c5c3/keystone:${RELEASE}"
-   if [[ "${KIND_EXPERIMENTAL_PROVIDER:-docker}" == podman ]]; then
-     podman pull "$image"
-   else
-     docker pull "$image"
-   fi
+   docker pull "$image"
    kind load docker-image "$image" --name cobaltcore-target
    ```
 
@@ -68,8 +64,6 @@ the examples below resolve on the target: `openstack-db`,
    external-secrets, openbao-operator, and the Prometheus operator CRDs. Every
    controller-runtime watch registers against this cluster at builder time, so
    those kinds have to be installed here even though no child is written here.
-    The script's preflight also requires the Docker CLI and a running Docker
-    daemon, including when the target cluster uses Podman.
   The rabbitmq-cluster-operator controller also runs here. A ControlPlane's
   shared message bus is provisioned in the ControlPlane's own
    namespace on this cluster, so the controller that turns a `RabbitmqCluster`
@@ -91,11 +85,7 @@ the examples below resolve on the target: `openstack-db`,
    ```bash
    for op in keystone barbican; do
      image="ghcr.io/c5c3/${op}-operator:latest"
-     if [[ "${KIND_EXPERIMENTAL_PROVIDER:-docker}" == podman ]]; then
-       podman pull "$image"
-     else
-       docker pull "$image"
-     fi
+     docker pull "$image"
      kind load docker-image "$image" --name cobaltcore-mgmt
    done
 
