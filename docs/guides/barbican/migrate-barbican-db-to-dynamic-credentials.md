@@ -22,9 +22,9 @@ store, which is a separate concern and is untouched here.
 ## What changes
 
 - **Before:** the Barbican DB password is a long-lived value copied from an
-  OpenBao KV path (`openstack/barbican/{namespace}/{controlplane}/db`) into the
-  `{controlplane}-barbican-db-credentials` Secret. Nothing seeds that path, so
-  on the static branch an operator writes it and rotates it by hand.
+  OpenBao KV path (`openstack/barbican/{namespace}/{controlplane name}/db`) into
+  the `{controlplane name}-barbican-db-credentials` Secret. Nothing seeds that
+  path, so on the static branch an operator writes it and rotates it by hand.
 - **After:** the c5c3 operator projects a per-ControlPlane
   [`VaultDynamicSecret`](https://external-secrets.io/) generator that reads
   short-lived credentials from the OpenBao database engine
@@ -103,7 +103,7 @@ The engine role for a tenant only exists once its MariaDB is Ready and
 # BAO_TOKEN must be exported. Replace these with the ControlPlane namespace/name.
 CONTROLPLANE_NAMESPACE=openstack
 CONTROLPLANE_NAME=controlplane
-bash deploy/openbao/bootstrap/setup-database-tenant.sh \
+bash deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh \
   "${CONTROLPLANE_NAMESPACE}" "${CONTROLPLANE_NAME}"
 ```
 
