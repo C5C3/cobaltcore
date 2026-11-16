@@ -265,6 +265,16 @@ test_special_suites_run_only_their_own_job() {
   expect_all false e2e-controlplane e2e-controlplane-sso e2e-external-keystone e2e-chaos tempest
 }
 
+test_bgp_fabric_suite_change() {
+  # The BGP fabric job loads no run-scoped image, so its suite or overlay alone
+  # schedules nothing else, the image build included.
+  scenario "a BGP fabric suite or frr-k8s overlay edit" refs/heads/main FILTER_tests_bgp_fabric=true
+  expect e2e-bgp-fabric true
+  expect_all false build-e2e-images e2e-infra e2e-ovn-overlay e2e-nova-libvirt has-e2e-operators
+  # shellcheck disable=SC2086 # deliberate: expand the job list
+  expect_all false $EXPENSIVE
+}
+
 # ---------------------------------------------------------------------------
 # The canary
 # ---------------------------------------------------------------------------
@@ -632,9 +642,9 @@ expect_night() {
   expect_all false go docs helm target-cluster-chart e2e-infra e2e-prometheus \
     e2e-controlplane e2e-controlplane-sso e2e-external-keystone \
     e2e-autoscaling e2e-multicluster e2e-orders-multicluster e2e-ovn-overlay \
-    e2e-nova-libvirt e2e-operator-upgrade tempest keystone-pressure \
-    measure-sizing actionlint changed-tempest changed-proxy changed-ovn \
-    changed-libvirt has-e2e-operators
+    e2e-nova-libvirt e2e-bgp-fabric e2e-operator-upgrade tempest \
+    keystone-pressure measure-sizing actionlint changed-tempest changed-proxy \
+    changed-ovn changed-libvirt has-e2e-operators
   expect_all '[]' changed-operators changed-services tempest-services
   expect test-targets "$SENTINEL_TARGETS"
   expect_all "$SENTINEL_OPERATORS" e2e-operators e2e-operator-upgrade-operators
@@ -718,7 +728,8 @@ test_outputs_are_complete() {
   local expected key
   expected="noop go docs helm target-cluster-chart e2e-infra e2e-chaos e2e-chaos-random
     e2e-prometheus e2e-controlplane e2e-controlplane-sso e2e-external-keystone
-    e2e-autoscaling e2e-multicluster e2e-orders-multicluster e2e-operator-upgrade tempest measure-sizing
+    e2e-autoscaling e2e-multicluster e2e-orders-multicluster e2e-ovn-overlay e2e-nova-libvirt
+    e2e-bgp-fabric e2e-operator-upgrade tempest measure-sizing
     keystone-pressure
     actionlint changed-tempest
     changed-proxy changed-ovn changed-libvirt build-e2e-images has-e2e-operators changed-operators
@@ -763,6 +774,7 @@ test_federation_proxy_change
 test_ovn_image_change
 test_libvirt_image_change
 test_special_suites_run_only_their_own_job
+test_bgp_fabric_suite_change
 test_shared_substrate_runs_the_canary
 test_openbao_change_adds_barbican
 test_korc_pin_change_adds_c5c3

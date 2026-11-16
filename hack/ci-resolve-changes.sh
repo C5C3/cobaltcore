@@ -179,7 +179,7 @@ if [[ "${noop}" == "true" ]]; then
   for out in go docs helm target-cluster-chart has-e2e-operators e2e-infra \
     e2e-chaos e2e-chaos-random e2e-prometheus e2e-controlplane e2e-controlplane-sso \
     e2e-external-keystone e2e-autoscaling e2e-multicluster \
-    e2e-orders-multicluster e2e-ovn-overlay e2e-nova-libvirt e2e-operator-upgrade tempest measure-sizing changed-tempest \
+    e2e-orders-multicluster e2e-ovn-overlay e2e-nova-libvirt e2e-bgp-fabric e2e-operator-upgrade tempest measure-sizing changed-tempest \
     changed-proxy changed-ovn changed-libvirt build-e2e-images actionlint keystone-pressure; do
     emit "$out" false
   done
@@ -381,6 +381,17 @@ if filter_on tests_nova_libvirt || filter_on nova || filter_on image_nova ||
 fi
 e2e_nova_libvirt=$(or_force "$cond")
 
+# The BGP fabric job. Its inputs are its suite and the frr-k8s overlay under
+# deploy/overlays/kind/frr-k8s/: the suite peers a kind node with two FRR Pods
+# through frr-k8s, and nothing else reaches it. It loads no run-scoped image,
+# so it never schedules build-e2e-images. Any other deploy/ or hack/ edit
+# reaches it only under ci:full: such an edit reaches e2e-infra through the
+# canary, and listing it here would start a self-hosted kind job for every
+# helper change.
+cond=false
+if filter_on tests_bgp_fabric; then cond=true; fi
+e2e_bgp_fabric=$(or_force "$cond")
+
 # One upgrade job per operator whose code changed (go_common included, as for
 # the e2e-operator legs) or whose own suite changed, and every operator when an
 # input all the upgrade jobs share changed.
@@ -563,7 +574,8 @@ if [[ "${EVENT_NAME}" == "schedule" || "${EVENT_NAME}" == "workflow_dispatch" ]]
   for flag in go docs helm target_cluster_chart e2e_infra e2e_prometheus \
     e2e_controlplane e2e_controlplane_sso e2e_external_keystone \
     e2e_autoscaling e2e_multicluster e2e_orders_multicluster e2e_ovn_overlay \
-    e2e_nova_libvirt e2e_operator_upgrade tempest keystone_pressure measure \
+    e2e_nova_libvirt e2e_bgp_fabric e2e_operator_upgrade tempest \
+    keystone_pressure measure \
     actionlint changed_tempest changed_proxy changed_ovn changed_libvirt \
     has_e2e_operators; do
     printf -v "$flag" false
@@ -599,6 +611,7 @@ emit e2e-multicluster "$e2e_multicluster"
 emit e2e-orders-multicluster "$e2e_orders_multicluster"
 emit e2e-ovn-overlay "$e2e_ovn_overlay"
 emit e2e-nova-libvirt "$e2e_nova_libvirt"
+emit e2e-bgp-fabric "$e2e_bgp_fabric"
 emit e2e-operator-upgrade "$e2e_operator_upgrade"
 emit tempest "$tempest"
 emit keystone-pressure "$keystone_pressure"
