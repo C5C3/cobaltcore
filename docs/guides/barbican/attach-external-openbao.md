@@ -46,12 +46,11 @@ which stands in below for the server you already run.
 :::
 
 The OpenBao or HashiCorp Vault server must be reachable from the cluster over
-`https`; plain HTTP is rejected at admission. Have the `bao` or `vault` CLI
-configured for that server and a token with write access for section 1. The
-section's commands use `bao`; use the equivalent `vault` commands for Vault.
-`jq` must be on `PATH` for section 4's token extraction and section 5's
-condition readouts. On the devstack, the server stand-in is
-`https://openbao-instance.openstack.svc:8200`.
+`https`. Have the `bao` or `vault` CLI configured for that server and a token
+with write access for section 1. The section's commands use `bao`; use the
+equivalent `vault` commands for Vault.  `jq` must be on `PATH` for section 4's
+token extraction and section 5's condition readouts. On the devstack, the server
+stand-in is `https://openbao-instance.openstack.svc:8200`.
 
 ## 1. What the server must carry
 
