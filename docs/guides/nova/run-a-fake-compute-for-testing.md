@@ -71,10 +71,11 @@ Three settings in the manifest make a compute run without a hypervisor:
 
 `[DEFAULT] host` comes from `OS_DEFAULT__HOST`, set to the pod's node name,
 `cobaltcore-control-plane` on the devstack (`<CLUSTER_NAME>-control-plane` when
-you set `CLUSTER_NAME` for `make deploy-infra`). The OVN chassis on a node
-registers under the node's name, and neutron binds a port only to a host that
-has a live chassis, so a compute under any other name would leave every port
-unbound once a chassis runs there.
+you set `CLUSTER_NAME` for `make deploy-infra`). Replace
+`cobaltcore-control-plane` in the commands below with that name if it differs.
+The OVN chassis on a node registers under the node's name, and neutron binds a
+port only to a host that has a live chassis, so a compute under any other name
+would leave every port unbound once a chassis runs there.
 
 ## Steps
 
@@ -137,17 +138,28 @@ service row reads `up`. The scheduler's periodic discovery is described in
 
 A flavor the fake driver can satisfy, a 1 MiB image it never reads, and a server
 without a network. If you kept `demo-server` from the quick start's optional
-server boot, it is already this server; skip to step 5.
+server boot, it is already this server; skip to step 5. If a previous attempt
+left `m1.nano` or `boot-image` behind without the server, delete those resources
+before running this block, or reuse them by skipping their create commands.
 
 ```bash
+set -euo pipefail
 openstack --insecure flavor create --vcpus 1 --ram 128 --disk 1 m1.nano
 truncate -s 1M /tmp/boot-image.raw
 openstack --insecure image create --disk-format raw --container-format bare \
   --file /tmp/boot-image.raw boot-image
+status=
 for _ in $(seq 30); do
-  [ "$(openstack --insecure image show boot-image -f value -c status)" = active ] && break
+  status="$(openstack --insecure image show boot-image -f value -c status)"
+  if [ "$status" = active ]; then
+    break
+  fi
   sleep 2
 done
+if [ "$status" != active ]; then
+  echo "boot-image did not become active within 60 seconds" >&2
+  exit 1
+fi
 openstack --insecure server create --image boot-image --flavor m1.nano \
   --nic none --wait demo-server
 openstack --insecure server show demo-server -c status -f value
@@ -166,6 +178,7 @@ again.
 
 ### 5. (Optional) Resize the server
 
+Use this step only if you want to exercise Nova's same-host resize path.
 The fake compute is the only host, so a resize must stay on the host where the
 server already runs. nova leaves that host out of the candidates unless
 `allow_resize_to_same_host` is set, and the resize then finds no valid host.
@@ -210,7 +223,10 @@ openstack --insecure server resize confirm demo-server
 ```
 
 The status reads `VERIFY_RESIZE` before the confirm and `ACTIVE` after it. To
-take the option out again, set the override to `null` with the same patch shape:
+take the option out again, set the override to `null` with the same patch
+shape. This clears all of `services.nova.extraConfig`; use it only if this is
+the field's only entry. If the ControlPlane has other Nova overrides, remove
+this key while preserving those entries.
 
 ```bash
 kubectl patch controlplane controlplane -n openstack --type merge \
