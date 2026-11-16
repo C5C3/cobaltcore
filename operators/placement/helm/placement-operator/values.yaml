@@ -157,10 +157,14 @@ networkPolicy:
   # Kubernetes API server reachability. When networkPolicy is
   # enabled, both cidrs and ports MUST be non-empty — an empty list would render
   # an open egress rule (fail-closed guard in templates/networkpolicy.yaml).
-  # Take the addresses from the kubernetes Endpoints, not the Service VIP
-  # (10.96.0.1): an enforcing CNI DNATs the VIP to an endpoint IP before it
-  # evaluates policy, so a rule naming the VIP never matches. List every IP:
-  #   kubectl get endpoints kubernetes -n default -o json
+  # Take addresses from the EndpointSlices for the `kubernetes` Service, not
+  # its Service VIP. Kubernetes leaves the order of Service DNAT and policy
+  # evaluation to the CNI; the Placement e2e suite confirms kindnet on kind
+  # v0.33 evaluates after DNAT. Verify other CNI behavior before relying on
+  # this. Use /32 for IPv4 addresses and /128 for IPv6; list every ready
+  # address and port:
+  #   kubectl get endpointslices -n default \
+  #     -l kubernetes.io/service-name=kubernetes
   # On a kind devstack that is the control-plane node on the kind bridge, e.g.:
   #   cidrs: ["172.18.0.2/32"]
   #   ports: [6443]
