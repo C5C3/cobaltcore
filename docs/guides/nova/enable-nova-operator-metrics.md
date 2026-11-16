@@ -16,9 +16,9 @@ This guide walks an operator through turning on the Prometheus ServiceMonitor
 shipped with the `nova-operator` Helm chart, importing the reference Grafana
 dashboard, and verifying that scrape targets transition to `Up`.
 
-The nova-operator emits the shared sub-reconciler instrumentation under the
-`nova_operator` prefix, plus four per-CR collectors covering the two Job-driven
-paths:
+The nova-operator emits shared sub-reconciler instrumentation for both `Nova`
+and `NovaCompute` under the `nova_operator` prefix, plus four per-Nova
+collectors covering the two Job-driven paths:
 
 | Metric | Type | Labels |
 | --- | --- | --- |
@@ -29,17 +29,19 @@ paths:
 | `nova_operator_db_archive_total` | counter | `nova`, `namespace`, `result` |
 | `nova_operator_db_archive_duration_seconds` | histogram | `nova`, `namespace` |
 
-`sub_reconciler` carries eighteen values: `Secrets`, `DBConnectionSecrets`,
-`TransportURLSecret`, `Config`, `ComputeConfig`, `Database`, `Conductor`,
-`Scheduler`, `Metadata`, `ConsoleProxy`, `Deployment`, `DBArchive`, `HTTPRoute`,
-`MetadataHTTPRoute`, `ConsoleHTTPRoute`, `HealthCheck`, `HPA` and
-`NetworkPolicy`. All eighteen come from the one `Nova` pipeline; the API group
-has no satellite kind whose controller could add more. The two job pairs carry
-the CR name and its namespace in place of a sub-reconciler: they measure Jobs,
-which is work that happens outside a reconcile.
+`sub_reconciler` carries twenty-seven values across both pipelines. `Nova`
+contributes nineteen: `Secrets`, `DBConnectionSecrets`, `TransportURLSecret`,
+`Config`, `ComputeConfig`, `Database`, `Conductor`, `Scheduler`, `Metadata`,
+`ConsoleProxy`, `Deployment`, `DBArchive`, `HTTPRoute`, `MetadataHTTPRoute`,
+`ConsoleHTTPRoute`, `HealthCheck`, `HPA`, `VPA` and `NetworkPolicy`.
+`NovaCompute` contributes eight: `NovaRef`, `Nodes`, `PoolConfig`, `DaemonSet`,
+`ComputeVPA`, `Aggregates`, `Services` and `Traits`. Both pipelines share one
+instrumenter and the same metric vectors. For the controller-side contract
+(which step drives which condition), see
+[Nova Reconciler Architecture](../../reference/nova/nova-reconciler.md).
 
-For the controller-side contract (which sub-reconciler drives which condition),
-see [Nova Reconciler Architecture](../../reference/nova/nova-reconciler.md).
+The two job pairs carry the Nova CR name and namespace instead of a
+sub-reconciler label because they record Job lifecycles, not reconcile steps.
 
 ## Prerequisites
 
@@ -56,10 +58,14 @@ Follow that tutorial through the `nova` block of Step 4 and the
 examples below is one that devstack produces.
 :::
 
-For a non-kind installation, install the prometheus-operator CRDs and configure
-Prometheus's `serviceMonitorSelector` to match the ServiceMonitor labels and
-`serviceMonitorNamespaceSelector` to include `nova-system`. The db-sync series
-in Step 3 requires a reconciled `Nova`. On the devstack that is
+Run the commands below from a workstation with `kubectl` access to the
+cluster, `curl` and `jq`; the direct Helm path also requires `helm`. For a
+non-kind installation, install the prometheus-operator CRDs and configure
+Prometheus's `serviceMonitorSelector` to match
+`app.kubernetes.io/name: nova-operator` and
+`app.kubernetes.io/instance: <release-name>`. Its
+`serviceMonitorNamespaceSelector` must include `nova-system`. The db-sync
+series in Step 3 requires a reconciled `Nova`. On the devstack that is
 `controlplane-nova`, projected when the ControlPlane declares the compute
 service.
 
@@ -103,8 +109,10 @@ If you installed the operator directly with Helm (not through Flux), set the
 value with a rolling `helm upgrade` instead:
 
 ```bash
+CHART_VERSION="$(helm list -n nova-system --filter '^nova-operator$' -o json \
+  | jq -r '.[0].chart // "" | sub("^nova-operator-"; "")')"
 helm upgrade nova-operator oci://ghcr.io/c5c3/charts/nova-operator \
-  --namespace nova-system --reuse-values \
+  --namespace nova-system --version "$CHART_VERSION" --reuse-values \
   --set monitoring.serviceMonitor.enabled=true
 ```
 
@@ -123,11 +131,12 @@ credentials.
 
 The reference dashboard ships in-repo at
 `operators/nova/dashboards/nova-operator.json` (uid `nova-operator`). Its five
-panels are the duration quantiles per sub-reconciler, the error rate per
-condition type, db-sync duration p95 beside the failed-run rate per CR, the
-archive runs broken out per result with their own p95, and the
-controller-runtime end-to-end reconcile histogram filtered to the `nova`
-controller. Import it via the Grafana UI or provision it from a ConfigMap.
+panels are the duration quantiles per sub-reconciler across both pipelines, the
+error rate per condition type, db-sync duration p95 beside the failed-run rate
+per CR, the archive runs broken out per result with their own p95, and the
+controller-runtime end-to-end reconcile histogram filtered to the `nova` and
+`novacompute` controllers. Import it via the Grafana UI or provision it from a
+ConfigMap.
 
 ## Step 3: Verify the target
 
@@ -137,48 +146,84 @@ Keep the port-forward running in a separate terminal:
 kubectl -n monitoring port-forward svc/prometheus-operated 9090:9090
 ```
 
-For an existing Prometheus, replace `monitoring` with its namespace.
+For an existing Prometheus, replace the namespace, Service name and remote port
+with those of its HTTP API.
 In another terminal, query the targets:
 
 ```bash
-curl -s 'http://localhost:9090/api/v1/targets' \
-  | jq '.data.activeTargets[] | select(.labels.namespace == "nova-system") | .health'
+curl --fail --silent --show-error 'http://localhost:9090/api/v1/targets?state=active' \
+  | jq -e '
+      [.data.activeTargets[]? |
+        select(.labels.namespace == "nova-system") |
+        {health, lastScrape, lastError}] as $targets |
+      if ($targets | length) == 0 then
+        error("no Nova operator target; check Prometheus ServiceMonitor selectors")
+      elif any($targets[]; .health != "up") then
+        error("a Nova operator target is not up: " + ($targets | tojson))
+      else $targets end'
 ```
 
-Expect `"up"`. Then confirm the series exist:
+The query fails if Prometheus has not selected a target or if one is down;
+inspect `lastError` in the output. If no target appears, recheck both
+ServiceMonitor selectors. If a target is down, confirm Prometheus can reach the
+metrics port. When the Nova NetworkPolicy is enabled, add the Prometheus source
+to `networkPolicy.allowMetricsFrom`; see
+[Enable the Nova Operator NetworkPolicy](./enable-nova-operator-networkpolicy.md).
+
+Then confirm the series exist:
 
 ```bash
-curl -s 'http://localhost:9090/api/v1/query?query=nova_operator_reconcile_duration_seconds_count' \
-  | jq '.data.result | length'
+curl --fail --silent --show-error \
+  'http://localhost:9090/api/v1/query?query=nova_operator_reconcile_duration_seconds_count' \
+  | jq -r '
+      if .status != "success" then
+        error("Prometheus query failed: " + (.error // "unknown error"))
+      else (.data.result | length) end'
 ```
 
-A non-zero result count means the operator has reconciled at least one `Nova`
-since the scrape began.
+A non-zero result count means the operator has recorded at least one reconcile
+observation for a `Nova` or `NovaCompute` since its process started. Prometheus
+scrapes the histogram's cumulative count; restarting the operator resets it.
 
 The two job pairs stay empty until a Job terminates, and each fills from a
 different event:
 
 ```bash
-curl -s 'http://localhost:9090/api/v1/query?query=nova_operator_db_sync_total' \
-  | jq '.data.result[] | {nova: .metric.nova, result: .metric.result, value: .value[1]}'
+curl --fail --silent --show-error \
+  'http://localhost:9090/api/v1/query?query=nova_operator_db_sync_total' \
+  | jq -r '
+      if .status != "success" then
+        error("Prometheus query failed: " + (.error // "unknown error"))
+      else
+        .data.result[]? |
+        {nova: .metric.nova, result: .metric.result, value: .value[1]}
+      end'
 ```
 
 The db-sync pair takes its sample when the `{name}-db-sync` Job of a `Nova`
-completes, which the ControlPlane devstack does once, while it projects
-`controlplane-nova`. Expect one sample with `nova: "controlplane-nova"` and
-`result: "succeeded"`. The three release-upgrade Jobs, `{name}-db-expand`,
+reaches a terminal state, which the ControlPlane devstack does once while it
+projects `controlplane-nova`. A successful initial run yields a sample with
+`nova: "controlplane-nova"` and `result: "succeeded"`; failed terminal runs use
+`result: "failed"`. The three release-upgrade Jobs, `{name}-db-expand`,
 `{name}-db-migrate` and `{name}-db-contract`, feed the same pair when an upgrade
-runs. The operator records each run once per Job UID through an annotation on
-the CR, so an operator restart after that migration leaves the pair empty until
-the next Job terminates.
+runs. After the operator records a run, its Job-UID annotation prevents a
+restart from recording that run again; the pair stays empty until another
+database Job terminates.
 
 The db-archive pair fills on the first run of the `controlplane-nova-db-archive`
 CronJob, `@daily` unless `services.nova.dbArchive.schedule` on the ControlPlane
 says otherwise:
 
 ```bash
-curl -s 'http://localhost:9090/api/v1/query?query=nova_operator_db_archive_total' \
-  | jq '.data.result[] | {nova: .metric.nova, result: .metric.result, value: .value[1]}'
+curl --fail --silent --show-error \
+  'http://localhost:9090/api/v1/query?query=nova_operator_db_archive_total' \
+  | jq -r '
+      if .status != "success" then
+        error("Prometheus query failed: " + (.error // "unknown error"))
+      else
+        .data.result[]? |
+        {nova: .metric.nova, result: .metric.result, value: .value[1]}
+      end'
 ```
 
 Only the Jobs that CronJob controls are counted, so a Job created by hand from
