@@ -13,6 +13,10 @@ to the minimum required for correct reconciliation. For the
 authoritative rule table, failure modes, and schema contract, see
 [Keystone Operator NetworkPolicy](../../reference/keystone/keystone-operator-networkpolicy.md).
 
+Kubernetes NetworkPolicies combine allowed connections additively. Inspect
+other policies that select the operator pod in `keystone-system`; they may
+allow traffic beyond this chart's rules.
+
 > **Scope.** This guide covers the NetworkPolicy that protects the
 > **operator pod itself**. For the per-CR NetworkPolicy that protects
 > Keystone API pods, see the
@@ -33,50 +37,59 @@ Follow that tutorial through to its final **Verify** step, so the keystone-opera
 is running and a `keystone` CR is `Ready` in `openstack`.
 :::
 
-1. **Permission to read the `kubernetes` default Service's endpoints** in
-   order to discover the API server CIDR:
-
-   ```bash
-   kubectl auth can-i get endpoints/kubernetes -n default
-   ```
-
-2. **Operator deployment whose chart values you can set.** This feature is
-   gated by chart values. On the tutorial devstacks the operator is a Flux
-   `HelmRelease`, so you set the values on its `spec.values` (section 2); a
-   directly Helm-managed install uses `helm upgrade`. If you installed the
-   operator via `hack/ci-deploy-operator.sh` or a raw manifest, first migrate
-   to one of those chart-value paths.
+The commands require `kubectl` and `jq`; direct Helm upgrades also require
+`helm`. You need permission to list EndpointSlices in `default` (check with
+`kubectl auth can-i list endpointslices.discovery.k8s.io -n default`) and an
+operator deployment managed by a Helm chart. The Quick Start uses a Flux
+`HelmRelease`; installations from `hack/ci-deploy-operator.sh` or raw
+manifests must first migrate to Flux or direct Helm chart values.
 
 ---
 
-## 1. Gather the kube-apiserver CIDR and port
+## 1. Gather the kube-apiserver CIDRs and ports
 
 The operator reaches the API server through the in-cluster `kubernetes`
-Service. Its backing endpoints give you the IPs and ports to encode in the
-NetworkPolicy:
+Service. Read its EndpointSlices to get the API server addresses and ports
+for the NetworkPolicy:
 
 ```bash
-kubectl get endpoints kubernetes -n default -o json \
-  | jq -r '.subsets[] | (.addresses[].ip) as $ip | (.ports[].port) as $p | "\($ip)/32 port=\($p)"'
+kubectl get endpointslices -n default \
+  -l kubernetes.io/service-name=kubernetes -o json \
+  | jq -r '
+      .items[] as $slice
+      | $slice.endpoints[]?.addresses[]? as $ip
+      | $slice.ports[]?.port as $p
+      | select($p != null)
+      | "\($ip)\(if ($ip | contains(":")) then "/128" else "/32" end) port=\($p)"
+    '
 ```
 
-Use these endpoint addresses. Do not use the `10.96.0.1` Service VIP that
-`kubectl get service kubernetes` reports: kindnet (kind v0.32 and later) and
-enforcing CNIs such as Calico and Cilium evaluate policy after the Service
-DNAT, so a rule naming the VIP never matches.
+Use these EndpointSlice addresses, not the `kubernetes` Service's ClusterIP
+(often `10.96.0.1`). The NetworkPolicy API leaves the order of Service DNAT
+and policy evaluation to the CNI. The Keystone e2e suite confirms that kindnet
+on kind v0.33 evaluates egress against the API server endpoint after DNAT.
+Verify your CNI's behavior before applying that assumption to another cluster.
 
-On Cilium, a CIDR selector, and so an `ipBlock` peer, matches no cluster node
-address by default. When the API server runs on a cluster node, as on a
-kubeadm control plane, Cilium drops the operator's API server traffic even
-with every endpoint address in the rule. Before you enable the policy, add a
-CiliumNetworkPolicy in the operator's namespace that selects the operator pod
-and allows egress `toEntities: [kube-apiserver]`. Starting the Cilium agents
-with `--policy-cidr-match-mode=nodes` (Helm value `policyCIDRMatchMode: nodes`)
-also works, but it is cluster-wide: every CIDR selector in every
-NetworkPolicy, CiliumNetworkPolicy, and CiliumClusterwideNetworkPolicy, in
-both directions (`ipBlock`, `fromCIDR`, `fromCIDRSet`, `toCIDR`, `toCIDRSet`,
-and CIDR deny rules), then matches node addresses too. Audit those rules
-before you turn it on.
+On Cilium, a CIDR selector (and therefore an `ipBlock` peer) does not match
+cluster node addresses by default
+([Cilium CIDR matching](https://docs.cilium.io/en/stable/security/policy/layer3/#cidr-select-nodes)).
+If the API server runs on a node, the chart's egress rule may not match even
+when it lists every EndpointSlice address. Before enabling the policy, add a
+CiliumNetworkPolicy in the operator's namespace that selects the operator
+pod and allows egress to the `kube-apiserver` entity on the API server ports
+discovered above
+([Cilium's kube-apiserver entity](https://docs.cilium.io/en/stable/security/policy/layer3/#access-to-from-kube-apiserver)).
+When webhooks are enabled, the chart's ingress rule also uses an `ipBlock`.
+If admission requests arrive from a node address, add a CiliumNetworkPolicy
+ingress rule from `kube-apiserver` on TCP 9443. Verify the caller path on
+managed distributions, where this entity may not work for ingress.
+
+Setting `--policy-cidr-match-mode=nodes` (Helm value
+`policyCIDRMatchMode: nodes`) is another option. It lets CIDR selectors match
+node addresses cluster-wide and causes Cilium to allocate node identities.
+It changes how CIDR rules in NetworkPolicy, CiliumNetworkPolicy, and
+CiliumClusterwideNetworkPolicy match node addresses in both directions,
+including CIDR deny rules. Audit those rules before enabling it.
 
 Example output on a kind cluster (the control-plane node on the kind bridge;
 the address depends on the subnet of the kind network):
@@ -91,15 +104,16 @@ Example output on a kubeadm cluster with an HA control plane:
 10.0.0.10/32 port=6443
 10.0.0.11/32 port=6443
 10.0.0.12/32 port=6443
+fd00::10/128 port=6443
 ```
 
-> **CIDR, not DNS.** `NetworkPolicy.spec.egress[].to[].ipBlock.cidr`
-> accepts CIDR notation only. Use `/32` for single IPs. DNS names are not
-> valid here.
+> **CIDR input.** `NetworkPolicy.spec.egress[].to[].ipBlock.cidr`
+> accepts CIDR notation only. Use `/32` for a single IPv4 address and `/128`
+> for a single IPv6 address. DNS names are not valid here.
 
-Record every endpoint IP. The rule must cover all of them, or the operator
-will lose quorum on leader-election renewals whenever it happens to be
-talking to an excluded replica.
+Record every endpoint address and port. If the rule omits one, connections
+routed to that API server can fail, including API requests and leader-election
+renewals.
 
 ---
 
@@ -142,9 +156,11 @@ for the Keystone API: TCP 5000 and 5050 to every pod labelled
 `app.kubernetes.io/name: keystone` and
 `app.kubernetes.io/managed-by: keystone-operator`, in any namespace. It needs no
 value. The operator's health check and its `KeystoneIdentityBackend` controller
-reach the API over the Keystone Service on 5000, and the CNI judges each
-connection after the Service DNAT, at the API pod and its port: 5000, or 5050
-when federation puts the OIDC sidecar in front of the API.
+reach the API over the Keystone Service on 5000. With a CNI that evaluates
+policy after Service DNAT, this rule matches the API pod on port 5000, or 5050
+when federation puts the OIDC sidecar in front of the API. Verify the DNAT
+behavior of other CNIs before applying this assumption outside the tutorial
+devstack.
 
 ### Optional overrides
 
@@ -176,13 +192,16 @@ Merge any of these overrides into the same `spec.values.networkPolicy` patch.
           matchLabels:
             app.kubernetes.io/name: prometheus
   ```
+  This opens the network path only. Enable the ServiceMonitor separately with
+  `monitoring.serviceMonitor.enabled`; see
+  [Enable the Keystone Operator Metrics Endpoint](./enable-keystone-operator-metrics.md).
 
 - **Webhook clients.** By default, webhook ingress (9443) falls back to
   `kubeApiServer.cidrs`, which is correct for the vast majority of
   clusters (the API server is the only caller of admission webhooks).
   Override only if you operate a non-standard webhook architecture, for
   example, an API server front-end that calls webhooks from a different
-  CIDR than it advertises in `endpoints/kubernetes`:
+  CIDR than the `kubernetes` Service's EndpointSlices advertise:
 
   ```yaml
   networkPolicy:
@@ -192,12 +211,16 @@ Merge any of these overrides into the same `spec.values.networkPolicy` patch.
 
 ::: details Helm-managed installations (non-Flux)
 If you installed the operator directly with Helm (not through Flux), apply the
-`values.yaml` from section 2 with a rolling `helm upgrade` instead:
+`values.yaml` from section 2 with a rolling `helm upgrade`. Reuse the current
+release values and pin the upgrade to the installed chart version:
 
 ```bash
+CHART_VERSION=$(helm list -n keystone-system --filter '^keystone-operator$' -o json \
+  | jq -r '.[0].chart | sub("^keystone-operator-"; "")')
 helm upgrade keystone-operator oci://ghcr.io/c5c3/charts/keystone-operator \
   --namespace keystone-system \
-  --version <chart-version> \
+  --version "$CHART_VERSION" \
+  --reuse-values \
   -f values.yaml
 ```
 
@@ -223,14 +246,12 @@ kubectl -n keystone-system rollout restart deploy/keystone-operator
 kubectl -n keystone-system rollout status deploy/keystone-operator --timeout=5m
 ```
 
-What the restart shows depends on the CNI. A CNI that isolates a new pod before
-its containers start, as the
-[Kubernetes NetworkPolicy contract](https://kubernetes.io/docs/concepts/services-networking/network-policies/#pod-lifecycle)
-requires, judges the new pod's first API server connection: under a wrong
-`kubeApiServer` rule the rollout does not finish within the timeout and the new
-pod never turns `Ready`. kindnet adds a new pod to its policy set a moment after
-the pod starts. The operator opens its API server connection in that moment and
-keeps it, so on the kind devstack the rollout finishes and the pod turns `Ready`
+What the restart shows depends on the CNI. Some CNIs enforce the policy before
+the new pod's containers start. Under those CNIs, a wrong `kubeApiServer` rule
+prevents the rollout from finishing within the timeout, and the new pod never
+turns `Ready`. kindnet adds a new pod to its policy set a moment after the pod
+starts. The operator opens its API server connection in that moment and keeps
+it, so on the kind devstack the rollout finishes and the pod turns `Ready`
 under a wrong rule too. On kind, only the fresh-connection check at the end of
 this step judges the rule.
 
@@ -246,8 +267,8 @@ kubectl -n keystone-system describe networkpolicy \
 ```
 
 Expected: one NetworkPolicy whose `PodSelector` matches the operator pod's
-labels, `PolicyTypes: Ingress, Egress`, and egress rules for DNS and the
-API server.
+labels, `PolicyTypes: Ingress, Egress`, and egress rules for DNS, the API
+server, and Keystone API pods.
 
 Confirm the selector actually matches exactly one pod:
 
@@ -292,9 +313,9 @@ container to the operator pod. The container shares the pod's network, so the
 policy judges its connections as it judges the operator's. It runs the image
 of the Keystone API Deployment, which ships `python3` and which the devstack's
 single node already holds, and opens one new TCP connection to every address
-and port of the `kubernetes` Endpoints. The block waits up to three minutes
-for the check to end, then prints the state of the check container and its
-log:
+and port listed in the EndpointSlices for the `kubernetes` Service. The block
+waits up to three minutes for the check to end, then prints the state of the
+check container and its log:
 
 ```bash
 CHECK='
@@ -316,8 +337,9 @@ if POD=$(kubectl -n keystone-system get pods \
    KS=$(kubectl -n openstack get keystones -o jsonpath='{.items[0].metadata.name}') &&
    IMG=$(kubectl -n openstack get deploy "${KS}" \
      -o jsonpath='{.spec.template.spec.containers[?(@.name=="keystone")].image}') &&
-   EPS=$(kubectl get endpoints kubernetes -n default -o json \
-     | jq -r '.subsets[] | (.addresses[].ip) as $ip | (.ports[].port) as $p | "\($ip):\($p)"') &&
+   EPS=$(kubectl get endpointslices -n default \
+     -l kubernetes.io/service-name=kubernetes -o json \
+     | jq -r '.items[] as $slice | $slice.endpoints[]?.addresses[]? as $ip | $slice.ports[]?.port as $p | select($p != null) | "\($ip):\($p)"') &&
    [ -n "${POD}" ] && [ -n "${IMG}" ] && [ -n "${EPS}" ]; then
   NAME="apiserver-check-$(date +%s)"
   kubectl -n keystone-system debug "pod/${POD}" --image="${IMG}" --profile=restricted \
@@ -387,15 +409,16 @@ the fresh-connection check of the Verify step.
 **Diagnosis:** the `kubeApiServer.cidrs` list is missing one or more of the
 current API server endpoint IPs. Re-run step 1: an HA control plane may
 have added a new replica, or a control-plane node may have been replaced
-with a different IP. A rule naming the `10.96.0.1` Service VIP instead of an
-endpoint address fails the same way, because the CNI evaluates the
-connection after the Service DNAT. On Cilium without
+with a different IP. On the kind devstack, a rule naming the `kubernetes`
+Service's ClusterIP (often `10.96.0.1`) instead of an endpoint address fails
+because kindnet evaluates the connection after the Service DNAT. Other CNIs may
+behave differently; see step 1. On Cilium without
 `--policy-cidr-match-mode=nodes`, no `ipBlock` matches an API server that
 runs on a cluster node; see the Cilium paragraph in step 1.
 
-**Fix:** update `networkPolicy.kubeApiServer.cidrs` to include every IP
-returned by `kubectl get endpoints kubernetes -n default -o json`, then
-reapply the values using step 2 and restart the operator as in step 3.
+**Fix:** update `networkPolicy.kubeApiServer.cidrs` and `ports` with every
+address and port returned by the EndpointSlice command in step 1, then reapply
+the values using step 2 and restart the operator as in step 3.
 
 ### Webhook TLS failures during admission
 
@@ -405,9 +428,9 @@ containing `failed calling webhook` and `connection refused` or
 timed out.
 
 **Diagnosis:** webhook ingress is blocked. Usually the API server calls
-webhooks from an IP that is **not** present in
-`endpoints/kubernetes`, for example, because it sits behind a front-end
-proxy. `networkPolicy.webhookClients.cidrs` falls back to
+webhooks from an IP that is **not** present in the EndpointSlices for the
+`kubernetes` Service, for example, because it sits behind a front-end proxy.
+`networkPolicy.webhookClients.cidrs` falls back to
 `kubeApiServer.cidrs` when empty, which is wrong in that topology.
 
 **Fix:** discover the actual caller IP (check API-server audit logs or the
@@ -448,10 +471,10 @@ template refuses to render a policy that would break the operator.
 
 **Fix:** populate both lists from step 1 and re-run the upgrade.
 
-### Metrics scraping suddenly returns `connection refused`
+### Metrics scraping fails after policy enablement
 
-**Symptom:** Prometheus (or another scraper) logs `connection refused` on
-the metrics port after the upgrade.
+**Symptom:** Prometheus (or another scraper) reports scrape failures, often
+with a timeout, after the upgrade.
 
 **Diagnosis:** the metrics port is default-denied. The previous behaviour
 (no NetworkPolicy) allowed any peer; the new policy requires explicit
@@ -475,8 +498,9 @@ kubectl patch helmrelease keystone-operator -n keystone-system --type=merge \
 
 (On a directly Helm-managed install, re-run `helm upgrade` with
 `networkPolicy.enabled=false` instead.) The NetworkPolicy object is removed on
-the next reconcile and the operator reverts to unrestricted pod networking
-without a pod restart.
+the next reconcile without a pod restart. Other NetworkPolicies that select
+the operator pod remain effective; if none do, it returns to the cluster's
+default networking posture.
 
 ---
 
