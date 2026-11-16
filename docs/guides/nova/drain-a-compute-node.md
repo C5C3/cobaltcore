@@ -41,10 +41,11 @@ This guide is written against the **[Quick Start (ControlPlane)](../../quick-sta
 KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true WITH_OVN_KERNEL_MODULES=true make deploy-infra
 ```
 
-Follow that tutorial through the **Boot a first server** checks in Step 7,
-without its optional fake compute, and keep the `OS_*` variables of Step 7
-exported. A fake compute that already runs registers under the kind node's name
-as well, so remove it first, as
+Follow [Boot a first server](../../quick-start-controlplane.md#boot-a-first-server)
+through its catalog and compute-service checks, but skip the optional
+fake-compute block: this guide creates its own pool and server. Keep the
+`OS_*` variables of Step 7 exported. A fake compute that already runs
+registers under the kind node's name as well, so remove it first, as
 [Run a Fake Compute for Testing](./run-a-fake-compute-for-testing.md#removing-the-fake-compute)
 describes.
 :::
@@ -116,14 +117,22 @@ Create the flavor and the image of the quick start's fake-compute check, and
 boot a server without a network:
 
 ```bash
+set -euo pipefail
 openstack --insecure flavor create --vcpus 1 --ram 128 --disk 1 m1.nano
 truncate -s 1M /tmp/boot-image.raw
 openstack --insecure image create --disk-format raw --container-format bare \
   --file /tmp/boot-image.raw boot-image
 for _ in $(seq 30); do
-  [ "$(openstack --insecure image show boot-image -f value -c status)" = active ] && break
+  image_status="$(openstack --insecure image show boot-image -f value -c status)"
+  [ "$image_status" = active ] && break
   sleep 2
 done
+image_status="$(openstack --insecure image show boot-image -f value -c status)"
+if [ "$image_status" != active ]; then
+  echo "ERROR: boot-image did not become active during the 60-second polling window " \
+    "(status: $image_status)" >&2
+  exit 1
+fi
 openstack --insecure server create --image boot-image --flavor m1.nano \
   --nic none --wait drain-server
 openstack --insecure server show drain-server -c OS-EXT-SRV-ATTR:host -f value
@@ -174,12 +183,20 @@ emptied by migration instead, as [On a compute cluster](#on-a-compute-cluster)
 describes.
 
 ```bash
+set -euo pipefail
 openstack --insecure server delete --wait drain-server
 for _ in $(seq 36); do
-  [ -z "$(kubectl get novacompute controlplane-pool-a -n openstack -o jsonpath='{.status.nodes}')" ] && break
+  nodes="$(kubectl get novacompute controlplane-pool-a -n openstack -o jsonpath='{.status.nodes}')"
+  [ -z "$nodes" ] && break
   sleep 5
 done
-kubectl get novacompute controlplane-pool-a -n openstack -o jsonpath='{.status.nodes}{"\n"}'
+nodes="$(kubectl get novacompute controlplane-pool-a -n openstack -o jsonpath='{.status.nodes}')"
+if [ -n "$nodes" ]; then
+  echo "ERROR: the pool did not release its node during the 3-minute polling window: " \
+    "$nodes" >&2
+  exit 1
+fi
+printf '%s\n' "$nodes"
 ```
 
 A Draining node is polled every 30 seconds. Once Nova counts no server, the
@@ -205,7 +222,7 @@ for as long as the pool exists.
 
 ```bash
 kubectl delete novacompute controlplane-pool-a -n openstack
-kubectl label node "$NODE" topology.kubernetes.io/zone-
+kubectl label node "$NODE" openstack.c5c3.io/nova-compute-pool- topology.kubernetes.io/zone-
 openstack --insecure image delete boot-image
 openstack --insecure flavor delete m1.nano
 ```
@@ -315,13 +332,12 @@ The order keeps the drain reversible until the label comes off: clearing
 `spec.maintenance` before step 3 makes hvo enable the service again and delete
 the Eviction, and the node is back in service.
 
-::: warning Leave `spec.maintenance` set once the label is off
-From step 3 on, the pool drains the node, and the pool never enables a service.
-Clearing `spec.maintenance` then makes hvo enable the service under a
-`Draining` node, and the scheduler places servers on a host that is leaving.
-Cleared after the pool deleted the service, it makes hvo retry the enable
-against a service that no longer exists, on every pass.
-:::
+**Leave `spec.maintenance` set once the pool label is off.** From step 3 on,
+the pool drains the node and never enables a service. Clearing
+`spec.maintenance` then makes hvo enable the service under a `Draining` node,
+so the scheduler can place servers on a host that is leaving. If the pool has
+already deleted the service, hvo retries the enable against a service that no
+longer exists on every pass.
 
 To decommission the node, delete its Node after step 3. The `Hypervisor` is
 owner-referenced to the Node and goes with it.
@@ -404,9 +420,11 @@ mirrored there, the compute contract and hvo's auth Secret.
 
 ## Tested by
 
-The walkthrough mirrors steps 7 and 8 of the following suite. It boots a server
-on the one kind node through the fake driver, removes the pool label, and then
-deletes the server where hvo's Eviction would migrate it. No suite runs hvo;
+The suite covers the same boot, label-removal and release sequence in its
+`Boot a server onto the node`, `Removing the pool label drains the node`, and
+`Deleting the server releases the node` steps. It boots a server on the one kind
+node through the fake driver, then deletes it where hvo's Eviction would migrate
+it. No suite runs hvo;
 Part 2, Step 9 of the
 [Quick Start (metal-stack)](../../quick-start-metal-stack.md#hv-evict) evicts a
 node through it by hand.
