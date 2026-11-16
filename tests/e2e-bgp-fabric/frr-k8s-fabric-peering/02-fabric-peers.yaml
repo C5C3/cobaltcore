@@ -1,0 +1,78 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Two fabric peers, the stand-ins for the node's leaf pair. Each runs peer.sh,
+# which needs hostPID to reach the node's network namespace through PID 1,
+# creates the veth uplink UPLINK in the node's VRF "fabric" with its other end
+# as eth1 in the Pod, and starts FRR with peer-frr.conf. The image is the FRR
+# pin of tests/lab/bgp-fabric/bgp-fabric.clab.yml; Renovate moves both files
+# in the group bgp-fabric lab.
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: fabric-peer-1
+spec:
+  hostPID: true
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  terminationGracePeriodSeconds: 5
+  nodeSelector:
+    openstack.c5c3.io/frr-k8s: "true"
+  containers:
+  - name: frr
+    image: quay.io/frrouting/frr:10.7.1@sha256:e995beaa50fdc9edb35eadcfefa29b7f062cc06f2b812613789b68fa541554d2
+    command: ["/bin/sh", "/config/peer.sh"]
+    env:
+    - name: UPLINK
+      value: fab1
+    - name: PEER_NAME
+      value: fabric-peer-1
+    - name: ROUTER_ID
+      value: 192.0.2.129
+    securityContext:
+      privileged: true
+      runAsUser: 0
+    volumeMounts:
+    - name: fabric-scripts
+      mountPath: /config
+      readOnly: true
+  volumes:
+  - name: fabric-scripts
+    configMap:
+      name: fabric-scripts
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: fabric-peer-2
+spec:
+  hostPID: true
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  terminationGracePeriodSeconds: 5
+  nodeSelector:
+    openstack.c5c3.io/frr-k8s: "true"
+  containers:
+  - name: frr
+    image: quay.io/frrouting/frr:10.7.1@sha256:e995beaa50fdc9edb35eadcfefa29b7f062cc06f2b812613789b68fa541554d2
+    command: ["/bin/sh", "/config/peer.sh"]
+    env:
+    - name: UPLINK
+      value: fab2
+    - name: PEER_NAME
+      value: fabric-peer-2
+    - name: ROUTER_ID
+      value: 192.0.2.130
+    securityContext:
+      privileged: true
+      runAsUser: 0
+    volumeMounts:
+    - name: fabric-scripts
+      mountPath: /config
+      readOnly: true
+  volumes:
+  - name: fabric-scripts
+    configMap:
+      name: fabric-scripts

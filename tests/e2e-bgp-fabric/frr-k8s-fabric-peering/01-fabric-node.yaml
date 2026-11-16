@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The Pod that prepares the node: it shares the node's network namespace and
+# runs node-prep.sh up, which creates the VRF "fabric" with the fabric
+# loopbacks and then sleeps. Ready means the devices exist. The preStop hook
+# runs node-prep.sh down, so the devices go away however the Pod is deleted
+# gracefully. The image is the FRR pin of tests/lab/bgp-fabric/bgp-fabric.clab.yml,
+# which carries iproute2; Renovate moves both files in the group bgp-fabric lab.
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: fabric-node
+spec:
+  hostNetwork: true
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  terminationGracePeriodSeconds: 5
+  nodeSelector:
+    openstack.c5c3.io/frr-k8s: "true"
+  containers:
+  - name: node-prep
+    image: quay.io/frrouting/frr:10.7.1@sha256:e995beaa50fdc9edb35eadcfefa29b7f062cc06f2b812613789b68fa541554d2
+    command: ["/bin/sh", "/config/node-prep.sh", "up"]
+    securityContext:
+      privileged: true
+      runAsUser: 0
+    readinessProbe:
+      exec:
+        command: ["cat", "/tmp/prepared"]
+      periodSeconds: 1
+    lifecycle:
+      preStop:
+        exec:
+          command: ["/bin/sh", "/config/node-prep.sh", "down"]
+    volumeMounts:
+    - name: fabric-scripts
+      mountPath: /config
+      readOnly: true
+  volumes:
+  - name: fabric-scripts
+    configMap:
+      name: fabric-scripts

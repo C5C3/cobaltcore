@@ -1,0 +1,51 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw configuration for the BGP fabric suite.
+#
+# The suite lives outside tests/e2e/ because it needs what `make e2e` never
+# installs: the frr-k8s overlay (WITH_FRR_K8S=true make deploy-infra) and the
+# `vrf` kernel module on the host that runs the kind node. It runs in the
+# non-blocking e2e-bgp-fabric job alone.
+#
+# Key differences from the happy-path config at tests/e2e/chainsaw-config.yaml:
+#   - Assert timeout: 300s (5m) vs 120s: the frr-k8s DaemonSet pod starts only
+#     once the suite labels the node, and the sessions, BFD and the FRR reload
+#     follow in sequence.
+#   - Cleanup timeout: 120s (2m) vs 3m: the teardown deletes three Pods, two
+#     FRRConfigurations and one ConfigMap, and takes the label off the node.
+#   - Parallelism: 1 vs 4: the fixture Pods own the host network namespace of
+#     the node (the VRF devices, the veth uplinks), and frr-k8s renders one
+#     FRR configuration per node.
+#
+# apiVersion v1alpha2 Configuration is the correct pairing with v1alpha1 Test
+# manifests, matching the sibling configs.
+apiVersion: chainsaw.kyverno.io/v1alpha2
+kind: Configuration
+metadata:
+  name: cloud-operator-e2e-bgp-fabric
+spec:
+  # ── Timeouts ────────────────────────────────────────────────────────────
+  timeouts:
+    apply: 30s
+    assert: 300s
+    cleanup: 120s
+    delete: 30s
+    error: 30s
+    exec: 30s
+
+  # ── Cleanup ─────────────────────────────────────────────────────────────
+  cleanup:
+    skipDelete: false
+
+  # ── Execution ───────────────────────────────────────────────────────────
+  execution:
+    failFast: true
+    parallel: 1
+
+  # ── Report ──────────────────────────────────────────────────────────────
+  report:
+    format: JUNIT-TEST
+    name: chainsaw-bgp-fabric-report
+    path: _output/reports
