@@ -54,8 +54,10 @@ with `requires a brownfield bus with tls (...)` (see
 - Two substitution rules: `COMPUTE_CLUSTER` is the name of the registration
   Secret, the value of every `targetClusterRef.name` below, and
   `COMPUTE_CONTEXT` is the kubeconfig context of the compute cluster. Export
-  both before you copy a command. The pool's namespace on the compute cluster
-  is the Nova's, `openstack`.
+  both before you copy a command. Keep `kubectl`'s current context on the
+  management cluster; commands without `--context` run there. Check it with
+  `kubectl config current-context`. The pool's namespace on the compute
+  cluster is the Nova's, `openstack`.
 - A brownfield broker in `spec.infrastructure.messaging`, with `tls` set, which
   the platform exposes to the compute nodes with a certificate that names the
   external address.
@@ -120,14 +122,12 @@ The mount path is part of the contract. `[oslo_messaging_rabbit] ssl_ca_file`
 points at `/etc/nova/compute-config/ca.crt`, so a compute that mounts the Secret
 anywhere else finds no CA bundle where its own configuration says one is.
 
-::: warning Three of the keys are credentials
-`transport_url`, `password` and `metadata_proxy_shared_secret` are credentials:
-the broker login, the `nova` service user's password, and the secret that
-authenticates every metadata request. Treat the Secret and every copy of it like
-the admin credential. Only `nova-compute.conf`, `cell_name` and `ca.crt`, a
-public CA bundle, carry nothing secret. Do not print the Secret's data to a
-terminal you share, and do not attach it to a ticket.
-:::
+**Three of the keys are credentials.** `transport_url`, `password` and
+`metadata_proxy_shared_secret` are the broker login, the `nova` service user's
+password, and the secret that authenticates every metadata request. Treat the
+Secret and every copy of it like the admin credential. Only `nova-compute.conf`,
+`cell_name` and `ca.crt`, a public CA bundle, carry nothing secret. Do not print
+the Secret's data to a terminal you share, and do not attach it to a ticket.
 
 ## Steps
 
@@ -591,7 +591,9 @@ annotation names plus its zone's (see
 
 `nova-compute` counts the builds that end `FAILED` or `RESCHEDULED` on a node
 in `failed_builds`, a key of the `stats` column of that node's `compute_nodes`
-row, and resets it to 0 on the next build that succeeds there. A server deleted while it
+row, and resets it to 0 on the next build that succeeds there. Nova enables this
+reporting with a nonzero `[compute] consecutive_build_service_disable_threshold`
+(10 by default); setting it to 0 disables the count. A server deleted while it
 is still scheduling counts: the build finds no instance and ends `FAILED` with
 the debug line `Instance disappeared before build.`, leaving no fault and no
 action event. A claim that fails on the host counts too, and a build that
@@ -601,11 +603,12 @@ carry no `stats` field, so `openstack hypervisor show` cannot show it.
 
 With the operator's
 [`[filter_scheduler]` defaults](../../reference/nova/nova-crd.md#rendered-configuration)
-the counter changes no placement. Reading it matters for a deployment that
-restored Nova's weigher through `extraConfig`, where one failed build takes the
-host out of every placement until a build succeeds on it. It is also a
-diagnostic: a counter that keeps growing names a host whose builds fail for a
-reason of its own.
+the counter changes no placement. If `extraConfig` restores Nova's build-failure
+weigher with its default multiplier of `1000000.0`, a host with failed builds
+ranks below every eligible host whose `failed_builds` counter is `0`. The
+weigher does not exclude that host when no host with a zero counter can satisfy
+a request. A successful build or a `nova-compute` restart resets the counter.
+The counter shows repeated failures on a host, not their cause.
 
 ### Read the counter
 
@@ -630,11 +633,14 @@ failure shows within a minute. An empty result means no compute has registered
 yet.
 
 A MariaDB CR that names no `rootPasswordSecretKeyRef` prints an empty
-`root_secret`, and a brownfield database has no MariaDB CR at all. Both run the
-same `SELECT` with the cell credentials: the password is the `password` key of
-the Secret the Nova's `spec.database.secretRef` names, and the user is the
-Nova's name in static managed mode and that Secret's `username` key otherwise.
-The schema is the Nova's `spec.database.database`, `nova` on the devstack.
+`root_secret`, and a brownfield database has no MariaDB CR at all. The command
+above uses the devstack's managed MariaDB root login. For either case, connect
+with the cell credentials using the database client approved for that endpoint
+and run the same `SELECT`. The endpoint, optional port and TLS settings, and
+schema come from the Nova's `spec.database`; its `secretRef` names the
+credentials Secret. The password is the Secret's `password` key, and the user
+is the Nova's name in static managed mode or the Secret's `username` key
+otherwise. The schema is `spec.database.database`, `nova` on the devstack.
 
 ### Take a failing host out of scheduling
 
@@ -679,7 +685,7 @@ availability zone of the aggregate the pool created for it (see
 [The aggregates](../../reference/nova/novacompute-crd.md#the-aggregates)):
 
 ```bash
-host=<node>
+host='<node>'
 zone="$(kubectl --context "$COMPUTE_CONTEXT" get node "${host}" \
   -o jsonpath='{.metadata.labels.topology\.kubernetes\.io/zone}')"
 ```
