@@ -36,6 +36,14 @@ child is `Ready` in `openstack` with `nfs1` and `nfsbk` attached. Every resource
 name in the examples below is one that devstack produces.
 :::
 
+::: warning Set storage on the ControlPlane
+The `controlplane-cinder` Cinder CR, the `CinderBackend` `nfs1` and the
+`CinderBackupBackend` `nfsbk` are **projected** by the c5c3-operator. Those CRs
+are reconciled and revert to the state configured in the `ControlPlane` CR.
+Change `services.cinder` on the `ControlPlane` CR and let the operator project
+it down.
+:::
+
 Keep the `OS_*` environment variables from the tutorial's token-issue step and
 the `demo-vol` volume from the **Create a first volume** check in Step 7. The
 polling commands below use GNU `timeout`; on macOS, install GNU coreutils and
