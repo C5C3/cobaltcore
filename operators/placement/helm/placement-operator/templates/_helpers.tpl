@@ -9,10 +9,11 @@ overrides a library hook by defining a template of the same name here.
 
 {{/*
 API health-check egress for the shared NetworkPolicy (operator-library chart
-hook). The operator GETs the Placement API over its Service, and an enforcing
-CNI judges that connection after the Service DNAT, at the API pod and its
-port. The rule therefore selects the API pods in any namespace by the two
-labels the operator sets on them (naming.CommonLabels in internal/common).
+hook). The operator GETs the Placement API over its Service. The Placement e2e
+suite confirms that kindnet on kind v0.33 evaluates this connection after
+Service DNAT, at the API pod and its port. Verify the behavior of other CNIs.
+The rule selects the API pods in any namespace by the two labels the operator
+sets on them (naming.CommonLabels in internal/common).
 */}}
 {{- define "operator-library.chart.networkPolicyEgress" -}}
 - to:
