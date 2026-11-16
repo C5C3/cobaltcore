@@ -10,15 +10,18 @@ SPDX-License-Identifier: Apache-2.0
 
 # Migrate Keystone DB to Dynamic Credentials
 
-This guide takes a managed-mode ControlPlane from a long-lived **static** Keystone
-database credential to **dynamic**, engine-issued credentials, without database
-downtime. It is the operator-facing side of the OpenBao MariaDB database secrets
-engine wired for the Keystone service DB user (issue #439).
+This guide takes a managed-mode ControlPlane on the shared database from a
+long-lived **static** Keystone database credential to **dynamic**, engine-issued
+credentials, without database downtime. Dedicated Keystone databases are
+Static-only and are outside this migration. This guide is the operator-facing
+side of the OpenBao MariaDB database secrets engine wired for the Keystone
+service DB user (issue #439).
 
 ## What changes
 
 - **Before:** the Keystone DB password is a long-lived value copied from an
-  OpenBao KV path (`openstack/keystone/{namespace}/{name}/db`) into the
+  OpenBao key/value (KV) path
+  (`openstack/keystone/{namespace}/{name}/db`) into the
   `{name}-keystone-db-credentials` Secret. Nothing seeds that path, so on the
   static branch an operator writes it and rotates it by hand.
 - **After:** the c5c3 operator projects a per-ControlPlane
@@ -26,11 +29,11 @@ engine wired for the Keystone service DB user (issue #439).
   short-lived credentials from the OpenBao database engine
   (`database/mariadb/creds/keystone-{namespace}`, where `{namespace}` is the
   Keystone service namespace, the ControlPlane's own namespace unless Keystone
-  runs in a dedicated one). The External Secrets Operator re-issues a fresh
-  lease before the previous one expires and stores its username and password in
-  the Kubernetes Secret. Dynamic mode does not read a static password from the
-  OpenBao KV path. Any existing static KV value remains until you delete it in
-  step 5.
+  runs in a dedicated one). The External Secrets Operator (ESO) re-issues a
+  fresh lease before the previous one expires and stores its username and
+  password in the Kubernetes Secret. Dynamic mode does not read a static
+  password from the OpenBao KV path. Any existing static KV value remains until
+  you delete it in step 5.
 
 The engine issues an ephemeral MySQL user per lease (for example `v-kube-...`)
 with `ALL PRIVILEGES` on the Keystone database and drops it at lease end.
@@ -67,9 +70,9 @@ to Static.
   `setup-secret-engines.sh` bootstrap step). On a greenfield cluster this is
   already in place; on a brownfield cluster, re-apply the bootstrap scripts (see
   below).
-- cert-manager and its `openbao-ca-issuer` ClusterIssuer are installed (they
-  issue the per-ControlPlane mTLS client certificate the generator presents to
-  the OpenBao listener).
+- cert-manager and its `openbao-ca-issuer` ClusterIssuer are installed. They
+  issue the per-ControlPlane mutual TLS (mTLS) client certificate that the
+  generator presents to the OpenBao listener.
 - The External Secrets Operator can request ServiceAccount tokens
   (`serviceaccounts/token` `create`) so the generator can authenticate to OpenBao
   as the per-ControlPlane `keystone-db-creds` ServiceAccount.
@@ -98,8 +101,9 @@ bash deploy/openbao/bootstrap/setup-policies.sh
 
 ### 2. (Optional) Stage or reproduce a Static starting state
 
-Dynamic is the default effective mode for a managed ControlPlane. To keep a
-ControlPlane on the static credential while you onboard the engine, set:
+Dynamic is the default effective mode for a managed ControlPlane on the shared
+database. Dedicated Keystone databases are Static-only. To keep a ControlPlane
+on the static credential while you onboard the engine, set:
 
 ```yaml
 spec:
@@ -118,12 +122,18 @@ Start Step 4. Use the inline per-service patch below so other services keep
 their current mode. For this devstack, the static SQL username is
 `controlplane-keystone`.
 
+The following command uses `common.sh` to run `bao` inside the kind OpenBao pod,
+where the client TLS settings are configured. For production, use a `bao` client
+configured with OpenBao's client certificate, key, and CA as described in the
+[bootstrap reference](../../reference/infrastructure/openbao-bootstrap.md#internal-script-variables).
+
 ```bash
 # Obtain BAO_TOKEN as described in Running the Full Bootstrap above.
+source deploy/openbao/bootstrap/common.sh
 printf 'Static Keystone DB password: '
 IFS= read -r -s DB_PASSWORD
 printf '\n'
-printf '%s' "$DB_PASSWORD" | bao kv put \
+printf '%s' "$DB_PASSWORD" | bao_exec_stdin bao kv put \
   kv-v2/openstack/keystone/openstack/controlplane/db \
   username=controlplane-keystone password=-
 unset DB_PASSWORD
@@ -165,12 +175,21 @@ mode is Static.
 
 ### 3. Onboard the per-tenant database-engine role
 
-Run this after the tenant's MariaDB is Ready. The script configures the
-connection and role that issue short-lived Keystone users:
+From the repository root, run this on the Quick Start kind cluster after the
+tenant's MariaDB is Ready. The script needs `kubectl` access to the ControlPlane
+and MariaDB Secrets, plus `kubectl exec` access to `openbao-0`. For an OpenBao
+deployment without that pod, use equivalent database-engine writes with a
+configured `bao` client; see the
+[bootstrap reference](../../reference/infrastructure/openbao-bootstrap.md#setup-database-tenant-sh).
+The script configures the connection and role that issue short-lived Keystone
+users:
 
 ```bash
-# BAO_TOKEN must be exported; <namespace>/<controlplane> identify the tenant.
-bash deploy/openbao/bootstrap/setup-database-tenant.sh <namespace> <controlplane>
+# BAO_TOKEN must be exported; set these to the ControlPlane's namespace and name.
+CONTROLPLANE_NAMESPACE=openstack
+CONTROLPLANE_NAME=controlplane
+bash deploy/openbao/bootstrap/setup-database-tenant.sh \
+  "$CONTROLPLANE_NAMESPACE" "$CONTROLPLANE_NAME"
 ```
 
 This writes:
@@ -199,48 +218,71 @@ On the next reconcile the c5c3 operator projects the generator, ServiceAccount,
 and Certificate, and the ExternalSecret switches to drawing from the generator.
 If the ExternalSecret still targets a Secret populated by a Static sync, delete
 that Secret once after the ExternalSecret switches to the generator. This
-prompts ESO to write the engine-issued credential immediately instead of
-waiting for the next refresh:
+prompts ESO to sync the engine-issued credential without waiting for the next
+refresh interval:
 
 ```bash
 kubectl delete secret controlplane-keystone-db-credentials -n openstack
 ```
 
-The c5c3 operator holds the Keystone child in Static mode until the Secret has
-an engine-issued username. Watch for:
+The c5c3 operator waits for the ExternalSecret to report Ready before it
+projects Dynamic mode onto Keystone. Watch for:
 
 - The `{name}-keystone-db-credentials` ExternalSecret spec changing from static
   `data[].remoteRef` to `dataFrom[].sourceRef.generatorRef` (kind
   `VaultDynamicSecret`).
-- The Kubernetes Secret's `username` becoming an engine-issued login (not
-  `keystone`).
+- The Kubernetes Secret's `username` becoming an engine-issued `v-...` login,
+  not the staged static name `controlplane-keystone`. Check it with:
+
+  ```bash
+  kubectl get secret controlplane-keystone-db-credentials -n openstack \
+    -o jsonpath='{.data.username}' | openssl base64 -d -A
+  printf '\n'
+  ```
 - A Keystone Deployment rollout: the operator sets a
   `keystone.c5c3.io/db-connection-hash` pod-template annotation in Dynamic mode,
   so a rotated credential rolls the Deployment (the DSN is consumed via the
   `OS_DATABASE__CONNECTION` env var, which only takes effect on a Pod restart).
 
+The c5c3 controller marks `DBCredentialsReady` when the selected SecretStore and
+the ExternalSecret report Ready; it does not verify the Secret's username. After
+an in-place Static-to-Dynamic update, the ExternalSecret's Ready condition may
+still reflect its previous static sync. Do not use `DBCredentialsReady=True`
+alone as proof that the engine-issued credential has arrived.
+
 Because the engine's GRANT overlaps any pre-existing operator-provisioned
-`User`/`Grant` from the static deployment, Keystone keeps serving throughout.
-The rolling restart is protected by the Keystone PodDisruptionBudget and moves
-Keystone onto an engine-issued login without interrupting database service.
+`User`/`Grant` from the static deployment, both SQL users remain usable during
+the migration. The default Keystone Deployment strategy uses one surge pod and
+`maxUnavailable: 0`. With capacity for the surge, Keystone can move to the
+engine-issued login without interrupting the API. A custom Deployment strategy
+can override these rollout bounds.
 
 ### 5. Retire the static credential
 
-Once the ControlPlane reports `DBCredentialsReady=True` on the dynamic path and
-Keystone is Ready:
+Before deleting the old SQL user, confirm that the Secret's `username` starts
+with `v-` using the command in Step 4. Then, once the ControlPlane reports
+`DBCredentialsReady=True` and Keystone is Ready:
 
 1. Delete the leftover static MariaDB `User` and `Grant` CRs (they carry the
    `<controlplane>-keystone` login the engine no longer uses):
 
    ```bash
-   kubectl delete user,grant <keystone-cr-name> -n <namespace> --ignore-not-found
+   KEYSTONE_NAMESPACE=openstack
+   KEYSTONE_CR_NAME=controlplane-keystone
+   kubectl delete user,grant "$KEYSTONE_CR_NAME" \
+     -n "$KEYSTONE_NAMESPACE" --ignore-not-found
    ```
 
 2. Remove the retired static KV secret:
 
    ```bash
-   # Inside the OpenBao pod, or with a bao client configured for it.
-   bao kv metadata delete kv-v2/openstack/keystone/<namespace>/<controlplane>/db
+   # Set these to the Keystone service namespace and ControlPlane name.
+   KEYSTONE_NAMESPACE=openstack
+   CONTROLPLANE_NAME=controlplane
+   # BAO_TOKEN must be exported as described in Step 1.
+   source deploy/openbao/bootstrap/common.sh
+   bao_exec bao kv metadata delete \
+     "kv-v2/openstack/keystone/${KEYSTONE_NAMESPACE}/${CONTROLPLANE_NAME}/db"
    ```
 
 The `push-keystone-db.hcl` PushSecret policy that stage (a) deferred is **not
@@ -249,37 +291,49 @@ back.
 
 ## Rollback
 
-To revert to the static credential, set `credentialsMode: Static`, re-seed the
-KV path (step 2), and re-create the `User`/`Grant` (the operator recreates them
-on the next reconcile in Static mode). Roll back the operators if you also need
-to remove the generator objects.
+To revert to the static credential, re-seed the KV path (Step 2) and set
+`spec.services.keystone.databaseCredentialsMode: Static`. To make Static the
+shared default too, set `spec.infrastructure.database.credentialsMode: Static`;
+per-service overrides take precedence, so inspect or clear overrides for any
+other services you intend to switch.
+
+The c5c3 operator updates the ExternalSecret to read the KV path and deletes the
+dynamic generator, client Certificate, and ServiceAccount. Wait for the Secret
+to sync with the seeded static username and for Keystone to return to Static
+mode. `DBCredentialsReady=True` alone does not verify the username. The Keystone
+operator then recreates the `User` and `Grant`. Roll back operator versions
+only after that cutover is complete.
 
 ## Operational considerations
 
-- **Rotation churn vs. lease headroom:** the DSN comes from an environment
-  variable, so Keystone must restart to use a rotated credential. ESO creates a
-  new credential on each refresh; OpenBao cannot renew the old credential in
-  place. The 24h refresh interval limits rollouts to at most one per day. The
-  48h `default_ttl` leaves a 24h window for pods to roll before OpenBao revokes
-  the previous lease. A stalled rollout should page on-call before it becomes an
-  outage.
-  Raise `DB_CREDS_DEFAULT_TTL` / `DB_CREDS_MAX_TTL` (and the operator's refresh
-  interval) further to trade churn against lease headroom; the PodDisruptionBudget
-  and the surge-before-remove rollout strategy keep each roll zero-downtime.
+- **Rotation churn vs. lease headroom:** the database source name (DSN) comes
+  from an environment variable, so Keystone must restart to use a rotated
+  credential. ESO creates a new credential on each refresh. OpenBao cannot
+  renew the old credential in place. The 24h refresh interval limits rollouts
+  to at most one per day. A 48h `default_ttl` leaves a 24h window for pods to
+  roll before OpenBao revokes the previous lease. A stalled rollout should page
+  on-call before it becomes an outage.
+  Set `DB_CREDS_DEFAULT_TTL` and `DB_CREDS_MAX_TTL` when re-running
+  `setup-database-tenant.sh` to change the engine role's lease limits. Changing
+  either requires coordinating the operator's refresh interval. That 24h
+  interval is a code constant, so changing it requires an operator change and it
+  must remain below `default_ttl`.
 - **Auth-token TTL bounds the lease:** OpenBao revokes a dynamic-secret lease
   together with the auth token that minted it, so the effective credential
   lifetime is `min(lease TTL, minting token TTL)`. The `keystone-db` auth role
-  therefore pins its token TTLs to `DB_CREDS_MAX_TTL` (72h). When raising
-  `DB_CREDS_*` beyond that, raise the role's `token_ttl`/`token_max_ttl` in
-  lockstep. A shorter token silently drops the ephemeral MySQL user under a
-  running Keystone long before the advertised lease end.
+  sets both token TTLs to 72h, matching the default `DB_CREDS_MAX_TTL`. When
+  raising `DB_CREDS_*` beyond 72h, raise the role's `token_ttl` and
+  `token_max_ttl` in `setup-auth.sh` in lockstep. A shorter token silently drops
+  the ephemeral MySQL user under a running Keystone long before the advertised
+  lease end.
 - **Revocation semantics:** revoking a lease runs `DROP USER`, which rejects
   *new* connections. Already-open sessions of a dropped user may persist until
   they disconnect.
 - **ESO/OpenBao outage longer than the lease:** the leased credential
   expires before a refresh completes. Running Pods keep pooled connections, but new
-  connections fail until ESO recovers. This surfaces as `DBCredentialsReady=False`
-  via the ClusterSecretStore gate.
+  connections fail until ESO recovers. When the selected SecretStore or the
+  ExternalSecret reports not Ready, this surfaces as `DBCredentialsReady=False`;
+  that condition does not check live MariaDB connections or lease validity.
 
 ## See also
 
