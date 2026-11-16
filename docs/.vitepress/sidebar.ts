@@ -243,6 +243,7 @@ const sidebar: DefaultTheme.Sidebar = [
         collapsed: true,
         items: [
           { text: 'BGP Fabric Contract', link: '/reference/networking/bgp-fabric-contract' },
+          { text: 'BGP Node Substrate', link: '/reference/networking/bgp-node-substrate' },
         ],
       },
       {

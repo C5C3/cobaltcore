@@ -279,9 +279,12 @@ fabric route, and the fabric VRF holds no node-network route, so a fabric
 default can never steer Kubernetes traffic and the node network's default
 never reaches the fabric.
 
-How the fabric VRF connects to the `ovnvrf<id>` VRFs ovn-controller maintains
-belongs to #1362 and #1363. The upstream reference leaks routes between its own
-VRFs with `import vrf`.
+The fabric VRF connects to the `ovnvrf<id>` VRFs ovn-controller maintains
+through `import vrf` and `redistribute kernel`, the way the upstream reference
+leaks routes between its own VRFs. The
+[BGP Node Substrate](bgp-node-substrate.md#what-the-typed-api-cannot-say) shows
+both on frr-k8s; generating them per node belongs to
+[#1363](https://github.com/C5C3/cobaltcore/issues/1363).
 
 On the leaf, the node sessions live in the deployment VRF, never in the leaf's
 default VRF.
@@ -485,9 +488,11 @@ the host. Run the lab on a workstation or a disposable VM, never on a shared
 cluster node.
 :::
 
-No CI job runs the lab; that job belongs to #1362. Renovate watches the FRR and
-the containerlab image without automerge, so a bump stays unverified until
-someone runs `run.sh` and refreshes the record below.
+No CI job runs the lab. The `e2e-bgp-fabric` job proves the node side against
+FRR peers on kind ([BGP Node Substrate](bgp-node-substrate.md#what-the-suite-proves)).
+Renovate watches the FRR and the containerlab image without automerge, so a
+bump stays unverified until someone runs `run.sh` and refreshes the record
+below.
 
 ### Leaf-pair acceptance
 
@@ -530,6 +535,8 @@ one here.
 
 ## See also
 
+- [BGP Node Substrate](bgp-node-substrate.md): frr-k8s, the speaker that
+  carries the node side of this contract, and its kind suite
 - [Create a Provider Network](../../guides/neutron/create-a-provider-network.md):
   the flat provider network and the gateway label the contract builds on
 - [Label a Node as a Compute or Network Node](../../guides/ovn/label-a-chassis-node.md):
