@@ -31,9 +31,9 @@ One operator serves two kinds, so `sub_reconciler` carries sixteen values:
 `TLS`, `Northbound`, `Southbound`, `Endpoints`, `Northd`, `Relay`, `Backup` and
 `VPA` from the `OVNCentral` pipeline, `Central`, `ClientSecret`, `Nodes`, `OVS`,
 `Controller`, `ChassisVPA`, `Maintenance` and `Fabric` from the `OVNChassis`
-one. The
-backup pair carries the CR name and its namespace: it measures the Jobs the
-CronJob spawns, which is work that happens outside a reconcile.
+one. The backup metrics are labeled by CR name and namespace. After observing a
+terminal backup Job, the operator records its result (`succeeded` or `failed`)
+and duration; the Job itself runs outside a reconcile.
 
 For the controller-side contract (which sub-reconciler drives which condition),
 see [OVN Reconciler Architecture](../../reference/ovn/ovn-reconciler.md).
@@ -54,9 +54,12 @@ kube-prometheus-stack scraping it.
 
 For a non-kind installation, install the prometheus-operator CRDs and configure
 Prometheus's `serviceMonitorSelector` to match the ServiceMonitor labels and
-`serviceMonitorNamespaceSelector` to include `ovn-system`. The backup series
-in Step 3 requires a reconciled `OVNCentral`. On the devstack that is
-`controlplane-ovn`, applied before the `ControlPlane` CR.
+`serviceMonitorNamespaceSelector` to include `ovn-system`. If the OVN operator
+NetworkPolicy is enabled, also allow Prometheus to reach the metrics port with
+`networkPolicy.allowMetricsFrom`; see
+[Enable the OVN Operator NetworkPolicy](./enable-ovn-operator-networkpolicy.md).
+The backup series in Step 3 requires a reconciled `OVNCentral`. On the
+devstack that is `controlplane-ovn`, applied before the `ControlPlane` CR.
 
 ## Step 1: Enable the ServiceMonitor
 
@@ -98,8 +101,10 @@ If you installed the operator directly with Helm (not through Flux), set the
 value with a rolling `helm upgrade` instead:
 
 ```bash
+CHART_VERSION="$(helm list -n ovn-system --filter '^ovn-operator$' -o json \
+  | jq -r '.[0].chart // "" | sub("^ovn-operator-"; "")')"
 helm upgrade ovn-operator oci://ghcr.io/c5c3/charts/ovn-operator \
-  --namespace ovn-system --reuse-values \
+  --namespace ovn-system --version "$CHART_VERSION" --reuse-values \
   --set monitoring.serviceMonitor.enabled=true
 ```
 
@@ -132,28 +137,34 @@ Keep the port-forward running in a separate terminal:
 kubectl -n monitoring port-forward svc/prometheus-operated 9090:9090
 ```
 
-For an existing Prometheus, replace `monitoring` with its namespace.
+For an existing Prometheus, replace `monitoring` with its namespace and
+`prometheus-operated` with its Prometheus Service name.
 In another terminal, query the targets:
 
 ```bash
-curl -s 'http://localhost:9090/api/v1/targets' \
-  | jq '.data.activeTargets[] | select(.labels.namespace == "ovn-system") | .health'
+curl --fail --silent --show-error \
+  'http://localhost:9090/api/v1/targets' \
+  | jq -e '.data.activeTargets[] | select(.labels.namespace == "ovn-system") | .health'
 ```
 
 Expect `"up"`. Then confirm the series exist:
 
 ```bash
-curl -s 'http://localhost:9090/api/v1/query?query=ovn_operator_reconcile_duration_seconds_count' \
-  | jq '.data.result | length'
+curl --fail --silent --show-error \
+  'http://localhost:9090/api/v1/query?query=ovn_operator_reconcile_duration_seconds_count' \
+  | jq -e '.data.result | length'
 ```
 
 A non-zero result count means the operator has reconciled at least one
 `OVNCentral` or `OVNChassis` since the scrape began. The backup pair stays empty
-until a backup Job terminates on `controlplane-ovn`, and its CronJob fires at
-02:00 UTC, so a devstack brought up during the day shows the reconcile series
-first. Trigger a run by hand to fill the pair on the spot:
-[Restore an OVN Database Snapshot](./restore-an-ovn-database-snapshot.md) shows
-the `kubectl create job --from=cronjob/controlplane-ovn-backup` invocation.
+until a backup Job reaches a terminal state for `controlplane-ovn`. Its default
+CronJob schedule is `0 2 * * *` (daily at 02:00), so a devstack brought up
+during the day shows the reconcile series first. Before triggering a manual run,
+check `kubectl get jobs -n openstack` and wait for any active backup to finish:
+a manually created Job does not honor the CronJob's `Forbid` policy and could
+write the shared volume concurrently. See the
+[Restore an OVN Database Snapshot](./restore-an-ovn-database-snapshot.md)
+guide for the invocation.
 
 ## Tested by
 
