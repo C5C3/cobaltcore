@@ -49,6 +49,10 @@ namespace and the `ControlPlane` `controlplane` serves the network API.
 2. The same Linux host requirement that guide names: the chassis pods have to be
    running for the `apply` Job to reach the node.
 
+The default devstack selects one node. On a cluster with several selected
+nodes, set `NODE` to the specific node you want to drain; the status checks
+below match that node by name.
+
 ## Steps
 
 The maintenance Jobs are named after the node, hashed:
@@ -58,10 +62,17 @@ of the SHA-256 of the node name. A node name is a DNS subdomain of up to 253 cha
 wait` calls below can address a Job by name:
 
 ```bash
-NODE="$(kubectl get nodes -l openstack.c5c3.io/chassis=true -o jsonpath='{.items[0].metadata.name}')"
-HASH="$(printf '%s' "$NODE" | sha256sum | cut -c1-8)"   # shasum -a 256 on macOS
+kubectl get nodes -l openstack.c5c3.io/chassis=true
+NODE="cobaltcore-control-plane" # replace with the node to drain
+if command -v sha256sum >/dev/null 2>&1; then
+  HASH="$(printf '%s' "$NODE" | sha256sum | cut -c1-8)"
+else
+  HASH="$(printf '%s' "$NODE" | shasum -a 256 | cut -c1-8)"
+fi
 echo "$NODE -> $HASH"
 ```
+
+Keep this shell open for the steps below; they reuse `NODE` and `HASH`.
 
 ### 1. Take the gateway role away
 
@@ -69,7 +80,9 @@ echo "$NODE -> $HASH"
 kubectl label node "$NODE" openstack.c5c3.io/gateway-
 ```
 
-Two Jobs run, in this order:
+The operator creates two Jobs in this order. Wait for each Job to appear before
+running its command below. If `kubectl wait` reports that a Job was not found,
+run that command again after the next reconcile.
 
 ```bash
 kubectl wait --for=condition=complete -n openstack \
@@ -88,15 +101,11 @@ that still claims the role. The Job then asks the Northbound what still names
 the chassis and fails if any matching row remains, so `gatewayEvacuated` only
 records a drain the database confirmed.
 
-`kubectl wait` fails outright on a Job that has not been created yet, so poll for
-its existence first if you run this immediately after the label change: the
-operator renders the Job on the pass that observes the change.
-
 The drain is complete when the evacuation result reaches status:
 
 ```bash
 kubectl get ovnchassis controlplane-chassis -n openstack \
-  -o jsonpath='{.status.nodes[0].gatewayEvacuated} {.status.nodes[0].gateway}'
+  -o jsonpath="{.status.nodes[?(@.name=='$NODE')].gatewayEvacuated} {.status.nodes[?(@.name=='$NODE')].gateway}"
 ```
 
 Expect `true` followed by an empty string. `status.nodes[].gateway` reports what
@@ -111,6 +120,15 @@ re-promoted node is not treated as still drained.
 kubectl label node "$NODE" openstack.c5c3.io/chassis-
 ```
 
+Wait for the chassis-deletion Job to appear, then wait for it to complete. If
+`kubectl wait` reports that the Job was not found, run the command again after
+the next reconcile.
+
+```bash
+kubectl wait --for=condition=complete -n openstack \
+  "job/controlplane-chassis-chassis-del-${HASH}" --timeout=5m
+```
+
 The node stops matching `spec.nodeSelector`. Its entry remains in the ConfigMap
 with the updated state:
 
@@ -121,27 +139,21 @@ kubectl get configmap controlplane-chassis-nodes -n openstack \
 
 The entry now ends in `LEAVING=true`. The Southbound registration outlives the
 selection, so the `SYSTEM_ID` that has to be deregistered has to outlive it too.
-That is what the third Job addresses:
-
-```bash
-kubectl wait --for=condition=complete -n openstack \
-  "job/controlplane-chassis-chassis-del-${HASH}" --timeout=5m
-```
-
 Once it succeeds the operator forgets the node in both places at once, the
 ConfigMap key and the status entry:
 
 ```bash
 kubectl get ovnchassis controlplane-chassis -n openstack \
-  -o jsonpath='{.status.nodes} {.status.desiredNumberScheduled}'
+  -o jsonpath="{.status.nodes[?(@.name=='$NODE')].leaving} {.status.desiredNumberScheduled}"
 kubectl get ovnchassis controlplane-chassis -n openstack \
   -o jsonpath='{.status.conditions[?(@.type=="MaintenanceReady")].reason}'
 ```
 
-`status.nodes` comes back empty, the counter reads `0`, and `MaintenanceReady`
-settles on `MaintenanceIdle`. A Job still in flight reports `MaintenanceRunning`,
-which is also `True`: a rolling drain is not an outage, so the aggregate `Ready`
-is not held down for it.
+The target node's `status.nodes` entry is gone, and
+`desiredNumberScheduled` has decreased by one (to `0` on the single-node
+devstack). `MaintenanceReady` settles on `MaintenanceIdle`. A Job still in
+flight reports `MaintenanceRunning`, which is also `True`: a rolling drain is
+not an outage, so the aggregate `Ready` is not held down for it.
 
 ### What keeps forwarding meanwhile
 
@@ -155,8 +167,9 @@ forwarding until a replacement pod started. `ovn-controller` runs
 `ovn-appctl -t /run/ovn/ovn-controller.ctl exit --restart`, which leaves the
 datapath flows in place and keeps the Southbound `Chassis` row for a successor
 pod to adopt, with no re-registration. The traffic on the node therefore keeps
-flowing on the kernel datapath the departed pods left behind, until the
-`chassis-del` Job removes the row.
+flowing on the kernel datapath the departed pods left behind. The
+`chassis-del` Job removes the Southbound registration; it does not clean up
+those local datapath flows or stop forwarding from the host.
 
 ### When a maintenance Job fails
 
