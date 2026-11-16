@@ -32,7 +32,7 @@ and a Keystone CR are running.
 For a non-kind installation, use your own Prometheus and Grafana instances.
 Have `kubectl`, `curl`, and `jq` available on your workstation; the direct
 Helm instructions also require `helm`. The production overlays
-(`deploy/bases/operator`) omit kube-prometheus-stack. Step 1 describes the CRD
+(`deploy/bases/operators`) omit kube-prometheus-stack. Step 1 describes the CRD
 and selector requirements for that setup.
 
 ---
