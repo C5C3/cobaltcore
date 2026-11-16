@@ -32,6 +32,7 @@ CR named `controlplane` is `Ready` in the `openstack` namespace and its projecte
 examples below is one that devstack produces.
 :::
 
+::: warning ControlPlane projected resources are operator-owned
 On a ControlPlane deployment, the c5c3-operator projects the
 `controlplane-keystone` Keystone CR and re-asserts projected fields on every
 reconcile. Direct edits to those fields are reverted. Configure supported
@@ -40,6 +41,7 @@ Keystone CR you own in the
 [Standalone Keystone](#standalone-keystone-without-a-controlplane) section;
 see the [ControlPlane Reconciler](../reference/c5c3/controlplane-reconciler.md)
 for the projection contract.
+:::
 
 Each section covers an independent recipe. Apply only what you need.
 
