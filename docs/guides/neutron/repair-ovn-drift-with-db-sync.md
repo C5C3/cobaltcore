@@ -71,15 +71,25 @@ kubectl patch neutron controlplane-neutron -n openstack --type json \
 :::
 
 `syncMode: log` reports and changes nothing. `suspend: true` keeps the schedule
-from firing while you drive the runs yourself, so the only comparison against
-the Northbound database is the one you ask for. An unset `schedule` resolves to
-the hourly default at reconcile time, and a suspended CronJob never reaches it.
+from starting new runs while you drive the comparisons yourself. Suspending the
+CronJob does not stop a Job that already started, so wait for any active sync Job
+to finish before proceeding. An unset `schedule` resolves to the hourly default
+at reconcile time.
 
 The operator projects the CronJob under the CR's name plus the sync suffix:
 
 ```bash
 kubectl get cronjob controlplane-neutron-ovn-db-sync -n openstack
+kubectl wait --for=jsonpath='{.spec.suspend}'=true \
+  cronjob/controlplane-neutron-ovn-db-sync -n openstack --timeout=2m
+kubectl wait --for=jsonpath='{.status.conditions[?(@.type=="OVNDBSyncReady")].reason}'=OVNDBSyncSuspended \
+  neutron/controlplane-neutron -n openstack --timeout=2m
+kubectl get jobs -n openstack \
+  -l app.kubernetes.io/instance=controlplane-neutron,app.kubernetes.io/component=ovn-db-sync
 ```
+
+Check the `ACTIVE` column and wait for any sync Job that is still running to
+finish.
 
 ### 2. Run it once by hand
 
@@ -94,9 +104,8 @@ kubectl wait --for=condition=complete -n openstack \
 ```
 
 A Job created this way carries the sync labels but no controller reference back
-to the CronJob, and the operator reports on the runs the CronJob controls, so
-this one leaves `OVNDBSyncReady` reporting the suspended schedule it reported
-before.
+to the CronJob. The operator reports only on Jobs the CronJob controls, so this
+manual run does not change `OVNDBSyncReady`.
 
 ### 3. Read the report
 
@@ -107,9 +116,7 @@ whether or not the databases agree:
 kubectl logs job/controlplane-neutron-ovn-db-sync-manual -n openstack
 ```
 
-In `log` mode the utility exits 0 whether or not the two databases agree, so a
-completed Job says nothing about drift on its own. Look for the lines that name
-an object and the side it is missing from:
+Look for the lines that name an object and the side it is missing from:
 
 ```text
 Network found in OVN NB DB but not in Neutron, network_id=<uuid>
@@ -149,12 +156,12 @@ kubectl wait --for=jsonpath='{.spec.jobTemplate.spec.template.spec.containers[0]
   cronjob/controlplane-neutron-ovn-db-sync -n openstack --timeout=2m
 ```
 
-Then repeat Step 2 under a fresh Job name, read its log the same way, and put
-`syncMode` back to `log`. Wait for the same projection with `log` as the
-value, because a schedule that resumes before it lands still fires the `repair`
-template. Leaving the CR in `repair` lets the hourly schedule rewrite the
-logical model unattended, which is the wrong posture for anything but the window
-you are working in.
+Then repeat Steps 2 and 3 with a fresh Job name, using it in the create, wait,
+and log commands. Set `syncMode` back to `log` and wait until the CronJob
+template reflects it. For a one-time repair, leave `suspend: true` or remove
+`spec.ovnDBSync` with the Step 1 command. To resume hourly comparisons, set
+`suspend: false` only after the `log` template is in place; otherwise hourly
+runs in `repair` mode can rewrite the logical model unattended.
 
 ### 5. Read the condition
 
@@ -163,7 +170,7 @@ you are working in.
 | Reason | What it says |
 | --- | --- |
 | `OVNDBSyncNotRequired` | `spec.ovnDBSync` is unset, so no CronJob exists |
-| `OVNDBSyncScheduled` | The CronJob is projected and firing on its schedule |
+| `OVNDBSyncScheduled` | The CronJob is projected and not suspended; its latest CronJob-controlled terminal run (if any) did not fail |
 | `OVNDBSyncSuspended` | The schedule is paused; the message names the mode it resumes in |
 | `OVNDBSyncJobFailed` | The newest run the CronJob controls failed |
 
