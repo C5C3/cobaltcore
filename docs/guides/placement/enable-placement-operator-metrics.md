@@ -51,8 +51,8 @@ Follow that tutorial through to its final **Verify** step, so the placement-oper
 (namespace `placement-system`) is running with kube-prometheus-stack scraping it.
 :::
 
-For a non-kind installation, install the prometheus-operator CRDs. Configure
-Prometheus's `serviceMonitorSelector` to match
+For a non-kind installation, install the Prometheus Operator custom resource
+definitions (CRDs). Configure Prometheus's `serviceMonitorSelector` to match
 `app.kubernetes.io/name: placement-operator` and
 `app.kubernetes.io/instance: placement-operator` (or your Helm release name),
 and set `serviceMonitorNamespaceSelector` to include `placement-system`. If
@@ -69,13 +69,10 @@ On the ControlPlane devstack, `WITH_PROMETHEUS=true` installs Prometheus and
 Grafana and sets `monitoring.serviceMonitor.enabled=true` on the
 placement-operator HelmRelease. `WITH_CONTROLPLANE=true` resumes that release,
 so the ServiceMonitor is already enabled. Skip the patch below and confirm
-the object. Use the patch for an existing installation without monitoring.
-If the HelmRelease is suspended, the value is stored but no ServiceMonitor
-is rendered until it is resumed or the chart is installed separately with
-that value.
+the object.
 
-On the tutorial devstacks the `placement-operator` release is owned by Flux (a
-`HelmRelease`), so set the chart value by patching that HelmRelease.
+On other Flux-managed installations without monitoring, set the chart value
+by patching the `HelmRelease`.
 Flux's helm-controller reverts any out-of-band
 Helm revision on its next reconcile. First check whether the release is
 suspended:
@@ -93,15 +90,9 @@ kubectl patch helmrelease placement-operator -n placement-system --type=merge \
   -p '{"spec":{"values":{"monitoring":{"serviceMonitor":{"enabled":true}}}}}'
 ```
 
-Once the patch succeeds, check the release:
-
-```bash
-kubectl get helmrelease placement-operator -n placement-system -o yaml
-```
-
-Check that `status.observedGeneration` matches `metadata.generation` and the
-`Ready` condition is `True`. Repeat the command if Flux has not reconciled the
-patch yet.
+If the HelmRelease is suspended, the patch is stored but no ServiceMonitor is
+rendered. The command exits before waiting; resume the release through its
+deployment owner, then rerun this step.
 
 Confirm the `ServiceMonitor` was rendered:
 
@@ -160,6 +151,7 @@ the port if needed. Keep the port-forward running in one terminal. In another,
 query the targets:
 
 ```bash
+set -euo pipefail
 curl --fail --silent --show-error \
   'http://localhost:9090/api/v1/targets?state=active' \
   | jq '[.data.activeTargets[] |
