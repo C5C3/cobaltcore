@@ -29,14 +29,16 @@ Job-driven sync paths:
 | `neutron_operator_ovn_db_sync_total` | counter | `neutron`, `namespace`, `result` |
 | `neutron_operator_ovn_db_sync_duration_seconds` | histogram | `neutron`, `namespace` |
 
-One operator serves two kinds, so `sub_reconciler` carries sixteen values:
+One operator serves two kinds, so `sub_reconciler` carries eighteen distinct
+values:
 `Secrets`, `DBConnectionSecret`, `TransportURLSecret`, `Config`,
 `OVNEndpoints`, `OVNClientSecret`, `Database`, `OVNDBSync`, `Deployment`,
-`Workers`, `HTTPRoute`, `HealthCheck`, `HPA` and `NetworkPolicy` from the
-`Neutron` pipeline, `Chassis` and `DaemonSet` from the `NeutronMetadataAgent`
-one, which reuses `Secrets` and `Config`. The two sync pairs carry the CR name
-and its namespace in place of a sub-reconciler: they measure Jobs, which is work
-that happens outside a reconcile.
+`Workers`, `HTTPRoute`, `HealthCheck`, `HPA`, `VPA` and `NetworkPolicy` from
+the `Neutron` pipeline, and `Chassis`, `DaemonSet` and `AgentVPA` from the
+`NeutronMetadataAgent` pipeline. Both pipelines also use `Secrets` and
+`Config`, which appear once in the shared label vocabulary. The two sync pairs
+carry the CR name and its namespace in place of a sub-reconciler: they measure
+Jobs, which is work that happens outside a reconcile.
 
 For the controller-side contract (which sub-reconciler drives which condition),
 see [Neutron Reconciler Architecture](../../reference/neutron/neutron-reconciler.md).
@@ -56,10 +58,12 @@ kube-prometheus-stack scraping it.
 :::
 
 For a non-kind installation, install the prometheus-operator CRDs and configure
-Prometheus's `serviceMonitorSelector` to match the ServiceMonitor labels and
-`serviceMonitorNamespaceSelector` to include `neutron-system`. The db-sync
-series in Step 3 requires a reconciled `Neutron`. On the devstack that is
-`controlplane-neutron`, projected when the ControlPlane declares the network
+Prometheus's `serviceMonitorSelector` to match the ServiceMonitor labels
+`app.kubernetes.io/name: neutron-operator` and
+`app.kubernetes.io/instance: neutron-operator` (or your Helm release name).
+Its `serviceMonitorNamespaceSelector` must include `neutron-system`. The
+db-sync series in Step 3 requires a reconciled `Neutron`. On the devstack that
+is `controlplane-neutron`, projected when the ControlPlane declares the network
 service.
 
 ## Step 1: Enable the ServiceMonitor
@@ -79,12 +83,17 @@ Flux's helm-controller reverts any out-of-band
 Helm revision on its next reconcile:
 
 ```bash
+set -euo pipefail
 kubectl patch helmrelease neutron-operator -n neutron-system --type=merge \
   -p '{"spec":{"values":{"monitoring":{"serviceMonitor":{"enabled":true}}}}}'
 
 kubectl wait helmrelease/neutron-operator -n neutron-system \
   --for=condition=Ready --timeout=5m
 ```
+
+If the HelmRelease is suspended, the value is stored but no ServiceMonitor is
+rendered. Do not run the wait while it is suspended; resume it through its
+owner's deployment workflow, then wait for it to reconcile.
 
 Confirm the `ServiceMonitor` was rendered:
 
@@ -102,8 +111,15 @@ If you installed the operator directly with Helm (not through Flux), set the
 value with a rolling `helm upgrade` instead:
 
 ```bash
+set -euo pipefail
+CHART_VERSION=$(helm list -n neutron-system --filter '^neutron-operator$' -o json \
+  | jq -r '.[0].chart | sub("^neutron-operator-"; "")')
+if [ -z "$CHART_VERSION" ]; then
+  echo "Could not determine the installed neutron-operator chart version." >&2
+  exit 1
+fi
 helm upgrade neutron-operator oci://ghcr.io/c5c3/charts/neutron-operator \
-  --namespace neutron-system --reuse-values \
+  --namespace neutron-system --version "$CHART_VERSION" --reuse-values \
   --set monitoring.serviceMonitor.enabled=true
 ```
 
@@ -141,32 +157,56 @@ For an existing Prometheus, replace `monitoring` with its namespace.
 In another terminal, query the targets:
 
 ```bash
-curl -s 'http://localhost:9090/api/v1/targets' \
-  | jq '.data.activeTargets[] | select(.labels.namespace == "neutron-system") | .health'
+curl --fail --silent --show-error 'http://localhost:9090/api/v1/targets?state=active' \
+  | jq -e '
+      [.data.activeTargets[]? |
+        select(.labels.namespace == "neutron-system") |
+        {health, lastScrape, lastError}] as $targets |
+      if ($targets | length) == 0 then
+        error("no Neutron operator target; check Prometheus ServiceMonitor selectors")
+      elif any($targets[]; .health != "up") then
+        error("a Neutron operator target is not up: " + ($targets | tojson))
+      else $targets end'
 ```
 
-Expect `"up"`. Then confirm the series exist:
+The query fails if Prometheus has not selected a target or if a target is down;
+inspect `lastError` in the output. If a target is absent, recheck both
+ServiceMonitor selectors. If it is down, confirm Prometheus can reach the
+operator metrics port. When the operator NetworkPolicy is enabled, add the
+Prometheus source to `networkPolicy.allowMetricsFrom`; see
+[Enable the Neutron Operator NetworkPolicy](./enable-neutron-operator-networkpolicy.md).
+Then confirm the series exist:
 
 ```bash
-curl -s 'http://localhost:9090/api/v1/query?query=neutron_operator_reconcile_duration_seconds_count' \
-  | jq '.data.result | length'
+curl --fail --silent --show-error \
+  'http://localhost:9090/api/v1/query?query=neutron_operator_reconcile_duration_seconds_count' \
+  | jq -r 'if .status != "success" then
+      error("Prometheus query failed: " + (.error // "unknown error"))
+    else (.data.result | length) end'
 ```
 
-A non-zero result count means the operator has reconciled at least one `Neutron`
-or `NeutronMetadataAgent` since the scrape began.
+A non-zero result count means the operator has recorded at least one reconcile
+observation since its process started. Prometheus receives the histogram's
+cumulative count at each scrape; restarting the operator resets that count.
 
 Both sync pairs stay empty until a Job terminates, and each fills from a
-different event. The db-sync pair takes its sample when the `{name}-db-sync` Job
-of a `Neutron` completes, which the ControlPlane devstack does once, while it
-projects `controlplane-neutron`. The operator records each run once per Job UID
-through an annotation on the CR, so an operator restart after that migration
-leaves the pair empty until the next `Neutron` is created. The ovn-db-sync pair
-needs a run of the `{name}-ovn-db-sync` CronJob, which exists only while
-`spec.ovnDBSync` is set. Fill it on the spot by scheduling the sync and
-triggering a run:
+different event. The db-sync pair records terminal runs of the initial
+`{name}-db-sync` Job and the `{name}-db-expand`, `{name}-db-migrate`, and
+`{name}-db-contract` upgrade Jobs. All four phases share the same series; the
+metrics do not include a job-phase label. The ControlPlane devstack runs the
+initial db-sync Job once while it projects `controlplane-neutron`. The operator
+records each run once per Job UID through an annotation on the CR. After an
+operator restart, old Jobs are not counted again, so the pair stays empty until
+another database Job terminates, such as during a release upgrade.
+
+The ovn-db-sync pair records terminal runs of the `{name}-ovn-db-sync`
+CronJob, which exists only while `spec.ovnDBSync` is set. It observes only Jobs
+owned by that CronJob. The manual
+`kubectl create job --from=cronjob/controlplane-neutron-ovn-db-sync` command
+in the repair guide creates an unowned Job, so it does not populate these
+metrics. Wait for a scheduled CronJob run to record a sample. The
 [Repair OVN Drift with db-sync](./repair-ovn-drift-with-db-sync.md) walks both,
-including the `kubectl create job --from=cronjob/controlplane-neutron-ovn-db-sync`
-invocation.
+including how to run and inspect the manual repair Job.
 
 ## Tested by
 
