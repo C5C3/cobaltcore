@@ -42,16 +42,16 @@ Step 7, so the `OVNCentral` `controlplane-ovn` is Ready in the `openstack`
 namespace and the `ControlPlane` `controlplane` serves the network API.
 :::
 
-1. **A Linux host with root or passwordless sudo.** `WITH_OVN_KERNEL_MODULES=true`
-   loads the `openvswitch` and `geneve` modules on the host
-   (`hack/deploy-infra.sh`). On a non-Linux host the script skips the load and
-   says so, because the datapath runs in the kind provider's Linux VM kernel;
-   on a Linux host without passwordless sudo it warns and skips. Either way the
-   privileged `host-prepare` init container of the chassis pods is left to find
-   the modules in the node's `/lib/modules` tree, and a node that carries
-   neither leaves the chassis pod in `Init:CrashLoopBackOff`.
-2. The `ovn-operator` in namespace `ovn-system`, which the ControlPlane
-   bring-up deploys.
+The kind node's Linux kernel must provide the `openvswitch` and `geneve`
+modules. `WITH_OVN_KERNEL_MODULES=true` asks `hack/deploy-infra.sh` to attempt
+loading them on a Linux host. The host-side load needs root or passwordless
+sudo; if the script cannot load a module, it logs a warning and continues. On a
+non-Linux host, the script skips the host-side load because the kind node runs
+in a Linux VM. In either case, the OVS DaemonSet's `host-prepare` init
+container runs `modprobe openvswitch && modprobe geneve`. If either module is
+unavailable to the node, the chassis pod stays in `Init:CrashLoopBackOff`.
+The ControlPlane bring-up also deploys the `ovn-operator` in namespace
+`ovn-system`.
 
 ## Steps
 
@@ -60,8 +60,10 @@ namespace and the `ControlPlane` `controlplane` serves the network API.
 The devstack cluster has one node, so read its name once and keep it:
 
 ```bash
+set -eu
 NODE="$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')"
-kubectl label node "$NODE" openstack.c5c3.io/chassis=true
+test -n "$NODE"
+kubectl label node "$NODE" openstack.c5c3.io/chassis=true --overwrite
 ```
 
 On a larger cluster, repeat the label for every node that should carry the
@@ -98,9 +100,10 @@ kubectl wait ovnchassis/controlplane-chassis -n openstack \
 Nothing projects an `OVNChassis`: the ControlPlane references an `OVNCentral`
 and stops there, so this CR is yours to edit and no reconcile takes your
 changes back. `spec.centralRef` and `spec.nodeSelector` name the central and the
-nodes; `spec.gateway.nodeSelector` narrows that same set, and it matches no node
-until Step 3 puts the second label on one. The manifest carries no
-`spec.bridgeMappings`, because a kind node has no provider network to map.
+nodes; `spec.gateway.nodeSelector` narrows that same set, and in this devstack
+it matches no node until Step 3 puts the second label on one. The manifest
+carries no `spec.bridgeMappings`, because a kind node has no provider network
+to map.
 
 `Ready` aggregates six sub-conditions. Read them when the wait times out:
 
@@ -116,16 +119,39 @@ of the workloads on it and announces no gateway role. Add the second label to
 make it a network node:
 
 ```bash
-kubectl label node "$NODE" openstack.c5c3.io/gateway=true
+kubectl label node "$NODE" openstack.c5c3.io/gateway=true --overwrite
 ```
+
+On a multi-node cluster, set `NODE` to the chassis node you want to promote
+before running the label command.
 
 Three things follow. The node's entry in the `controlplane-chassis-nodes`
 ConfigMap is re-rendered with `GATEWAY=true`, so its hash no longer matches
 `status.nodes[].configHash` and the operator runs a
 `controlplane-chassis-apply-<8 hex>` Job pinned to that node. The Job re-runs
 the same `apply-node.sh` the pod's init container runs, which sets
-`ovn-cms-options=enable-chassis-as-gw` in the local `Open_vSwitch` table. Once
-it has landed, `status.nodes[].gateway` reports `true`.
+`ovn-cms-options=enable-chassis-as-gw` in the local `Open_vSwitch` table.
+`status.nodes[].gateway` follows the selector on promotion and can turn `true`
+before the Job completes. On demotion, it stays `true` until the evacuation Job
+succeeds. `MaintenanceReady` also stays `True` while a Job runs, so neither it
+nor the aggregate `Ready` condition proves that the node has applied the
+gateway configuration. After the operator creates the apply Job, check its
+name and wait for it to complete:
+
+```bash
+set -eu
+kubectl get jobs -n openstack
+kubectl wait 'job/controlplane-chassis-apply-<8-hex-suffix>' -n openstack \
+  --for=condition=Complete --timeout=5m
+```
+
+If the wait fails, inspect the Job's pod logs:
+
+```bash
+kubectl logs 'job/controlplane-chassis-apply-<8-hex-suffix>' -n openstack
+```
+
+The local database check in Verification confirms the applied gateway option.
 
 Taking the label off again is an evacuation, with a Job of its own:
 [Drain a Chassis Node](./drain-a-chassis-node.md) walks it.
@@ -140,10 +166,10 @@ kubectl get ovnchassis controlplane-chassis -n openstack \
 ```
 
 Expect one entry per labelled node, with `systemID` holding a UUID and
-`gateway: true` on the promoted one. The `gateway` field uses `omitempty`, so a
-compute node has no `gateway` key when its value is false. The `systemID` is what the
-chassis-deletion Job addresses later, so a node without one is a registration
-nothing could remove.
+`gateway: true` on the promoted one. A compute node has no `gateway` key
+because the field uses `omitempty` for false values. The `systemID` is what the
+chassis-deletion Job addresses later, so a node without one leaves the Job
+unable to identify the registration to remove.
 
 Both DaemonSets run on the selected nodes:
 
@@ -165,11 +191,23 @@ kubectl exec ds/controlplane-chassis-ovs -n openstack -c ovsdb-server -- \
   ovs-vsctl get open . external_ids
 ```
 
-The output holds `system-id` matching `status.nodes[].systemID`, `hostname` with
-the node name, `ovn-encap-type=geneve` with the node address in `ovn-encap-ip`,
-`ovn-remote` pointing at the Southbound address `controlplane-ovn` published,
-and `ovn-cms-options=enable-chassis-as-gw` on a gateway node. A compute node
-carries no `ovn-cms-options` key at all.
+The devstack has one labelled node, so the command reads its database. On a
+multi-node cluster, list the OVS DaemonSet pods:
+
+```bash
+kubectl get pods -n openstack \
+  -l app.kubernetes.io/instance=controlplane-chassis,app.kubernetes.io/component=ovs
+```
+
+Replace `ds/controlplane-chassis-ovs` with each pod name in the `kubectl exec`
+command and run it once per pod to check every node.
+
+The output should show `system-id` matching `status.nodes[].systemID`,
+`hostname` with the node name, `ovn-encap-type=geneve` with the node address in
+`ovn-encap-ip`, and `ovn-remote` pointing at the Southbound address published
+by `controlplane-ovn`. A gateway node also has
+`ovn-cms-options=enable-chassis-as-gw`; a compute node has no
+`ovn-cms-options` key.
 
 ## See also
 
