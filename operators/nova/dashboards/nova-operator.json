@@ -31,7 +31,7 @@
       "id": 1,
       "type": "timeseries",
       "title": "Reconcile duration p50/p95/p99 per sub_reconciler",
-      "description": "p50/p95/p99 wall-clock duration of Nova sub-reconciler invocations, derived from nova_operator_reconcile_duration_seconds_bucket. p50 tracks the steady-state hot path; p99 surfaces the tail a speedup roadmap must watch.",
+      "description": "p50/p95/p99 wall-clock duration of Nova and NovaCompute sub-reconciler invocations, derived from nova_operator_reconcile_duration_seconds_bucket. p50 tracks the steady-state hot path; p99 surfaces the tail a speedup roadmap must watch.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -257,7 +257,7 @@
       "id": 5,
       "type": "timeseries",
       "title": "End-to-end reconcile duration (controller-runtime)",
-      "description": "p50/p95/p99 of controller_runtime_reconcile_time_seconds_bucket for the nova controller. Unlike nova_operator_reconcile_duration_seconds (which samples only the sub-reconcilers), this built-in histogram covers the whole Reconcile call: orchestration, status update, and watch handling. It is the SLO signal for end-to-end reconcile latency.",
+      "description": "p50/p95/p99 of controller_runtime_reconcile_time_seconds_bucket for the nova and novacompute controllers. Unlike nova_operator_reconcile_duration_seconds (which samples only the sub-reconcilers), this built-in histogram covers the whole Reconcile call: orchestration, status update, and watch handling. It is the SLO signal for end-to-end reconcile latency.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
