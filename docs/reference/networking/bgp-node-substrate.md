@@ -245,7 +245,7 @@ here.
   this page maps to frr-k8s, and the containerlab lab
 - [E2E Infrastructure Deployment](../infrastructure/e2e-deployment.md): the
   overlay table and the `WITH_FRR_K8S` flag
-- [CI Workflow](../ci-cd/ci-workflow.md): the `e2e-bgp-fabric`
+- [CI Workflow](../ci-cd/ci-workflow.md#e2e-bgp-fabric): the `e2e-bgp-fabric`
   job
 - [Connect a Compute Cluster](../../guides/nova/connect-a-compute-cluster.md):
   what a compute cluster installs with its own Flux

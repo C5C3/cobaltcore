@@ -9,9 +9,9 @@ description: >-
   e2e job fails (build-e2e-images, e2e-infra, e2e-operator, e2e-chaos,
   e2e-chaos-random, e2e-prometheus, e2e-controlplane, e2e-controlplane-sso,
   e2e-external-keystone, e2e-autoscaling, e2e-operator-upgrade,
-  e2e-multicluster, e2e-ovn-overlay, e2e-nova-libvirt, tempest), when a job died
-  without logs, when asked to debug a chainsaw suite, or when reproducing an e2e
-  failure locally.
+  e2e-multicluster, e2e-ovn-overlay, e2e-nova-libvirt, e2e-bgp-fabric, tempest),
+  when a job died without logs, when asked to debug a chainsaw suite, or when
+  reproducing an e2e failure locally.
 ---
 
 # Debug an e2e failure
@@ -37,7 +37,7 @@ kind cluster last (`hack/ci-delete-kind-cluster.sh`).
 
 All jobs below run on `pull_request` (green `main` pushes say nothing
 about them); `build-e2e-images`, the `e2e-chaos` legs and `e2e-chaos-random`
-also run every night against `main`. Every job except `e2e-infra` gates on `build-e2e-images`, which
+also run every night against `main`. Every job except `e2e-infra` and `e2e-bgp-fabric` gates on `build-e2e-images`, which
 skips for fork PRs. Runner `self-hosted` is the `ogrm-*` pool. Re-derive this table
 from `.github/workflows/ci.yaml` when it looks stale.
 
@@ -57,6 +57,7 @@ from `.github/workflows/ci.yaml` when it looks stale.
 | `e2e-multicluster` | self-hosted, 90m | `make e2e-multicluster` over `tests/e2e-multicluster/`: `cobaltcore-target` runs the infrastructure (`INFRA_ONLY=true` + the `deploy/bases/target-cluster-access` chart), `cobaltcore-mgmt` runs keystone, barbican, ovn and neutron operators, which reach the target only through the chart's token in Secret `cobaltcore-target` in `c5c3-clusters` | two dumps (management `OPERATOR=keystone`; target without `OPERATOR`) + `e2e-multicluster-junit-report` |
 | `e2e-ovn-overlay` | self-hosted, 60m, `continue-on-error` | `make e2e-ovn-overlay` over `tests/e2e-ovn-overlay/` (own config) on `hack/kind-config-multinode.yaml` (one control plane, two workers), ovn-operator only; needs openvswitch + geneve on the host | dump `OPERATOR=ovn` + `e2e-ovn-overlay-junit-report` |
 | `e2e-nova-libvirt` | self-hosted, 150m, `continue-on-error` | `make e2e-nova-libvirt` over `tests/e2e-nova-libvirt/` (own config, `failFast: false`) on `hack/kind-config.yaml`: `server-boot` and `guest-dataplane` on the `compute-node-pool` stack, libvirtd in DaemonSet `libvirt-e2e` (`hostPID`) from `ghcr.io/c5c3/libvirt:latest` (in the image map: this run's build when an input of the image changed, otherwise main's digest), a `NovaCompute` with `virtType: qemu`; the guest suite adds Cinder on NFS, cirros guests with in-guest probes, PodChaos F1/F2 and four Tempest scenarios; keystone, placement, glance, ovn, neutron, cinder and nova operators, `WITH_NFS` and `WITH_CHAOS_MESH`; needs openvswitch on the host | the suites' `catch` (libvirt pod describe and log, `virsh list --all`, `/var/log/libvirt/qemu/*`; the guest suite's `gl_dump` and the probe console log) + dump `OPERATOR=nova` and one `OPERATOR_ONLY=1` pass per sibling + `e2e-nova-libvirt-junit-report` + `e2e-nova-libvirt-tempest-results` |
+| `e2e-bgp-fabric` | self-hosted, 45m, `continue-on-error`; needs only `changes`, skips for fork PRs | `make e2e-bgp-fabric` over `tests/e2e-bgp-fabric/` (own config) on `hack/kind-config.yaml` with `WITH_FRR_K8S=true`, no operator: `frr-k8s-fabric-peering` labels the node `openstack.c5c3.io/frr-k8s=true`, builds the VRF `fabric` from Pod `fabric-node` and peers it with Pods `fabric-peer-1`/`-2`; needs the `vrf` module on the host | the suite's test-level `catch` (the three Pods' describe and logs, the `frr` and `controller` logs of DaemonSet `frr-k8s`, FRR's `show running-config`, `FRRNodeState`, `BGPSessionState`s) + dump without `OPERATOR` + `e2e-bgp-fabric-junit-report` |
 | `tempest (<service>, <release>, …)` | self-hosted; 150m nova, 120m cinder, 68m others | matrix from `hack/ci-generate-tempest-matrix.sh`: keystone glance barbican neutron cinder nova × every `releases/*/`, plus a `keystone-upgrade` leg for the newest release (deploys `upgrade-from`, upgrades it in place, then runs the keystone suite); the job's own steps apply the CRs from `tests/tempest/<svc>-<slug>/` and `kubectl wait` each, then `hack/ci-run-tempest.sh`. Runs only after e2e-infra, e2e-operator, e2e-chaos and e2e-prometheus finished without failure. The job name carries every matrix value | `tempest-<service>-<release>-results`, `tempest-keystone-upgrade-<release>-results` for the upgrade leg (`tempest-results.xml` has the tracebacks the job log omits, `port-forward-<Svc>.log`; `tempest.conf` excluded — admin password) + dump `OPERATOR=keystone` (+ one `OPERATOR_ONLY=1` pass per compute-stack operator on nova/cinder) |
 
 Gating facts to know before reading results:
@@ -298,7 +299,7 @@ means the pattern has no log signature and is recognised by hand.
 | `stale-image` — | a PR fails on behaviour main already fixed; the image provenance shows the implicated image pulled `@sha256:` (reused); `build-e2e-images` `Image map` says `(reused)` | a `build-and-push` leg failed on the main push, `merge-operator-images` skipped for every operator, `:latest` kept an older revision; a later push republishes only operators whose sources changed | since `8347f30e` the resolver builds an operator image whose revision lacks commits to its sources, so PR legs self-heal; `:latest` itself stays stale until `gh run rerun <main-run> --failed` — within a day, the digest artifacts have `retention-days: 1`. Check the `org.opencontainers.image.revision` label of `latest` on GHCR |
 | `ghcr-transient` | `ghcr.io … (Client.Timeout exceeded while awaiting headers)`, `docker login/push … failed after 5 attempts` | registry eventual consistency, transient 5xx | bounded retries `4b3cfbde`, `1f43aee7`, `f67318cd`; GHCR transport `b5efce28`. Once: rerun; recurring: own issue |
 | `go-merge-with-main` | `verify-codegen` → `FAIL: operators/<op> is not tidy` (`make verify-go-tidy`); `test (<op>)` `[setup failed]` on `verifying go.mod: reading https://sum.golang.org/…`; nothing reproduces on the branch | PR CI tests the merge with main: a module lagging a bump main carries loads the unpruned graph and fetches checksums | reproduce in a worktree merged with `origin/main`; bump the lagging `go.mod` to lockstep and `go mod tidy` **in the merged tree** (`go get` indirect pins explicitly); a module new on the branch needs its own tidy. [[check-go-workspace-deps]] |
-| `kernel-modules` — | NetworkChaos suites fail on missing `ip_set` / `xt_set` / `sch_netem`; OVN chassis pods without a datapath | the runner kernel lacks the modules | `hack/deploy-infra.sh` installs `linux-modules-extra-$(uname -r)` and retries; OVN modules load only under `WITH_OVN_KERNEL_MODULES=true`; every chaos leg gates since #1388, while `e2e-ovn-overlay` and `e2e-nova-libvirt` stay `continue-on-error` |
+| `kernel-modules` — | NetworkChaos suites fail on missing `ip_set` / `xt_set` / `sch_netem`; OVN chassis pods without a datapath | the runner kernel lacks the modules | `hack/deploy-infra.sh` installs `linux-modules-extra-$(uname -r)` and retries; OVN modules load only under `WITH_OVN_KERNEL_MODULES=true`; `vrf` loads when `e2e-bgp-fabric`'s Pod creates the VRF, and a kernel without it prints `ERROR: cannot create a VRF device; the node kernel has no vrf module` in the `fabric-node` log; every chaos leg gates since #1388, while `e2e-ovn-overlay`, `e2e-nova-libvirt` and `e2e-bgp-fabric` stay `continue-on-error` |
 
 ### Suite / product
 

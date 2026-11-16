@@ -116,6 +116,7 @@ jobs:
       e2e-orders-multicluster: ${{ steps.result.outputs.e2e-orders-multicluster }}
       e2e-ovn-overlay: ${{ steps.result.outputs.e2e-ovn-overlay }}
       e2e-nova-libvirt: ${{ steps.result.outputs.e2e-nova-libvirt }}
+      e2e-bgp-fabric: ${{ steps.result.outputs.e2e-bgp-fabric }}
       keystone-pressure: ${{ steps.result.outputs.keystone-pressure }}
       e2e-operator-upgrade: ${{ steps.result.outputs.e2e-operator-upgrade }}
       tempest: ${{ steps.result.outputs.tempest }}
@@ -435,6 +436,10 @@ jobs:
               - 'tests/e2e/nova/compute-node-pool/**'
               # The suite creates and deletes its vhost with this script.
               - 'tests/e2e/cinder/broker-vhost.sh'
+            # The BGP fabric suite and the frr-k8s overlay it peers through.
+            tests_bgp_fabric:
+              - 'tests/e2e-bgp-fabric/**'
+              - 'deploy/overlays/kind/frr-k8s/**'
             # The harness of the keystone-pressure job: the A/B script, the
             # dizzy pin it takes the client image from and the profiles. The
             # Keystone image reaches the job through the image_keystone filter.
@@ -647,6 +652,7 @@ jobs:
           FILTER_tests_orders_multicluster: ${{ steps.filter.outputs.tests_orders_multicluster }}
           FILTER_tests_ovn_overlay: ${{ steps.filter.outputs.tests_ovn_overlay }}
           FILTER_tests_nova_libvirt: ${{ steps.filter.outputs.tests_nova_libvirt }}
+          FILTER_tests_bgp_fabric: ${{ steps.filter.outputs.tests_bgp_fabric }}
           FILTER_keystone_pressure: ${{ steps.filter.outputs.keystone_pressure }}
           FILTER_tests_operator_upgrade: ${{ steps.filter.outputs.tests_operator_upgrade }}
           FILTER_tests_operator_upgrade_keystone: ${{ steps.filter.outputs.tests_operator_upgrade_keystone }}
@@ -5123,6 +5129,67 @@ jobs:
           path: |
             _output/tempest-nova-libvirt/
             !_output/tempest-nova-libvirt/config/tempest.conf
+          retention-days: 14
+      # Last step of the job, so the dump above still had a cluster to read;
+      # `always()` covers the failed and timed-out runs.  Never fails the job
+      # (see hack/ci-delete-kind-cluster.sh).
+      - name: Delete kind cluster
+        if: always()
+        run: hack/ci-delete-kind-cluster.sh
+
+  # The node side of the BGP fabric contract on frr-k8s. Brings up the
+  # single-node cluster of hack/kind-config.yaml with the frr-k8s overlay
+  # (WITH_FRR_K8S=true) and runs tests/e2e-bgp-fabric/: one kind node peers
+  # with two FRR Pods over two unnumbered eBGP sessions with BFD in a VRF,
+  # and the suite checks the routes at both ends, the node's untouched main
+  # table and the raw snippet that announces kernel routes. See
+  # docs/reference/networking/bgp-node-substrate.md.
+  #
+  # The job needs only changes: it builds and loads no run-scoped image, so
+  # it joins neither build-e2e-images nor the needs of cleanup-e2e-tags.
+  #
+  # continue-on-error: true because the suite needs the vrf kernel module on
+  # the runner host, which puts the job under the non-blocking entry rule of
+  # `### Kernel-module-dependent suites` in docs/reference/ci-cd/ci-workflow.md.
+  # The fork guard keeps its privileged hostNetwork and hostPID Pods off the
+  # self-hosted runner for a pull request from a fork.
+  e2e-bgp-fabric:
+    needs: [changes]
+    if: |
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.fork != true &&
+      needs.changes.outputs.e2e-bgp-fabric == 'true'
+    runs-on: self-hosted
+    timeout-minutes: 45
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.work
+      - name: Create kind cluster
+        uses: ./.github/actions/create-kind-cluster
+        with:
+          version: ${{ env.KIND_VERSION }}
+          config: hack/kind-config.yaml
+          cluster-name: ${{ env.KIND_CLUSTER }}
+      - name: Setup E2E infrastructure
+        uses: ./.github/actions/setup-e2e-infra
+        env:
+          WITH_FRR_K8S: "true"
+      - name: Run the BGP fabric suite
+        run: |
+          mkdir -p _output/reports
+          make e2e-bgp-fabric
+      - name: Dump diagnostic info
+        if: always()
+        run: hack/ci-dump-diagnostics.sh
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-bgp-fabric-junit-report
+          path: _output/reports/
           retention-days: 14
       # Last step of the job, so the dump above still had a cluster to read;
       # `always()` covers the failed and timed-out runs.  Never fails the job

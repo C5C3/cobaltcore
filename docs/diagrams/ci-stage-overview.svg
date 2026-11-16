@@ -88,10 +88,11 @@
 <text x="799" y="1099.2" font-size="20" font-weight="400" fill="#2B3440">docs-overlay</text>
 <text x="79" y="1127.2" font-size="20" font-weight="400" fill="#2B3440">helm-validate</text>
 <text x="79" y="1155.2" font-size="20" font-weight="400" fill="#55606E">needed by no other job</text>
-<rect x="1232" y="997" width="300" height="125" rx="13" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<rect x="1232" y="997" width="300" height="153" rx="13" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
 <text x="1251" y="1036.36" font-size="26" font-weight="700" fill="#2B3440">Infrastructure suite</text>
 <text x="1251" y="1071.2" font-size="20" font-weight="400" fill="#2B3440">e2e-infra</text>
-<text x="1251" y="1099.2" font-size="20" font-weight="400" fill="#55606E">needs only changes</text>
+<text x="1251" y="1099.2" font-size="20" font-weight="400" fill="#2B3440">e2e-bgp-fabric</text>
+<text x="1251" y="1127.2" font-size="20" font-weight="400" fill="#55606E">needs only changes</text>
 <polyline points="658,165 658,470.5" fill="none" stroke="#3A4452" stroke-width="3"/>
 <polygon points="658,481 650.8,466 665.2,466" fill="#3A4452"/>
 <polyline points="928,102.5 965.5,102.5" fill="none" stroke="#3A4452" stroke-width="3"/>

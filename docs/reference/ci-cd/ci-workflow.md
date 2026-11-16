@@ -17,7 +17,7 @@ The `build-e2e-images` job centralises E2E image builds. It builds the images wh
 sources the pull request changed and pushes those to GHCR under run-scoped tags
 (`e2e-${run_id}-<orig_tag>`), then resolves every other image to the digest behind
 the tag `main` last published. Both kinds go into the job's `image-map` output. The
-`tempest` job and every `e2e-*` job except `e2e-infra` `docker pull` whatever the map
+`tempest` job and every `e2e-*` job except `e2e-infra` and `e2e-bgp-fabric` `docker pull` whatever the map
 names via the `load-e2e-images` composite action and re-tag the images to their
 canonical local references, so a pull request that touches one operator spends about
 four minutes here instead of the 39 the full build took. The `cleanup-e2e-tags` job
@@ -93,6 +93,7 @@ scripts it calls. Nothing runs because Go code changed somewhere else.
 | `tests_chaos_random` | `tests/chaos-random/**`, `hack/chaos-random.sh`, `hack/dizzy-soak.sh`, `hack/dizzy-soak-runner.sh`, `deploy/overlays/metal-stack/dizzy-soak/**`, `tests/e2e-chaos/lib/consistency.sh` | `e2e-chaos-random` |
 | `tests_operator_upgrade` | the inputs every operator upgrade suite shares: `tests/e2e-operator-upgrade/chainsaw-config.yaml`, `hack/ci-fetch-released-operator.sh`, `hack/ci-read-chart-version.sh`, `hack/ci-operator-upgrade-leg.sh`, `hack/ci-deploy-operator.sh`, `.github/workflows/e2e-operator-upgrade.yaml` | every `e2e-operator-upgrade` job |
 | `tests_operator_upgrade_<op>` (one per operator) | `tests/e2e-operator-upgrade/<op>-helm-upgrade/**`; cinder and nova also `tests/e2e/cinder/broker-vhost.sh`; keystone also `hack/ci-operator-upgrade-crd-window.sh`, which its suite calls, and `tests/e2e-operator-upgrade/keystone-helm-upgrade-pod-kill/**` with the `tests/e2e-chaos/lib/workload.sh` and `workload.py` that suite calls | that operator's `e2e-operator-upgrade` job |
+| `tests_bgp_fabric` | `tests/e2e-bgp-fabric/**`, `deploy/overlays/kind/frr-k8s/**` | `e2e-bgp-fabric` |
 | `e2e_infra` | `tests/e2e/infrastructure/**` | `e2e-infra` |
 | `e2e_shared`, `e2e_openbao`, `ci_plumbing`, `makefile` | the deploy stack, the infra scripts, the shared composite actions, the workflow file, the remaining CI helpers | the canary: `e2e-infra` plus the keystone `e2e-operator` leg. `deploy/bases/shared-openbao/**` adds the barbican leg |
 | `actionlint` | `.github/**` | `actionlint` |
@@ -224,7 +225,7 @@ Jobs that need elevated access declare per-job `permissions:` blocks:
 
 ## Job Dependency DAG
 
-The workflow defines 42 jobs. `changes` and `test-shell` run on every event. The
+The workflow defines 43 jobs. `changes` and `test-shell` run on every event. The
 gate, test and E2E jobs carry a `github.event_name == 'pull_request'` guard.
 `build-e2e-images`, `e2e-chaos` and `e2e-chaos-random` also run on a `schedule` or
 `workflow_dispatch` event, the nightly chaos run, and `report-nightly-chaos` runs on a `schedule` event
@@ -235,7 +236,7 @@ The figure groups the jobs into stages and draws the order of the stages. The
 table lists every job with its stage and its `needs:` list, and links the
 section that describes the job.
 
-![The jobs of the CI workflow, grouped into stages. The job changes works out what a run has to do, and every job of the two events needs it. test-shell needs no job and runs on every event. On a pull request the gates come first: lint, shellcheck, test, test-integration, verify-codegen, verify-invalid-cr-fixtures and chainsaw-lint. The image build, build-e2e-images, needs each of them. The E2E fan-out needs the image build: e2e-operator, e2e-operator-upgrade, e2e-prometheus, e2e-controlplane, e2e-controlplane-sso, e2e-autoscaling, e2e-external-keystone, e2e-multicluster, e2e-orders-multicluster, e2e-ovn-overlay, e2e-nova-libvirt and keystone-pressure. e2e-chaos follows e2e-operator, the random chaos run e2e-chaos-random follows the image build, and report-nightly-chaos follows both on a schedule only. tempest follows e2e-chaos and the infrastructure suite e2e-infra, and cleanup-e2e-tags runs last. No other job needs the checks format-check, feature-ids, review-markers, actionlint, test-race, govulncheck, docs, docs-overlay and helm-validate. On a push to main or of a v* tag, build-and-push and merge-operator-images publish the operator images, helm-push and helm-push-target-cluster publish the charts, and github-release follows both for a v* tag.](../../diagrams/ci-stage-overview.svg)
+![The jobs of the CI workflow, grouped into stages. The job changes works out what a run has to do, and every job of the two events needs it. test-shell needs no job and runs on every event. On a pull request the gates come first: lint, shellcheck, test, test-integration, verify-codegen, verify-invalid-cr-fixtures and chainsaw-lint. The image build, build-e2e-images, needs each of them. The E2E fan-out needs the image build: e2e-operator, e2e-operator-upgrade, e2e-prometheus, e2e-controlplane, e2e-controlplane-sso, e2e-autoscaling, e2e-external-keystone, e2e-multicluster, e2e-orders-multicluster, e2e-ovn-overlay, e2e-nova-libvirt and keystone-pressure. e2e-chaos follows e2e-operator, the random chaos run e2e-chaos-random follows the image build, and report-nightly-chaos follows both on a schedule only. The infrastructure suites e2e-infra and e2e-bgp-fabric need only changes. tempest follows e2e-chaos and e2e-infra, and cleanup-e2e-tags runs last. No other job needs the checks format-check, feature-ids, review-markers, actionlint, test-race, govulncheck, docs, docs-overlay and helm-validate. On a push to main or of a v* tag, build-and-push and merge-operator-images publish the operator images, helm-push and helm-push-target-cluster publish the charts, and github-release follows both for a v* tag.](../../diagrams/ci-stage-overview.svg)
 
 | Job | Stage | `needs` |
 | --- | --- | --- |
@@ -273,6 +274,7 @@ section that describes the job.
 | [`e2e-orders-multicluster`](#e2e-orders-multicluster) | E2E fan-out | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` |
 | [`e2e-ovn-overlay`](#e2e-ovn-overlay) | E2E fan-out | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` |
 | [`e2e-nova-libvirt`](#e2e-nova-libvirt) | E2E fan-out | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` |
+| [`e2e-bgp-fabric`](#e2e-bgp-fabric) | Infrastructure suite | `changes` |
 | [`keystone-pressure`](#keystone-pressure) | E2E fan-out | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` |
 | [`tempest`](#tempest) | Tempest | `changes`, `build-e2e-images`, `e2e-infra`, `e2e-operator`, `e2e-chaos`, `e2e-prometheus` |
 | [`cleanup-e2e-tags`](#cleanup-e2e-tags) | Cleanup | `changes`, `build-e2e-images`, `e2e-operator`, `e2e-operator-upgrade`, `e2e-chaos`, `e2e-chaos-random`, `e2e-prometheus`, `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-autoscaling`, `e2e-external-keystone`, `e2e-multicluster`, `e2e-orders-multicluster`, `e2e-ovn-overlay`, `e2e-nova-libvirt`, `keystone-pressure`, `tempest` |
@@ -282,8 +284,8 @@ section that describes the job.
 | [`helm-push-target-cluster`](#helm-push-target-cluster) | Publish charts | `changes` |
 | [`github-release`](#github-release) | Release | `changes`, `merge-operator-images`, `helm-push` |
 
-`e2e-infra`, the jobs of the E2E fan-out, `e2e-chaos` and `tempest` bring up a
-kind cluster through the `create-kind-cluster` and `setup-e2e-infra` composite
+`e2e-infra`, `e2e-bgp-fabric`, the jobs of the E2E fan-out, `e2e-chaos` and
+`tempest` bring up a kind cluster through the `create-kind-cluster` and `setup-e2e-infra` composite
 actions and dump diagnostics through `hack/ci-dump-diagnostics.sh`. They run on
 the `self-hosted` runners, as do `test-integration` and `build-e2e-images`.
 
@@ -354,6 +356,7 @@ The flags come first. Each one is `true` or `false`:
 | `e2e-orders-multicluster` | Gates `e2e-orders-multicluster` |
 | `e2e-ovn-overlay` | Gates `e2e-ovn-overlay` |
 | `e2e-nova-libvirt` | Gates `e2e-nova-libvirt` |
+| `e2e-bgp-fabric` | Gates `e2e-bgp-fabric` |
 | `keystone-pressure` | Gates `keystone-pressure` |
 | `e2e-operator-upgrade` | Gates `e2e-operator-upgrade` |
 | `tempest` | Gates `tempest` |
@@ -466,7 +469,7 @@ The shellcheck binary is pre-installed on `ubuntu-latest` runners.
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
-| 2 | `make shellcheck` | Runs `shellcheck --severity=warning` over `hack/*.sh`, the operator rotation scripts (`operators/*/internal/controller/scripts/*.sh`) and the BGP fabric lab (`tests/lab/bgp-fabric/`) |
+| 2 | `make shellcheck` | Runs `shellcheck --severity=warning` over `hack/*.sh`, the operator rotation scripts (`operators/*/internal/controller/scripts/*.sh`), the BGP fabric lab (`tests/lab/bgp-fabric/`) and the fixture scripts of the BGP fabric suite (`tests/e2e-bgp-fabric/*/*.sh`) |
 
 Timeout: 8 minutes.
 
@@ -931,7 +934,7 @@ and one extra name on the HelmRelease wait list.
 Centralised image build for E2E test jobs. Builds the images whose sources the pull
 request changed, pushes them to GHCR under run-scoped tags
 (`e2e-${run_id}-<orig_tag>`), and resolves the rest to the digests `main` published.
-The `tempest` job and every `e2e-*` job except `e2e-infra` `docker pull` from GHCR via
+The `tempest` job and every `e2e-*` job except `e2e-infra` and `e2e-bgp-fabric` `docker pull` from GHCR via
 the `load-e2e-images` composite action instead of rebuilding.
 
 **Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, verify-invalid-cr-fixtures, chainsaw-lint]`
@@ -1520,6 +1523,15 @@ the `e2e-operator` legs for `ovn` and `neutron`. Both assert what one node can
 answer. The `nova` leg loads the modules too: its `compute-node-pool` suite runs
 a single-node chassis for the gate its `NovaCompute` pod waits on. The `e2e-ovn-overlay` job takes the non-blocking entry described above.
 
+**The BGP fabric suite.** `e2e-bgp-fabric` needs the `vrf` module: the suite
+creates the VRF devices `fabric` and `ovnvrf42` on the kind node, and frr-k8s
+runs its BGP sessions in the first. No `setup-e2e-infra` flag loads the module.
+The kernel loads it when the suite's privileged Pod creates the first VRF
+device, and on a kernel without it the Pod prints
+`ERROR: cannot create a VRF device; the node kernel has no vrf module` and the
+suite fails in its second step. The job takes the non-blocking entry described
+above.
+
 ### e2e-chaos-random
 
 The random chaos run of #1395: faults drawn from
@@ -1667,6 +1679,44 @@ finishes.
 That includes `internal/common/deployment`, which renders the default spread
 `default-spread` checks: the byte-identity pin goldens of every operator fail
 on any change to the rendered default, so the path needs no job of this size.
+
+### e2e-bgp-fabric
+
+Runs `tests/e2e-bgp-fabric/frr-k8s-fabric-peering` against the single-node
+cluster of `hack/kind-config.yaml` with the frr-k8s overlay installed. The kind
+node stands in for a compute node and two FRR Pods for its leaf pair. In nine
+steps the suite proves the node side of the
+[BGP Fabric Contract](../networking/bgp-fabric-contract.md) on frr-k8s:
+
+- the inert posture;
+- two unnumbered eBGP sessions with BFD in the VRF `fabric`;
+- the node's host routes at both peers;
+- the defaults in the VRF;
+- the node's untouched main table;
+- the raw snippet that announces kernel routes.
+
+The [BGP Node Substrate](../networking/bgp-node-substrate.md#what-the-suite-proves)
+lists the steps.
+
+**Dependencies:** `needs: [changes]`
+**Condition:** Runs only on a `pull_request` event from this repository (not a
+fork) when `e2e-bgp-fabric == 'true'`.
+
+The job runs on `self-hosted` with `timeout-minutes: 45` and
+`continue-on-error: true` under the
+[kernel-module rule](#kernel-module-dependent-suites): the suite needs the `vrf`
+module. It loads no run-scoped image and deploys no operator, so it needs
+neither `build-e2e-images` nor a place in the `needs` of `cleanup-e2e-tags`.
+`setup-e2e-infra` receives `WITH_FRR_K8S: "true"`, and the suite runs through
+`make e2e-bgp-fabric`, the same target a developer calls locally. The fork
+guard keeps its privileged hostNetwork and hostPID Pods off the self-hosted
+runner for a fork's pull request. `_output/reports/` is uploaded as the
+`e2e-bgp-fabric-junit-report` artifact (14-day retention).
+
+**Path filter:** `tests/e2e-bgp-fabric/**` and `deploy/overlays/kind/frr-k8s/**`
+(the `tests_bgp_fabric` class). A change elsewhere under `deploy/` or `hack/`
+does not schedule the job, and `ci:full` forces it on. A `v*` tag push sets
+the flag but does not run the job, which runs on `pull_request` events only.
 
 ### e2e-nova-libvirt
 
@@ -3097,7 +3147,8 @@ the calling step sets.
 
 A composite GitHub Action that pulls pre-built E2E images from GHCR and re-tags them
 to their canonical local references so downstream `kind load docker-image` calls work
-unchanged. Shared between the `tempest` job and every `e2e-*` job except `e2e-infra`.
+unchanged. Shared between the `tempest` job and every `e2e-*` job except `e2e-infra` and
+`e2e-bgp-fabric`.
 
 | Step | Description |
 | --- | --- |
@@ -3157,9 +3208,9 @@ The E2E jobs follow a common pattern with shared components:
 
 Image building is centralised in `build-e2e-images`, which runs once before the E2E jobs
 and pushes the images it built to GHCR under a run-scoped tag. An image it reused from
-`main` is pulled by digest and carries no run-scoped tag. The `e2e-infra` job uses steps
-1, 4, 6-8 (no operator or service images needed). The `tempest` job and every `e2e-*`
-job except `e2e-infra` use all steps, pulling their required images from GHCR via
+`main` is pulled by digest and carries no run-scoped tag. The `e2e-infra` and
+`e2e-bgp-fabric` jobs use steps 1, 4, 6-8 (no operator or service images needed). The
+`tempest` job and every `e2e-*` job except those two use all steps, pulling their required images from GHCR via
 `load-e2e-images`. The `e2e-chaos` job uses a chaos-specific Chainsaw config
 (`tests/e2e-chaos/chainsaw-config.yaml`) and test directory (`tests/e2e-chaos/`). The
 `tempest` job additionally deploys a Keystone CR before running `hack/ci-run-tempest.sh`
@@ -3427,12 +3478,13 @@ The CI workflow depends on the following artifacts:
 | `go.work` | All Go-based jobs | Provides the Go version for `actions/setup-go@v7` |
 | `hack/*.sh` | `shellcheck` job | Shell scripts validated by shellcheck |
 | `tests/lab/bgp-fabric/*.sh`, `tests/lab/bgp-fabric/*/setup.sh` | `shellcheck` job | The BGP fabric lab's runner and box entrypoints, validated by shellcheck |
+| `tests/e2e-bgp-fabric/*/*.sh` | `shellcheck` job | The node and peer scripts of the BGP fabric suite, validated by shellcheck |
 | `.codecov.yml` | Codecov integration | Component-level coverage thresholds |
 | `hack/ci-dump-diagnostics.sh` | every `e2e-*` job and the `tempest` job | Shared diagnostic dump |
 | `hack/ci-nix-build-e2e-images.sh` | `build-e2e-images` job, in the `nixos/nix` container | Builds the Nix-built operator, service, nova-compute, Tempest, ovn, libvirt and federation proxy images and writes their streams to `.nix-e2e/` |
 | `flake.nix`, `flake.lock`, `nix/locks/` | `build-e2e-images` job | The flake the e2e images are built from |
 | `hack/ci-deploy-korc.sh` | `e2e-operator` (c5c3 leg), `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-autoscaling`, `e2e-external-keystone` jobs | Applies K-ORC from an authenticated clone at the pinned commit |
-| `hack/ci-deploy-operator.sh` | the `tempest` job and every `e2e-*` job except `e2e-infra` | Deploys operator via Helm; `e2e-controlplane` sets `OPERATOR_REPLICAS=1` |
+| `hack/ci-deploy-operator.sh` | the `tempest` job and every `e2e-*` job except `e2e-infra` and `e2e-bgp-fabric` | Deploys operator via Helm; `e2e-controlplane` sets `OPERATOR_REPLICAS=1` |
 | `hack/ci-fetch-released-operator.sh`, `hack/ci-operator-upgrade-leg.sh` | `e2e-operator-upgrade.yaml` | Fetch the pinned baseline chart and image; name what an operator's upgrade suite loads and deploys |
 | `hack/ci-read-chart-version.sh` | `merge-operator-images`, `hack/ci-fetch-released-operator.sh`, `hack/ci-operator-upgrade-main-matrix.sh` | Prints the version a `Chart.yaml` or a `baseline.yaml` pin names |
 | `hack/ci-operator-upgrade-main-matrix.sh` | `operator-upgrade.yaml` | Selects the operators a push to `main` published whose pin is frozen, and maps the images their suites load |
@@ -3442,7 +3494,7 @@ The CI workflow depends on the following artifacts:
 | `hack/ci-run-tempest.sh` | `tempest` job | Runs Tempest API tests |
 | `.github/actions/setup-test-deps/` | `chainsaw-lint` job, `setup-e2e-infra` composite action | Composite action for testdeps cache + `make install-test-deps` |
 | `.github/actions/setup-e2e-infra/` | every `e2e-*` job and the `tempest` job | Composite action for infra setup |
-| `.github/actions/load-e2e-images/` | the `tempest` job and every `e2e-*` job except `e2e-infra` | Composite action that pulls run-scoped GHCR tags and re-tags them to canonical local refs (GH-310) |
+| `.github/actions/load-e2e-images/` | the `tempest` job and every `e2e-*` job except `e2e-infra` and `e2e-bgp-fabric` | Composite action that pulls run-scoped GHCR tags and re-tags them to canonical local refs (GH-310) |
 | `hack/ghcr-prune-stale-versions.py` | `cleanup-e2e-tags` job, `cleanup-images.yaml` | Deletes GHCR package versions that carry no keeper tag; resolves multi-arch children and cosign referrers first |
 | `hack/ci-generate-cleanup-matrix.sh` | `changes` job, `cleanup-images.yaml` | Derives the GHCR package lists from `images/` and `operators/` |
 | `tests/e2e-chaos/chainsaw-config.yaml` | `e2e-chaos` job | Chaos-specific Chainsaw configuration |
