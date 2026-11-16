@@ -74,10 +74,13 @@ this operator implements.
   OVN: every certificate it signs is a valid client of both databases.
 - D12 (recurring maintenance inventory): a backup CronJob for both databases,
   with a daily schedule, a retention bound and a suspend switch. The lab that
-  settled it also pinned the restore constraints: `ovsdb-client restore` needs a
-  seekable stdin, so a snapshot is staged as a file; a clustered snapshot
-  restored into a standalone server needs `--force`; and a failed run leaves a
-  zero-byte file behind, so retention gates on the exit code.
+  settled it also pinned the restore constraints: `ovsdb-client restore` needs
+  seekable stdin, and `ovsdb-client` accepts a comma-separated address list for
+  a clustered database. `--force` bypasses schema-mismatch checks and can make
+  a restore fail or produce surprising results; clustering alone does not
+  require it. The backup script promotes each non-empty snapshot from `.tmp`
+  only after its database dump succeeds, and prunes old snapshots only after
+  both database dumps succeed.
 
 BGP itself is tracked in its own meta,
 [#899](https://github.com/C5C3/cobaltcore/issues/899), and the fabric side is

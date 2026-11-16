@@ -50,12 +50,15 @@ The CronJob and the volume share one name, `controlplane-ovn-backup`:
 kubectl get cronjob,pvc controlplane-ovn-backup -n openstack
 ```
 
-The volume is mounted at `/backup` in every run. Each run writes two files,
+The volume is mounted at `/backup` in every run. Each successful run writes two files,
 `nb-<timestamp>.backup` and `sb-<timestamp>.backup`, where the timestamp is
 `date -u +%Y%m%dT%H%M%SZ`, for example `nb-20260906T020000Z.backup`. Unless
 `spec.backup` says otherwise, the schedule is `0 2 * * *` and the retention
-window 14 days; both resolve at reconcile time, and a nil `spec.backup` behaves
-like an empty one.
+setting is 14 days by default; both resolve at reconcile time, and a nil
+`spec.backup` behaves like an empty one. The script applies retention with
+GNU `find -mtime +N`, which rounds file age down to full 24-hour periods before
+matching values greater than `N`. With the default `N=14`, a snapshot becomes
+eligible for pruning at 15 days old.
 
 ## Steps
 
@@ -67,49 +70,56 @@ and record its name as recovery from an incorrect replay.
 
 Creating a Job from the CronJob runs the same pod template the schedule runs,
 so the on-demand snapshot is written by the code path the nightly one uses,
-including the retention sweep that template ends with:
+including its retention sweep:
 
 ::: warning The on-demand run prunes the volume as well
-This Job deletes every `*.backup` file older than `spec.backup.retentionDays`
-(14 days unless you changed it) before it exits, as a nightly run does.
-A snapshot one night short of the window is still on the volume when the
-incident starts and gone once this run finishes. That is the file Step 2 would
-have you pick.
+After both database snapshots succeed, this Job deletes `*.backup` files whose
+whole-day age exceeds `spec.backup.retentionDays`. With the default value of 14,
+files become eligible at 15 days old. This on-demand run can therefore remove
+an older candidate before you list the volume.
 
-So when the state you want back is near the far end of the window, list the
-volume with the pod from Step 2 **before** you take the snapshot, and hold your
-candidate outside the glob the sweep matches by running that pod once more with
+If the snapshot you need is near the retention cutoff, first list the volume
+with the pod described in Step 2 and copy the candidate outside the sweep's
+`*.backup` pattern. In that pod's `--overrides`, use this command instead of
+`["ls", "-l", "/backup"]`:
 
 ```json
 "command": ["cp", "/backup/nb-20260823T020000Z.backup", "/backup/hold-nb-20260823T020000Z"]
 ```
 
-in place of its `ls -l /backup`. `find -name '*.backup'` matches no `hold-*`
-file, so no retention run touches it; Step 3 replays it under that name. Delete
-it once the restore is behind you.
+Then run the listing pod again with `["ls", "-l", "/backup"]` and confirm the
+`hold-*` file exists before taking the snapshot. Step 3 can replay that held
+path. Delete it after the restore is complete.
 :::
 
 ```bash
-kubectl create job controlplane-ovn-backup-manual \
+set -euo pipefail
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM"
+JOB="controlplane-ovn-backup-manual-$RUN_ID"
+kubectl create job "$JOB" \
   --from=cronjob/controlplane-ovn-backup -n openstack
-kubectl wait --for=condition=complete -n openstack \
-  job/controlplane-ovn-backup-manual --timeout=5m
+if ! kubectl wait --for=condition=complete -n openstack \
+  "job/$JOB" --timeout=5m; then
+  kubectl logs -n openstack "job/$JOB" --all-containers=true || true
+  kubectl describe job "$JOB" -n openstack || true
+  exit 1
+fi
+kubectl logs -n openstack "job/$JOB" --all-containers=true
 ```
 
-The script prints nothing on success, so the exit status is the whole verdict.
-It writes each snapshot to a `.tmp` file and renames it only after
+The backup script prints no success message; the completed Job is the success
+signal. It writes each snapshot to a `.tmp` file and renames it only after
 `ovsdb-client` exits zero with a non-empty result, so a run that dies mid-copy
-leaves nothing that looks like a snapshot. A full volume is why the emptiness
-check exists: `ovsdb-client` can exit zero having written nothing, and a
-zero-byte file restores no database. Retention runs after that gate, pruning
-`*.backup` files past the window, sweeping `*.backup.tmp` leftovers older than a
-day, and deleting any zero-byte file it still finds.
+leaves no completed snapshot for that database. A full volume is why the
+emptiness check exists: `ovsdb-client` can exit zero having written nothing,
+and an empty file restores no database. After both snapshots succeed, retention
+prunes expired `*.backup` files, sweeps `*.backup.tmp` leftovers older than a
+day, and removes any zero-byte `*.backup` file left by an earlier run.
 
 A failed run reports itself twice, as a `BackupJobFailed` event and as
 `ovn_operator_backup_total{result="failed"}`:
 
 ```bash
-kubectl logs -n openstack job/controlplane-ovn-backup-manual
 kubectl get events -n openstack --field-selector reason=BackupJobFailed
 ```
 
@@ -119,11 +129,16 @@ Nothing mounts the volume between runs, so list it from a short-lived pod that
 borrows the OVN image from the running Northbound StatefulSet:
 
 ```bash
+set -euo pipefail
 IMG="$(kubectl get sts controlplane-ovn-nb -n openstack \
   -o jsonpath='{.spec.template.spec.containers[0].image}')"
+test -n "$IMG"
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM"
+POD="ovn-backup-ls-$RUN_ID"
 
 OVERRIDES="$(cat <<JSON
 {"spec":{
+  "securityContext": {"fsGroup": 42424},
   "containers": [{"name": "ovn-backup-ls", "image": "${IMG}",
     "command": ["ls", "-l", "/backup"],
     "volumeMounts": [{"name": "backup", "mountPath": "/backup"}]}],
@@ -133,25 +148,29 @@ OVERRIDES="$(cat <<JSON
 JSON
 )"
 
-kubectl run ovn-backup-ls -n openstack --image="$IMG" --restart=Never \
+kubectl run "$POD" -n openstack --image="$IMG" --restart=Never \
   --overrides="$OVERRIDES"
 
-kubectl wait --for=jsonpath='{.status.phase}'=Succeeded \
-  pod/ovn-backup-ls -n openstack --timeout=2m
-kubectl logs ovn-backup-ls -n openstack
-kubectl delete pod ovn-backup-ls -n openstack
+if ! kubectl wait --for=jsonpath='{.status.phase}'=Succeeded \
+  "pod/$POD" -n openstack --timeout=2m; then
+  kubectl logs "$POD" -n openstack || true
+  kubectl describe pod "$POD" -n openstack || true
+  exit 1
+fi
+kubectl logs "$POD" -n openstack
+kubectl delete pod "$POD" -n openstack
 ```
 
-Read the log after the pod reached a terminal phase. `kubectl run -i` carries
-only what the container writes after the attach is established, and `ls` is
-finished long before that. A zero-byte file in the listing is the fingerprint of
-a run that failed before its rename, and the next retention sweep deletes it.
+The pod-level `fsGroup` gives the image's UID 42424 access to the snapshot
+volume. The wait's failure path prints the pod log and description, exits
+nonzero, and leaves the pod available for inspection. The backup script removes
+an incomplete temporary file; do not restore any zero-byte file you find.
 
-Choose the `nb-*.backup` file to replay out of that listing and keep its full
-path for Step 3. The newest file is rarely the one you want: the Step 1 snapshot
-is the newest when written, and a nightly run after the damage may capture the
-damaged model. Read the timestamps against the last moment the logical
-model was the one you want back.
+Choose an `nb-*.backup` file or a protected `hold-*` copy and keep its full path
+for Step 3. The newest file is rarely the one you want: the Step 1 snapshot is
+the newest when written, and a nightly run after the damage may capture the
+damaged model. Read the timestamps against the last moment the logical model
+was the one you want back.
 
 ### 3. Replay the Northbound snapshot
 
@@ -161,16 +180,21 @@ the file you picked in Step 2; the value below is an example, and replaying a
 different file means editing that one line:
 
 ```bash
+set -euo pipefail
 IMG="$(kubectl get sts controlplane-ovn-nb -n openstack \
   -o jsonpath='{.spec.template.spec.containers[0].image}')"
 NB="$(kubectl get ovncentral controlplane-ovn -n openstack \
   -o jsonpath='{.status.northbound.internalDbAddress}')"
+test -n "$IMG"
+test -n "$NB"
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM"
+RESTORE_JOB="controlplane-ovn-restore-$RUN_ID"
 
 cat <<JOB | kubectl apply -f -
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: controlplane-ovn-restore
+  name: ${RESTORE_JOB}
   namespace: openstack
 spec:
   backoffLimit: 0
@@ -206,7 +230,7 @@ spec:
         - |
           test -s "\$SNAPSHOT"
           echo "restoring \$SNAPSHOT"
-          ovsdb-client --force -p /certs/tls.key -c /certs/tls.crt -C /certs/ca.crt restore "\$NB_ADDR" OVN_Northbound < "\$SNAPSHOT"
+          ovsdb-client -p /certs/tls.key -c /certs/tls.crt -C /certs/ca.crt restore "\$NB_ADDR" OVN_Northbound < "\$SNAPSHOT"
         volumeMounts:
         - name: backup
           mountPath: /backup
@@ -226,31 +250,41 @@ spec:
         emptyDir: {}
 JOB
 
-kubectl wait --for=condition=complete -n openstack \
-  job/controlplane-ovn-restore --timeout=5m
-kubectl logs -n openstack job/controlplane-ovn-restore
+if ! kubectl wait --for=condition=complete -n openstack \
+  "job/$RESTORE_JOB" --timeout=5m; then
+  kubectl logs -n openstack "job/$RESTORE_JOB" --all-containers=true || true
+  kubectl describe job "$RESTORE_JOB" -n openstack || true
+  exit 1
+fi
+kubectl logs -n openstack "job/$RESTORE_JOB" --all-containers=true
 ```
 
-Four details of that Job carry weight. The pod-level `fsGroup: 42424` is what
+The pod-level `fsGroup: 42424` is what
 hands a freshly provisioned volume to the group the container runs as, and the
 container context is the Restricted one the backup run itself carries; without
 both, the replay cannot read the files the backup wrote. Redirect the snapshot
-to a regular file because `ovsdb-client restore` needs seekable stdin. `--force`
-covers a snapshot taken from a clustered
-database. And `$NB_ADDR` is one server:
-`status.northbound.internalDbAddress` lists one `ssl:<ip>:6641` entry per Raft
-member, and the ControlPlane devstack pins the Northbound to a single member, so
-the field holds one address. On a three-member cluster, pass one entry from the
-list.
+to a regular file because `ovsdb-client restore` needs seekable stdin.
+`--force` proceeds despite a schema mismatch, which can fail or produce
+surprising results
+([`ovsdb-client(1)`](https://www.openvswitch.org/support/dist-docs/ovsdb-client.1.html)).
+Do not use it just because the database is clustered.
+The image comes from the running Northbound StatefulSet, but an older snapshot
+may use a different schema. If restore reports a schema mismatch, stop and
+check the linked OVSDB manual's schema-conversion guidance for the snapshot and
+running version. Do not retry with `--force` as a workaround.
+`status.northbound.internalDbAddress` is a comma-separated list with one
+`ssl:<ip>:6641` address per Raft member. `ovsdb-client` accepts that cluster
+address form and tries the members until it finds the leader, so pass the full
+value in `$NB_ADDR`.
 
 The replay **replaces** the database with the snapshot contents. Snapshot rows
-return under fresh UUIDs, so references to old row UUIDs become invalid. Every Northbound
-row created since the snapshot is deleted. A network a tenant created after the
-backup ran is gone from the logical model by the time the Job reports complete,
-and the Step 1 snapshot is what brings it back. northd recompiles the Southbound
-database from the restored Northbound model on its own, and each chassis
-re-registers itself there, which is why the `sb-*.backup` file earns its place
-as forensic material; a routine repair goes through the Northbound.
+return under fresh UUIDs, so references to old row UUIDs become invalid. Every
+Northbound row created since the snapshot is deleted. A network a tenant
+created after the backup ran is gone from the logical model by the time the Job
+reports complete. The Step 1 snapshot brings it back. northd recompiles the
+Southbound database from the restored Northbound model, and each chassis
+re-registers itself there. The `sb-*.backup` file is useful for forensic
+analysis; a routine repair goes through the Northbound database.
 
 ### 4. Check Neutron against the restored model
 
@@ -278,10 +312,11 @@ snapshot or not at all, which is what the Step 1 file is for.
 The suite below asserts a full snapshot round trip on the CI e2e kind cluster:
 it seeds a logical switch, snapshots it with the CronJob's pod template, removes
 it, replays the snapshot, and finds the switch again. It also creates a switch
-the snapshot predates and asserts that replay removes it,
-which is the replacement half of the paragraph above. It runs the same
-`ovsdb-client` invocation this guide prints, against the one-member clustered
-Northbound the operator projects, which is the shape every deployment runs:
+the snapshot predates and asserts that replay removes it, which is the
+replacement half of the paragraph above. It runs the same `ovsdb-client`
+invocation this guide prints against a one-member clustered Northbound database.
+A production OVNCentral can have multiple members, and `ovsdb-client` accepts
+the full comma-separated address list for that cluster:
 
 ```bash
 chainsaw test --test-dir tests/e2e/ovn/central-backup-restore
