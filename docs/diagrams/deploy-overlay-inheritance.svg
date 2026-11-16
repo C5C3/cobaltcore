@@ -158,7 +158,7 @@
 <text x="66" y="2243.2" font-size="20" font-weight="400" fill="#55606E">ceph/cluster is a separate root, not a ceph base.</text>
 <rect x="640" y="2090" width="528" height="206" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
 <text x="658" y="2123.56" font-size="21" font-weight="700" fill="#2B3440">Other kind roots (no directory base)</text>
-<text x="658" y="2159.2" font-size="20" font-weight="400" fill="#55606E">metrics-server, vpa: opt-in Step 3</text>
+<text x="658" y="2159.2" font-size="20" font-weight="400" fill="#55606E">metrics-server, vpa, frr-k8s: opt-in Step 3</text>
 <text x="658" y="2187.2" font-size="20" font-weight="400" fill="#55606E">controlplane: by hand / WITH_CONTROLPLANE_CR</text>
 <text x="658" y="2215.2" font-size="20" font-weight="400" fill="#55606E">fake-compute: applied by hand</text>
 <rect x="1232" y="2090" width="528" height="206" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>

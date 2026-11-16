@@ -1,0 +1,72 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# frr-k8s HelmRelease: the per-node FRR DaemonSet that FRRConfiguration
+# objects drive, the speaker a compute node uses toward the BGP fabric
+# (docs/reference/networking/bgp-node-substrate.md). Opt-in, reconciled only
+# when the frr-k8s overlay is applied (WITH_FRR_K8S=true make deploy-infra).
+#
+# The label openstack.c5c3.io/frr-k8s=true is the opt-in per node: the
+# DaemonSet selects only nodes that carry it, so with no labelled node the
+# release runs no FRR at all. A node whose host already runs FRR (a
+# metal-stack machine, the lab included) must never carry the label. The
+# DaemonSet runs with hostNetwork, and two zebra instances in one network
+# namespace are not a supported FRR deployment; the host FRR carries the
+# fabric VRF there instead.
+#
+# The chart version is PINNED exactly, for the reason
+# deploy/bases/nfs/release.yaml gives: a `>=x <y` range would let Flux adopt
+# a new chart on its next reconcile with no repo diff, and what it installs
+# is a privileged hostNetwork DaemonSet. The pin controls WHICH VERSION Flux
+# installs, not WHICH BYTES: the chart comes from an HTTP Helm repository,
+# and Flux HelmRepository `spec.verify` is OCI-only, so nothing records a
+# checksum of the tarball. Both images carry their digest in the tag value.
+# Renovate's flux manager tracks all three (packageRules "frr-k8s", majors
+# disabled, no automerge).
+#
+# FRR 10.6.2 is the chart's own default FRR image. It moves only with the
+# chart: Renovate offers its patch and digest updates, and the FRR minor
+# follows the chart's default by hand, in the pull request that moves the
+# chart.
+#
+# What stays at chart default, and is relied on:
+#   - `frrk8s.frr.acceptIncomingBGPConnections: false`: bgpd runs with
+#     `-p 0` and accepts no incoming BGP connection.
+#   - `crds.enabled: true`: the chart installs its four CRDs as templates,
+#     so removing the release deletes them and every FRRConfiguration.
+#   - `prometheus.serviceMonitor.enabled: false`: no phase reads BGP
+#     metrics yet.
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: frr-k8s
+  namespace: frr-k8s-system
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: frr-k8s
+      version: "0.0.27"
+      sourceRef:
+        kind: HelmRepository
+        name: frr-k8s
+        namespace: flux-system
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+  values:
+    frrk8s:
+      image:
+        repository: quay.io/metallb/frr-k8s
+        tag: "v0.0.27@sha256:de862b74a3a314eb76c8fb4cabc9d2c55cca51002cd022704c32df717f9366b7"
+      nodeSelector:
+        openstack.c5c3.io/frr-k8s: "true"
+      frr:
+        image:
+          repository: quay.io/frrouting/frr
+          tag: "10.6.2@sha256:89e5e1ec8b17c5dffaf57dbac58a29ebeb3731a84e5bc09dad1662adff2ba7f5"

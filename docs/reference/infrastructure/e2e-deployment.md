@@ -660,6 +660,7 @@ bases it lists under `resources`.
 | `deploy/overlays/kind/controlplane` | none | a person, as the file `controlplane.yaml` ([Quick Start (ControlPlane)](../../quick-start-controlplane.md)), or the script under `WITH_CONTROLPLANE_CR=true` |
 | `deploy/overlays/kind/dizzy` | `deploy/bases/dizzy` | Step 3 under `WITH_DIZZY=true` |
 | `deploy/overlays/kind/fake-compute` | none | a person ([Run a Fake Compute for Testing](../../guides/nova/run-a-fake-compute-for-testing.md)) |
+| `deploy/overlays/kind/frr-k8s` | none | Step 3 under `WITH_FRR_K8S=true`, in kind mode only |
 | `deploy/overlays/kind/hypervisor-operator-fixtures` | `deploy/bases/hypervisor-fixtures` | a person ([Connect a Compute Cluster](../../guides/nova/connect-a-compute-cluster.md)) |
 | `deploy/overlays/kind/infrastructure` | `deploy/bases/devstack/infrastructure` | `make deploy-infra`, Step 5 |
 | `deploy/overlays/kind/messaging` | `deploy/bases/messaging` | after the apply of Step 5 under `WITH_MESSAGING=true`, in both cluster modes |

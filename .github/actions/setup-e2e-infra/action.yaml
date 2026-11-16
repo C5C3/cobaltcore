@@ -53,6 +53,12 @@
 # and hack/deploy-infra.sh's `${WITH_VPA:-false}` default keeps the
 # recommender out of the install.
 #
+# WITH_FRR_K8S is threaded the same way so the e2e-bgp-fabric job can install
+# the kind frr-k8s overlay its BGP fabric suite peers from. When the calling
+# job leaves WITH_FRR_K8S unset, `${{ env.WITH_FRR_K8S }}` resolves to an empty
+# string and hack/deploy-infra.sh's `${WITH_FRR_K8S:-false}` default keeps
+# frr-k8s out of the install.
+#
 # WITH_MESSAGING is threaded the same way so the Cinder e2e legs can opt in to
 # the kind-only `shared-rabbitmq` broker in `openstack`. When the calling job
 # leaves WITH_MESSAGING unset, `${{ env.WITH_MESSAGING }}` resolves to an empty
@@ -117,6 +123,8 @@ runs:
         WITH_METRICS_SERVER: ${{ env.WITH_METRICS_SERVER }}
         # opt-in flag — empty when caller does not set it; deploy-infra.sh defaults to false.
         WITH_VPA: ${{ env.WITH_VPA }}
+        # opt-in flag — empty when caller does not set it; deploy-infra.sh defaults to false.
+        WITH_FRR_K8S: ${{ env.WITH_FRR_K8S }}
         # opt-in flag — empty when caller does not set it; deploy-infra.sh defaults to false.
         WITH_MESSAGING: ${{ env.WITH_MESSAGING }}
         # opt-in flag — empty when caller does not set it; deploy-infra.sh defaults to false.

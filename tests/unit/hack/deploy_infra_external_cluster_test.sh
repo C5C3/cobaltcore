@@ -265,7 +265,7 @@ run_preflight() {
   (
     unset EXTERNAL_CLUSTER EXTERNAL_OVERLAY WITH_CONTROLPLANE WITH_CONTROLPLANE_CR \
       CONTROLPLANE_NAME WITH_VPA WITH_METRICS_SERVER WITH_REGISTRY_CACHE \
-      WITH_CHAOS_MESH WITH_OVN_KERNEL_MODULES WITH_NFS WITH_DIZZY
+      WITH_CHAOS_MESH WITH_OVN_KERNEL_MODULES WITH_NFS WITH_DIZZY WITH_FRR_K8S
     for assignment in "$@"; do
       export "${assignment?}"
     done
@@ -637,7 +637,7 @@ test_refused_flags() {
   # WITH_VPA=true folds into WITH_METRICS_SERVER=true at the top of the script,
   # so it has to be checked first to be named at all.
   for flag in WITH_VPA WITH_METRICS_SERVER WITH_REGISTRY_CACHE \
-    WITH_OVN_KERNEL_MODULES; do
+    WITH_OVN_KERNEL_MODULES WITH_FRR_K8S; do
     : >"$KUBECTL_LOG"
     output="$(run_preflight "$tmp/bin" EXTERNAL_CLUSTER=true "${flag}=true")"
     rc=$?
@@ -656,6 +656,14 @@ test_refused_flags() {
       WITH_METRICS_SERVER)
         assert_contains "the WITH_METRICS_SERVER refusal names the opt-in field" "$output" \
           "autoscaling block (spec.sizing.<component>.api.autoscaling on the ControlPlane)"
+        ;;
+      # A metal-stack machine runs its own FRR in the host network namespace,
+      # so the refusal names the host FRR that carries the fabric VRF there.
+      WITH_FRR_K8S)
+        assert_contains "the WITH_FRR_K8S refusal names the second zebra" "$output" \
+          "ERROR: EXTERNAL_CLUSTER=true does not support WITH_FRR_K8S=true: its DaemonSet starts a second zebra"
+        assert_contains "the WITH_FRR_K8S refusal names the host FRR" "$output" \
+          "the host FRR carries the fabric VRF instead"
         ;;
     esac
     assert_eq "${flag}=true is refused before the cluster is contacted" "" "$(cat "$KUBECTL_LOG")"
