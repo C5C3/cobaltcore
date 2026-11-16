@@ -15,10 +15,10 @@ shared Gateway, fetches a console URL for a server, and follows the URL through
 the proxy as far as a devstack without a hypervisor allows. It closes with what
 a real deployment needs beyond that, and how to switch the proxy off.
 
-The console proxy takes a hostname of its own. The URL the compute API hands a
-browser is `https://<host>/vnc_lite.html?path=%3Ftoken%3D<token>`, and the
-WebSocket the page then opens starts on `/` as well, so the two share one path
-and only a separate hostname can route them to the proxy.
+The console proxy needs its own hostname on this devstack. Its HTTPRoute matches
+`PathPrefix: /`, which covers both the noVNC page at `/vnc_lite.html` and the
+WebSocket endpoint at `/websockify`. The Nova API route also matches `/`, so a
+distinct hostname keeps the two routes from competing for the same requests.
 
 ## Prerequisites
 
@@ -43,6 +43,8 @@ produces.
 - If your host cannot resolve `*.nip.io`, add
   `127.0.0.1 nova-console.127-0-0-1.nip.io` to `/etc/hosts`, the way the quick
   start's DNS tip does for its other hostnames.
+- `curl` must be on `PATH` for Step 3. The quick start covers `kubectl` and the
+  OpenStack CLI used in the other steps.
 
 ## Steps
 
@@ -52,6 +54,7 @@ Set the console gateway on the ControlPlane, which projects it into the child's
 `spec.consoleProxy.gateway`:
 
 ```bash
+set -euo pipefail
 kubectl patch controlplane controlplane -n openstack --type merge \
   -p '{"spec":{"services":{"nova":{"consoleProxy":{"gateway":{"parentRef":{"name":"openstack-gw"},"hostname":"nova-console.127-0-0-1.nip.io"}}}}}}'
 ```
@@ -70,12 +73,15 @@ kubectl get httproute controlplane-nova-console -n openstack
 The same change rewrites `[vnc] novncproxy_base_url` from the cluster-local
 Service to `https://nova-console.127-0-0-1.nip.io/vnc_lite.html`, in the
 control plane's `nova.conf` and in the compute contract alike. A `nova-compute`
-builds a console URL from its own copy of that option, read at start, so
-restart the fake compute once the contract carries the new value:
+builds a console URL from its own copy of that option, read at start. Wait for
+the compute contract to contain the new URL before restarting the fake compute;
+if the check finds no matching line, let Nova reconcile and rerun it:
 
 ```bash
+set -euo pipefail
 kubectl get secret controlplane-nova-compute-config -n openstack \
-  -o jsonpath='{.data.nova-compute\.conf}' | base64 -d | grep novncproxy_base_url
+  -o jsonpath='{.data.nova-compute\.conf}' | base64 -d \
+  | grep -F 'novncproxy_base_url = https://nova-console.127-0-0-1.nip.io/vnc_lite.html'
 kubectl rollout restart deploy/controlplane-fake-compute -n openstack
 kubectl rollout status deploy/controlplane-fake-compute -n openstack --timeout=5m
 ```
@@ -85,8 +91,16 @@ URL, which no browser outside the cluster reaches.
 
 ### 2. Fetch a console URL
 
+The URL contains a short-lived console token. Do not share it in tickets or
+shared terminal logs.
+
 ```bash
+set -euo pipefail
 URL=$(openstack --insecure console url show --novnc demo-server -f value -c url)
+if [ -z "$URL" ]; then
+  echo "ERROR: the API returned no console URL for demo-server" >&2
+  exit 1
+fi
 echo "$URL"
 ```
 
@@ -95,16 +109,23 @@ The URL reads
 It carries no port, because the operator renders the console base URL from the
 gateway hostname alone and assumes the listener answers on 443. With
 `KIND_HOST_PORT=8443` the Gateway answers on host port 8443, so insert `:8443`
-after the hostname before you open the URL or reuse it:
+after the hostname before you open the URL or reuse it. Keep this shell open;
+the next block derives `TOKEN` from `URL`:
 
 ```bash
-echo "${URL/nip.io\//nip.io:8443/}"
+set -euo pipefail
+URL_WITH_PORT="${URL/nip.io\//nip.io:8443/}"
+echo "$URL_WITH_PORT"
 TOKEN=$(sed -n 's/.*token%3D\([0-9a-f-]*\).*/\1/p' <<<"$URL")
+if [ -z "$TOKEN" ]; then
+  echo "ERROR: could not extract a console token from the URL" >&2
+  exit 1
+fi
 ```
 
-On the default `KIND_HOST_PORT=443` the URL works as printed. A token lives for
-600 seconds (`[consoleauth] token_ttl`), so fetch a fresh URL when the checks
-below run later than that.
+On the default `KIND_HOST_PORT=443` the URL works as printed. By default, a
+console token lives for 600 seconds (`[consoleauth] token_ttl`), so fetch a
+fresh URL if the checks below run later than that.
 
 ### 3. Verify the path through the proxy
 
@@ -119,15 +140,19 @@ curl -sk -o /dev/null -w '%{http_code}\n' \
 
 The WebSocket upgrade the page makes next, spelled out with curl, answers
 `HTTP/1.1 101`. `--http1.1` pins the protocol version an upgrade needs, and the
-socket opens on `/websockify`, the path websockify serves its endpoint under:
+socket opens on `/websockify`, the path websockify serves its endpoint under.
+The proxy closes the upgraded socket after the timeout, so this pipeline ignores
+curl's expected nonzero exit and prints the response line:
 
 ```bash
+set +o pipefail
 curl -sk -i -N --http1.1 --max-time 10 \
   -H 'Connection: Upgrade' \
   -H 'Upgrade: websocket' \
   -H 'Sec-WebSocket-Version: 13' \
   -H "Sec-WebSocket-Key: $(head -c 16 /dev/urandom | base64)" \
   "https://nova-console.127-0-0-1.nip.io:8443/websockify?token=${TOKEN}" | head -1
+set -o pipefail
 ```
 
 curl exits non-zero once the proxy drops the switched socket; the first line is
@@ -154,8 +179,8 @@ more to reach:
 
 - **Egress from the proxy to the hypervisors' VNC ports**, TCP 5900-65535. With
   `spec.networkPolicy` set on a `Nova`, the operator opens it in the
-  `{name}-novncproxy` NetworkPolicy; any other firewall between the proxy pods
-  and the hypervisors needs the same range.
+  `{name}-novncproxy` NetworkPolicy. Confirm which source address the
+  hypervisors see and allow only that address through any other firewall.
 - **A secured hop from the proxy to the hypervisors.** The console token admits
   a browser to the proxy and no further. libvirt's VNC servers take no password
   or TLS by default, and `[vnc] auth_schemes` defaults to `none`, so any host
@@ -170,12 +195,15 @@ more to reach:
   the address the compute registers for an instance's console and the address
   the proxy dials, so the proxy pods have to reach it. The compute contract
   leaves it out; the compute deployment sets it.
-- **One Gateway listener and one certificate per hostname.** The console route
-  may not share a listener hostname with the API's or the metadata API's route:
-  the routes would tie and the Gateway would hand every request to the older one.
-- **A `path` that is empty or `/`.** The console page and the WebSocket both sit
-  at the root of the console host, so a prefix route matches neither, and the
-  ControlPlane webhook rejects one.
+- **A TLS listener for a distinct console hostname.** The kind overlay uses a
+  dedicated listener and certificate. Another Gateway can reuse a listener if
+  it accepts this hostname and presents a certificate that covers it. Do not
+  reuse the Nova API hostname when both routes match `/`: the Gateway can send
+  console requests to the older route.
+- **A root path match.** The Nova operator accepts only an empty `path` or `/`,
+  which produces a `PathPrefix: /` match for both `/vnc_lite.html` and
+  `/websockify`. A non-root prefix such as `/console` matches neither endpoint,
+  so the ControlPlane webhook rejects it.
 - **The cell database.** Console tokens live in the cell schema, which is why the
   proxy carries the cell connection. A proxy that cannot reach the database
   rejects every token.
