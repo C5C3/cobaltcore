@@ -1777,7 +1777,7 @@ describes each numbered step, and
 [Steps and phases](e2e-deployment.md#steps-and-phases) maps the step and phase
 numbers of the two pages.
 
-![The run of make deploy-infra as eight numbered steps from top to bottom, with the opt-ins beside the step each one changes. Before Step 1 the script runs its preflight checks and, in kind mode, loads the kernel modules some opt-ins need. Step 1 forks: kind mode creates the cluster from hack/kind-config.yaml or keeps the one that exists, and EXTERNAL_CLUSTER=true creates none and checks the cluster of the current context. Step 2 installs the flux-operator, the Namespaces and the FluxInstance, waits for the FluxInstance to be Ready, and installs the Gateway API and Envoy Gateway CRDs. Step 3 applies the base overlay, deploy/overlays/kind/base or base/ of EXTERNAL_OVERLAY. Step 4 waits for the releases in four phases: cert-manager and its webhook, the four TLS prerequisites, the infrastructure releases, and the Kustomization rabbitmq-cluster-operator. Once the operator CRDs are registered, Step 5 applies the infrastructure overlay and waits for the Gateway openstack-gw to be Programmed. Step 6 waits for the OpenBao pods to run. Step 7 initialises, unseals and configures OpenBao and waits for its pods to be Ready. Step 8 waits for the ExternalSecrets keystone-admin, keystone-db and mariadb-root-password. After Step 8 the script waits for the proving OpenBao instance, for Garage and, without a ControlPlane, for the MariaDB openstack-db. The opt-in boxes: KIND_HOST_PORT, KIND_CONFIG, SKIP_KIND_CREATE and WITH_REGISTRY_CACHE act on the cluster creation. WITH_CHAOS_MESH, WITH_PROMETHEUS, WITH_DIZZY, WITH_NFS, WITH_CEPH, WITH_METRICS_SERVER and WITH_VPA each add an overlay in Step 3 and a release to the wait of Step 4. WITH_CEPH also applies ceph/cluster in Step 5 and, after Step 8, waits for the Ceph cluster and syncs its client keys. WITH_CONTROLPLANE resumes the service-operator releases in Step 3, leaves MariaDB, Memcached and the three ExternalSecrets out of Step 5, skips the wait of Step 8, and ends with the operator stack Ready and a dry-run of the ControlPlane admitted. WITH_MESSAGING adds a RabbitMQ broker after Step 5.](../../diagrams/deploy-infra-run.svg)
+![The run of make deploy-infra as eight numbered steps from top to bottom, with the opt-ins beside the step each one changes. Before Step 1 the script runs its preflight checks and, in kind mode, loads the kernel modules some opt-ins need. Step 1 forks: kind mode creates the cluster from hack/kind-config.yaml or keeps the one that exists, and EXTERNAL_CLUSTER=true creates none and checks the cluster of the current context. Step 2 installs the flux-operator, the Namespaces and the FluxInstance, waits for the FluxInstance to be Ready, and installs the Gateway API and Envoy Gateway CRDs. Step 3 applies the base overlay, deploy/overlays/kind/base or base/ of EXTERNAL_OVERLAY. Step 4 waits for the releases in four phases: cert-manager and its webhook, the four TLS prerequisites, the infrastructure releases, and the Kustomization rabbitmq-cluster-operator. Once the operator CRDs are registered, Step 5 applies the infrastructure overlay and waits for the Gateway openstack-gw to be Programmed. Step 6 waits for the OpenBao pods to run. Step 7 initialises, unseals and configures OpenBao and waits for its pods to be Ready. Step 8 waits for the ExternalSecrets keystone-admin, keystone-db and mariadb-root-password. After Step 8 the script waits for the proving OpenBao instance, for Garage and, without a ControlPlane, for the MariaDB openstack-db. The opt-in boxes: KIND_HOST_PORT, KIND_CONFIG, SKIP_KIND_CREATE and WITH_REGISTRY_CACHE act on the cluster creation. WITH_CHAOS_MESH, WITH_PROMETHEUS, WITH_DIZZY, WITH_NFS, WITH_CEPH, WITH_METRICS_SERVER, WITH_VPA and WITH_FRR_K8S each add an overlay in Step 3 and a release to the wait of Step 4. WITH_CEPH also applies ceph/cluster in Step 5 and, after Step 8, waits for the Ceph cluster and syncs its client keys. WITH_CONTROLPLANE resumes the service-operator releases in Step 3, leaves MariaDB, Memcached and the three ExternalSecrets out of Step 5, skips the wait of Step 8, and ends with the operator stack Ready and a dry-run of the ControlPlane admitted. WITH_MESSAGING adds a RabbitMQ broker after Step 5.](../../diagrams/deploy-infra-run.svg)
 
 ### Step 1: Apply base resources
 
@@ -2484,6 +2484,65 @@ On an external cluster, which refuses `WITH_VPA=true`,
 WITH_VPA=true make deploy-infra
 ```
 
+### frr-k8s (kind-only opt-in)
+
+**File:** `deploy/overlays/kind/frr-k8s/kustomization.yaml`
+
+[frr-k8s](https://github.com/metallb/frr-k8s) is the per-node FRR DaemonSet
+that `FRRConfiguration` objects drive, the speaker a compute node uses toward
+the BGP fabric. It ships as a separate opt-in kind overlay. Neither the default
+`make deploy-infra` flow nor the production `deploy/bases/operators/` overlay
+installs it, so it never reaches a control plane. A compute cluster that
+attaches to the fabric applies the overlay's three files with its own Flux. The
+[BGP Node Substrate](../networking/bgp-node-substrate.md) records why and
+describes the install, the node prerequisites and the per-node configuration.
+
+The overlay's consumer is the `e2e-bgp-fabric` CI job, which deploys it with
+`WITH_FRR_K8S=true` and runs `make e2e-bgp-fabric` (see
+[e2e-bgp-fabric](../ci-cd/ci-workflow.md#e2e-bgp-fabric)).
+
+The overlay ships its own `Namespace` `frr-k8s-system` at the privileged
+PodSecurity level, because the FRR container runs in the host network
+namespace with `NET_ADMIN`, `NET_RAW`, `SYS_ADMIN` and `NET_BIND_SERVICE`. The
+DaemonSet `frr-k8s` selects only nodes labelled
+`openstack.c5c3.io/frr-k8s=true`, so the release is inert until a node opts
+in: the DaemonSet has no pod, and the Deployment `frr-k8s-statuscleaner`
+serves the validating webhook alone. A node whose host already runs FRR, a
+metal-stack machine for example, never carries the label.
+
+| Property | Value |
+| --- | --- |
+| Target namespace | `frr-k8s-system` (inline Namespace, `pod-security.kubernetes.io/enforce: privileged`) |
+| Chart | `frr-k8s` |
+| Version constraint | `0.0.27`, an exact pin (an HTTP Helm repository gives Flux no digest to verify, the reason `deploy/bases/nfs/release.yaml` gives for its pin) |
+| Source | `frr-k8s` HelmRepository (`https://metallb.github.io/frr-k8s`) |
+| Dependencies | none (the chart rotates its own webhook certificate) |
+
+**Values:**
+
+| Helm value | Override | Purpose |
+| --- | --- | --- |
+| `frrk8s.image` | `quay.io/metallb/frr-k8s`, `v0.0.27` with its digest | The controller image, pinned by digest in the tag |
+| `frrk8s.frr.image` | `quay.io/frrouting/frr`, `10.6.2` with its digest | The chart's own default FRR, pinned by digest; its minor follows the chart |
+| `frrk8s.nodeSelector` | `openstack.c5c3.io/frr-k8s: "true"` | The per-node opt-in |
+
+The chart defaults `frrk8s.frr.acceptIncomingBGPConnections: false` (bgpd
+accepts no incoming connection), `crds.enabled: true` (the four CRDs are
+templates, so removing the release deletes them and every `FRRConfiguration`)
+and `prometheus.serviceMonitor.enabled: false` stay.
+
+When `WITH_FRR_K8S=true`, `hack/deploy-infra.sh` runs
+`kubectl apply -k deploy/overlays/kind/frr-k8s` in Step 3 and appends `frr-k8s`
+to the Phase 3 HelmRelease wait list, after `vertical-pod-autoscaler`. Only the
+literal `true` installs it, and `EXTERNAL_CLUSTER=true` refuses it.
+
+**Opt-in usage:**
+
+```bash
+WITH_FRR_K8S=true make deploy-infra
+kubectl label node <node> openstack.c5c3.io/frr-k8s=true
+```
+
 ### dizzy load/chaos stack (development opt-in)
 
 **File:** `deploy/overlays/kind/dizzy/kustomization.yaml`
@@ -3104,8 +3163,9 @@ The `curl` prints `404` until a ControlPlane routes `keystone.<suffix>`; the
 answer proves the address, the name and the certificate.
 
 The deploy runs against the current kubeconfig context and never switches it.
-It refuses four opt-ins that are bound to kind, `WITH_VPA`,
-`WITH_METRICS_SERVER`, `WITH_REGISTRY_CACHE` and `WITH_OVN_KERNEL_MODULES`
+It refuses five opt-ins that are bound to kind, `WITH_VPA`,
+`WITH_METRICS_SERVER`, `WITH_REGISTRY_CACHE`, `WITH_OVN_KERNEL_MODULES` and
+`WITH_FRR_K8S` (the lab's machines run their own FRR)
 (`WITH_MESSAGING`, which applies `deploy/bases/messaging`, and
 `WITH_NFS`, `WITH_CEPH`, `WITH_CHAOS_MESH` and `WITH_DIZZY` aside, which apply
 `nfs/`, `ceph/` with `ceph/cluster/`, `chaos-mesh/` and `dizzy/`),

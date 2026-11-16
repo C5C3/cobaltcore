@@ -121,6 +121,10 @@ reference set). The remaining pieces ship only with the kind overlay
   [Kind Overlay Demo Addons section](../reference/infrastructure/infrastructure-manifests.md#kind-overlay-demo-addons).
 - **dizzy**, the load/chaos stack around victoria-metrics, used by
   [dizzy chaos testing](../reference/testing/dizzy-chaos-testing.md).
+- **frr-k8s**, the per-node FRR DaemonSet the BGP fabric suite peers from.
+  A compute cluster that attaches to the fabric installs it with its own
+  Flux; the [BGP Node Substrate](../reference/networking/bgp-node-substrate.md)
+  describes it.
 - **Envoy Gateway** as the demo Gateway API implementation
   (`deploy/overlays/kind/base/`); production overlays bring their own Gateway
   controller.

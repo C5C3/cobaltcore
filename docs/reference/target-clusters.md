@@ -782,6 +782,16 @@ namespace, the teardown of the last agent that names the metadata copy deletes
 that one, and the namespaces themselves stay, annotated
 `helm.sh/resource-policy: keep`.
 
+A compute cluster that attaches to the BGP fabric runs frr-k8s, the per-node
+FRR the [BGP Node Substrate](./networking/bgp-node-substrate.md) describes. It
+is the compute cluster's own install, as hvo is: its Flux applies the
+Namespace `frr-k8s-system` and the HelmRepository and HelmRelease of
+`deploy/overlays/kind/frr-k8s/`, and the label
+`openstack.c5c3.io/frr-k8s=true` opts a node in. Nothing CobaltCore OpenStack
+runs writes an `FRRConfiguration` yet, so the access account needs no
+`frrconfigurations` rule until
+[#1363](https://github.com/C5C3/cobaltcore/issues/1363) generates them.
+
 ## Prerequisites on the management cluster
 
 Target clusters need a cluster-scoped operator install. The registration Secrets
