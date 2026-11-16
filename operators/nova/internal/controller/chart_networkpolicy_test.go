@@ -19,9 +19,9 @@ import (
 // TestChartNetworkPolicy_AdmitsAPIHealthCheck guards the egress rule the
 // chart's opt-in NetworkPolicy hard-codes for the health check: it must admit
 // the target port of the API Service on the pods labelled the way this operator
-// labels its API pods, since an enforcing CNI judges the probe after the Service
-// DNAT. The keystone and placement operators check the chart's Keystone and
-// Placement rules, since they own the ports and labels those rules admit.
+// labels its API pods. The e2e suite verifies the kindnet post-DNAT behavior.
+// The keystone and placement operators check the chart's Keystone and Placement
+// rules, since they own the ports and labels those rules admit.
 func TestChartNetworkPolicy_AdmitsAPIHealthCheck(t *testing.T) {
 	g := NewGomegaWithT(t)
 	nova := &novav1alpha1.Nova{ObjectMeta: metav1.ObjectMeta{Name: "nova", Namespace: "openstack"}}

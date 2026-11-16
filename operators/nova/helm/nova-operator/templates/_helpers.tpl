@@ -12,11 +12,12 @@ API egress for the shared NetworkPolicy (operator-library chart hook). The
 operator GETs the Nova API for its health check, and a NovaCompute pool
 authenticates against Keystone, calls the Nova API for its compute services
 and aggregates, and calls the Placement API to create and delete its custom
-traits. Each call goes through a Service, and an enforcing CNI judges the
-connection after the Service DNAT, at the pod and its port, so each rule
-selects the pods in any namespace by the two labels their operator sets on
-them (naming.CommonLabels in internal/common). Port 5050 is the OIDC sidecar
-the Keystone Service targets while federation is active.
+traits. Each call goes through a Service. Kubernetes leaves Service DNAT and
+NetworkPolicy evaluation order to the CNI. The kind devstack's kindnet evaluates
+after DNAT, so these rules select the pods in any namespace by the two labels
+their operator sets on them (naming.CommonLabels in internal/common). Verify
+your CNI's behavior before relying on these selector rules elsewhere. Port 5050
+is the OIDC sidecar the Keystone Service targets while federation is active.
 */}}
 {{- define "operator-library.chart.networkPolicyEgress" -}}
 - to:
