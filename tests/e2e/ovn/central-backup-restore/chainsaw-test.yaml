@@ -18,15 +18,11 @@
 # sixth reads the backup run of step 2 off the ovn-operator release as
 # ovn_operator_backup_total.
 #
-# ── ASSUMPTION under test: restore against a clustered server ────────
-# The Phase-0 lab verified `ovsdb-client --force restore` against a standalone
-# ovsdb-server only. This suite runs the same invocation against the one-member
-# clustered Northbound the operator projects, which is the shape every
-# deployment actually runs. Its result is what decides the invocation the
-# restore guide prints: if the server refuses the transaction, the error text
-# from the ovn-restore-restore Job is to be recorded on the issue and both
-# artefacts (this suite and the guide) changed to whatever the server does
-# accept.
+# ── Clustered restore invocation under test ────────────────────────────
+# This suite exercises `ovsdb-client restore` without `--force` against the
+# one-member clustered Northbound used by the kind fixture. The command receives
+# the address list published by the OVNCentral; production clusters may contain
+# multiple members.
 #
 # The suite runs concurrently with its siblings: it starts no hostNetwork pod
 # and claims no node port, so it contends with them over nothing but the node's
@@ -343,7 +339,7 @@ spec:
                     f="\$(ls -1 /backup/nb-*.backup | sort | tail -n1)"
                     test -s "\$f"
                     echo "restoring \$f"
-                    ovsdb-client --force -p /certs/tls.key -c /certs/tls.crt -C /certs/ca.crt restore "\$NB_ADDR" OVN_Northbound < "\$f"
+                    ovsdb-client -p /certs/tls.key -c /certs/tls.crt -C /certs/ca.crt restore "\$NB_ADDR" OVN_Northbound < "\$f"
                   volumeMounts:
                   - name: backup
                     mountPath: /backup
