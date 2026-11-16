@@ -6,6 +6,7 @@
   "patches": [
     "patches/barbican/2026.1/0001-add-batched-db-cleanup-to-prevent-innodb-buffer-pool-exhaustion.patch",
     "patches/barbican/2026.1/0002-retry-a-clean-up-batch-that-conflicts-with-a-concurrent-write.patch",
-    "patches/barbican/2026.1/0003-carry-the-openbao-storage-index-from-a-write-to-its-reads.patch"
+    "patches/barbican/2026.1/0003-carry-the-openbao-storage-index-from-a-write-to-its-reads.patch",
+    "patches/barbican/2026.1/0004-retry-secret-metadata-writes-that-conflict-with-a-concurrent-write.patch"
   ]
 }

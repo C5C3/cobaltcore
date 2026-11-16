@@ -287,6 +287,107 @@ if got != want:
   assert_eq "the storage index of a write is sent with the read" "0" "$exit_code"
 }
 
+# --- Test 11: a secret metadata write that lost to a concurrent write is retried ---
+test_secret_metadata_retry_patch_applied() {
+  echo "Test: a secret metadata write that lost to a concurrent write is retried"
+  # Proves the image build applied
+  # patches/barbican/<release>/000N-retry-secret-metadata-writes-that-conflict-with-a-concurrent-write.patch
+  # (#1752). create_replace_user_metadata, create_replace_user_metadatum and
+  # delete_metadatum of SecretUserMetadatumRepo delete and insert rows of
+  # secret_user_metadata in the request's transaction. Under concurrent
+  # writes MariaDB fails them with error 1213 (a deadlock on a gap of the
+  # unique index) or 1020, which oslo.db raises as DBDeadlock and its
+  # subclass DBConsistencyError. Each method is called once on a secret
+  # committed to an in-memory database, and its first INSERT or DELETE raises
+  # DBDeadlock after the statement ran: the patched image rolls the session
+  # back, runs the method again and stores the metadata, an unpatched image
+  # lets the error escape. The retry's wait is mocked, and stderr is echoed
+  # on failure so the reason is named.
+  local exit_code=0 err=""
+  err=$(docker run --rm "$IMAGE" \
+    /var/lib/openstack/bin/python -c \
+    'import sys
+from unittest import mock
+
+from oslo_db import exception as db_exc
+from sqlalchemy import orm as sa_orm
+
+from barbican.common import config
+from barbican.model import models
+from barbican.model import repositories as repo
+
+CONF = config.CONF
+CONF.set_override("connection", "sqlite://", "database")
+CONF.set_override("db_auto_create", True)
+repo.setup_database_engine_and_factory()
+
+session = repo.get_session()
+project = models.Project()
+project.external_id = "verify"
+project.save(session=session)
+secret = models.Secret()
+secret.project_id = project.id
+secret.save(session=session)
+secret_id = secret.id
+repo.commit()
+
+metadata = repo.get_secret_user_meta_repository()
+real_save = models.SecretUserMetadatum.save
+real_delete = sa_orm.Query.delete
+state = {}
+
+
+def lose_once():
+    if state["lost"] is None:
+        state["lost"] = True
+        raise db_exc.DBDeadlock()
+
+
+def save(model, session=None):
+    real_save(model, session=session)
+    if state["statement"] == "insert":
+        lose_once()
+
+
+def delete(query, *args, **kwargs):
+    count = real_delete(query, *args, **kwargs)
+    if state["statement"] == "delete":
+        lose_once()
+    return count
+
+
+def check(name, statement, want, call):
+    state.update(statement=statement, lost=None)
+    try:
+        with mock.patch.object(models.SecretUserMetadatum, "save",
+                               autospec=True, side_effect=save), \
+                mock.patch.object(sa_orm.Query, "delete", autospec=True,
+                                  side_effect=delete), \
+                mock.patch("time.sleep"):
+            call()
+    except db_exc.DBDeadlock:
+        sys.exit("%s lets a DBDeadlock escape: the write is not retried"
+                 % name)
+    repo.commit()
+    got = metadata.get_metadata_for_secret(secret_id)
+    if not state["lost"] or got != want:
+        sys.exit("%s: conflict raised: %s, metadata %r, want %r"
+                 % (name, bool(state["lost"]), got, want))
+
+
+check("create_replace_user_metadata", "insert", {"a": "1", "b": "2"},
+      lambda: metadata.create_replace_user_metadata(
+          secret_id, {"a": "1", "b": "2"}))
+check("create_replace_user_metadatum", "insert", {"a": "3", "b": "2"},
+      lambda: metadata.create_replace_user_metadatum(secret_id, "a", "3"))
+check("delete_metadatum", "delete", {"b": "2"},
+      lambda: metadata.delete_metadatum(secret_id, "a"))' \
+    2>&1 > /dev/null) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "    $err"
+
+  assert_eq "secret metadata writes are retried after a conflict" "0" "$exit_code"
+}
+
 # --- Run all tests ---
 echo "=== barbican container verification tests ==="
 echo "Image: $IMAGE"
@@ -310,6 +411,8 @@ echo ""
 test_db_clean_retry_patch_applied
 echo ""
 test_vault_index_patch_applied
+echo ""
+test_secret_metadata_retry_patch_applied
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 
