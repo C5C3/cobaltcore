@@ -96,13 +96,11 @@ func (r *NovaReconciler) reconcileMetadataHTTPRoute(ctx context.Context, childre
 // gateway block: the flow deletes the route and reports HTTPRouteNotRequired,
 // which is the same pass that deletes the proxy Deployment and its Service.
 //
-// The proxy takes a hostname of its own rather than a path under the API's. The
-// console URL the API hands a browser is
-// https://{host}/vnc_lite.html?path=%3Ftoken%3D{token}, so the page and the
-// WebSocket that follows it both open on "/" with nothing but a query string to
-// tell them apart. Splitting them off the API hostname by path is therefore not
-// possible, and routing them by the Upgrade header is not something the shared
-// route builder expresses.
+// The console HTTPRoute matches PathPrefix "/" (the only supported path), which
+// covers both /vnc_lite.html and /websockify. On the default API route, which
+// also matches "/", that prefix would tie with the API route, so the proxy uses
+// a distinct hostname. The shared route builder does not match on the Upgrade
+// header.
 func (r *NovaReconciler) reconcileConsoleHTTPRoute(ctx context.Context, children client.Client,
 	nova *novav1alpha1.Nova,
 ) (ctrl.Result, error) {
