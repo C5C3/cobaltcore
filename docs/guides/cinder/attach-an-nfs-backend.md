@@ -40,6 +40,14 @@ name in the examples below is one that devstack produces.
 Export the `OS_*` environment variables from the tutorial's token-issue step so
 the `openstack` client reaches the ControlPlane's Keystone.
 
+::: warning Set storage on the ControlPlane, never on the projected children
+The `controlplane-cinder` Cinder CR, the `CinderBackend` `nfs1` and the
+`CinderBackupBackend` `nfsbk` are **projected** by the c5c3-operator. A child you
+edit, or delete, by hand is reverted (or recreated) on the next reconcile.
+Change `services.cinder` on the `ControlPlane` CR and let the operator project
+it down; that block is the single source of truth for the projected storage.
+:::
+
 ## Step 1: The kind NFS stack
 
 `WITH_NFS=true` adds an overlay the default `make deploy-infra` leaves out. It
@@ -154,14 +162,6 @@ nfs-server.openstack.svc.cluster.local:/volumes /var/lib/cinder/mnt/6f3cb55ed3b4
 asserts the same path on the Deployment's `volumeMounts`.
 
 ## Step 3: Attach a second backend
-
-::: warning Set storage on the ControlPlane, never on the projected children
-The `controlplane-cinder` Cinder CR, the `CinderBackend` `nfs1` and the
-`CinderBackupBackend` `nfsbk` are **projected** by the c5c3-operator. A child you
-edit, or delete, by hand is reverted (or recreated) on the next reconcile.
-Change `services.cinder` on the `ControlPlane` CR and let the operator project
-it down; that block is the single source of truth for the projected storage.
-:::
 
 A second backend needs a second export. Create the directory on the server with
 the ownership and mode the driver needs:
