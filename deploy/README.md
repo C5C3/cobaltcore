@@ -204,6 +204,7 @@ describe every addon/fixture and its caller.
 | `overlays/kind/prometheus-managed` and `overlays/metal-stack/prometheus` | `WITH_PROMETHEUS=true`; omit Namespace/monitoring already owned by the base |
 | [kind/prometheus](overlays/kind/prometheus) | Compatible standalone root including its Namespace; shares chart/dashboard definitions with the managed variant |
 | `overlays/kind/{metrics-server,vpa}` | Kind measurement opt-ins; VPA also requires metrics-server |
+| [overlays/kind/frr-k8s](overlays/kind/frr-k8s) | `WITH_FRR_K8S=true`, kind mode only: the per-node FRR of the BGP fabric suite, inert until a node is labelled `openstack.c5c3.io/frr-k8s=true`; a compute cluster applies it with its own Flux |
 | [bases/messaging](bases/messaging) | `WITH_MESSAGING=true` after infrastructure, in either cluster mode; `overlays/kind/messaging` remains a manual entry point |
 | `overlays/metal-stack/ceph` and `ceph/cluster` | `WITH_CEPH=true`: operator first, then cluster and credential handoff |
 | ControlPlane, compute and diagnostic fixtures | Manual entry points include kind `fake-compute`/`hypervisor-operator-fixtures` and lab `controlplane-nfs`, `hypervisor-fixtures`, `hypervisor`, `migration-ports`, `probe`; `dizzy-soak` uses `make dizzy-soak-start` |

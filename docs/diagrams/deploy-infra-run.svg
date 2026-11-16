@@ -14,7 +14,7 @@
 <text x="927" y="191.36" font-size="26" font-weight="700" fill="#2B3440">Before the cluster exists</text>
 <text x="927" y="225.2" font-size="20" font-weight="400" fill="#55606E">kind: WITH_CHAOS_MESH, WITH_NFS and WITH_OVN_KERNEL_MODULES</text>
 <text x="927" y="251.2" font-size="20" font-weight="400" fill="#55606E">load kernel modules on the host</text>
-<text x="927" y="277.2" font-size="20" font-weight="400" fill="#55606E">external: refuses WITH_VPA, WITH_METRICS_SERVER,</text>
+<text x="927" y="277.2" font-size="20" font-weight="400" fill="#55606E">external: refuses WITH_VPA, WITH_METRICS_SERVER, WITH_FRR_K8S,</text>
 <text x="927" y="303.2" font-size="20" font-weight="400" fill="#55606E">WITH_REGISTRY_CACHE and WITH_OVN_KERNEL_MODULES</text>
 <polyline points="908,239 830.5,239" fill="none" stroke="#3A4452" stroke-width="3" stroke-dasharray="9 6"/>
 <polygon points="820,239 835,231.8 835,246.2" fill="#3A4452"/>
@@ -69,7 +69,7 @@
 <text x="927" y="912.2" font-size="20" font-weight="400" fill="#55606E">WITH_CHAOS_MESH, WITH_PROMETHEUS, WITH_DIZZY, WITH_NFS:</text>
 <text x="927" y="938.2" font-size="20" font-weight="400" fill="#55606E">the directory of that name under deploy/overlays/kind or EXTERNAL_OVERLAY</text>
 <text x="927" y="964.2" font-size="20" font-weight="400" fill="#55606E">WITH_CEPH: ceph/ of EXTERNAL_OVERLAY, external cluster only</text>
-<text x="927" y="990.2" font-size="20" font-weight="400" fill="#55606E">WITH_METRICS_SERVER, WITH_VPA: deploy/overlays/kind/metrics-server, deploy/overlays/kind/vpa</text>
+<text x="927" y="990.2" font-size="20" font-weight="400" fill="#55606E">WITH_METRICS_SERVER, WITH_VPA, WITH_FRR_K8S: their kind overlay, kind only</text>
 <text x="927" y="1016.2" font-size="20" font-weight="400" fill="#55606E">WITH_CONTROLPLANE: resumes the service-operator releases</text>
 <text x="927" y="1042.2" font-size="20" font-weight="400" fill="#55606E">without it: suspends c5c3-operator and k-orc</text>
 <text x="927" y="1068.2" font-size="20" font-weight="400" fill="#55606E">INFRA_ONLY: suspends every CobaltCore OpenStack operator release</text>

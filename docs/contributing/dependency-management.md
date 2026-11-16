@@ -156,7 +156,7 @@ HelmRelease and the HelmRepository of the lab Ceph match, because that overlay h
 shared chart base; nothing else under `deploy/overlays/metal-stack/` or `deploy/examples/` does. The patterns use no regex lookahead, because the hosted bot
 compiles them with RE2, which has none.
 
-It tracks seventeen third-party charts and one image:
+It tracks eighteen third-party charts and three images:
 
 | Chart | File | Strategy | Automerge |
 | --- | --- | --- | --- |
@@ -177,7 +177,10 @@ It tracks seventeen third-party charts and one image:
 | `headlamp` | `deploy/bases/devstack/base/headlamp.yaml` | `bump`, group `headlamp` | minor/patch after 3 days |
 | `csi-driver-nfs` | `deploy/bases/nfs/release.yaml` | exact pin, majors disabled, group `csi-driver-nfs chart` | no |
 | `rook-ceph` | `deploy/overlays/metal-stack/ceph/release.yaml` | exact pin, majors disabled, group `rook-ceph chart` | no |
+| `frr-k8s` | `deploy/overlays/kind/frr-k8s/release.yaml` | exact pin, majors disabled, group `frr-k8s` | no |
 | image `ghcr.io/headlamp-k8s/headlamp-plugin-flux` | `deploy/bases/devstack/base/headlamp.yaml` (HelmRelease values) | tag | no |
+| image `quay.io/metallb/frr-k8s` | `deploy/overlays/kind/frr-k8s/release.yaml` (HelmRelease values) | tag and digest, majors disabled, group `frr-k8s` | no |
+| image `quay.io/frrouting/frr` | `deploy/overlays/kind/frr-k8s/release.yaml` (HelmRelease values) | patch and digest only, group `frr-k8s`; the minor follows the chart's default by hand | no |
 
 `widen` is the `rangeStrategy` of the base rule. A release inside the range changes
 nothing in Git: Flux installs it on its next reconcile and Renovate stays silent. A
