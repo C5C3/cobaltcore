@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# frr-k8s Namespace. The FRR container of the frr-k8s DaemonSet runs in the
+# host network namespace with NET_ADMIN, NET_RAW, SYS_ADMIN and
+# NET_BIND_SERVICE, and the e2e-bgp-fabric suite runs its hostNetwork and
+# hostPID fixture Pods here, so the namespace enforces the privileged
+# PodSecurity level.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: frr-k8s-system
+  labels:
+    pod-security.kubernetes.io/enforce: privileged

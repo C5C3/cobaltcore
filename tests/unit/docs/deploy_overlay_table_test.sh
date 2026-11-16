@@ -491,7 +491,7 @@ test_repository_table_matches_the_tree() {
   # labels.
   copy="$(mktemp -d "$TMP_ROOT/copy.XXXXXX")"
   cp "$diagrams/$FIGURE.drawio" "$diagrams/$FIGURE.svg" "$copy/"
-  rewrite "$copy/$FIGURE.svg" 's/>metrics-server, vpa: />metrics-server: /'
+  rewrite "$copy/$FIGURE.svg" 's/>metrics-server, vpa, frr-k8s: />metrics-server, frr-k8s: /'
   assert_eq "a figure copy without vpa" "not in the figure: deploy/overlays/kind/vpa ($FIGURE.svg)" \
     "$(check_overlay_table "$PROJECT_ROOT" "$page" "$copy")"
 }

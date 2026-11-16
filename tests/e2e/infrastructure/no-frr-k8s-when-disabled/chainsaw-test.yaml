@@ -1,0 +1,147 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test pinning the default-state non-regression invariant for the
+# frr-k8s kind opt-in: when WITH_FRR_K8S is unset (or set to anything other
+# than the literal string "true"), `make deploy-infra` MUST NOT create the
+# frr-k8s-system Namespace, any CRD of the group frrk8s.metallb.io, the
+# frr-k8s HelmRelease, or the frr-k8s HelmRepository.
+#
+# Why this test exists
+#   The only producer of those resources is deploy/overlays/kind/frr-k8s/,
+#   applied by the single `kubectl apply -k deploy/overlays/kind/frr-k8s` inside
+#   the WITH_FRR_K8S=true gate of hack/deploy-infra.sh. The shell unit tests
+#   (tests/unit/hack/deploy_infra_frr_k8s_flag_test.sh,
+#   tests/unit/deploy/frr_k8s_overlay_test.sh) exercise that gate and the
+#   overlay render at the source level. Neither asserts "a default cluster has
+#   no frr-k8s footprint", so a regression that moves the apply outside the
+#   gate, or a kustomize edit that pulls the overlay into
+#   deploy/overlays/kind/base, would slip through. What the overlay installs
+#   is a privileged hostNetwork DaemonSet, so this suite asserts the absence
+#   against the running cluster, mirroring no-nfs-when-disabled.
+#
+# Lane wiring:
+#   The e2e-infra job runs `make deploy-infra` through setup-e2e-infra, which
+#   threads WITH_FRR_K8S as an empty string, so this suite also covers the
+#   empty value. Its additive re-run never sets WITH_FRR_K8S. Only the
+#   e2e-bgp-fabric job installs the overlay, and it runs tests/e2e-bgp-fabric/
+#   alone.
+#
+# Scope gating: none. The invariant also holds on production overlays
+# (deploy/bases/operators/kustomization.yaml lists none of the overlay's
+# resources).
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: no-frr-k8s-when-disabled
+spec:
+  # Four kubectl gets plus a diagnostic dump on failure. Realistic worst case
+  # is sub-second; budget 2m for cluster slowness margin.
+  timeouts:
+    assert: 2m
+    exec: 2m
+  steps:
+  - try:
+    - script:
+        timeout: 2m
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          # ── Lookup helper ────────────────────────────────────────────────
+          # The helper of no-nfs-when-disabled: --ignore-not-found turns a
+          # genuine NotFound into exit 0 with empty output, a missing CRD
+          # (`doesn't have a resource type`) is also an absence, and every
+          # other kubectl failure stops the suite with the kubectl error
+          # rather than passing as absence. stderr stays out of FOUND, because
+          # kubectl writes aggregated-discovery warnings there on exit 0.
+          #
+          # Sets FOUND to the matching resource names, empty when absent.
+          FOUND=""
+          lookup() {
+            local rc=0 err msg
+            err="$(mktemp)"
+            FOUND="$(kubectl get "$@" --ignore-not-found -o name 2>"${err}")" || rc=$?
+            msg="$(cat "${err}")"
+            rm -f "${err}"
+            if [ "${rc}" -ne 0 ]; then
+              case "${msg}" in
+                *"doesn't have a resource type"*)
+                  FOUND=""
+                  return 0
+                  ;;
+              esac
+              echo "FAIL: kubectl get $* failed: ${msg}"
+              exit 1
+            fi
+          }
+
+          # ── Assertion 1: no frr-k8s-system Namespace ──
+          # The only producer is deploy/overlays/kind/frr-k8s/namespace.yaml.
+          lookup namespace frr-k8s-system
+          if [ -n "${FOUND}" ]; then
+            echo "FAIL: Namespace 'frr-k8s-system' exists on a default cluster."
+            echo "      Source of regression: hack/deploy-infra.sh ran the frr-k8s"
+            echo "      overlay apply outside the WITH_FRR_K8S gate, or the overlay"
+            echo "      was pulled into deploy/overlays/kind/base."
+            exit 1
+          fi
+          echo "OK: no Namespace 'frr-k8s-system'"
+
+          # ── Assertion 2: no CRD of the group frrk8s.metallb.io ──
+          # The chart installs its four CRDs as templates; none may exist
+          # without the release.
+          lookup customresourcedefinitions.apiextensions.k8s.io
+          crds="$(printf '%s\n' "${FOUND}" | grep -E '\.frrk8s\.metallb\.io$' || true)"
+          if [ -n "${crds}" ]; then
+            echo "FAIL: CRDs of the group frrk8s.metallb.io exist on a default cluster:"
+            printf '%s\n' "${crds}"
+            echo "      Source of regression: the frr-k8s chart was installed"
+            echo "      without WITH_FRR_K8S=true."
+            exit 1
+          fi
+          echo "OK: no CRD of the group frrk8s.metallb.io"
+
+          # ── Assertion 3: no frr-k8s HelmRelease anywhere ──
+          lookup helmrelease.helm.toolkit.fluxcd.io --all-namespaces \
+            --field-selector=metadata.name=frr-k8s
+          if [ -n "${FOUND}" ]; then
+            echo "FAIL: HelmRelease 'frr-k8s' exists on a default cluster:"
+            printf '%s\n' "${FOUND}"
+            echo "      Source of regression: deploy/overlays/kind/frr-k8s/release.yaml"
+            echo "      was applied without WITH_FRR_K8S=true."
+            exit 1
+          fi
+          echo "OK: no HelmRelease 'frr-k8s' exists"
+
+          # ── Assertion 4: no frr-k8s HelmRepository in flux-system ──
+          # The only producer is deploy/overlays/kind/frr-k8s/source.yaml.
+          lookup helmrepository.source.toolkit.fluxcd.io frr-k8s -n flux-system
+          if [ -n "${FOUND}" ]; then
+            echo "FAIL: HelmRepository 'frr-k8s' exists in 'flux-system' on a default cluster."
+            echo "      Source of regression: deploy/overlays/kind/frr-k8s/source.yaml"
+            echo "      was applied without WITH_FRR_K8S=true."
+            exit 1
+          fi
+          echo "OK: no HelmRepository 'frr-k8s' in 'flux-system'"
+
+          echo "PASS: default kind deploy footprint matches the WITH_FRR_K8S=false contract."
+    catch:
+    # On failure, dump the cluster's frr-k8s footprint for triage. Each block
+    # is independently scoped so a missing resource does not short-circuit
+    # the rest of the dump.
+    - script:
+        content: |
+          echo "=== Namespace frr-k8s-system ==="
+          kubectl get namespace frr-k8s-system -o wide 2>&1 || true
+          echo "=== CRDs of the group frrk8s.metallb.io ==="
+          kubectl get customresourcedefinitions.apiextensions.k8s.io -o name 2>&1 \
+            | grep -E 'frrk8s\.metallb\.io' || true
+          echo "=== HelmReleases named frr-k8s (any namespace) ==="
+          kubectl get helmrelease.helm.toolkit.fluxcd.io --all-namespaces \
+            --field-selector=metadata.name=frr-k8s -o wide 2>&1 || true
+          echo "=== HelmRepository frr-k8s (flux-system) ==="
+          kubectl get helmrepository.source.toolkit.fluxcd.io frr-k8s \
+            -n flux-system -o wide 2>&1 || true

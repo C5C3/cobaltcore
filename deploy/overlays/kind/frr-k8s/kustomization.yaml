@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Opt-in kind overlay for frr-k8s, the per-node FRR DaemonSet that
+# FRRConfiguration objects drive. Applied only when the operator explicitly
+# requests it (WITH_FRR_K8S=true make deploy-infra).
+#
+# Bundles:
+#   1. The frr-k8s-system Namespace with the privileged PodSecurity label.
+#   2. The frr-k8s HelmRepository source (upstream chart index).
+#   3. The frr-k8s HelmRelease with exact pins (release.yaml says why).
+#
+# The release is inert until a node carries the label
+# openstack.c5c3.io/frr-k8s=true: the DaemonSet selects only labelled nodes,
+# and the frr-k8s-statuscleaner Deployment serves the validating webhook.
+#
+# All resource references are local to this overlay (no parent-directory
+# `../../` paths), so `kubectl apply -k deploy/overlays/kind/frr-k8s` renders
+# under kustomize's default `LoadRestrictionsRootOnly` check without
+# `--load-restrictor` (kubernetes/kubectl#948), the same contract as the
+# metrics-server overlay.
+#
+# Production overlays (deploy/bases/operators/kustomization.yaml) list none of
+# it, so it never reaches a control plane. A compute cluster that attaches to
+# the BGP fabric applies the three files with its own Flux;
+# docs/reference/networking/bgp-node-substrate.md describes how.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - namespace.yaml
+  - source.yaml
+  - release.yaml

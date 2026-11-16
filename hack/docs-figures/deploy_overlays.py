@@ -100,7 +100,7 @@ card(X[0], 2090, "Additional lab composition", [
     "ceph/cluster is a separate root, not a ceph base.",
 ], height=206)
 card(X[1], 2090, "Other kind roots (no directory base)", [
-    "metrics-server, vpa: opt-in Step 3",
+    "metrics-server, vpa, frr-k8s: opt-in Step 3",
     "controlplane: by hand / WITH_CONTROLPLANE_CR",
     "fake-compute: applied by hand",
 ], height=206, fs=21)

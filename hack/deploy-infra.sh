@@ -175,6 +175,13 @@ WITH_METRICS_SERVER="${WITH_METRICS_SERVER:-false}"
 WITH_VPA="${WITH_VPA:-false}"
 if [[ "${WITH_VPA}" == "true" ]]; then WITH_METRICS_SERVER=true; fi
 
+# Gates the opt-in frr-k8s kind overlay (deploy/overlays/kind/frr-k8s), the
+# per-node FRR DaemonSet the BGP fabric suite (tests/e2e-bgp-fabric/) peers
+# from. The release stays inert until a node carries the label
+# openstack.c5c3.io/frr-k8s=true. Defaults to false so the kind Quick Start
+# stays minimal; set WITH_FRR_K8S=true to install it.
+WITH_FRR_K8S="${WITH_FRR_K8S:-false}"
+
 # Gates the opt-in dizzy overlay, the dizzy/ of OVERLAY_ROOT, which installs
 # VictoriaMetrics + Grafana for dizzy load/chaos runs: in kind mode
 # deploy/overlays/kind/dizzy, under EXTERNAL_CLUSTER=true the overlay's dizzy/, which
@@ -364,8 +371,9 @@ INFRA_ONLY="${INFRA_ONLY:-false}"
 # Selects the external-cluster mode: deploy onto whatever cluster the current
 # kubeconfig context points at (KUBECONFIG or ~/.kube/config, as kubectl
 # resolves it) instead of a kind cluster this script creates. The script never
-# switches contexts. Docker and kind are not needed; the four kind-bound opt-ins
-# (WITH_VPA, WITH_METRICS_SERVER, WITH_REGISTRY_CACHE, WITH_OVN_KERNEL_MODULES)
+# switches contexts. Docker and kind are not needed; the five kind-bound opt-ins
+# (WITH_VPA, WITH_METRICS_SERVER, WITH_REGISTRY_CACHE, WITH_OVN_KERNEL_MODULES,
+# WITH_FRR_K8S)
 # are refused in preflight_checks, WITH_NFS=true is accepted only for an overlay
 # with an nfs/ kustomization, WITH_CHAOS_MESH=true only for one with a
 # chaos-mesh/ kustomization, WITH_DIZZY=true only for one with a dizzy/
@@ -1929,7 +1937,8 @@ preflight_external_cluster() {
     "WITH_VPA|the platform runs Gardener's VPA, so nothing is installed; opt a workload in with its verticalAutoscaling block (spec.sizing.<component>.<workload>.verticalAutoscaling on the ControlPlane)" \
     "WITH_METRICS_SERVER|the platform serves v1beta1.metrics.k8s.io, so nothing is installed; scale an API with its autoscaling block (spec.sizing.<component>.api.autoscaling on the ControlPlane)" \
     "WITH_REGISTRY_CACHE|the pull-through cache needs the kind Docker network" \
-    "WITH_OVN_KERNEL_MODULES|it loads kernel modules on the host"; do
+    "WITH_OVN_KERNEL_MODULES|it loads kernel modules on the host" \
+    "WITH_FRR_K8S|its DaemonSet starts a second zebra in the host network namespace of every labelled node, and a metal-stack machine runs its own FRR there; the host FRR carries the fabric VRF instead"; do
     flag="${entry%%|*}"
     if [[ "${!flag}" == "true" ]]; then
       log "ERROR: EXTERNAL_CLUSTER=true does not support ${flag}=true: ${entry#*|}"
@@ -3502,6 +3511,7 @@ main() {
   log "Prometheus stack    : ${WITH_PROMETHEUS} (set WITH_PROMETHEUS=true to install)"
   log "metrics-server      : ${WITH_METRICS_SERVER} (set WITH_METRICS_SERVER=true to install)"
   log "VPA recommender    : ${WITH_VPA} (set WITH_VPA=true to install the recommender and metrics-server)"
+  log "frr-k8s             : ${WITH_FRR_K8S} (set WITH_FRR_K8S=true to install)"
   log "dizzy stack         : ${WITH_DIZZY} (VictoriaMetrics + Grafana for dizzy load/chaos runs; set WITH_DIZZY=true to install)"
   log "NFS storage stack   : ${WITH_NFS} (set WITH_NFS=true for the NFS server + csi-driver-nfs; in kind mode it also modprobes nfs/nfsv4 on the host, under EXTERNAL_CLUSTER=true the pods of the overlay's nfs/ load them on the nodes)"
   log "Ceph storage stack  : ${WITH_CEPH} (set WITH_CEPH=true for the Rook operator and a Ceph on raw block volumes; external cluster only)"
@@ -3721,6 +3731,14 @@ main() {
   if [[ "${WITH_VPA}" == "true" ]]; then
     kubectl apply -k "${REPO_ROOT}/deploy/overlays/kind/vpa"
     log "VPA recommender kind overlay applied (WITH_VPA=true)."
+  fi
+
+  # Opt-in frr-k8s overlay for the BGP fabric suite. Self-contained like the
+  # overlays above, so no `--load-restrictor` flag. The DaemonSet starts on
+  # no node until one carries openstack.c5c3.io/frr-k8s=true.
+  if [[ "${WITH_FRR_K8S}" == "true" ]]; then
+    kubectl apply -k "${REPO_ROOT}/deploy/overlays/kind/frr-k8s"
+    log "frr-k8s kind overlay applied (WITH_FRR_K8S=true)."
   fi
 
   # Opt-in dizzy overlay (VictoriaMetrics + Grafana). Layered on top of the base
@@ -4098,6 +4116,11 @@ main() {
   # vertical-pod-autoscaler follows metrics-server, which WITH_VPA implies.
   if [[ "${WITH_VPA}" == "true" ]]; then
     helm_releases+=(vertical-pod-autoscaler)
+  fi
+  # frr-k8s follows vertical-pod-autoscaler, so the relative ordering of the
+  # base releases and the earlier opt-ins is preserved exactly.
+  if [[ "${WITH_FRR_K8S}" == "true" ]]; then
+    helm_releases+=(frr-k8s)
   fi
   # dizzy-victoria-metrics and dizzy-grafana are appended last so the relative
   # ordering of the base releases is preserved exactly. wait_for_helmreleases

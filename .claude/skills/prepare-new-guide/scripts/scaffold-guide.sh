@@ -123,7 +123,7 @@ if [[ "${DEVSTACK}" == "quick-start-metal-stack" ]]; then
     exit 2
   fi
   for flag in WITH_VPA WITH_METRICS_SERVER WITH_REGISTRY_CACHE \
-    WITH_OVN_KERNEL_MODULES; do
+    WITH_OVN_KERNEL_MODULES WITH_FRR_K8S; do
     if [[ " ${OPT_INS} " == *" ${flag}=true "* ]]; then
       echo "error: ${flag}=true is kind-only; hack/deploy-infra.sh refuses it under EXTERNAL_CLUSTER=true" >&2
       exit 2
