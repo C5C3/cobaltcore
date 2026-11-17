@@ -326,6 +326,164 @@ EOF
   assert_eq "the RBAC Policies panel checks the catalog before it asks Neutron" "0" "$exit_code"
 }
 
+# --- Test 10: OPENSTACK_REQUEST_TIMEOUT reaches every client ---
+test_request_timeout_reaches_every_client() {
+  echo "Test: OPENSTACK_REQUEST_TIMEOUT bounds every Keystone and service client"
+  # Proves the image build applied
+  # patches/horizon/<release>/0002-add-a-request-timeout-for-the-keystone-and-service-clients.patch
+  # (#1799). Upstream Horizon builds every keystoneauth session and service
+  # client without a timeout, and the horizon-operator's
+  # OPENSTACK_REQUEST_TIMEOUT = 30 is inert there. The probe renders
+  # OPENSTACK_REQUEST_TIMEOUT = 7 into local_settings.py, asserts that
+  # openstack_auth's get_session() carries it, and calls every patched
+  # factory with its session or client constructor mocked. The factories
+  # differ by release: horizon 25.x still builds a neutronclient, 27.x a
+  # second Nova session (computeclient). The second pass sets the setting
+  # to None: the sessions get timeout=None, and the Glance client gets no
+  # timeout argument, so glanceclient keeps its 600 seconds. A fresh request
+  # per call keeps the memoized factories from answering from a cache.
+  # Stderr is echoed on failure so the reason is named.
+  local probe err="" exit_code=0
+  probe=$(
+    cat <<'EOF'
+import datetime
+import importlib.metadata
+import sys
+import types
+from unittest import mock
+
+import django
+
+django.setup()
+
+from django.conf import settings
+from django.test import RequestFactory
+from django.test.utils import override_settings
+from openstack_auth import user as auth_user
+from openstack_auth import utils as auth_utils
+from openstack_dashboard.api import _nova
+from openstack_dashboard.api import cinder
+from openstack_dashboard.api import glance
+from openstack_dashboard.api import keystone
+from openstack_dashboard.api import neutron
+from openstack_dashboard.api import placement
+
+if settings.OPENSTACK_REQUEST_TIMEOUT != 7:
+    sys.exit("OPENSTACK_REQUEST_TIMEOUT is %r, expected 7 from "
+             "local_settings.py" % (settings.OPENSTACK_REQUEST_TIMEOUT,))
+
+
+# The factories look an endpoint up by OPENSTACK_ENDPOINT_TYPE (publicURL by
+# default), so every service carries a public and an internal entry.
+def service(kind, name, url):
+    return {"type": kind, "name": name, "endpoints": [
+        {"region": "RegionOne", "interface": interface, "url": url}
+        for interface in ("public", "internal")]}
+
+
+CATALOG = [
+    service("identity", "keystone", "http://keystone.invalid/v3"),
+    service("network", "neutron", "http://neutron.invalid"),
+    service("compute", "nova", "http://nova.invalid/v2.1"),
+    service("volumev3", "cinderv3", "http://cinder.invalid/v3/1"),
+    service("image", "glance", "http://glance.invalid"),
+    service("placement", "placement", "http://placement.invalid"),
+]
+
+
+def request():
+    req = RequestFactory().get("/")
+    req.session = {}
+    token = types.SimpleNamespace(
+        id="verify", project={"id": "1", "domain_id": "default"},
+        expires=datetime.datetime.now(datetime.timezone.utc)
+        + datetime.timedelta(hours=1))
+    req.user = auth_user.User(
+        id="1", token=token, user="admin", tenant_id="1",
+        service_catalog=CATALOG, roles=[{"id": "1", "name": "admin"}],
+        services_region="RegionOne", enabled=True,
+        endpoint="http://keystone.invalid/v3")
+    return req
+
+
+def keyword(target, attribute, call, extra=()):
+    patches = [mock.patch.object(target, attribute)]
+    patches += [mock.patch(name) for name in extra]
+    mocks = [p.start() for p in patches]
+    try:
+        call()
+    finally:
+        for p in patches:
+            p.stop()
+    return mocks[0].call_args.kwargs
+
+
+CONNECTION = ("openstack.connection.Connection",)
+CHECKS = [
+    ("keystone session", lambda: keyword(
+        keystone.session, "Session", lambda: keystone.keystoneclient(request()))),
+    ("placement session", lambda: keyword(
+        placement.session, "Session", lambda: placement.make_adapter(request()))),
+    ("neutron session", lambda: keyword(
+        neutron.session, "Session", lambda: neutron.networkclient(request()),
+        CONNECTION)),
+    ("novaclient", lambda: keyword(
+        _nova.nova_client, "Client",
+        lambda: _nova.novaclient(request(), version="2.1"))),
+    ("cinderclient", lambda: keyword(
+        cinder.cinder_client, "Client", lambda: cinder.cinderclient(request()))),
+]
+major = int(importlib.metadata.version("horizon").split(".")[0])
+if major < 27:
+    CHECKS.append(("neutronclient", lambda: keyword(
+        neutron.neutron_client, "Client",
+        lambda: neutron.neutronclient(request()))))
+else:
+    CHECKS.append(("nova session", lambda: keyword(
+        _nova.session, "Session", lambda: _nova.computeclient(request()),
+        CONNECTION)))
+
+
+def glance_kwargs():
+    with mock.patch.object(glance.VERSIONS, "get_active_version") as version:
+        glance.glanceclient(request())
+    return version.return_value["client"].Client.call_args.kwargs
+
+
+def check(expected):
+    found = auth_utils.get_session().timeout
+    if found != expected:
+        sys.exit("get_session().timeout is %r, expected %r" % (found, expected))
+    for name, kwargs in CHECKS:
+        found = kwargs()
+        if "timeout" not in found or found["timeout"] != expected:
+            sys.exit("the %s got %r, expected timeout=%r"
+                     % (name, found, expected))
+
+
+check(7)
+found = glance_kwargs()
+if found.get("timeout") != 7:
+    sys.exit("the Glance client got %r, expected timeout=7" % (found,))
+
+with override_settings(OPENSTACK_REQUEST_TIMEOUT=None):
+    check(None)
+    found = glance_kwargs()
+    if "timeout" in found:
+        sys.exit("with the setting at None the Glance client got %r, "
+                 "expected no timeout argument" % (found,))
+EOF
+  )
+  err=$(docker run --rm --tmpfs /etc/openstack-dashboard:uid=42424,gid=42424 \
+    -e DJANGO_SETTINGS_MODULE=openstack_dashboard.settings -e TIMEOUT_PROBE="$probe" "$IMAGE" sh -c \
+    'printf "SECRET_KEY = \"verify\"\nOPENSTACK_REQUEST_TIMEOUT = 7\n" > /etc/openstack-dashboard/local_settings.py &&
+     exec /var/lib/openstack/bin/python -W ignore -c "$TIMEOUT_PROBE"' \
+    2>&1 > /dev/null) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "    $err"
+
+  assert_eq "OPENSTACK_REQUEST_TIMEOUT reaches every Keystone and service client" "0" "$exit_code"
+}
+
 # --- Run all tests ---
 echo "=== horizon container verification tests ==="
 echo "Image: $IMAGE"
@@ -347,6 +505,8 @@ echo ""
 test_static_assets_typed
 echo ""
 test_rbac_policies_panel_checks_catalog_first
+echo ""
+test_request_timeout_reaches_every_client
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 
