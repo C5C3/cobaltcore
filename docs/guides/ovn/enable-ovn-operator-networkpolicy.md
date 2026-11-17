@@ -135,7 +135,6 @@ before enabling the policy to avoid interrupting scrapes. For Flux, patch the
 peer while the HelmRelease is active:
 
 ```bash
-set -euo pipefail
 kubectl patch helmrelease ovn-operator -n ovn-system --type=merge \
   -p '{"spec":{"values":{"networkPolicy":{"allowMetricsFrom":[{"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"monitoring"}}}]}}}}'
 
@@ -150,7 +149,6 @@ For direct Helm installations, set the same value in the values supplied to
 Enable the policy after adding the metrics peer, if needed:
 
 ```bash
-set -euo pipefail
 kubectl patch helmrelease ovn-operator -n ovn-system --type=merge \
   -p '{"spec":{"values":{"networkPolicy":{"enabled":true,"kubeApiServer":{"cidrs":["172.18.0.2/32"],"ports":[6443]}}}}}'
 
@@ -166,7 +164,6 @@ For a release managed directly by Helm, enable the same values with a rolling
 `helm upgrade`. Pin the upgrade to the installed chart version:
 
 ```bash
-set -euo pipefail
 CHART_VERSION="$(helm list -n ovn-system --filter '^ovn-operator$' -o json \
   | jq -r '.[0].chart // "" | sub("^ovn-operator-"; "")')"
 if [ -z "$CHART_VERSION" ]; then
@@ -347,7 +344,6 @@ three minutes for the check to end, then prints the state of the check
 container and its log:
 
 ```bash
-set -euo pipefail
 CHECK='
 import socket, sys
 failed = False
@@ -526,7 +522,6 @@ empty, which is wrong in that topology.
 `networkPolicy.webhookClients.cidrs` explicitly. For an active Flux release:
 
 ```bash
-set -euo pipefail
 kubectl patch helmrelease ovn-operator -n ovn-system --type=merge \
   -p '{"spec":{"values":{"networkPolicy":{"webhookClients":{"cidrs":["10.1.0.0/24"]}}}}}'
 
@@ -546,7 +541,6 @@ unrestricted pod networking without a pod restart. To disable it on a Flux
 release:
 
 ```bash
-set -euo pipefail
 kubectl patch helmrelease ovn-operator -n ovn-system --type=merge \
   -p '{"spec":{"values":{"networkPolicy":{"enabled":false}}}}'
 
