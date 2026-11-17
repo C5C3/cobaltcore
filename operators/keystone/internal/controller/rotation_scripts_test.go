@@ -261,8 +261,8 @@ func expectMissingStateDirFailsBeforeRotating(t *testing.T, script string) {
 // its first call, so the working copy holds only the keys the script copied
 // from the source mount, and checks that every copy is read-only for its owner.
 // writeKeys writes the sources at 0o600, so a copy that kept their mode
-// would fail. A world-readable key makes upstream Keystone log
-// "key_repository is world readable".
+// would fail. A world-readable key makes the patched Keystone image (keystone
+// patch 0005) log "key_repository is world readable".
 func expectCopiedKeysOwnerReadOnly(t *testing.T, script string) {
 	t.Helper()
 	g := NewGomegaWithT(t)

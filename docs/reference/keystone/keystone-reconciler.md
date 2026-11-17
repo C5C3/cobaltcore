@@ -1690,7 +1690,7 @@ and disaster recovery backup to OpenBao.
 | Volume `scripts` | ConfigMap `{name}-fernet-rotate-script-{hash}` (`defaultMode: 0555`) |
 | Volume `rotation-state` | emptyDir at `/rotation-state` in the rotate container; holds the rotated key set and the digest of the production keys it came from across container restarts |
 | Pod `fsGroup` | `42424` (openstack GID — grants the rotation Pod's UID 42424 group access to projected key files at mode `0400`) |
-| Rationale | Mirrors upstream Keystone's `keystone.common.fernet_utils._check_key_repository`, which logs a `WARNING` when the key directory or any key file is world-readable (`stat.S_IROTH`); pinning `defaultMode: 0400` plus `fsGroup: 42424` keeps the projected files group-readable to UID 42424 only and silences the warning |
+| Rationale | The kubelet creates the mount directory of a Secret volume with mode `1777`, adds the setgid and group bits under `fsGroup`, and applies `defaultMode` to the files only. `defaultMode: 0400` plus `fsGroup: 42424` project each key as `0440 root:42424`, readable by UID 42424 through the group bit and by no other user. Upstream `keystone.common.fernet_utils.FernetUtils.validate_key_repository` logs the `WARNING` `key_repository is world readable` on the directory mode alone. Keystone [patch 0005](../ci-cd/container-images.md#keystone) makes it warn only when a key file is readable by others; an image without the patch logs the warning on every key load |
 
 **PushSecret:**
 
@@ -1897,7 +1897,7 @@ with credential migration, and disaster recovery backup to OpenBao.
 | Volume `scripts` | ConfigMap `{name}-credential-rotate-script-{hash}` (`defaultMode: 0555`) |
 | Volume `rotation-state` | emptyDir at `/rotation-state` in the rotate container; holds the rotated key set and the digest of the production keys it came from across container restarts |
 | Pod `fsGroup` | `42424` (openstack GID — grants the rotation Pod's UID 42424 group access to projected key files at mode `0400`) |
-| Rationale | Mirrors upstream Keystone's `keystone.common.fernet_utils._check_key_repository`, which logs a `WARNING` when the key directory or any key file is world-readable (`stat.S_IROTH`); pinning `defaultMode: 0400` plus `fsGroup: 42424` keeps the projected files group-readable to UID 42424 only and silences the warning |
+| Rationale | The kubelet creates the mount directory of a Secret volume with mode `1777`, adds the setgid and group bits under `fsGroup`, and applies `defaultMode` to the files only. `defaultMode: 0400` plus `fsGroup: 42424` project each key as `0440 root:42424`, readable by UID 42424 through the group bit and by no other user. Upstream `keystone.common.fernet_utils.FernetUtils.validate_key_repository` logs the `WARNING` `key_repository is world readable` on the directory mode alone. Keystone [patch 0005](../ci-cd/container-images.md#keystone) makes it warn only when a key file is readable by others; an image without the patch logs the warning on every key load |
 
 > **Note:** The `credential_rotate.sh` script runs `credential_migrate`,
 > `credential_rotate` and `credential_migrate` again. `credential_rotate`
@@ -2380,7 +2380,7 @@ Secret-backed mounts are read-only.
 | Field | Value |
 | --- | --- |
 | `spec.template.spec.securityContext.fsGroup` | `42424` (openstack GID — grants the API Pod's UID 42424 group access to projected key files at mode `0400`) |
-| Rationale | Mirrors upstream Keystone's `keystone.common.fernet_utils._check_key_repository`, which logs a `WARNING` when the key directory or any key file is world-readable (`stat.S_IROTH`); pinning `defaultMode: 0400` plus `fsGroup: 42424` keeps the projected files group-readable to UID 42424 only and silences the warning |
+| Rationale | The kubelet creates the mount directory of a Secret volume with mode `1777`, adds the setgid and group bits under `fsGroup`, and applies `defaultMode` to the files only. `defaultMode: 0400` plus `fsGroup: 42424` project each key as `0440 root:42424`, readable by UID 42424 through the group bit and by no other user. Upstream `keystone.common.fernet_utils.FernetUtils.validate_key_repository` logs the `WARNING` `key_repository is world readable` on the directory mode alone. Keystone [patch 0005](../ci-cd/container-images.md#keystone) makes it warn only when a key file is readable by others; an image without the patch logs the warning on every key load |
 
 **Service Spec:**
 

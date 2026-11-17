@@ -107,12 +107,14 @@ func keyRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName, scri
 		ServiceAccountName: name,
 		RestartPolicy:      corev1.RestartPolicyOnFailure,
 		// FSGroup makes the kubelet group-own mounted Secret volumes by
-		// the openstack GID so DefaultMode 0o400 still lets the openstack
-		// UID read the keys via the group bit. Without it, kubelet would
-		// project files as root:root mode 0o400 and the openstack process
-		// could not read them; upstream Keystone logs a "key_repository is
-		// world readable" WARNING via fernet_utils._check_key_repository
-		// for any default-mode (0o644) workaround.
+		// the openstack GID, so DefaultMode 0o400 projects the key files
+		// as 0440 root:42424 and the openstack UID reads them via the
+		// group bit. Without it, kubelet would project files as root:root
+		// mode 0o400 and the openstack process could not read them. The
+		// kubelet leaves every mount point, Secret and emptyDir alike, open
+		// to others; validate_key_repository of the patched Keystone image
+		// (keystone patch 0005) logs "key_repository is world readable"
+		// only when a key file is readable by others.
 		SecurityContext: &corev1.PodSecurityContext{FSGroup: ptr.To(deployment.OpenStackUID)},
 		Containers: []corev1.Container{{
 			Name:            p.keyKind + "-rotate",
