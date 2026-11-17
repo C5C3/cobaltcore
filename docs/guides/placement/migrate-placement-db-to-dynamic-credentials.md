@@ -10,10 +10,12 @@ SPDX-License-Identifier: Apache-2.0
 
 # Migrate Placement DB to Dynamic Credentials
 
-This guide takes a managed-mode ControlPlane from a long-lived **static**
-Placement database credential to **dynamic**, engine-issued credentials, without
-database downtime. It is the operator-facing side of the OpenBao MariaDB
-database secrets engine wired for the Placement service DB user.
+This guide moves a managed-mode ControlPlane from a long-lived **static**
+Placement database credential to **dynamic**, engine-issued credentials. The
+Placement operator's default rolling update keeps existing API replicas
+available while replacements start, provided the new credential works and the
+cluster has capacity for a surge. This is the operator-facing side of the OpenBao
+MariaDB database secrets engine wired for the Placement service DB user.
 
 ## What changes
 
@@ -26,9 +28,9 @@ database secrets engine wired for the Placement service DB user.
   short-lived credentials from the OpenBao database engine
   (`database/mariadb/creds/placement-{namespace}`, where `{namespace}` is the
   Placement service namespace, the ControlPlane's own namespace unless Placement
-  runs in a dedicated one). The External Secrets Operator re-issues a fresh lease
-  before the previous one expires and stores its username and password in the
-  Kubernetes Secret. Dynamic mode does not read a static password from the
+  runs in a dedicated one). The External Secrets Operator (ESO) refreshes the
+  generator and stores its issued username and password in the Kubernetes
+  Secret. Dynamic mode does not read a static password from the
   OpenBao KV path. Any existing static KV value remains until you delete it in
   step 5.
 
@@ -62,8 +64,8 @@ manages.
   `setup-secret-engines.sh` bootstrap step). A greenfield cluster already has it;
   on a brownfield cluster, re-apply the bootstrap scripts (see below).
 - cert-manager and its `openbao-ca-issuer` ClusterIssuer are installed. They
-  issue the per-ControlPlane mTLS client certificate the generator presents to
-  the OpenBao listener.
+  issue the per-ControlPlane mutual TLS (mTLS) client certificate the generator
+  presents to the OpenBao listener.
 - The External Secrets Operator can request ServiceAccount tokens
   (`serviceaccounts/token` `create`) so the generator can authenticate to OpenBao
   as the `placement-db-creds` ServiceAccount.
@@ -97,8 +99,11 @@ The engine role for a tenant only exists once its MariaDB is Ready and
 `setup-database-tenant.sh` has configured the connection and role against it:
 
 ```bash
-# BAO_TOKEN must be exported; <namespace>/<controlplane> identify the tenant.
-bash deploy/openbao/bootstrap/setup-database-tenant.sh <namespace> <controlplane>
+# BAO_TOKEN must be exported. Set these to the ControlPlane's namespace and name.
+CONTROLPLANE_NAMESPACE=openstack
+CONTROLPLANE_NAME=controlplane
+bash deploy/openbao/bootstrap/setup-database-tenant.sh \
+  "${CONTROLPLANE_NAMESPACE}" "${CONTROLPLANE_NAME}"
 ```
 
 When the ControlPlane declares `spec.services.placement` on the shared managed
@@ -138,11 +143,30 @@ spec:
 The shared `spec.infrastructure.database.credentialsMode: Static` opts out
 ControlPlane-wide instead; the per-service override scopes the opt-out to
 Placement alone. Nothing seeds the static KV path, so while staging you must
-write `kv-v2/openstack/placement/<namespace>/<controlplane>/db` (`username`,
-`password`) by hand, with `username` set to the Placement child's name
+write `kv-v2/openstack/placement/<placement-namespace>/<controlplane>/db`
+(`username`, `password`) by hand. Set `username` to the Placement child's name
 (`<controlplane>-placement`), which is the login the operator's MariaDB
-`User`/`Grant` provisions. Remove the override (or set it to `Dynamic`) to cut
-over.
+`User`/`Grant` provisions. This example uses the devstack names; set
+`PLACEMENT_NAMESPACE` to the Placement service namespace if it differs from the
+ControlPlane namespace. `BAO_TOKEN` must be exported.
+
+```bash
+source deploy/openbao/bootstrap/common.sh
+PLACEMENT_NAMESPACE=openstack
+CONTROLPLANE_NAME=controlplane
+PLACEMENT_CR_NAME="${CONTROLPLANE_NAME}-placement"
+printf 'Static Placement DB password: '
+IFS= read -r -s DB_PASSWORD
+printf '\n'
+printf '%s' "$DB_PASSWORD" | bao_exec_stdin bao kv put \
+  "kv-v2/openstack/placement/${PLACEMENT_NAMESPACE}/${CONTROLPLANE_NAME}/db" \
+  "username=${PLACEMENT_CR_NAME}" password=-
+unset DB_PASSWORD
+```
+
+Removing the per-service override inherits the shared mode and cuts over only
+when that mode is `Dynamic`. If the shared mode is `Static`, set the Placement
+override to `Dynamic` to cut over.
 
 ### 4. Upgrade the operators and observe the cutover
 
@@ -155,11 +179,14 @@ On a cluster that ran the static path, delete the credential Secret once to
 remove the old value before ESO syncs the engine-issued credential:
 
 ```bash
-kubectl delete secret <controlplane>-placement-db-credentials -n <namespace>
+PLACEMENT_NAMESPACE=openstack
+CONTROLPLANE_NAME=controlplane
+kubectl delete secret "${CONTROLPLANE_NAME}-placement-db-credentials" \
+  -n "${PLACEMENT_NAMESPACE}" --ignore-not-found
 ```
 
 The ExternalSecret is updated in place (same name, same target Secret), so until
-Until ESO completes its first generator-backed sync, the Secret still holds
+ESO completes its first generator-backed sync, the Secret still holds
 whatever the previous static sync wrote. Deleting it forces ESO to sync from the
 generator immediately instead of at the next refresh.
 
@@ -179,8 +206,8 @@ Watch for:
 - The `controlplane-placement-db-credentials` ExternalSecret spec changing from
   static `data[].remoteRef` to `dataFrom[].sourceRef.generatorRef` (kind
   `VaultDynamicSecret`).
-- The Kubernetes Secret's `username` becoming an engine-issued login rather
-  than `controlplane-placement`.
+- The Kubernetes Secret's `username` becoming an engine-issued login; the static
+  username is `controlplane-placement`.
 - A Placement Deployment rollout: the operator sets a
   `placement.c5c3.io/db-connection-hash` pod-template annotation, so a rotated
   credential rolls the Deployment. The DSN travels in the
@@ -188,35 +215,58 @@ Watch for:
   effect on a Pod restart.
 
 The engine's `GRANT` overlaps the pre-existing operator-provisioned `User` and
-`Grant` from the static deployment, so Placement keeps serving throughout. The
-rolling restart, protected by the Placement PodDisruptionBudget, moves it onto
-an engine-issued login without a gap in the API.
+`Grant` from the static deployment. By default, the Deployment uses a
+RollingUpdate strategy with `maxUnavailable: 0` and `maxSurge: 1`, so existing
+replicas remain available while ready replacements start, provided the cluster
+has surge capacity and the new credential works. The PodDisruptionBudget
+protects against voluntary disruptions, while the Deployment strategy controls
+the rollout.
 
 ### 5. Retire the static credential
 
-Once the ControlPlane reports `PlacementReady=True` on the dynamic path:
+Once the ControlPlane reports `PlacementReady=True` on the dynamic path, wait
+for the Deployment rollout to finish before deleting the static database user.
+`PlacementReady=True` confirms the desired replicas are available. An old pod
+can still remain in the Deployment:
 
 1. Delete the leftover static MariaDB `User` and `Grant` CRs (they carry the
    long-lived `<controlplane>-placement` login the engine no longer uses):
 
    ```bash
-   kubectl delete user,grant <placement-cr-name> -n <namespace> --ignore-not-found
+   # Set to the Placement service namespace; Quick Start uses openstack.
+   PLACEMENT_NAMESPACE=openstack
+   CONTROLPLANE_NAME=controlplane
+   PLACEMENT_CR_NAME="${CONTROLPLANE_NAME}-placement"
+   kubectl rollout status "deployment/${PLACEMENT_CR_NAME}" \
+     -n "${PLACEMENT_NAMESPACE}" --timeout=10m
+   kubectl delete user,grant "${PLACEMENT_CR_NAME}" \
+     -n "${PLACEMENT_NAMESPACE}" --ignore-not-found
    ```
 
 2. Remove the retired static KV secret, if step 3 ever seeded it:
 
    ```bash
-   # Inside the OpenBao pod, or with a bao client configured for it.
-   bao kv metadata delete kv-v2/openstack/placement/<namespace>/<controlplane>/db
+   # BAO_TOKEN must be exported.
+   source deploy/openbao/bootstrap/common.sh
+   # Set to the Placement service namespace; Quick Start uses openstack.
+   PLACEMENT_NAMESPACE=openstack
+   CONTROLPLANE_NAME=controlplane
+   bao_exec bao kv metadata delete \
+     "kv-v2/openstack/placement/${PLACEMENT_NAMESPACE}/${CONTROLPLANE_NAME}/db"
    ```
 
 ## Rollback
 
-To revert to the static credential, set the mode back to `Static` (the
-per-service `spec.services.placement.databaseCredentialsMode` override, or the
-shared `spec.infrastructure.database.credentialsMode`), re-seed the KV path
-(step 3), and let the next Static-mode reconcile re-create the `User`/`Grant`.
-Roll back the operators if you also need to remove the generator objects.
+To revert to the static credential, first re-seed the KV path as in step 3, then
+set the mode to `Static` (the per-service
+`spec.services.placement.databaseCredentialsMode` override, or the shared
+`spec.infrastructure.database.credentialsMode`). The next reconcile switches
+the ExternalSecret back to the static KV path. The c5c3 operator attempts to
+remove the dynamic generator objects, and the Placement operator reconciles the
+static `User`/`Grant`.
+Wait for the Secret's username to return to `<controlplane>-placement` and for
+the Placement Deployment rollout to complete before considering the rollback
+finished.
 
 ## Operational considerations
 
@@ -224,34 +274,41 @@ Roll back the operators if you also need to remove the generator objects.
   environment variable, so a rotated engine credential only takes effect on a Pod
   restart and Placement rolls each time the ExternalSecret re-issues the
   credential. Every refresh is a new credential; there is no stable value to
-  renew in place. The defaults balance two concerns: the 24h refresh interval
-  keeps the roll cadence to at most once a day, while the 48h `default_ttl`
-  leaves a 24h gap (`default_ttl` minus refresh) in which to roll the pods before
-  the previous, still-in-use lease is revoked. Raise `DB_CREDS_DEFAULT_TTL` /
-  `DB_CREDS_MAX_TTL` (and the operator's refresh interval) to trade churn against
-  lease headroom. The PodDisruptionBudget and the surge-before-remove rollout
-  strategy keep each roll zero-downtime.
+  renew in place. The defaults set a 24h refresh interval and a 48h
+  `default_ttl`, leaving a nominal 24h interval for the Deployment to roll before
+  the previous, still-in-use lease is revoked. Delayed refreshes or rollouts
+  reduce that headroom. Raise `DB_CREDS_DEFAULT_TTL` / `DB_CREDS_MAX_TTL` and the
+  operator's refresh interval together when changing the balance between
+  refresh frequency and lease headroom. The default RollingUpdate strategy uses
+  `maxUnavailable: 0` and `maxSurge: 1`. The PodDisruptionBudget applies to
+  voluntary disruptions; the Deployment strategy governs the rollout.
 - **Auth-token TTL bounds the lease:** OpenBao revokes a dynamic-secret lease
   together with the auth token that minted it, so the effective credential
   lifetime is `min(lease TTL, minting token TTL)`. The `placement-db` auth role
   therefore pins `token_ttl` and `token_max_ttl` to 72h, the `DB_CREDS_MAX_TTL`
   default. When raising `DB_CREDS_*` beyond that, raise the role's TTLs in
-  lockstep. A shorter token silently drops the ephemeral MySQL user under a
-  running Placement long before the advertised lease end.
+  lockstep. A shorter token can cause OpenBao to revoke the ephemeral MySQL user
+  before the database lease's stated TTL expires.
 - **No per-user connection cap on the dynamic path.** In Static mode the
   operator sizes the MariaDB `User` CR's `max_user_connections` for the CR's
-  topology, counting two connections per uWSGI thread across the API pods and
-  the rollout surge, plus headroom for the db-sync Job. The engine's
-  `CREATE USER` statement sets no cap, so once Placement runs on an
-  engine-issued login the server's own `max_connections` is the only bound.
+  topology, counting two connections per uWSGI API thread across the API pods
+  and the rollout surge, plus headroom for the db-sync Job. The engine's
+  `CREATE USER` statement sets no per-user cap. Dynamic-login connections
+  therefore share the MariaDB server's connection budget; account for them in
+  `max_connections`.
 - **Revocation semantics:** revoking a lease runs `DROP USER`, which rejects new
   connections. Already-open sessions of a dropped user may persist until they
   disconnect.
 - **ESO or OpenBao outage longer than the lease:** the leased credential
-  expires before a refresh completes. Running Pods keep pooled connections, but new
-  connections fail until ESO recovers. This surfaces through the Placement
-  child's own database readiness and, ControlPlane-side, as
-  `PlacementReady=False`.
+  expires before a refresh completes. Running Pods may keep pooled connections;
+  new connections fail after the engine revokes the user. The Placement
+  `DatabaseReady` condition tracks database provisioning and schema work. Its
+  API health check probes `/` without connecting to the database. Neither signal
+  checks live lease validity. The ControlPlane can report
+  `PlacementReady=False` when it observes the ExternalSecret as not Ready. A
+  Ready condition can still coexist with an expired or soon-to-expire lease.
+  Monitor ESO/OpenBao and Placement database connection errors, and restore
+  credential issuance before the lease expires.
 
 ## See also
 
@@ -267,12 +324,15 @@ Roll back the operators if you also need to remove the generator objects.
 
 ## Tested by
 
-The dynamic, engine-issued per-ControlPlane database credential this guide
-migrates to (the projected Dynamic mode, the `VaultDynamicSecret`, the
-generator-backed `controlplane-placement-db-credentials` ExternalSecret, and the
-transient engine-issued login) is asserted on the live CI e2e kind cluster by
-this chainsaw suite:
+The live CI suite validates the resulting Dynamic state; it does not exercise a
+Static-to-Dynamic cutover. It checks the projected Dynamic mode, the
+`VaultDynamicSecret` and its engine path, the generator-backed
+`controlplane-placement-db-credentials` ExternalSecret, the ServiceAccount, and
+a non-empty Secret username that differs from the fixture's static `placement`
+login. The suite also waits for the Placement child to become Ready after the
+API Deployment and database sync complete:
 
 ```bash
-chainsaw test --test-dir tests/e2e/c5c3/full-controlplane-keystone
+chainsaw test --config tests/e2e/chainsaw-config.yaml \
+  tests/e2e/c5c3/full-controlplane-keystone/
 ```
