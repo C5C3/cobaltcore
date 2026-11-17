@@ -164,8 +164,9 @@ func TestBackendReconcile_ManageKeepsItsDomainWhenTheStatusWriteConflicts(t *tes
 		},
 	})
 
-	_, err := reconcileBackendTwice(t, r, backend)
-	g.Expect(apierrors.IsConflict(err)).To(BeTrue(), "the creating pass must surface the lost status write")
+	result, err := reconcileBackendTwice(t, r, backend)
+	g.Expect(err).NotTo(HaveOccurred(), "the creating pass requeues after the lost status write instead of failing")
+	g.Expect(result.RequeueAfter).To(And(BeNumerically(">", 0), BeNumerically("<=", commonreconcile.RequeueNextPass)))
 	created := srv.GetDomainByName("corp")
 	g.Expect(created).NotTo(BeNil(), "the domain exists in Keystone although the status write failed")
 

@@ -9,16 +9,21 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
+	"github.com/go-logr/logr/funcr"
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 var testSubConditionTypes = []string{"AReady", "BReady"}
@@ -173,4 +178,142 @@ func TestUpdateStatus_ReconcileErrorOnlyPreserved(t *testing.T) {
 		func() { pod.Status.Message = "x" }, ctrl.Result{}, reconcileErr)
 
 	g.Expect(err).To(gomega.MatchError(reconcileErr))
+}
+
+// statusConflict is the 409 a status write returns when the object changed
+// after the pass read it.
+func statusConflict() error {
+	return apierrors.NewConflict(schema.GroupResource{Resource: "pods"}, "p", errors.New("the object has been modified"))
+}
+
+// contextWithLogCapture returns a context whose logger appends every line it
+// writes, rendered by funcr, to the returned slice.
+func contextWithLogCapture() (context.Context, *[]string) {
+	var logs []string
+	logger := funcr.New(func(prefix, args string) { logs = append(logs, prefix+" "+args) }, funcr.Options{})
+	return log.IntoContext(context.Background(), logger), &logs
+}
+
+// A status write that loses to a concurrent write of the same object drops
+// the computed status and requeues after RequeueNextPass with a nil error, so
+// controller-runtime neither logs "Reconciler error" nor counts the pass as
+// failed. The lost write leaves one Info line and no error line.
+func TestUpdateStatus_ConflictRequeuesWithoutError(t *testing.T) {
+	cases := map[string]struct {
+		snapshot bool
+	}{
+		"snapshot":     {snapshot: true},
+		"nil snapshot": {snapshot: false},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			c, pod := testStatusClient(t, statusConflict())
+			ctx, logs := contextWithLogCapture()
+			var before *corev1.PodStatus
+			if tc.snapshot {
+				before = pod.Status.DeepCopy()
+			}
+
+			result, err := UpdateStatus(ctx, c, pod, before, &pod.Status,
+				func() { pod.Status.Message = "changed" }, ctrl.Result{}, nil)
+
+			g.Expect(err).NotTo(gomega.HaveOccurred())
+			g.Expect(result).To(gomega.Equal(ctrl.Result{RequeueAfter: RequeueNextPass}))
+			g.Expect(*logs).To(gomega.ConsistOf(gomega.And(
+				gomega.ContainSubstring(`"msg"="status update conflict, requeueing"`),
+				gomega.ContainSubstring(`"level"=0`))))
+			g.Expect(*logs).NotTo(gomega.ContainElement(gomega.ContainSubstring("unable to update status")))
+		})
+	}
+}
+
+// A pass that asked for an earlier requeue than RequeueNextPass keeps it
+// under a conflict; a later one is brought forward to RequeueNextPass.
+func TestUpdateStatus_ConflictKeepsShorterRequeue(t *testing.T) {
+	cases := map[string]struct {
+		pass, want ctrl.Result
+	}{
+		"shorter than RequeueNextPass": {
+			pass: ctrl.Result{RequeueAfter: 500 * time.Millisecond},
+			want: ctrl.Result{RequeueAfter: 500 * time.Millisecond},
+		},
+		"longer than RequeueNextPass": {
+			pass: ctrl.Result{RequeueAfter: 5 * time.Minute},
+			want: ctrl.Result{RequeueAfter: RequeueNextPass},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			c, pod := testStatusClient(t, statusConflict())
+
+			result, err := UpdateStatus(context.Background(), c, pod, nil, &pod.Status,
+				func() {}, tc.pass, nil)
+
+			g.Expect(err).NotTo(gomega.HaveOccurred())
+			g.Expect(result).To(gomega.Equal(tc.want))
+		})
+	}
+}
+
+// A real reconcile failure keeps its error backoff under a conflicting
+// write: UpdateStatus returns the reconcile error alone, not joined with the
+// conflict, and drops the pass's requeue. The lost write leaves the same Info
+// line as without a reconcile error and no error line.
+func TestUpdateStatus_ConflictWithReconcileErrorReturnsOnlyIt(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	reconcileErr := fmt.Errorf("sub-reconciler failed")
+	c, pod := testStatusClient(t, statusConflict())
+	ctx, logs := contextWithLogCapture()
+
+	result, err := UpdateStatus(ctx, c, pod, nil, &pod.Status,
+		func() {}, ctrl.Result{RequeueAfter: 5 * time.Minute}, reconcileErr)
+
+	g.Expect(result).To(gomega.Equal(ctrl.Result{}))
+	g.Expect(err).To(gomega.BeIdenticalTo(reconcileErr))
+	g.Expect(*logs).To(gomega.ConsistOf(gomega.ContainSubstring(`"msg"="status update conflict, requeueing"`)))
+	g.Expect(*logs).NotTo(gomega.ContainElement(gomega.ContainSubstring("unable to update status")))
+}
+
+// Without an interceptor, the fake client's optimistic lock rejects a status
+// write computed from a stale read with a real 409. The stale status is not
+// persisted, and the pass requeues without an error.
+func TestUpdateStatus_StaleResourceVersionConflicts(t *testing.T) {
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+	c, pod := testStatusClient(t, nil)
+
+	stale := &corev1.Pod{}
+	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(pod), stale)).To(gomega.Succeed())
+	newer := stale.DeepCopy()
+	newer.Labels = map[string]string{"changed": "true"}
+	g.Expect(c.Update(ctx, newer)).To(gomega.Succeed())
+
+	result, err := UpdateStatus(ctx, c, stale, nil, &stale.Status,
+		func() { stale.Status.Message = "stale" }, ctrl.Result{}, nil)
+
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(result).To(gomega.Equal(ctrl.Result{RequeueAfter: RequeueNextPass}))
+	fetched := &corev1.Pod{}
+	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(pod), fetched)).To(gomega.Succeed())
+	g.Expect(fetched.Status.Message).To(gomega.BeEmpty(), "the stale status must not be persisted")
+}
+
+// Any failed write other than a 409 keeps the error path: an error-level log
+// line, an empty result and the wrapped API error.
+func TestUpdateStatus_NonConflictErrorKeepsErrorPath(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	c, pod := testStatusClient(t, apierrors.NewInternalError(errors.New("etcdserver: request timed out")))
+	ctx, logs := contextWithLogCapture()
+
+	result, err := UpdateStatus(ctx, c, pod, nil, &pod.Status,
+		func() {}, ctrl.Result{RequeueAfter: 5}, nil)
+
+	g.Expect(result).To(gomega.Equal(ctrl.Result{}))
+	g.Expect(apierrors.IsInternalError(err)).To(gomega.BeTrue())
+	g.Expect(err.Error()).To(gomega.ContainSubstring("updating status:"))
+	g.Expect(*logs).To(gomega.ContainElement(gomega.ContainSubstring(`"msg"="unable to update status"`)))
 }

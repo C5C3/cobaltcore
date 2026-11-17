@@ -10,6 +10,7 @@ import (
 	"fmt"
 
 	"k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -59,6 +60,15 @@ func SetAggregateReady(conds *[]metav1.Condition, observedGeneration int64, subC
 // When both reconcileErr and the status update fail, both errors are
 // preserved via errors.Join so that the original reconcile failure is visible
 // in controller-runtime logs.
+//
+// A 409 Conflict on the write is the exception. The object changed after this
+// pass read it, so the computed status rests on a stale read: UpdateStatus
+// drops it and logs one Info line instead of an error. With a nil reconcileErr
+// it returns the shorter of result and RequeueNextPass and a nil error, so the
+// next pass recomputes the status from a fresh read; the requeue is needed
+// because watch.CRUpdatePredicate filters the CR's status-only updates. With a
+// non-nil reconcileErr it returns an empty result and reconcileErr alone, so
+// the real failure keeps its error backoff.
 func UpdateStatus[S any](
 	ctx context.Context,
 	c client.Client,
@@ -75,8 +85,23 @@ func UpdateStatus[S any](
 	}
 
 	if err := c.Status().Update(ctx, obj); err != nil {
+		if apierrors.IsConflict(err) {
+			logStatusWriteConflict(ctx, err)
+			if reconcileErr != nil {
+				return ctrl.Result{}, reconcileErr
+			}
+			return ShortestRequeue(result, ctrl.Result{RequeueAfter: RequeueNextPass}), nil
+		}
 		log.FromContext(ctx).Error(err, "unable to update status")
 		return ctrl.Result{}, errors.Join(reconcileErr, fmt.Errorf("updating status: %w", err))
 	}
 	return result, reconcileErr
+}
+
+// logStatusWriteConflict logs err, a 409 Conflict a status write returned
+// because the object changed after this pass read it, as the Info line
+// "status update conflict, requeueing", so the lost write stays visible
+// without an error-level line.
+func logStatusWriteConflict(ctx context.Context, err error) {
+	log.FromContext(ctx).Info("status update conflict, requeueing", "error", err)
 }
