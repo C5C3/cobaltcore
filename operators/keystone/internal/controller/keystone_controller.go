@@ -541,9 +541,9 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	// A suspended CR ends the pass here. The deletion branch above still runs
 	// its cleanup; nothing below runs until spec.suspend is cleared.
-	if stop, err := commonreconcile.GateSuspend(ctx, r.Client, r.Recorder, &keystone,
+	if stop, gateResult, err := commonreconcile.GateSuspend(ctx, r.Client, r.Recorder, &keystone,
 		&keystone.Status.Conditions, keystone.Spec.Suspend); stop || err != nil {
-		return ctrl.Result{}, err
+		return gateResult, err
 	}
 
 	// Resolve the client every child object of this CR is read and written

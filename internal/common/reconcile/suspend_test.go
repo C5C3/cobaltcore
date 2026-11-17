@@ -7,6 +7,7 @@ package reconcile
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,9 +16,9 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -103,10 +104,11 @@ func TestGateSuspend_SuspendSetsConditionOnce(t *testing.T) {
 	rec := record.NewFakeRecorder(10)
 	var conds []metav1.Condition
 
-	stop, err := GateSuspend(context.Background(), c, rec, pod, &conds, true)
+	stop, result, err := GateSuspend(context.Background(), c, rec, pod, &conds, true)
 
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	g.Expect(stop).To(gomega.BeTrue())
+	g.Expect(result).To(gomega.Equal(ctrl.Result{}))
 	g.Expect(calls.statusWrites).To(gomega.Equal(1))
 	cond := meta.FindStatusCondition(conds, ConditionTypeSuspended)
 	g.Expect(cond).NotTo(gomega.BeNil())
@@ -127,7 +129,7 @@ func TestGateSuspend_SuspendFlipsFalseCondition(t *testing.T) {
 	rec := record.NewFakeRecorder(10)
 	conds := []metav1.Condition{suspendedCondition(metav1.ConditionFalse, suspendTestGeneration, time.Now())}
 
-	stop, err := GateSuspend(context.Background(), c, rec, pod, &conds, true)
+	stop, _, err := GateSuspend(context.Background(), c, rec, pod, &conds, true)
 
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	g.Expect(stop).To(gomega.BeTrue())
@@ -142,10 +144,11 @@ func TestGateSuspend_SteadySuspendWritesNothing(t *testing.T) {
 	rec := record.NewFakeRecorder(10)
 	conds := []metav1.Condition{suspendedCondition(metav1.ConditionTrue, suspendTestGeneration, time.Now())}
 
-	stop, err := GateSuspend(context.Background(), c, rec, pod, &conds, true)
+	stop, result, err := GateSuspend(context.Background(), c, rec, pod, &conds, true)
 
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	g.Expect(stop).To(gomega.BeTrue())
+	g.Expect(result).To(gomega.Equal(ctrl.Result{}))
 	g.Expect(calls.all).To(gomega.BeZero())
 	g.Expect(drainEvents(rec)).To(gomega.BeEmpty())
 }
@@ -159,7 +162,7 @@ func TestGateSuspend_SuspendFollowsNewGeneration(t *testing.T) {
 	since := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	conds := []metav1.Condition{suspendedCondition(metav1.ConditionTrue, suspendTestGeneration-1, since)}
 
-	stop, err := GateSuspend(context.Background(), c, rec, pod, &conds, true)
+	stop, _, err := GateSuspend(context.Background(), c, rec, pod, &conds, true)
 
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	g.Expect(stop).To(gomega.BeTrue())
@@ -176,10 +179,11 @@ func TestGateSuspend_UnsuspendedWithoutConditionMakesNoCall(t *testing.T) {
 	rec := record.NewFakeRecorder(10)
 	var conds []metav1.Condition
 
-	stop, err := GateSuspend(context.Background(), c, rec, pod, &conds, false)
+	stop, result, err := GateSuspend(context.Background(), c, rec, pod, &conds, false)
 
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	g.Expect(stop).To(gomega.BeFalse())
+	g.Expect(result).To(gomega.Equal(ctrl.Result{}))
 	g.Expect(calls.all).To(gomega.BeZero())
 	g.Expect(conds).To(gomega.BeNil())
 	g.Expect(drainEvents(rec)).To(gomega.BeEmpty())
@@ -193,10 +197,11 @@ func TestGateSuspend_ResumeRemovesCondition(t *testing.T) {
 			rec := record.NewFakeRecorder(10)
 			conds := []metav1.Condition{suspendedCondition(status, suspendTestGeneration, time.Now())}
 
-			stop, err := GateSuspend(context.Background(), c, rec, pod, &conds, false)
+			stop, result, err := GateSuspend(context.Background(), c, rec, pod, &conds, false)
 
 			g.Expect(err).NotTo(gomega.HaveOccurred())
 			g.Expect(stop).To(gomega.BeFalse())
+			g.Expect(result).To(gomega.Equal(ctrl.Result{}))
 			g.Expect(calls.statusWrites).To(gomega.Equal(1))
 			g.Expect(meta.FindStatusCondition(conds, ConditionTypeSuspended)).To(gomega.BeNil())
 			g.Expect(drainEvents(rec)).To(gomega.ConsistOf(
@@ -205,8 +210,48 @@ func TestGateSuspend_ResumeRemovesCondition(t *testing.T) {
 	}
 }
 
-// A failed status write stops the pass with a wrapped error that keeps the
-// API error class, and emits no event for the transition it did not persist.
+// A status write that loses to a concurrent write stops the pass and
+// requeues it after RequeueNextPass without an error: a suspended resource is
+// never requeued otherwise, so its Suspended condition would never be
+// written. The transition was not persisted, so the gate neither logs nor
+// announces it.
+func TestGateSuspend_StatusWriteConflictRequeuesWithoutError(t *testing.T) {
+	cases := map[string]struct {
+		suspended bool
+		conds     []metav1.Condition
+	}{
+		"suspend": {suspended: true},
+		"resume": {
+			suspended: false,
+			conds:     []metav1.Condition{suspendedCondition(metav1.ConditionTrue, suspendTestGeneration, time.Now())},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			c, pod, calls := suspendTestClient(t, statusConflict())
+			rec := record.NewFakeRecorder(10)
+			ctx, logs := contextWithLogCapture()
+			conds := tc.conds
+
+			stop, result, err := GateSuspend(ctx, c, rec, pod, &conds, tc.suspended)
+
+			g.Expect(stop).To(gomega.BeTrue())
+			g.Expect(result).To(gomega.Equal(ctrl.Result{RequeueAfter: RequeueNextPass}))
+			g.Expect(err).NotTo(gomega.HaveOccurred())
+			g.Expect(calls.statusWrites).To(gomega.Equal(1))
+			g.Expect(drainEvents(rec)).To(gomega.BeEmpty())
+			joined := strings.Join(*logs, "\n")
+			g.Expect(joined).To(gomega.ContainSubstring("status update conflict, requeueing"))
+			g.Expect(joined).NotTo(gomega.ContainSubstring("Reconciliation suspended"))
+			g.Expect(joined).NotTo(gomega.ContainSubstring("Reconciliation resumed"))
+		})
+	}
+}
+
+// Any other failed status write stops the pass with an empty result and a
+// wrapped error that keeps the API error class, so the caller backs off, and
+// emits no event for the transition it did not persist.
 func TestGateSuspend_StatusWriteFailureStopsWithoutEvent(t *testing.T) {
 	cases := map[string]struct {
 		suspended bool
@@ -221,19 +266,20 @@ func TestGateSuspend_StatusWriteFailureStopsWithoutEvent(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			g := gomega.NewWithT(t)
-			conflict := apierrors.NewConflict(schema.GroupResource{Resource: "pods"}, "p", errors.New("stale"))
-			c, pod, calls := suspendTestClient(t, conflict)
+			internalErr := apierrors.NewInternalError(errors.New("etcdserver: request timed out"))
+			c, pod, calls := suspendTestClient(t, internalErr)
 			rec := record.NewFakeRecorder(10)
 			conds := tc.conds
 
-			stop, err := GateSuspend(context.Background(), c, rec, pod, &conds, tc.suspended)
+			stop, result, err := GateSuspend(context.Background(), c, rec, pod, &conds, tc.suspended)
 
 			g.Expect(stop).To(gomega.BeTrue())
+			g.Expect(result).To(gomega.Equal(ctrl.Result{}))
 			g.Expect(err).To(gomega.HaveOccurred())
 			g.Expect(err.Error()).To(gomega.HavePrefix("updating status for the Suspended condition:"))
 			var statusErr *apierrors.StatusError
 			g.Expect(errors.As(err, &statusErr)).To(gomega.BeTrue())
-			g.Expect(apierrors.IsConflict(statusErr)).To(gomega.BeTrue())
+			g.Expect(apierrors.IsInternalError(statusErr)).To(gomega.BeTrue())
 			g.Expect(calls.statusWrites).To(gomega.Equal(1))
 			g.Expect(drainEvents(rec)).To(gomega.BeEmpty())
 		})
@@ -258,7 +304,7 @@ func TestGateSuspend_NilRecorderStillWrites(t *testing.T) {
 			conds := tc.conds
 
 			g.Expect(func() {
-				_, err := GateSuspend(context.Background(), c, nil, pod, &conds, tc.suspended)
+				_, _, err := GateSuspend(context.Background(), c, nil, pod, &conds, tc.suspended)
 				g.Expect(err).NotTo(gomega.HaveOccurred())
 			}).NotTo(gomega.Panic())
 			g.Expect(calls.statusWrites).To(gomega.Equal(1))
@@ -296,7 +342,7 @@ func TestGateSuspend_LeavesOtherConditionsAlone(t *testing.T) {
 			c, pod, _ := suspendTestClient(t, nil)
 			conds := append([]metav1.Condition(nil), tc.conds...)
 
-			_, err := GateSuspend(context.Background(), c, record.NewFakeRecorder(10), pod, &conds, tc.suspended)
+			_, _, err := GateSuspend(context.Background(), c, record.NewFakeRecorder(10), pod, &conds, tc.suspended)
 
 			g.Expect(err).NotTo(gomega.HaveOccurred())
 			for _, want := range others {

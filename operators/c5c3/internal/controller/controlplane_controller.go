@@ -583,9 +583,9 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	// A suspended CR ends the pass here. The deletion branch above still runs
 	// its cleanup; nothing below runs until spec.suspend is cleared.
-	if stop, err := commonreconcile.GateSuspend(ctx, r.Client, r.Recorder, &cp,
+	if stop, gateResult, err := commonreconcile.GateSuspend(ctx, r.Client, r.Recorder, &cp,
 		&cp.Status.Conditions, cp.Spec.Suspend); stop || err != nil {
-		return ctrl.Result{}, err
+		return gateResult, err
 	}
 
 	// Defense-in-depth for the one-ControlPlane-per-namespace contract

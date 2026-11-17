@@ -313,9 +313,9 @@ func (r *OVNCentralReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	// A suspended CR ends the pass here. The deletion branch above still runs
 	// its cleanup; nothing below runs until spec.suspend is cleared.
-	if stop, err := commonreconcile.GateSuspend(ctx, r.Client, r.Recorder, &cr,
+	if stop, gateResult, err := commonreconcile.GateSuspend(ctx, r.Client, r.Recorder, &cr,
 		&cr.Status.Conditions, cr.Spec.Suspend); stop || err != nil {
-		return ctrl.Result{}, err
+		return gateResult, err
 	}
 
 	// Resolve the client every child object of this CR is read and written with.
