@@ -34,6 +34,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
 )
@@ -232,6 +233,34 @@ func TestReconcile_SuspendedCRTouchesNothing(t *testing.T) {
 	rec := r.Recorder.(*record.FakeRecorder)
 	g.Expect(rec.Events).To(Receive(ContainSubstring(commonreconcile.ReasonReconciliationSuspended)))
 	g.Expect(rec.Events).NotTo(Receive(), "exactly one event is emitted")
+}
+
+// TestReconcile_SuspendedCRStatusConflictRequeues pins that Reconcile returns
+// the suspend gate's result: a Suspended condition write that loses to a
+// concurrent write requeues the pass after RequeueNextPass without an error,
+// and the requeued pass writes the condition. Nothing else requeues a
+// suspended CR.
+func TestReconcile_SuspendedCRStatusConflictRequeues(t *testing.T) {
+	g := NewGomegaWithT(t)
+	h := testHorizon()
+	h.Spec.Suspend = true
+	r := newTestReconciler(testScheme(), h)
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), testutil.ConflictFirstStatusUpdate())
+	ctx := context.Background()
+
+	res, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: horizonKey})
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
+	g.Expect(conditions.GetCondition(getHorizon(t, r).Status.Conditions, commonreconcile.ConditionTypeSuspended)).To(BeNil())
+
+	res, err = r.Reconcile(ctx, ctrl.Request{NamespacedName: horizonKey})
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{}))
+	suspended := conditions.GetCondition(getHorizon(t, r).Status.Conditions, commonreconcile.ConditionTypeSuspended)
+	g.Expect(suspended).NotTo(BeNil())
+	g.Expect(suspended.Status).To(Equal(metav1.ConditionTrue))
 }
 
 // TestReconcile_ResumedCRDropsSuspendedCondition pins the resume path: a CR

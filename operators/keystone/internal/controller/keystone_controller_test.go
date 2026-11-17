@@ -2170,6 +2170,38 @@ func TestReconcile_SuspendedCRTouchesNothing(t *testing.T) {
 		ConsistOf(commonreconcile.ReasonReconciliationSuspended))
 }
 
+// TestReconcile_SuspendedCRStatusConflictRequeues pins that Reconcile
+// returns the suspend gate's result: a Suspended condition write that loses to
+// a concurrent write requeues the pass after RequeueNextPass without an error,
+// and the requeued pass writes the condition. Nothing else requeues a
+// suspended CR.
+func TestReconcile_SuspendedCRStatusConflictRequeues(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	ks.Spec.Suspend = true
+	r := newTestReconciler(ks)
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), testutil.ConflictFirstStatusUpdate())
+	ctx := context.Background()
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}}
+
+	result, err := r.Reconcile(ctx, req)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
+	var updated keystonev1alpha1.Keystone
+	g.Expect(r.Get(ctx, req.NamespacedName, &updated)).To(Succeed())
+	g.Expect(meta.FindStatusCondition(updated.Status.Conditions, commonreconcile.ConditionTypeSuspended)).To(BeNil())
+
+	result, err = r.Reconcile(ctx, req)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{}))
+	g.Expect(r.Get(ctx, req.NamespacedName, &updated)).To(Succeed())
+	suspended := meta.FindStatusCondition(updated.Status.Conditions, commonreconcile.ConditionTypeSuspended)
+	g.Expect(suspended).NotTo(BeNil())
+	g.Expect(suspended.Status).To(Equal(metav1.ConditionTrue))
+}
+
 // TestReconcile_ResumedCRDropsSuspendedCondition pins the resume path: a CR
 // whose spec.suspend was cleared loses the Suspended condition left by the
 // suspended passes, and the same pass goes on to install the finalizer.

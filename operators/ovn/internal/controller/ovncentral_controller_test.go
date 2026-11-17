@@ -29,6 +29,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	mctestutil "github.com/c5c3/cobaltcore/internal/common/testutil/multicluster"
 	"github.com/c5c3/cobaltcore/internal/common/testutil/simulators"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
@@ -191,6 +192,34 @@ func TestReconcile_SuspendedCRTouchesNothing(t *testing.T) {
 
 	g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).To(ConsistOf(
 		ContainSubstring(commonreconcile.ReasonReconciliationSuspended)))
+}
+
+// TestReconcile_SuspendedCRStatusConflictRequeues pins that Reconcile
+// returns the suspend gate's result: a Suspended condition write that loses to
+// a concurrent write requeues the pass after RequeueNextPass without an error,
+// and the requeued pass writes the condition. Nothing else requeues a
+// suspended CR.
+func TestReconcile_SuspendedCRStatusConflictRequeues(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cr := testOVNCentral()
+	cr.Spec.Suspend = true
+	r := newTestOVNCentralReconciler(t, cr)
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), testutil.ConflictFirstStatusUpdate())
+	ctx := context.Background()
+
+	res, err := r.Reconcile(ctx, ovnCentralRequest)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
+	g.Expect(ovnCentralCondition(getOVNCentral(t, r.Client, testOVNCentralName), commonreconcile.ConditionTypeSuspended)).To(BeNil())
+
+	res, err = r.Reconcile(ctx, ovnCentralRequest)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{}))
+	suspended := ovnCentralCondition(getOVNCentral(t, r.Client, testOVNCentralName), commonreconcile.ConditionTypeSuspended)
+	g.Expect(suspended).NotTo(BeNil())
+	g.Expect(suspended.Status).To(Equal(metav1.ConditionTrue))
 }
 
 // TestReconcile_ResumedCRDropsSuspendedCondition pins the resume path: a CR

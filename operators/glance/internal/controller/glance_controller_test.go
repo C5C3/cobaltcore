@@ -30,6 +30,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
 )
@@ -265,6 +266,34 @@ func TestReconcile_SuspendedCRTouchesNothing(t *testing.T) {
 	g.Expect(cronJobs.Items).To(BeEmpty())
 	g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).To(ConsistOf(
 		ContainSubstring(commonreconcile.ReasonReconciliationSuspended)))
+}
+
+// TestReconcile_SuspendedCRStatusConflictRequeues pins that Reconcile
+// returns the suspend gate's result: a Suspended condition write that loses to
+// a concurrent write requeues the pass after RequeueNextPass without an error,
+// and the requeued pass writes the condition. Nothing else requeues a
+// suspended CR.
+func TestReconcile_SuspendedCRStatusConflictRequeues(t *testing.T) {
+	g := NewGomegaWithT(t)
+	glance := testGlance()
+	glance.Spec.Suspend = true
+	r := newGlanceTestReconciler(glance)
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), testutil.ConflictFirstStatusUpdate())
+	ctx := context.Background()
+
+	res, err := r.Reconcile(ctx, glanceRequest)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
+	g.Expect(conditions.GetCondition(getGlance(t, r.Client, "test-glance").Status.Conditions, commonreconcile.ConditionTypeSuspended)).To(BeNil())
+
+	res, err = r.Reconcile(ctx, glanceRequest)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{}))
+	suspended := conditions.GetCondition(getGlance(t, r.Client, "test-glance").Status.Conditions, commonreconcile.ConditionTypeSuspended)
+	g.Expect(suspended).NotTo(BeNil())
+	g.Expect(suspended.Status).To(Equal(metav1.ConditionTrue))
 }
 
 // TestReconcile_ResumedCRDropsSuspendedCondition pins the resume path: a CR

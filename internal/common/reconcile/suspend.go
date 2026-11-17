@@ -9,9 +9,11 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -48,29 +50,38 @@ const (
 // to their write would be lost wherever the snapshot follows the gate. The
 // gate touches no other condition, not status.observedGeneration and no
 // finalizer. A Normal event is emitted only on a transition, after its write
-// succeeded; a nil recorder skips it. A failed write returns stop=true and
-// the wrapped error, so the caller backs off.
+// succeeded; a nil recorder skips it.
+//
+// Every path whose write succeeds or is skipped returns an empty result. A
+// 409 Conflict on the write returns stop=true, a result that requeues after
+// RequeueNextPass and a nil error, and logs only "status update conflict,
+// requeueing": the transition was not persisted, so it is neither logged nor
+// announced, and the next pass sees it again. The requeue is needed because a
+// suspended resource is never requeued otherwise. Any other failed write
+// returns stop=true, an empty result and the wrapped error, so the caller
+// backs off. A caller that stops returns result and err unchanged.
 func GateSuspend(ctx context.Context, c client.Client, recorder record.EventRecorder,
 	obj client.Object, conds *[]metav1.Condition, suspended bool,
-) (stop bool, err error) {
+) (stop bool, result ctrl.Result, err error) {
 	current := conditions.GetCondition(*conds, ConditionTypeSuspended)
 
 	if !suspended {
 		if current == nil {
-			return false, nil
+			return false, ctrl.Result{}, nil
 		}
 		meta.RemoveStatusCondition(conds, ConditionTypeSuspended)
 		if err := c.Status().Update(ctx, obj); err != nil {
-			return true, suspendWriteError(err)
+			result, err = suspendWriteFailure(ctx, err)
+			return true, result, err
 		}
 		log.FromContext(ctx).Info("Reconciliation resumed", "generation", obj.GetGeneration())
 		emitNormal(recorder, obj, ReasonReconciliationResumed, resumedEventMessage)
-		return false, nil
+		return false, ctrl.Result{}, nil
 	}
 
 	transition := current == nil || current.Status != metav1.ConditionTrue
 	if !transition && current.ObservedGeneration == obj.GetGeneration() {
-		return true, nil
+		return true, ctrl.Result{}, nil
 	}
 	conditions.SetCondition(conds, metav1.Condition{
 		Type:               ConditionTypeSuspended,
@@ -80,17 +91,26 @@ func GateSuspend(ctx context.Context, c client.Client, recorder record.EventReco
 		Message:            suspendedConditionMessage,
 	})
 	if err := c.Status().Update(ctx, obj); err != nil {
-		return true, suspendWriteError(err)
+		result, err = suspendWriteFailure(ctx, err)
+		return true, result, err
 	}
 	if transition {
 		log.FromContext(ctx).Info("Reconciliation suspended", "generation", obj.GetGeneration())
 		emitNormal(recorder, obj, ReasonReconciliationSuspended, suspendedEventMessage)
 	}
-	return true, nil
+	return true, ctrl.Result{}, nil
 }
 
-func suspendWriteError(err error) error {
-	return fmt.Errorf("updating status for the %s condition: %w", ConditionTypeSuspended, err)
+// suspendWriteFailure maps a failed write of the Suspended condition to the
+// gate's result and error: a 409 Conflict is logged at Info level and requeues
+// after RequeueNextPass without an error, any other error is wrapped and comes
+// with an empty result.
+func suspendWriteFailure(ctx context.Context, err error) (ctrl.Result, error) {
+	if apierrors.IsConflict(err) {
+		logStatusWriteConflict(ctx, err)
+		return ctrl.Result{RequeueAfter: RequeueNextPass}, nil
+	}
+	return ctrl.Result{}, fmt.Errorf("updating status for the %s condition: %w", ConditionTypeSuspended, err)
 }
 
 func emitNormal(recorder record.EventRecorder, obj client.Object, reason, message string) {

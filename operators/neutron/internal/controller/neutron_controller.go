@@ -425,9 +425,9 @@ func (r *NeutronReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	// A suspended CR ends the pass here. The deletion branch above still runs
 	// its cleanup; nothing below runs until spec.suspend is cleared.
-	if stop, err := commonreconcile.GateSuspend(ctx, r.Client, r.Recorder, &neutron,
+	if stop, gateResult, err := commonreconcile.GateSuspend(ctx, r.Client, r.Recorder, &neutron,
 		&neutron.Status.Conditions, neutron.Spec.Suspend); stop || err != nil {
-		return ctrl.Result{}, err
+		return gateResult, err
 	}
 
 	// Resolve the client every child object of this CR is read and written with.

@@ -27,6 +27,7 @@ import (
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
 	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
@@ -1154,6 +1155,44 @@ func TestReconcile_SuspendedControlPlaneTouchesNothing(t *testing.T) {
 	g.Expect(suspended.Reason).To(Equal(commonreconcile.ReasonReconciliationSuspended))
 	g.Expect(controllerutil.ContainsFinalizer(&got, controlPlaneORCFinalizer)).To(BeFalse())
 	g.Expect(conditions.GetCondition(got.Status.Conditions, conditionTypeReady)).To(BeNil())
+}
+
+// TestReconcile_SuspendedControlPlaneStatusConflictRequeues pins that
+// Reconcile returns the suspend gate's result: a Suspended condition write
+// that loses to a concurrent write requeues the pass after RequeueNextPass
+// without an error, and the requeued pass writes the condition. Nothing else
+// requeues a suspended ControlPlane.
+func TestReconcile_SuspendedControlPlaneStatusConflictRequeues(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := controllerTestScheme(t)
+	cp := duplicateGuardControlPlane("alpha", "default", "uid-alpha", time.Now())
+	cp.Spec.Suspend = true
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp).
+		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}).
+		WithInterceptorFuncs(testutil.ConflictFirstStatusUpdate()).
+		Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+	ctx := context.Background()
+	key := types.NamespacedName{Namespace: "default", Name: "alpha"}
+
+	res, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
+	var got c5c3v1alpha1.ControlPlane
+	g.Expect(c.Get(ctx, key, &got)).To(Succeed())
+	g.Expect(conditions.GetCondition(got.Status.Conditions, commonreconcile.ConditionTypeSuspended)).To(BeNil())
+
+	res, err = r.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{}))
+	g.Expect(c.Get(ctx, key, &got)).To(Succeed())
+	suspended := conditions.GetCondition(got.Status.Conditions, commonreconcile.ConditionTypeSuspended)
+	g.Expect(suspended).NotTo(BeNil())
+	g.Expect(suspended.Status).To(Equal(metav1.ConditionTrue))
 }
 
 // TestReconcile_SuspendedDuplicateControlPlaneReportsSuspended pins that the
