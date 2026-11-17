@@ -20,6 +20,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../lib/assertions.sh"
 # shellcheck source=tests/lib/build_tools.sh
 source "$SCRIPT_DIR/../lib/build_tools.sh"
+# shellcheck source=tests/lib/castellan.sh
+source "$SCRIPT_DIR/../lib/castellan.sh"
 # shellcheck source=tests/lib/ceph_bindings.sh
 source "$SCRIPT_DIR/../lib/ceph_bindings.sh"
 # shellcheck source=tests/lib/uwsgi.sh
@@ -839,6 +841,15 @@ sys.exit(0 if driver.rados is not None and driver.rbd is not None
     "$output" "error calling conf_read_file"
 }
 
+# --- Test 17: [barbican] timeout bounds castellan's session ---
+test_castellan_barbican_session_bounded() {
+  echo "Test: [barbican] timeout bounds the session castellan reads keys through"
+  # The cinder-operator renders [barbican] timeout = 60 while spec.keyManager
+  # is set; cinder-volume creates and reads the key of an encrypted volume
+  # through castellan.
+  assert_castellan_barbican_session_bounded
+}
+
 # --- Run all tests ---
 echo "=== cinder container verification tests ==="
 echo "Image: $IMAGE"
@@ -882,6 +893,8 @@ echo ""
 test_uwsgi_runnable
 echo ""
 test_state_directories
+echo ""
+test_castellan_barbican_session_bounded
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 

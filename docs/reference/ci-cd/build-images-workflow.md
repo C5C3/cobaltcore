@@ -86,6 +86,8 @@ because it rebuilds those images (the `ovn` and `libvirt` filters name it as wel
 static-image check the hvo and kna verify scripts source, which the `hvo` and `kna`
 filters name. They name `tests/lib/pymemcache.sh` as well, the pymemcache bound check
 the keystone and nova verify scripts source, which the `svc_keystone` and `svc_nova`
+filters name, and `tests/lib/castellan.sh`, the castellan session bound check the nova,
+nova-compute and cinder verify scripts source, which the `svc_nova` and `svc_cinder`
 filters name. They name `tests/lib/uwsgi.sh`, and so does the `base` filter: the
 uWSGI import and graceful-shutdown checks that the verify scripts of keystone,
 glance, placement, barbican, neutron, cinder, nova and horizon source.
