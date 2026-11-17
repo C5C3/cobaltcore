@@ -236,16 +236,17 @@ kubectl -n brownfield get mariadbs,memcacheds,keystones,deployments
 Finally, verify that the generated credential authenticates against your
 installation. The Secret contains a credential-bearing `clouds.yaml`; do not
 print it. This command writes it to a private temporary file, runs the
-OpenStack client, then removes the file when the shell exits:
+OpenStack client, then removes the file when the subshell exits:
 
 ```bash
-set -euo pipefail
-umask 077
-CLOUDS_FILE=$(mktemp)
-trap 'rm -f "$CLOUDS_FILE"' EXIT
-kubectl -n brownfield get secret k-orc-clouds-yaml \
-  -o jsonpath='{.data.clouds\.yaml}' | base64 -d > "$CLOUDS_FILE"
-OS_CLIENT_CONFIG_FILE="$CLOUDS_FILE" openstack --os-cloud admin catalog list
+(
+  set -euo pipefail
+  CLOUDS_FILE=$(mktemp)
+  trap 'rm -f "$CLOUDS_FILE"' EXIT
+  kubectl -n brownfield get secret k-orc-clouds-yaml \
+    -o jsonpath='{.data.clouds\.yaml}' | base64 -d > "$CLOUDS_FILE"
+  OS_CLIENT_CONFIG_FILE="$CLOUDS_FILE" openstack --os-cloud admin catalog list
+)
 ```
 
 `catalog list` verifies authentication without printing the token. The e2e suite
@@ -312,13 +313,14 @@ consumer Secret with the same name. Do not print this Secret; use a private
 temporary file to test the cloud configuration:
 
 ```bash
-set -euo pipefail
-umask 077
-CLOUDS_FILE=$(mktemp)
-trap 'rm -f "$CLOUDS_FILE"' EXIT
-kubectl -n brownfield get secret nova-credentials \
-  -o jsonpath='{.data.clouds\.yaml}' | base64 -d > "$CLOUDS_FILE"
-OS_CLIENT_CONFIG_FILE="$CLOUDS_FILE" openstack --os-cloud admin catalog list
+(
+  set -euo pipefail
+  CLOUDS_FILE=$(mktemp)
+  trap 'rm -f "$CLOUDS_FILE"' EXIT
+  kubectl -n brownfield get secret nova-credentials \
+    -o jsonpath='{.data.clouds\.yaml}' | base64 -d > "$CLOUDS_FILE"
+  OS_CLIENT_CONFIG_FILE="$CLOUDS_FILE" openstack --os-cloud admin catalog list
+)
 ```
 
 The fixture uses the cloud name `admin`; use the cloud name configured in your
