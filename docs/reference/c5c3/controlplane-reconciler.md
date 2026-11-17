@@ -381,8 +381,14 @@ One pass, in order:
 3. Ends the pass while `spec.suspend` is `true`. `GateSuspend` in
    `internal/common/reconcile/suspend.go` sets `Suspended=True` with reason
    `ReconciliationSuspended` and returns an empty result, so nothing requeues
-   the ControlPlane. `Ready` and `status.observedGeneration` keep the values of
-   the last full pass, and a spec change made meanwhile shows as
+   the ControlPlane. The exception is a failed status write by the gate, on
+   suspend or on resume. On a 409 Conflict the gate logs the Info line
+   `status update conflict, requeueing` and requeues the pass after
+   `RequeueNextPass` (1 s), which retries the write. On any other failure it
+   returns the wrapped error, and controller-runtime retries the pass with its
+   error backoff. `Ready` and
+   `status.observedGeneration` keep the values of the last full pass, and a
+   spec change made meanwhile shows as
    `status.observedGeneration` below `metadata.generation`. Nothing is
    projected and no finalizer is added. A suspended duplicate reports
    `Suspended`, because the duplicate guard runs after the gate. The children
@@ -585,8 +591,14 @@ controller-runtime logs:
 | --- | --- | --- |
 | nil | succeeds | nil |
 | non-nil | succeeds | reconcileErr (unchanged) |
-| nil | fails | `errors.Join(nil, fmt.Errorf("updating status: %w", statusErr))` |
-| non-nil | fails | `errors.Join(reconcileErr, fmt.Errorf("updating status: %w", statusErr))` |
+| nil | fails (not 409) | `errors.Join(nil, fmt.Errorf("updating status: %w", statusErr))` |
+| non-nil | fails (not 409) | `errors.Join(reconcileErr, fmt.Errorf("updating status: %w", statusErr))` |
+| nil | 409 Conflict | nil; result is the shorter of the pass's `RequeueAfter` and `RequeueNextPass` (1 s) |
+| non-nil | 409 Conflict | reconcileErr (unchanged) |
+
+On a 409 Conflict, `commonreconcile.UpdateStatus` drops the computed status,
+logs the Info line `status update conflict, requeueing`, and leaves the status
+to the next pass, which reads the ControlPlane again.
 
 Because `ObservedGeneration` is stamped on **every** `updateStatus` call (early
 return or final), a stale status is always distinguishable from a current one.
