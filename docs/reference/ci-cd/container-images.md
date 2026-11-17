@@ -85,6 +85,24 @@ horizon-operator renders the same bound as cache `OPTIONS`;
 names against the image's Django. Upstream status: not reported; #1562 tracks
 the patch.
 
+**Library patch:** the barbican, cinder, glance and nova images, nova-compute
+included, carry the castellan row of `nix/lib/python-env.nix`, which edits the
+castellan of each lock that contains it
+([Nix Image Build](./nix-image-build.md#python-environments-and-locks)).
+castellan registers the keystoneauth session options for `[barbican]` and builds
+the session of every Barbican call without them, so a key read whose Keystone
+or Barbican stops answering waits out the kernel's retransmission limit, about
+15 minutes (#1799). With the patch the session takes `[barbican] timeout`, which
+the nova-operator and the cinder-operator render as `60`, and a timed-out call
+raises `KeyManagerError`. With the option unset the session keeps
+`timeout=None`, so the glance and barbican images, whose operators render no
+`[barbican]`, behave as before. `test_castellan_barbican_session_bounded` in
+`verify_nova.sh`, `verify_nova_compute.sh` and `verify_cinder.sh` runs
+`assert_castellan_barbican_session_bounded` from `tests/lib/castellan.sh`: a key
+read against a server that never answers raises `KeyManagerError` within 5 s
+with `timeout = 1`, and the session is built with `timeout=None` without the
+option. Upstream status: not submitted.
+
 **Library patches:** every service image, nova-compute and tempest included,
 carries `nix/lib/patches/uwsgi-2.0.31-retry-write-poll-on-eintr.patch` and
 `nix/lib/patches/uwsgi-2.0.31-flush-logs-under-threaded-logger-lock.patch`,
