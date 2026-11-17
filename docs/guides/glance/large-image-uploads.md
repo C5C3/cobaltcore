@@ -297,7 +297,7 @@ With the `OS_*` variables exported, push an image large enough to outlive any
 default route timeout. 512 MiB is what the end-to-end suite uses:
 
 ```bash
-dd if=/dev/urandom of=/tmp/large.img bs=1048576 count=512
+dd if=/dev/urandom of=/tmp/large.img bs=1M count=512
 time openstack --insecure image create --disk-format raw --container-format bare \
   --file /tmp/large.img large-image
 openstack --insecure image show large-image -f value -c status -c size
