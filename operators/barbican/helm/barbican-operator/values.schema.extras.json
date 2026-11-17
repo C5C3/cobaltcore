@@ -29,7 +29,7 @@
           "properties": {
             "enabled": {
               "type": "boolean",
-              "description": "Permit TCP/8200 egress so the BarbicanSecretStore controller can reach the OpenBao server of every store it reconciles. Disable when no store uses a non-standard posture",
+              "description": "Permit TCP/8200 egress so the BarbicanSecretStore controller can reach the OpenBao server of every store it reconciles. Disable only when every store uses a non-standard port or an egress proxy covered by another policy",
               "default": true
             }
           }
