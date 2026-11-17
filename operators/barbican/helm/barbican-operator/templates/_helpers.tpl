@@ -13,7 +13,8 @@ OpenBao API egress for the shared NetworkPolicy (operator-library chart hook).
 The BarbicanSecretStore controller dials the OpenBao server of every store it
 reconciles. Brownfield OpenBao servers are user-supplied, so the destination
 cannot be narrowed: the rule is ports-only (TCP 8200) and carries no `to` peer.
-It can be disabled entirely when no store uses a non-standard posture.
+Disable it only when every store uses a non-standard port or an egress proxy
+covered by another policy.
 
 API health-check egress. The operator GETs the Barbican API over its Service,
 and an enforcing CNI judges that connection after the Service DNAT, at the API
