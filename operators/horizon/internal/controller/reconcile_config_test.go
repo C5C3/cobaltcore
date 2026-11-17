@@ -65,6 +65,9 @@ func TestReconcileConfig_RendersLocalSettings(t *testing.T) {
 	// spelling is required by openstack_dashboard's ENDPOINT_TYPE_TO_INTERFACE
 	// map; a bare "internal" fails every catalog lookup.
 	g.Expect(rendered).To(ContainSubstring(`OPENSTACK_ENDPOINT_TYPE = "internalURL"`))
+	// Every session and client the dashboard builds gives up after 30 seconds
+	// on an image with horizon patch 0002, inside the gateway's 60-second route.
+	g.Expect(rendered).To(MatchRegexp(`(?m)^OPENSTACK_REQUEST_TIMEOUT = 30$`))
 	g.Expect(rendered).To(ContainSubstring("COMPRESS_OFFLINE = True"))
 	g.Expect(rendered).To(ContainSubstring(`STATIC_ROOT = "/var/lib/openstack/horizon-static"`))
 	g.Expect(rendered).To(ContainSubstring("DEBUG = False"))
@@ -574,6 +577,49 @@ func TestReconcileConfig_OwnedSettingOverrideReported(t *testing.T) {
 	var cm corev1.ConfigMap
 	g.Expect(r.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: name}, &cm)).To(Succeed())
 	g.Expect(cm.Data["local_settings.py"]).To(ContainSubstring(`STATIC_ROOT = "/custom/static"`))
+}
+
+// TestReconcileConfig_RequestTimeoutOverrideReported pins that the request
+// bound is the user's to raise: an extraConfig value wins the render, and the
+// override is reported rather than rejected. A null value renders None, which
+// the patched dashboard reads as "no bound".
+func TestReconcileConfig_RequestTimeoutOverrideReported(t *testing.T) {
+	for _, tc := range []struct {
+		name, raw, want string
+	}{
+		{"a number", `60`, "OPENSTACK_REQUEST_TIMEOUT = 60"},
+		{"null", `null`, "OPENSTACK_REQUEST_TIMEOUT = None"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			h := testHorizon()
+			h.Spec.ExtraConfig = map[string]apiextensionsv1.JSON{
+				"OPENSTACK_REQUEST_TIMEOUT": {Raw: []byte(tc.raw)},
+			}
+			r := newTestReconciler(testScheme(), h)
+
+			name, err := r.reconcileConfig(context.Background(), r.Client, h)
+			g.Expect(err).NotTo(HaveOccurred())
+
+			var cm corev1.ConfigMap
+			g.Expect(r.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: name}, &cm)).To(Succeed())
+			rendered := cm.Data["local_settings.py"]
+			g.Expect(rendered).To(MatchRegexp(`(?m)^` + tc.want + `$`))
+			g.Expect(rendered).NotTo(ContainSubstring("OPENSTACK_REQUEST_TIMEOUT = 30"))
+
+			cond := conditions.GetCondition(h.Status.Conditions, config.ConditionTypeExtraConfigHealthy)
+			g.Expect(cond).NotTo(BeNil())
+			g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			g.Expect(cond.Message).To(ContainSubstring("OPENSTACK_REQUEST_TIMEOUT"))
+
+			fakeRecorder := r.Recorder.(*record.FakeRecorder)
+			g.Expect(fakeRecorder.Events).To(Receive(And(
+				ContainSubstring("Warning "+config.EventReasonExtraConfigOwnedKeyOverride),
+				ContainSubstring("OPENSTACK_REQUEST_TIMEOUT"),
+			)))
+			g.Expect(fakeRecorder.Events).NotTo(Receive(), "the guard must emit exactly one event")
+		})
+	}
 }
 
 // TestReconcileConfig_NoOwnedOverridesConditionTrue verifies that a CR whose
