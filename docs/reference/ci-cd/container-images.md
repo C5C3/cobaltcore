@@ -1191,6 +1191,23 @@ MariaDB pod failure that followed. No upstream test pins a lost database in
 `tests/container-images/verify_cinder.sh` drives `set_worker` against the built
 image. Upstream status: not yet proposed.
 
+`patches/cinder/2026.1/0009-bound-the-keystone-session-of-the-quota-project-lookup.patch`
+and its 2026.2 twin
+`patches/cinder/2026.2/0008-bound-the-keystone-session-of-the-quota-project-lookup.patch`
+bound the session the quota code looks a project up through. Upstream
+`_keystone_client` (`cinder/api/api_utils.py`) builds it from the TLS options
+of `[keystone_authtoken]` and passes no timeout, and no option of `cinder.conf`
+reaches it, so a lookup whose Keystone stops answering holds the API worker for
+the kernel's retransmission limit, about 15 minutes (#1799). The patch passes
+`[keystone_authtoken] http_connect_timeout`, which the cinder-operator renders
+as `10`; the lookup passes no retries and fails after 10 seconds. With the
+option unset the session gets `timeout=None`, as upstream. No upstream test pins
+the session arguments, so the patch adds two tests to
+`cinder/tests/unit/test_quota_utils.py` that assert the `timeout` argument with
+the option set and unset. `tests/container-images/verify_cinder.sh` drives
+`_keystone_client` against the built image with `http_connect_timeout = 7` and
+with the option unset. Upstream status: not yet proposed.
+
 **Readiness probe:** `images/cinder/cinder-amqp-ready` is the exec readiness
 probe of the cinder-scheduler, cinder-volume and cinder-backup processes
 (decision D2 of issue #979). None of the three serves an HTTP port, so

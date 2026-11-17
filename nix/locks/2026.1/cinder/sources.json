@@ -11,6 +11,7 @@
     "patches/cinder/2026.1/0005-tests-collect-garbage-before-tpool-killall.patch",
     "patches/cinder/2026.1/0006-service-stop-the-coordinator-after-the-rpc-servers-drained.patch",
     "patches/cinder/2026.1/0007-set-a-volume-to-error-when-its-create-loses-the-database.patch",
-    "patches/cinder/2026.1/0008-retry-the-worker-entry-when-the-database-is-lost.patch"
+    "patches/cinder/2026.1/0008-retry-the-worker-entry-when-the-database-is-lost.patch",
+    "patches/cinder/2026.1/0009-bound-the-keystone-session-of-the-quota-project-lookup.patch"
   ]
 }

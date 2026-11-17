@@ -710,6 +710,68 @@ if get.call_count != 2 or create.call_count != 1:
   assert_eq "a lost database read is retried before the worker entry" "0" "$exit_code"
 }
 
+test_quota_project_lookup_bounded() {
+  echo "Test: the quota project lookup's Keystone session is bounded"
+  # Proves both build paths applied
+  # patches/cinder/<release>/000N-bound-the-keystone-session-of-the-quota-project-lookup.patch
+  # (#1799). _keystone_client builds the session the quota code looks a
+  # project up through; an unpatched image passes it no timeout, so a lookup
+  # against a Keystone that stops answering waits as long as TCP does. The
+  # patched image passes [keystone_authtoken] http_connect_timeout, and None
+  # while the option is unset. keystoneauth's load_from_options and
+  # keystoneclient are mocked, so nothing is dialled. Stderr is echoed on
+  # failure so the reason is named.
+  local exit_code=0 err=""
+  err=$(docker run --rm "$IMAGE" \
+    /var/lib/openstack/bin/python -W ignore -c \
+    'import sys
+from unittest import mock
+
+from keystoneauth1 import loading
+# Importing the middleware registers [keystone_authtoken] on cfg.CONF, as the
+# API pipeline does.
+from keystonemiddleware import auth_token  # noqa: F401
+from oslo_config import cfg
+
+from cinder.api import api_utils
+from cinder import context
+# Registers [service_user], whose split_loggers _keystone_client reads.
+from cinder import service_auth  # noqa: F401
+
+CONF = cfg.CONF
+# auth_url belongs to the password plugin, which the middleware registers
+# only once it loads; _keystone_client reads it.
+CONF.register_opt(cfg.StrOpt("auth_url"), group="keystone_authtoken")
+CONF([], default_config_files=[])
+CONF.set_override("auth_url", "http://keystone:5000", group="keystone_authtoken")
+request = context.RequestContext("user", "project", auth_token="token")
+
+
+def session_timeout():
+    with mock.patch.object(loading.session.Session, "load_from_options") as load, \
+            mock.patch("keystoneclient.client.Client"):
+        api_utils._keystone_client(request)
+    if "timeout" not in load.call_args.kwargs:
+        sys.exit("_keystone_client passed no timeout to its session: %r"
+                 % (load.call_args.kwargs,))
+    return load.call_args.kwargs["timeout"]
+
+
+CONF.set_override("http_connect_timeout", 7, group="keystone_authtoken")
+found = session_timeout()
+if found != 7:
+    sys.exit("with http_connect_timeout = 7 the session timeout is %r" % (found,))
+CONF.clear_override("http_connect_timeout", group="keystone_authtoken")
+found = session_timeout()
+if found is not None:
+    sys.exit("with http_connect_timeout unset the session timeout is %r, "
+             "expected None" % (found,))' \
+    2>&1 > /dev/null) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "    $err"
+
+  assert_eq "the quota project lookup's session takes http_connect_timeout" "0" "$exit_code"
+}
+
 # --- Test 12: runs as openstack user ---
 test_runs_as_openstack_user() {
   echo "Test: container runs as openstack user"
@@ -885,6 +947,8 @@ echo ""
 test_lost_database_create_patch_applied
 echo ""
 test_lost_database_worker_patch_applied
+echo ""
+test_quota_project_lookup_bounded
 echo ""
 test_runs_as_openstack_user
 echo ""
