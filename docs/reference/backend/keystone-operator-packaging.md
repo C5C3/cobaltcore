@@ -24,7 +24,9 @@ operators/keystone/
 │       ├── values.schema.json          JSON Schema for values validation (generated)
 │       ├── values.schema.extras.json   Chart-specific schema additions (federation)
 │       ├── crds/
-│       │   └── keystone.openstack.c5c3.io_keystones.yaml   CRD (auto-installed by Helm)
+│       │   ├── keystone.openstack.c5c3.io_keystones.yaml   Keystone CRD (auto-installed by Helm)
+│       │   └── keystone.openstack.c5c3.io_keystoneidentitybackends.yaml
+│       │                                                   KeystoneIdentityBackend CRD
 │       └── templates/
 │           ├── _helpers.tpl            Chart-specific helpers: the operator-library.chart.* hook overrides
 │           ├── _rbac-rules.tpl         RBAC rules, generated from config/rbac/role.yaml (make sync-helm-rbac)
@@ -133,7 +135,7 @@ docker run --rm keystone-operator:dev --help
 | `name` | `keystone-operator` |
 | `description` | `A Helm chart for deploying the Keystone OpenStack operator` |
 | `type` | `application` |
-| `version` | `0.5.0` |
+| `version` | `0.15.0` |
 | `appVersion` | `0.1.0` |
 
 ### Shared Library Subchart
@@ -144,7 +146,7 @@ The chart depends on the `operator-library` library chart
 ```yaml
 dependencies:
   - name: operator-library
-    version: 0.1.0
+    version: 0.12.0
     repository: "file://../../../shared/helm/operator-library"
 ```
 
@@ -191,6 +193,7 @@ All configurable parameters with their types, defaults, and descriptions:
 | --- | --- | --- | --- |
 | `image.repository` | `string` | `ghcr.io/c5c3/keystone-operator` | Container image registry and repository |
 | `image.tag` | `string` | `""` (appVersion) | Image tag. When empty, defaults to `appVersion` from `Chart.yaml` |
+| `image.digest` | `string` | `""` | Optional `sha256:` digest with 64 lowercase hexadecimal characters, rendered as `repository:tag@digest`; Flux can inject it from a ConfigMap |
 | `image.pullPolicy` | `string` | `IfNotPresent` | Kubernetes image pull policy (`Always`, `IfNotPresent`, `Never`) |
 
 #### Replicas
@@ -232,16 +235,27 @@ When enabled, the `--leader-elect` flag is passed to the manager binary. When di
 the flag is omitted (not set to `false`), and all replicas process reconciliation events
 concurrently. Disable only for single-replica development deployments.
 
+#### Controller
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `controller.maxConcurrentReconciles` | `integer` | `2` | Maximum number of Keystone CRs reconciled concurrently; rendered as `--max-concurrent-reconciles` |
+| `controller.defaultImagePullPolicy` | `string` | unset | Fallback pull policy for managed workload containers whose image references omit one; allowed values are `Always`, `IfNotPresent`, and `Never` |
+
+When `controller.defaultImagePullPolicy` is unset, the operator uses `IfNotPresent`
+for digest-pinned images and `Always` for tag-based images.
+
 #### Webhook
 
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
-| `webhook.enabled` | `boolean` | `true` | Enable admission webhooks (MutatingWebhookConfiguration and ValidatingWebhookConfiguration). Requires cert-manager for TLS certificate injection |
+| `webhook.enabled` | `boolean` | `true` | Enable admission webhooks for `Keystone` and `KeystoneIdentityBackend` CR validation and defaulting. Requires cert-manager for TLS certificate injection |
 | `webhook.standalone` | `boolean` | `false` | Run the release as a standalone admission webhook for the namespace-scoped installs of the chart. Requires `webhook.enabled=true` and `rbac.namespaceScoped=false` |
 
 When disabled, the webhook container port (9443) is omitted from the Deployment and no
 webhook configuration resources are created. The operator continues to function without
-admission validation; CRs are not validated or defaulted at admission time.
+webhook validation or defaulting for either CR kind. The API server continues to apply
+the CRD schema's validation rules and defaults.
 A namespace-scoped install sets `webhook.enabled=false`, which the values schema
 requires beside `rbac.namespaceScoped=true`.
 
@@ -273,6 +287,15 @@ admits the CRs of every namespace-scoped install of the chart; see
 Each value maps to a controller-runtime `--zap-*` flag and is omitted from the
 operator args when left at its default.
 
+#### Additional Manager Inputs
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `extraArgs` | array of strings | `[]` | Append manager arguments after the chart-rendered flags |
+| `extraEnv` | array of `EnvVar` objects | `[]` | Append environment variables to the manager container |
+| `extraVolumes` | array of `Volume` objects | `[]` | Append pod volumes after the webhook certificate volume |
+| `extraVolumeMounts` | array of `VolumeMount` objects | `[]` | Append manager volume mounts after the webhook certificate mount |
+
 #### Monitoring
 
 | Parameter | Type | Default | Description |
@@ -287,13 +310,17 @@ for the end-to-end scraping setup.
 
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
-| `networkPolicy.enabled` | `boolean` | `false` | Opt-in NetworkPolicy that default-denies operator pod traffic and opens explicit rules (kube-apiserver, DNS, webhook, metrics) |
+| `networkPolicy.enabled` | `boolean` | `false` | Opt-in NetworkPolicy that default-denies operator pod traffic and opens explicit kube-apiserver, DNS, Keystone API health-check, webhook, and metrics rules |
 | `networkPolicy.kubeApiServer.cidrs` / `.ports` | `list` | `[]` | API-server egress targets. Both **must** be non-empty when the policy is enabled (fail-closed template guard) |
-| `networkPolicy.dns.*` | — | kube-dns | DNS egress selectors (UDP/TCP 53) |
+| `networkPolicy.dns.enabled` | `boolean` | `true` | Enable DNS egress on UDP and TCP port 53 |
+| `networkPolicy.dns.namespaceSelector` | `object` | `kubernetes.io/metadata.name: kube-system` | Select the namespace containing the DNS pods |
+| `networkPolicy.dns.podSelector` | `object` | `k8s-app: kube-dns` | Select the DNS pods |
 | `networkPolicy.allowMetricsFrom` | `list` | `[]` | Ingress peers allowed to scrape metrics |
 | `networkPolicy.webhookClients.cidrs` | `list` | `[]` | Webhook ingress override; falls back to `kubeApiServer.cidrs` |
 
 Full semantics live in the [Operator NetworkPolicy reference](../keystone/keystone-operator-networkpolicy.md).
+The Keystone API health-check rule allows TCP ports 5000 and 5050 to Keystone API
+pods with the chart's labels in any namespace; it has no chart value.
 
 #### Federation
 
@@ -303,6 +330,13 @@ Full semantics live in the [Operator NetworkPolicy reference](../keystone/keysto
 
 See [Attach an OIDC Federation Backend to Keystone](../../guides/keystone/oidc-federation.md#discovery-against-an-in-cluster-identity-provider)
 for the discovery workflow this value enables.
+
+#### Naming
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `nameOverride` | `string` | `""` | Override the chart name used in resource names |
+| `fullnameOverride` | `string` | `""` | Override the full resource-name prefix, skipping the release-name prefix |
 
 #### Service Account
 
@@ -337,32 +371,45 @@ The `{fullname}` pattern resolves to `{release-name}-keystone-operator` unless
 
 ### Standard Labels
 
-All resources include standard Helm labels via the `operator-library.labels` helper:
+All resources rendered from chart templates include standard Helm labels via the
+`operator-library.labels` helper:
 
 | Label | Value |
 | --- | --- |
-| `helm.sh/chart` | `keystone-operator-0.5.0` |
+| `helm.sh/chart` | `keystone-operator-0.15.0` |
 | `app.kubernetes.io/name` | `keystone-operator` |
 | `app.kubernetes.io/instance` | `{release-name}` |
 | `app.kubernetes.io/version` | `0.1.0` |
 | `app.kubernetes.io/managed-by` | `Helm` |
 
-Selector labels (used by Deployment and Service) are a subset:
+Selector labels (used by the Deployment, Service, PDB, NetworkPolicy, and
+ServiceMonitor) are a subset:
 `app.kubernetes.io/name` and `app.kubernetes.io/instance`.
 
 ### Deployment Configuration
 
-The operator Deployment is configured with the following fixed settings:
+The chart passes these arguments to the manager; conditional arguments are
+omitted when their values are unset or disabled:
 
 ::: v-pre
 **Container arguments:**
 
 | Argument | Value | Configurable |
 | --- | --- | --- |
-| `--leader-elect` | Present when `leaderElection.enabled=true` | Yes |
+| `--leader-elect` | Present when `leaderElection.enabled=true` and `webhook.standalone=false` | Yes |
+| `--namespace` | Release namespace when `rbac.namespaceScoped=true` | Yes |
+| `--clusters-namespace=` | Set to an empty value when `rbac.namespaceScoped=true` | Yes |
+| `--enable-controllers=false` | Present when `webhook.standalone=true` | Yes |
+| `--enable-webhooks=false` | Present when `webhook.enabled=false` | Yes |
+| `--max-concurrent-reconciles` | `controller.maxConcurrentReconciles` (default `2`) | Yes |
+| `--default-image-pull-policy` | `controller.defaultImagePullPolicy` | Yes; omitted when unset |
 | `--metrics-bind-address` | `:{{ .Values.metrics.port }}` (default `:8080`) | Yes (port) |
 | `--health-probe-bind-address` | `:8081` | No (hardcoded in bootstrap.Run) |
 | `--federation-metadata-allow-cidrs` | Comma-separated `.Values.federation.metadataAllowCidrs`; omitted when the list is empty | Yes |
+| `--zap-devel` | Present when `logging.development=true` | Yes |
+| `--zap-log-level` | `logging.level` | Yes; omitted when empty |
+| `--zap-encoder` | `logging.encoder` | Yes; omitted when empty |
+| Extra arguments | `extraArgs`, appended verbatim after chart-rendered flags | Yes |
 :::
 
 **Health probes:**
@@ -429,26 +476,28 @@ The Service is type `ClusterIP` with two ports:
 
 ### RBAC Configuration
 
-The ClusterRole includes permissions generated from the kubebuilder RBAC markers
-spread across the reconciler files in `operators/keystone/internal/controller/`
+For a normal (non-standalone) release, the ClusterRole includes permissions
+generated from the kubebuilder RBAC markers in the Keystone operator's Go sources
 (see the RBAC paragraph under [Helm Chart](#helm-chart)). controller-gen merges
 resources that share a verb set into one rule and sorts the verbs, so the
 rendered rules group differently from the table below; the grants are the same.
-These are the minimum permissions required for the operator to manage Keystone
-resources and their dependencies:
+The chart also adds `get`, `create`, and `update` on `coordination.k8s.io/leases`
+for leader election. These are the minimum permissions required for the operator
+to manage Keystone resources and their dependencies:
 
 | API Group | Resources | Verbs |
 | --- | --- | --- |
-| `keystone.openstack.c5c3.io` | `keystones` | get, list, watch, create, update, patch, delete |
-| `keystone.openstack.c5c3.io` | `keystones/status` | get, update, patch |
-| `keystone.openstack.c5c3.io` | `keystones/finalizers` | update |
-| `apps` | `deployments` | get, list, watch, create, update, patch, delete |
-| `autoscaling` | `horizontalpodautoscalers` | get, list, watch, create, update, patch, delete |
-| `autoscaling.k8s.io` | `verticalpodautoscalers` | get, list, watch, create, update, patch, delete |
-| `""` (core) | `services`, `configmaps`, `secrets`, `serviceaccounts` | get, list, watch, create, update, patch, delete |
+| `""` (core) | `configmaps` | create, delete, get, list, watch |
 | `""` (core) | `events` | create, patch |
 | `""` (core) | `pods` | get, list |
+| `""` (core) | `secrets` | create, delete, get, list, patch, update, watch |
+| `""` (core) | `serviceaccounts` | create, delete, get, list, update, watch |
+| `""` (core) | `services` | create, delete, get, list, patch, watch |
+| `apps` | `deployments` | create, delete, get, list, patch, watch |
+| `autoscaling` | `horizontalpodautoscalers` | create, delete, get, list, patch, watch |
+| `autoscaling.k8s.io` | `verticalpodautoscalers` | create, delete, get, list, patch, watch |
 | `batch` | `jobs`, `cronjobs` | get, list, watch, create, update, patch, delete |
+| `batch` | `jobs` | get, list, watch, create, delete |
 | `cert-manager.io` | `certificates` | get, list, watch, create, update, patch, delete |
 | `k8s.mariadb.com` | `databases`, `users`, `grants` | get, list, watch, create, update, patch, delete |
 | `k8s.mariadb.com` | `mariadbs`, `maxscales` | get, list, watch |
@@ -458,32 +507,39 @@ resources and their dependencies:
 | `external-secrets.io` | `clustersecretstores` | get, list, watch |
 | `gateway.networking.k8s.io` | `httproutes` | get, list, watch, create, update, patch, delete |
 | `gateway.networking.k8s.io` | `httproutes/status` | get |
-| `networking.k8s.io` | `networkpolicies` | get, list, watch, create, update, patch, delete |
-| `policy` | `poddisruptionbudgets` | get, list, watch, create, update, patch, delete |
-| `rbac.authorization.k8s.io` | `roles`, `rolebindings` | get, list, watch, create, update, patch, delete |
-| `scheduling.k8s.io` | `priorityclasses` | get, list, watch |
+| `keystone.openstack.c5c3.io` | `keystoneidentitybackends` | get, list, update, watch |
+| `keystone.openstack.c5c3.io` | `keystoneidentitybackends/status` | get, patch, update |
+| `keystone.openstack.c5c3.io` | `keystones` | get, list, patch, update, watch |
+| `keystone.openstack.c5c3.io` | `keystones/finalizers` | update |
+| `keystone.openstack.c5c3.io` | `keystones/status` | get, update |
+| `memcached.c5c3.io` | `memcacheds` | get, list, watch |
+| `networking.k8s.io` | `networkpolicies` | create, delete, get, list, patch, watch |
+| `policy` | `poddisruptionbudgets` | create, delete, get, list, patch, watch |
+| `rbac.authorization.k8s.io` | `roles`, `rolebindings` | create, delete, get, list, update, watch |
+| `scheduling.k8s.io` | `priorityclasses` | get |
+| `coordination.k8s.io` | `leases` | create, get, update (chart-added leader-election rule) |
 
 **Notable verb restrictions:**
 
 - **`events`** has only `create` and `patch`: the operator emits events but never reads
   or deletes them.
-- **`externalsecrets`** has no `delete` verb: ExternalSecret cleanup is left to
-  owner-reference garbage collection. **`pushsecrets`** does include `delete`: the
-  OpenBao finalizer deletes the key-backup PushSecrets when a Keystone CR is
-  deleted so ESO stops pushing to OpenBao.
-- **`mariadbs`, `maxscales`, `clustersecretstores`, `priorityclasses`, `pods`,
-  and `httproutes/status`** are read-only: the operator observes them but never
+- **`externalsecrets`, `secretstores`, and `clustersecretstores`** are read-only
+  to the manager. **`pushsecrets`** includes `delete`: the OpenBao finalizer
+  deletes key-backup PushSecrets when a Keystone CR is deleted so ESO stops
+  pushing to OpenBao.
+- **`mariadbs`, `memcacheds`, `priorityclasses`, `pods`, and
+  `httproutes/status`** are read-only: the operator observes them but never
   mutates them.
 
 The ClusterRoleBinding binds the ClusterRole to the operator's ServiceAccount in the
 release namespace only. With `rbac.namespaceScoped=true` the identical rule set is
 rendered as a namespaced Role/RoleBinding instead (both library templates
-include the generated `keystone-operator.rbacRules` partial). The rule set's
-cluster-scoped entries, `clustersecretstores` and `priorityclasses`, grant nothing
-in a Role. The operator started with `--namespace` neither watches nor reads
-them: it registers no `ClusterSecretStore` watch and refuses a Keystone whose
-effective store is cluster-scoped, and only the webhook, which this mode
-disables, reads PriorityClasses.
+include the generated `keystone-operator.rbacRules` partial). The cluster-scoped
+entries, `clustersecretstores` and `priorityclasses`, grant nothing in a Role.
+The operator started with `--namespace` neither watches nor reads them: it
+registers no `ClusterSecretStore` watch and refuses a Keystone whose effective
+store is cluster-scoped, and only the webhook, which this mode disables, reads
+PriorityClasses.
 
 #### Standalone webhook rule set
 
@@ -509,7 +565,7 @@ The generator also guards coverage: every `(apiGroup, resource, verb)` the
 and `make sync-helm-rbac` and `make verify-helm-rbac` exit 1 otherwise. The
 in-process webhook of a cluster-wide release runs under the manager identity, so
 a read declared for the webhook role alone would fail there. The manager rules
-keep `priorityclasses` at `get, list, watch`; controller-gen merges the verbs of
+also grant `get` on `priorityclasses`; controller-gen merges the verbs of
 markers per resource.
 
 ### Webhook Configuration
@@ -520,12 +576,12 @@ Two webhook configurations are rendered when `webhook.enabled=true`:
 
 | Field | Value |
 | --- | --- |
-| Webhook name | `mkeystone.kb.io` |
-| Path | `/mutate-keystone-openstack-c5c3-io-v1alpha1-keystone` |
+| Webhook names | `mkeystone.kb.io`, `mkeystoneidentitybackend.kb.io` |
+| Paths | `/mutate-keystone-openstack-c5c3-io-v1alpha1-keystone`, `/mutate-keystone-openstack-c5c3-io-v1alpha1-keystoneidentitybackend` |
 | Operations | `CREATE`, `UPDATE` |
 | API group | `keystone.openstack.c5c3.io` |
 | API version | `v1alpha1` |
-| Resource | `keystones` |
+| Resources | `keystones`, `keystoneidentitybackends` |
 | Failure policy | `Fail` |
 | Side effects | `None` |
 | Admission review versions | `v1` |
@@ -534,12 +590,12 @@ Two webhook configurations are rendered when `webhook.enabled=true`:
 
 | Field | Value |
 | --- | --- |
-| Webhook name | `vkeystone.kb.io` |
-| Path | `/validate-keystone-openstack-c5c3-io-v1alpha1-keystone` |
+| Webhook names | `vkeystone.kb.io`, `vkeystoneidentitybackend.kb.io` |
+| Paths | `/validate-keystone-openstack-c5c3-io-v1alpha1-keystone`, `/validate-keystone-openstack-c5c3-io-v1alpha1-keystoneidentitybackend` |
 | Operations | `CREATE`, `UPDATE` |
 | API group | `keystone.openstack.c5c3.io` |
 | API version | `v1alpha1` |
-| Resource | `keystones` |
+| Resources | `keystones`, `keystoneidentitybackends` |
 | Failure policy | `Fail` |
 | Side effects | `None` |
 | Admission review versions | `v1` |
@@ -578,8 +634,11 @@ mariadb-operator).
 | Target namespace | `keystone-system` |
 | Reconciliation interval | `30m` |
 | Chart | `keystone-operator` |
-| Version constraint | `>=0.1.0 <1.0.0` |
+| Version constraint | `>=0.8.0 <1.0.0` |
 | Source | `c5c3-charts` HelmRepository in `flux-system` namespace |
+
+The lower bound is `0.8.0`, the first chart version whose schema accepts
+`image.digest`.
 
 **Helm values applied by the HelmRelease:**
 
@@ -587,8 +646,12 @@ mariadb-operator).
 | --- | --- | --- |
 | `replicas` | `2` | High availability with leader election |
 | `leaderElection.enabled` | `true` | Single active controller with 2 replicas |
+| `image.tag` | `latest` | Uses the latest image on the default deployment path |
+| `image.digest` | From `keystone-operator-image-digest` ConfigMap | Optional digest pin on the `WITH_CONTROLPLANE` Flux path |
 
-All other values use chart defaults.
+The ConfigMap is referenced through optional `valuesFrom`; when it is absent,
+the chart runs with `image.tag: latest` and no digest. All other values use chart
+defaults.
 
 **Install settings:**
 
@@ -611,10 +674,10 @@ All other values use chart defaults.
 
 ## Dependency Chain
 
-The Keystone operator depends on four infrastructure operators that must be running
+The Keystone operator depends on four infrastructure releases that must be ready
 before it starts. FluxCD enforces this ordering via `spec.dependsOn`:
 
-![The install order of the Flux resources of deploy/bases/operators, in four layers. Layer 1 declares no dependency: cert-manager, mariadb-operator-crds and prometheus-operator-crds. Layer 2 waits for cert-manager: mariadb-operator, which also waits for mariadb-operator-crds, memcached-operator, which also waits for prometheus-operator-crds, external-secrets, garage-operator, openbao, openbao-operator and ovn-operator. Layer 3 is keystone-operator, which waits for mariadb-operator, memcached-operator and external-secrets. Layer 4 waits for keystone-operator: horizon-operator, glance-operator, placement-operator, cinder-operator, nova-operator, barbican-operator, which also waits for openbao-operator, neutron-operator, which also waits for ovn-operator, and c5c3-operator. A solid arrow is a dependsOn entry of a HelmRelease, and the one solid arrow between Flux Kustomizations says that the Kustomization messaging-topology-operator waits for the Kustomization rabbitmq-cluster-operator. Two dotted arrows are dependencies that no manifest declares, because each crosses between a HelmRelease and a Flux Kustomization: the Kustomization rabbitmq-cluster-operator needs the CRDs of cert-manager and retries until they exist, and c5c3-operator starts only once the Kustomization k-orc has installed the K-ORC CRDs.](../../diagrams/deploy-flux-dependencies.svg)
+![The install order of the Flux resources of deploy/flux-system, in four layers. Layer 1 declares no dependency: cert-manager, mariadb-operator-crds and prometheus-operator-crds. Layer 2 waits for cert-manager: mariadb-operator, which also waits for mariadb-operator-crds, memcached-operator, which also waits for prometheus-operator-crds, external-secrets, garage-operator, openbao, openbao-operator and ovn-operator. Layer 3 is keystone-operator, which waits for cert-manager, mariadb-operator, memcached-operator and external-secrets. Layer 4 waits for keystone-operator: horizon-operator, glance-operator, placement-operator, cinder-operator, nova-operator, barbican-operator, which also waits for openbao-operator, neutron-operator, which also waits for ovn-operator, and c5c3-operator. A solid arrow is a dependsOn entry of a HelmRelease, and the one solid arrow between Flux Kustomizations says that the Kustomization messaging-topology-operator waits for the Kustomization rabbitmq-cluster-operator. Two dotted arrows are dependencies that no manifest declares, because each crosses between a HelmRelease and a Flux Kustomization: the Kustomization rabbitmq-cluster-operator needs the CRDs of cert-manager and retries until they exist, and c5c3-operator starts only once the Kustomization k-orc has installed the K-ORC CRDs.](../../diagrams/deploy-flux-dependencies.svg)
 
 The keystone-operator HelmRelease sits in layer 3 of the figure: it waits for
 `cert-manager`, `mariadb-operator`, `memcached-operator` and `external-secrets`.
@@ -624,17 +687,19 @@ The keystone-operator HelmRelease sits in layer 3 of the figure: it waits for
 | Dependency | Namespace | Reason |
 | --- | --- | --- |
 | `cert-manager` | `cert-manager` | Provides TLS certificate injection for admission webhooks via `cert-manager.io/inject-ca-from` annotation. Without cert-manager, webhook TLS is not provisioned and the API server cannot call admission webhooks |
-| `mariadb-operator` | `mariadb-system` | Installs the `k8s.mariadb.com` CRDs (`Database`, `User`, `Grant`) that the Keystone operator creates to provision database resources for each Keystone CR |
+| `mariadb-operator` | `mariadb-system` | Waits for the separate `mariadb-operator-crds` release, which installs the `k8s.mariadb.com` CRDs (`MariaDB`, `Database`, `User`, `Grant`); Keystone reads `MariaDB` and creates the other resources for each Keystone CR |
 | `memcached-operator` | `memcached-system` | Installs the `memcached.c5c3.io` CRDs (`Memcached`) that the Keystone operator references for cache discovery |
-| `external-secrets` | `external-secrets` | Installs the `external-secrets.io` CRDs (`ExternalSecret`, `PushSecret`) that the Keystone operator creates to manage secret synchronization from the secret store |
+| `external-secrets` | `external-secrets` | Installs the `external-secrets.io` CRDs (`SecretStore`, `ClusterSecretStore`, `ExternalSecret`, `PushSecret`) used by Keystone to read store and secret status and create PushSecrets |
 
 ### Deployment Sequence
 
 FluxCD resolves the dependency graph and deploys in this order:
 
-1. **cert-manager** — base layer, no dependencies
-2. **mariadb-operator**, **memcached-operator**, and **external-secrets** — depend only on
-   cert-manager, can install in parallel
+1. **cert-manager**, **mariadb-operator-crds**, and **prometheus-operator-crds** — base
+   layer, no dependencies
+2. **mariadb-operator**, **memcached-operator**, and **external-secrets** — wait for
+   cert-manager; MariaDB and Memcached also wait for their CRD prerequisites, and can
+   install in parallel once those releases are ready
 3. **keystone-operator** — depends on all four, installs last
 
 If any dependency is not ready (HelmRelease not in `Ready` condition), the
@@ -643,35 +708,39 @@ satisfied.
 
 ## CRD Installation Behavior
 
-**CRD file:** `operators/keystone/helm/keystone-operator/crds/keystone.openstack.c5c3.io_keystones.yaml`
+**CRD files:**
+
+- `operators/keystone/helm/keystone-operator/crds/keystone.openstack.c5c3.io_keystones.yaml`
+- `operators/keystone/helm/keystone-operator/crds/keystone.openstack.c5c3.io_keystoneidentitybackends.yaml`
 
 ### Helm CRD Lifecycle
 
-The CRD is placed in the chart's `crds/` directory (not `templates/`). Helm handles
-CRDs in `crds/` with special behavior:
+Both CRDs are placed in the chart's `crds/` directory (not `templates/`). Helm
+handles CRDs in `crds/` with special behavior:
 
-1. **On install:** Helm installs CRDs from `crds/` **before** rendering and applying
-   templates. This ensures the CRD exists before any templates that reference it are
-   created, avoiding chicken-and-egg ordering issues.
+1. **On install:** Helm installs both CRDs from `crds/` **before** rendering and
+   applying templates. This ensures the CRDs exist before resources that reference
+   them are created.
 
 2. **On upgrade (with FluxCD `crds: CreateReplace`):** FluxCD's helm-controller replaces
    the existing CRD with the version from the chart. This enables CRD schema updates
    when the chart version is upgraded.
 
 3. **On uninstall:** Helm does **not** delete CRDs from the `crds/` directory on
-   `helm uninstall`. This is intentional: CRDs are cluster-scoped resources and
-   deleting them would destroy all custom resources of that type across all namespaces.
+   `helm uninstall`. CRDs are cluster-scoped resources, and deleting them would
+   destroy all custom resources of those types across all namespaces.
 
 ### CRD Source
 
-The CRD file in `crds/` is an exact copy of the generated CRD at
-`operators/keystone/config/crd/bases/keystone.openstack.c5c3.io_keystones.yaml`. It
-defines the `Keystone` kind in the `keystone.openstack.c5c3.io` API group.
+Each chart CRD file matches its generated source under
+`operators/keystone/config/crd/bases/`: the `keystones` CRD defines the `Keystone`
+kind, and the `keystoneidentitybackends` CRD defines `KeystoneIdentityBackend`.
+Both use the `keystone.openstack.c5c3.io` API group. The chart files add a
+provenance header; `make verify-crd-sync` checks the CRD content against the
+generated sources.
 
-**Important:** The CRD in `crds/` must remain an exact copy of the source CRD. Manual
-modifications would cause divergence between the Helm-installed CRD and the
-kubebuilder-generated source. When the source CRD changes (e.g., new spec fields are
-added), the copy in `crds/` must be updated to match.
+When a source CRD changes, run `make sync-crds` to update the chart copies, then
+`make verify-crd-sync` to check them.
 
 ### FluxCD CRD Policy
 
@@ -693,4 +762,4 @@ upgrade:
 
 End-to-end deployment flow from FluxCD reconciliation to operator startup:
 
-![How the Flux helm-controller installs the keystone-operator HelmRelease, in seven steps. It reconciles the HelmRelease, checking that cert-manager, mariadb-operator, memcached-operator and external-secrets are ready; fetches the chart from the c5c3-charts OCI HelmRepository; installs the CRDs from crds/, keystone.openstack.c5c3.io_keystones.yaml; renders the templates with the chart defaults merged with the HelmRelease values, which yields the ServiceAccount, ClusterRole, ClusterRoleBinding, Deployment, Service, PodDisruptionBudget, Issuer, Certificate, the two webhook configurations, and the NetworkPolicy and ServiceMonitor when opted in; and applies them into the keystone-system namespace. Then cert-manager fills caBundle of the webhook configurations from the Certificate through the inject-ca-from annotation, and the operator pods start, where leader election picks the active replica that begins reconciling Keystone resources.](../../diagrams/deploy-keystone-operator-helmrelease.svg)
+![How the Flux helm-controller installs the keystone-operator HelmRelease, in seven steps. It reconciles the HelmRelease, checking that cert-manager, mariadb-operator, memcached-operator and external-secrets are ready; fetches the chart from the c5c3-charts OCI HelmRepository; installs the Keystone and KeystoneIdentityBackend CRDs from crds/; renders the templates with chart defaults and HelmRelease values, yielding the ServiceAccount, ClusterRole, ClusterRoleBinding, Deployment, Service, PodDisruptionBudget, Issuer, Certificate, the two webhook configurations, and the NetworkPolicy and ServiceMonitor when opted in; applies namespaced resources in keystone-system and cluster-scoped resources at cluster scope; cert-manager fills the webhook configurations' caBundle from the Certificate through the inject-ca-from annotation; and the operator pods start, where leader election picks the active replica that begins reconciling Keystone resources.](../../diagrams/deploy-keystone-operator-helmrelease.svg)
