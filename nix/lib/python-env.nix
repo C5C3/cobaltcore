@@ -117,6 +117,17 @@ let
       patch -p1 --fuzz=0 --no-backup-if-mismatch -d "$out/${python.sitePackages}" \
         < ${./patches/dogpile-cache-1.5.0-pymemcache-timeouts.patch}
     '';
+    # castellan registers [barbican] timeout and builds the session of every
+    # Barbican call without it, so a key read whose Keystone or Barbican stops
+    # answering waited out the kernel's retransmission limit, about 15
+    # minutes (#1799). The session is handed the option; the line is the same
+    # in castellan 5.6.0 (2026.1) and 5.8.0 (2026.2). A castellan bump that
+    # changes it fails the build in substituteInPlace.
+    castellan.attrs.postInstall = ''
+      substituteInPlace "$out/${python.sitePackages}/castellan/key_manager/barbican_key_manager.py" \
+        --replace-fail "sess = session.Session(auth=auth, verify=self._verify)" \
+        "sess = session.Session(auth=auth, verify=self._verify, timeout=self.conf.barbican.timeout)"
+    '';
     # barbican's test group: 0.10.0 ships no wheel, and its setup.py fails
     # with "ModuleNotFoundError: No module named 'setuptools'".
     pykmip.buildSystem.setuptools = [ ];

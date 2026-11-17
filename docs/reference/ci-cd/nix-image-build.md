@@ -179,7 +179,11 @@ with `nix/lib/patches/dogpile-cache-1.5.0-pymemcache-timeouts.patch`: oslo.cache
 and every pymemcache error becomes a cache miss unless `distributed_lock` is
 set (#1560). The row runs
 `patch --fuzz=0`, so a dogpile.cache release that moves the patched lines fails
-the build with `Hunk #N FAILED`; #1562 tracks that re-check. The `uwsgi` row
+the build with `Hunk #N FAILED`; #1562 tracks that re-check. The `castellan`
+row edits the installed wheel with `substituteInPlace --replace-fail`:
+castellan's `[barbican] timeout` reaches the session it reads keys through
+(#1799). A castellan release that changes the edited line fails the build. The
+`uwsgi` row
 patches the source with
 `nix/lib/patches/uwsgi-2.0.31-retry-write-poll-on-eintr.patch` and
 `nix/lib/patches/uwsgi-2.0.31-flush-logs-under-threaded-logger-lock.patch`
