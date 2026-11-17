@@ -4,6 +4,7 @@
   "hash": "sha256-JUPQ62zadq1lynPmHQ9lHwDNUbFJKBc0dkwn8Bv03do=",
   "project": "horizon",
   "patches": [
-    "patches/horizon/2026.2/0001-check-the-service-catalog-before-the-rbac-policies-panel-asks-neutron.patch"
+    "patches/horizon/2026.2/0001-check-the-service-catalog-before-the-rbac-policies-panel-asks-neutron.patch",
+    "patches/horizon/2026.2/0002-add-a-request-timeout-for-the-keystone-and-service-clients.patch"
   ]
 }

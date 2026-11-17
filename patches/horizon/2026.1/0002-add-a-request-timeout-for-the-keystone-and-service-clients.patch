@@ -1,0 +1,392 @@
+SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+SPDX-License-Identifier: Apache-2.0
+
+Add a request timeout for the Keystone and service clients
+
+Horizon has no request-timeout setting.
+`openstack_auth.utils.get_session` builds the keystoneauth session of
+every login and token request with
+`session.Session(verify=verify, **kwargs)`, and the dashboard builds the
+Keystone session of `keystoneclient`
+(openstack_dashboard/api/keystone.py), the Placement session of
+`make_adapter` (api/placement.py), the session of `networkclient` and
+the neutronclient of `neutronclient` (api/neutron.py), the novaclient of
+`cached_novaclient` (api/_nova.py), the cinderclient of `cinderclient`
+(api/cinder.py) and the glanceclient of `glanceclient` (api/glance.py)
+without a timeout. glanceclient falls back to its own 600 seconds, every
+other client to none. A service that stops answering on an established
+connection holds the uWSGI process that serves the page until the kernel
+gives up on the connection (`tcp_retries2 = 15`, about 15.6 minutes),
+long after the gateway in front of the dashboard answered the browser
+with 503 or 504 (#1799).
+
+The patch adds the setting `OPENSTACK_REQUEST_TIMEOUT`, `None` by
+default, to openstack_auth/defaults.py and
+openstack_dashboard/defaults.py beside `OPENSTACK_SSL_NO_VERIFY`.
+`get_session` passes it as `timeout` unless the caller gave one, and
+every session and client constructor named above passes it as `timeout`.
+glanceclient turns its timeout into a float and takes no `None`, so the
+Glance client gets the argument only when the setting is not `None`.
+With the setting at `None`, every constructor behaves as upstream. The
+horizon-operator renders `OPENSTACK_REQUEST_TIMEOUT = 30`: Horizon's
+sessions pass no retries, so a hung call ends after 30 seconds and the
+user sees Horizon's own error.
+
+Tests: no upstream test pins the arguments of these constructors. The
+patch adds GetSessionTimeoutTestCase to
+openstack_auth/tests/unit/test_utils.py and one test class per client
+module under openstack_dashboard/test/unit/api/ (test_keystone.py,
+test_cinder.py, test_glance.py, test_neutron.py (networkclient and
+neutronclient), test_nova.py, and a new test_placement.py), each with
+the setting at 7 and at `None`. Without the code hunks 13 of the 14
+dashboard tests and the get_session test fail; the Glance test with the
+setting at `None` asserts that no `timeout` argument is passed, which
+holds upstream too.
+
+Proof: test_request_timeout_reaches_every_client in
+tests/container-images/verify_horizon.sh sets
+`OPENSTACK_REQUEST_TIMEOUT = 7` in the built image and asserts the
+`timeout` of `get_session()` and of every patched constructor, then
+repeats with `None` and asserts that the Glance client gets no `timeout`
+argument.
+
+The 2026.2 twin carries the same change cut from 27.0.0: 27.0.0 dropped
+neutronclient and added a second Nova session, `computeclient`.
+
+Applies to horizon 25.7.0 (2026.1).
+
+Upstream status: not yet proposed.
+diff --git a/openstack_auth/defaults.py b/openstack_auth/defaults.py
+index 7ef5e49..7058834 100644
+--- a/openstack_auth/defaults.py
++++ b/openstack_auth/defaults.py
+@@ -34,6 +34,9 @@ OPENSTACK_KEYSTONE_ENDPOINT_TYPE = None
+ OPENSTACK_SSL_NO_VERIFY = False
+ # TODO(amotoki): Is it correct?
+ OPENSTACK_SSL_CACERT = True
++# The timeout in seconds of every request openstack_auth sends to Keystone.
++# None leaves the session without a timeout.
++OPENSTACK_REQUEST_TIMEOUT = None
+ OPENSTACK_API_VERSIONS = {
+     'identity': 3,
+ }
+diff --git a/openstack_auth/tests/unit/test_utils.py b/openstack_auth/tests/unit/test_utils.py
+index 59f1427..7134054 100644
+--- a/openstack_auth/tests/unit/test_utils.py
++++ b/openstack_auth/tests/unit/test_utils.py
+@@ -119,3 +119,17 @@ class BehindProxyTestCase(test.TestCase):
+         self.request.META['HTTP_X_REAL_IP'] = '192.168.15.33'
+         self.request.META['HTTP_X_FORWARDED_FOR'] = '172.18.0.2'
+         self.assertEqual('192.168.15.33', get_client_ip(self.request))
++
++
++class GetSessionTimeoutTestCase(test.TestCase):
++
++    @override_settings(OPENSTACK_REQUEST_TIMEOUT=7)
++    def test_get_session_takes_the_request_timeout(self):
++        self.assertEqual(7, utils.get_session().timeout)
++
++    @override_settings(OPENSTACK_REQUEST_TIMEOUT=7)
++    def test_get_session_keeps_the_timeout_of_the_caller(self):
++        self.assertEqual(3, utils.get_session(timeout=3).timeout)
++
++    def test_get_session_without_a_request_timeout(self):
++        self.assertIsNone(utils.get_session().timeout)
+diff --git a/openstack_auth/utils.py b/openstack_auth/utils.py
+index ab0b220..88aff6f 100644
+--- a/openstack_auth/utils.py
++++ b/openstack_auth/utils.py
+@@ -125,6 +125,7 @@ def get_session(**kwargs):
+     if insecure:
+         verify = False
+ 
++    kwargs.setdefault('timeout', settings.OPENSTACK_REQUEST_TIMEOUT)
+     return session.Session(verify=verify, **kwargs)
+ 
+ 
+diff --git a/openstack_dashboard/api/_nova.py b/openstack_dashboard/api/_nova.py
+index 4d237cc..519479a 100644
+--- a/openstack_dashboard/api/_nova.py
++++ b/openstack_dashboard/api/_nova.py
+@@ -178,7 +178,8 @@ def cached_novaclient(request, version=None):
+                            cacert=CACERT,
+                            http_log_debug=settings.DEBUG,
+                            auth_token=token_id,
+-                           endpoint_override=nova_url)
++                           endpoint_override=nova_url,
++                           timeout=settings.OPENSTACK_REQUEST_TIMEOUT)
+     return c
+ 
+ 
+diff --git a/openstack_dashboard/api/cinder.py b/openstack_dashboard/api/cinder.py
+index 7d023a2..5f403ef 100644
+--- a/openstack_dashboard/api/cinder.py
++++ b/openstack_dashboard/api/cinder.py
+@@ -244,6 +244,7 @@ def cinderclient(request, version=None):
+         insecure=insecure,
+         cacert=cacert,
+         http_log_debug=settings.DEBUG,
++        timeout=settings.OPENSTACK_REQUEST_TIMEOUT,
+     )
+     c.client.auth_token = request.user.token.id
+     c.client.management_url = cinder_url
+diff --git a/openstack_dashboard/api/glance.py b/openstack_dashboard/api/glance.py
+index 2100a87..73f2292 100644
+--- a/openstack_dashboard/api/glance.py
++++ b/openstack_dashboard/api/glance.py
+@@ -119,9 +119,14 @@ def glanceclient(request):
+     url = base.url_for(request, 'image')
+     insecure = settings.OPENSTACK_SSL_NO_VERIFY
+     cacert = settings.OPENSTACK_SSL_CACERT
++    # glanceclient takes no None: an unset timeout keeps its 600 seconds.
++    kwargs = {}
++    if settings.OPENSTACK_REQUEST_TIMEOUT is not None:
++        kwargs['timeout'] = settings.OPENSTACK_REQUEST_TIMEOUT
+ 
+     return api_version['client'].Client(url, token=request.user.token.id,
+-                                        insecure=insecure, cacert=cacert)
++                                        insecure=insecure, cacert=cacert,
++                                        **kwargs)
+ 
+ 
+ # Note: Glance is adding more than just public and private in Newton or later
+diff --git a/openstack_dashboard/api/keystone.py b/openstack_dashboard/api/keystone.py
+index 618a2f4..1669140 100644
+--- a/openstack_dashboard/api/keystone.py
++++ b/openstack_dashboard/api/keystone.py
+@@ -185,9 +185,11 @@ def keystoneclient(request, admin=False, force_scoped=None):
+         remote_addr = auth_utils.get_client_ip(request)
+         token_auth = token_endpoint.Token(endpoint=endpoint,
+                                           token=token_id)
+-        keystone_session = session.Session(auth=token_auth,
+-                                           original_ip=remote_addr,
+-                                           verify=verify)
++        keystone_session = session.Session(
++            auth=token_auth,
++            original_ip=remote_addr,
++            verify=verify,
++            timeout=settings.OPENSTACK_REQUEST_TIMEOUT)
+         conn = client_version['client'].Client(session=keystone_session,
+                                                debug=settings.DEBUG)
+         setattr(request, cache_attr, conn)
+diff --git a/openstack_dashboard/api/neutron.py b/openstack_dashboard/api/neutron.py
+index 7950b22..5f1ba10 100644
+--- a/openstack_dashboard/api/neutron.py
++++ b/openstack_dashboard/api/neutron.py
+@@ -985,7 +985,8 @@ def neutronclient(request):
+     c = neutron_client.Client(token=token_id,
+                               auth_url=auth_url,
+                               endpoint_url=neutron_url,
+-                              insecure=insecure, ca_cert=cacert)
++                              insecure=insecure, ca_cert=cacert,
++                              timeout=settings.OPENSTACK_REQUEST_TIMEOUT)
+     return c
+ 
+ 
+@@ -1004,6 +1005,7 @@ def networkclient(request):
+         auth=token_auth,
+         original_ip=auth_utils.get_client_ip(request),
+         verify=verify,
++        timeout=settings.OPENSTACK_REQUEST_TIMEOUT,
+         # TODO(lajoskatona): cert should be None of a tuple in the form of
+         # (cert, key).
+         # In a devstack with enable_service tls-proxy:
+diff --git a/openstack_dashboard/api/placement.py b/openstack_dashboard/api/placement.py
+index 94ef4b9..6c6eda6 100644
+--- a/openstack_dashboard/api/placement.py
++++ b/openstack_dashboard/api/placement.py
+@@ -48,7 +48,8 @@ def make_adapter(request):
+     elif settings.OPENSTACK_SSL_CACERT:
+         verify = settings.OPENSTACK_SSL_CACERT
+     return Adapter(
+-        session.Session(auth=auth, verify=verify),
++        session.Session(auth=auth, verify=verify,
++                        timeout=settings.OPENSTACK_REQUEST_TIMEOUT),
+         api_version="placement 1.6",
+     )
+ 
+diff --git a/openstack_dashboard/defaults.py b/openstack_dashboard/defaults.py
+index d12559a..da076b3 100644
+--- a/openstack_dashboard/defaults.py
++++ b/openstack_dashboard/defaults.py
+@@ -366,6 +366,10 @@ OPENSTACK_SSL_NO_VERIFY = False
+ # The CA certificate to use to verify SSL connections
+ # Example: OPENSTACK_SSL_CACERT = '/path/to/cacert.pem'
+ OPENSTACK_SSL_CACERT = None
++# The timeout in seconds of every request the dashboard sends to Keystone and
++# the other services. None keeps each client's own default: no timeout, and
++# 600 seconds for the Glance client.
++OPENSTACK_REQUEST_TIMEOUT = None
+ # The OPENSTACK_CINDER_FEATURES settings can be used to enable optional
+ # services provided by cinder that is not exposed by its extension API.
+ OPENSTACK_CINDER_FEATURES = {
+diff --git a/openstack_dashboard/test/unit/api/test_cinder.py b/openstack_dashboard/test/unit/api/test_cinder.py
+index a2e12fd..d42429e 100644
+--- a/openstack_dashboard/test/unit/api/test_cinder.py
++++ b/openstack_dashboard/test/unit/api/test_cinder.py
+@@ -516,3 +516,21 @@ class CinderApiVersionTests(test.TestCase):
+     def test_get_id_for_nameless_volume(self):
+         volume = self.cinder_volumes.first()
+         self.assertEqual('Volume name', volume.name)
++
++
++class CinderClientTimeoutTests(test.APIMockTestCase):
++
++    def setUp(self):
++        super().setUp()
++        api.cinder.VERSIONS._active = None
++
++    @override_settings(OPENSTACK_REQUEST_TIMEOUT=7)
++    @mock.patch.object(api.cinder.cinder_client, 'Client')
++    def test_cinderclient_takes_the_request_timeout(self, mock_client):
++        api.cinder.cinderclient(self.request)
++        self.assertEqual(7, mock_client.call_args.kwargs['timeout'])
++
++    @mock.patch.object(api.cinder.cinder_client, 'Client')
++    def test_cinderclient_without_a_request_timeout(self, mock_client):
++        api.cinder.cinderclient(self.request)
++        self.assertIsNone(mock_client.call_args.kwargs['timeout'])
+diff --git a/openstack_dashboard/test/unit/api/test_glance.py b/openstack_dashboard/test/unit/api/test_glance.py
+index 71edf7d..e2bb2d5 100644
+--- a/openstack_dashboard/test/unit/api/test_glance.py
++++ b/openstack_dashboard/test/unit/api/test_glance.py
+@@ -406,3 +406,20 @@ class GlanceApiTests(test.APIMockTestCase):
+         self.assertNotIn('properties', meta)
+         self.assertEqual(meta['description'], form_data['description'])
+         self.assertEqual(meta['architecture'], form_data['architecture'])
++
++
++class GlanceClientTimeoutTests(test.APIMockTestCase):
++
++    @override_settings(OPENSTACK_REQUEST_TIMEOUT=7)
++    @mock.patch.object(api.glance.VERSIONS, 'get_active_version')
++    def test_glanceclient_takes_the_request_timeout(self, mock_version):
++        api.glance.glanceclient(self.request)
++        client = mock_version.return_value['client'].Client
++        self.assertEqual(7, client.call_args.kwargs['timeout'])
++
++    @mock.patch.object(api.glance.VERSIONS, 'get_active_version')
++    def test_glanceclient_keeps_its_default_without_a_request_timeout(
++            self, mock_version):
++        api.glance.glanceclient(self.request)
++        client = mock_version.return_value['client'].Client
++        self.assertNotIn('timeout', client.call_args.kwargs)
+diff --git a/openstack_dashboard/test/unit/api/test_keystone.py b/openstack_dashboard/test/unit/api/test_keystone.py
+index fb061d9..64cd195 100644
+--- a/openstack_dashboard/test/unit/api/test_keystone.py
++++ b/openstack_dashboard/test/unit/api/test_keystone.py
+@@ -225,3 +225,17 @@ class ApplicationCredentialsAPITests(test.APIMockTestCase):
+         api.keystone.application_credential_create(self.request, None)
+         mock_keystoneclient.assert_called_once_with(
+             self.request, force_scoped=True)
++
++
++class KeystoneClientTimeoutTests(test.APIMockTestCase):
++
++    @override_settings(OPENSTACK_REQUEST_TIMEOUT=7)
++    @mock.patch.object(api.keystone.session, 'Session')
++    def test_keystoneclient_takes_the_request_timeout(self, mock_session):
++        api.keystone.keystoneclient(self.request)
++        self.assertEqual(7, mock_session.call_args.kwargs['timeout'])
++
++    @mock.patch.object(api.keystone.session, 'Session')
++    def test_keystoneclient_without_a_request_timeout(self, mock_session):
++        api.keystone.keystoneclient(self.request)
++        self.assertIsNone(mock_session.call_args.kwargs['timeout'])
+diff --git a/openstack_dashboard/test/unit/api/test_neutron.py b/openstack_dashboard/test/unit/api/test_neutron.py
+index 00153ea..164a07a 100644
+--- a/openstack_dashboard/test/unit/api/test_neutron.py
++++ b/openstack_dashboard/test/unit/api/test_neutron.py
+@@ -2737,3 +2737,32 @@ class NeutronApiFloatingIpTests(test.APIMockTestCase):
+         ret = api.neutron.floating_ip_target_list_by_instance(
+             self.request, 'id-vm2', target_list)
+         self.assertEqual(['id21', 'id22'], [r.port_id for r in ret])
++
++
++class NeutronClientTimeoutTests(test.APIMockTestCase):
++
++    @override_settings(OPENSTACK_REQUEST_TIMEOUT=7)
++    @mock.patch('openstack.connection.Connection')
++    @mock.patch.object(api.neutron.session, 'Session')
++    def test_networkclient_takes_the_request_timeout(self, mock_session,
++                                                     mock_connection):
++        api.neutron.networkclient(self.request)
++        self.assertEqual(7, mock_session.call_args.kwargs['timeout'])
++
++    @mock.patch('openstack.connection.Connection')
++    @mock.patch.object(api.neutron.session, 'Session')
++    def test_networkclient_without_a_request_timeout(self, mock_session,
++                                                     mock_connection):
++        api.neutron.networkclient(self.request)
++        self.assertIsNone(mock_session.call_args.kwargs['timeout'])
++
++    @override_settings(OPENSTACK_REQUEST_TIMEOUT=7)
++    @mock.patch.object(api.neutron.neutron_client, 'Client')
++    def test_neutronclient_takes_the_request_timeout(self, mock_client):
++        api.neutron.neutronclient(self.request)
++        self.assertEqual(7, mock_client.call_args.kwargs['timeout'])
++
++    @mock.patch.object(api.neutron.neutron_client, 'Client')
++    def test_neutronclient_without_a_request_timeout(self, mock_client):
++        api.neutron.neutronclient(self.request)
++        self.assertIsNone(mock_client.call_args.kwargs['timeout'])
+diff --git a/openstack_dashboard/test/unit/api/test_nova.py b/openstack_dashboard/test/unit/api/test_nova.py
+index 0e059b9..da8f904 100644
+--- a/openstack_dashboard/test/unit/api/test_nova.py
++++ b/openstack_dashboard/test/unit/api/test_nova.py
+@@ -835,3 +835,17 @@ class ComputeApiTests(test.APIMockTestCase):
+         }
+         self._test_server_create(extra_kwargs=kwargs,
+                                  expected_kwargs={'nics': 'auto'})
++
++
++class NovaClientTimeoutTests(test.APIMockTestCase):
++
++    @override_settings(OPENSTACK_REQUEST_TIMEOUT=7)
++    @mock.patch.object(api._nova.nova_client, 'Client')
++    def test_novaclient_takes_the_request_timeout(self, mock_client):
++        api._nova.novaclient(self.request, version='2.1')
++        self.assertEqual(7, mock_client.call_args.kwargs['timeout'])
++
++    @mock.patch.object(api._nova.nova_client, 'Client')
++    def test_novaclient_without_a_request_timeout(self, mock_client):
++        api._nova.novaclient(self.request, version='2.1')
++        self.assertIsNone(mock_client.call_args.kwargs['timeout'])
+diff --git a/openstack_dashboard/test/unit/api/test_placement.py b/openstack_dashboard/test/unit/api/test_placement.py
+new file mode 100644
+index 0000000..585dfd2
+--- /dev/null
++++ b/openstack_dashboard/test/unit/api/test_placement.py
+@@ -0,0 +1,32 @@
++# Licensed under the Apache License, Version 2.0 (the "License"); you may
++# not use this file except in compliance with the License. You may obtain
++# a copy of the License at
++#
++#      http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
++# License for the specific language governing permissions and limitations
++# under the License.
++
++from unittest import mock
++
++from django.test.utils import override_settings
++
++from openstack_dashboard import api
++from openstack_dashboard.test import helpers as test
++
++
++class PlacementAdapterTimeoutTests(test.APIMockTestCase):
++
++    @override_settings(OPENSTACK_REQUEST_TIMEOUT=7)
++    @mock.patch.object(api.placement.session, 'Session')
++    def test_make_adapter_takes_the_request_timeout(self, mock_session):
++        api.placement.make_adapter(self.request)
++        self.assertEqual(7, mock_session.call_args.kwargs['timeout'])
++
++    @mock.patch.object(api.placement.session, 'Session')
++    def test_make_adapter_without_a_request_timeout(self, mock_session):
++        api.placement.make_adapter(self.request)
++        self.assertIsNone(mock_session.call_args.kwargs['timeout'])

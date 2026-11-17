@@ -458,6 +458,35 @@ It asserts that a catalog without a network service answers `False` without an
 ERROR record, and that a catalog with one asks Neutron once. The patches need
 no operator configuration. Upstream status: not yet proposed.
 
+**Source patch:**
+`patches/horizon/2026.1/0002-add-a-request-timeout-for-the-keystone-and-service-clients.patch`
+and its 2026.2 twin
+`patches/horizon/2026.2/0002-add-a-request-timeout-for-the-keystone-and-service-clients.patch`
+give every Keystone and service client of the dashboard a request timeout
+(#1799). Upstream Horizon has no such setting: `openstack_auth.utils.get_session`
+and the dashboard's Keystone, Placement, Neutron, Nova and Cinder clients are
+built without a timeout, and glanceclient falls back to its own 600 seconds. A
+service that stops answering holds the uWSGI process serving the page for the
+kernel's retransmission limit, about 15 minutes. The patches add
+`OPENSTACK_REQUEST_TIMEOUT`, `None` by default, to `openstack_auth/defaults.py`
+and `openstack_dashboard/defaults.py`. `get_session` passes it as `timeout`
+unless the caller gave one, and every session and client constructor passes it
+as `timeout`. The Glance client gets the argument only when the setting is not
+`None`, because glanceclient takes no `None`. The 2026.1 patch also covers the
+neutronclient of 25.7.0, and the 2026.2 patch the second Nova session
+(`computeclient`) of 27.0.0. The horizon-operator renders
+`OPENSTACK_REQUEST_TIMEOUT = 30`; Django ignores a setting no code reads, so the
+key is inert against an image without the patch. No upstream test pins the
+constructor arguments, so the patches add `GetSessionTimeoutTestCase` to
+`openstack_auth/tests/unit/test_utils.py` and one test class per client module
+under `openstack_dashboard/test/unit/api/`, a new `test_placement.py` included,
+each with the setting at a number and at `None`.
+`test_request_timeout_reaches_every_client` in
+`tests/container-images/verify_horizon.sh` sets the setting to 7 in the built
+image, asserts the `timeout` of `get_session()` and of every patched constructor,
+then repeats with `None` and asserts that the Glance client gets no `timeout`
+argument. Upstream status: not yet proposed.
+
 **Build and verify:**
 
 ```bash
