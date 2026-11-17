@@ -28,6 +28,7 @@ name: Build Images
       - tests/lib/uwsgi.sh
       - tests/lib/static_image.sh
       - tests/lib/pymemcache.sh
+      - tests/lib/castellan.sh
       - .github/workflows/build-images.yaml
       - flake.nix
       - flake.lock
@@ -92,6 +93,7 @@ name: Build Images
       - tests/lib/uwsgi.sh
       - tests/lib/static_image.sh
       - tests/lib/pymemcache.sh
+      - tests/lib/castellan.sh
       - .github/workflows/build-images.yaml
       - flake.nix
       - flake.lock
@@ -197,6 +199,7 @@ jobs:
               - 'operators/cinder/api/v1alpha1/catalogs/**'
               - 'tests/container-images/verify_cinder.sh'
               - 'tests/lib/ceph_bindings.sh'
+              - 'tests/lib/castellan.sh'
             svc_nova:
               - 'images/nova/**'
               - 'nix/locks/*/nova/**'
@@ -204,6 +207,7 @@ jobs:
               - 'operators/nova/api/v1alpha1/catalogs/**'
               - 'tests/container-images/verify_nova.sh'
               - 'tests/lib/pymemcache.sh'
+              - 'tests/lib/castellan.sh'
               # The compute image is built from nova's lock, patches and
               # constraints and rides the nova service name.
               - 'images/nova-compute/**'

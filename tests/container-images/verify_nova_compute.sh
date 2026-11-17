@@ -26,6 +26,8 @@ source "$SCRIPT_DIR/../lib/assertions.sh"
 source "$SCRIPT_DIR/../lib/ceph_bindings.sh"
 # shellcheck source=tests/lib/build_tools.sh
 source "$SCRIPT_DIR/../lib/build_tools.sh"
+# shellcheck source=tests/lib/castellan.sh
+source "$SCRIPT_DIR/../lib/castellan.sh"
 
 # --- Test 1: the console scripts ship and nova-compute runs ---
 test_console_scripts() {
@@ -445,6 +447,15 @@ test_root_tools_resolve() {
   assert_contains "modprobe reads xz-compressed modules" "$output" "+XZ"
 }
 
+# --- Test 12: [barbican] timeout bounds castellan's session ---
+test_castellan_barbican_session_bounded() {
+  echo "Test: [barbican] timeout bounds the session castellan reads keys through"
+  # nova-compute is the process that reads the key of an encrypted volume
+  # through castellan when it attaches the volume; the compute fragment
+  # carries [barbican] timeout = 60.
+  assert_castellan_barbican_session_bounded
+}
+
 # --- Run all tests ---
 echo "=== nova-compute container verification tests ==="
 echo "Image: $IMAGE"
@@ -470,6 +481,8 @@ echo ""
 test_state_directories
 echo ""
 test_root_tools_resolve
+echo ""
+test_castellan_barbican_session_bounded
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 

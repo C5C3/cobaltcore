@@ -1074,6 +1074,14 @@ test_changes_job_gates_matrix_jobs() {
     assert_contains "the svc_${svc} filter covers the pymemcache helper" \
       "$(path_filters | yq_raw ".svc_${svc}[]" - || true)" "tests/lib/pymemcache.sh"
   done
+  assert_contains "the pull-request trigger names the castellan helper" \
+    "$pr_paths" "tests/lib/castellan.sh"
+  assert_contains "the push trigger names the castellan helper" \
+    "$push_paths" "tests/lib/castellan.sh"
+  for svc in nova cinder; do
+    assert_contains "the svc_${svc} filter covers the castellan helper" \
+      "$(path_filters | yq_raw ".svc_${svc}[]" - || true)" "tests/lib/castellan.sh"
+  done
   assert_contains "the base filter rebuilds every image whose verify script sources the build-tools helper" \
     "$(path_filters | yq_raw '.base[]' - || true)" \
     "tests/lib/build_tools.sh"

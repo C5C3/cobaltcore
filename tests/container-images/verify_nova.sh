@@ -20,6 +20,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../lib/assertions.sh"
 # shellcheck source=tests/lib/build_tools.sh
 source "$SCRIPT_DIR/../lib/build_tools.sh"
+# shellcheck source=tests/lib/castellan.sh
+source "$SCRIPT_DIR/../lib/castellan.sh"
 # shellcheck source=tests/lib/pymemcache.sh
 source "$SCRIPT_DIR/../lib/pymemcache.sh"
 # shellcheck source=tests/lib/uwsgi.sh
@@ -801,6 +803,15 @@ print(" ".join(result))' 2>&1) || exit_code=$?
   assert_eq "a failed start reverts its task state after a lost database" "RemoteError 3 RuntimeError 1" "${output##*$'\n'}"
 }
 
+# --- Test 21: [barbican] timeout bounds castellan's session ---
+test_castellan_barbican_session_bounded() {
+  echo "Test: [barbican] timeout bounds the session castellan reads keys through"
+  # The nova-operator renders [barbican] timeout = 60 into nova.conf, and
+  # every nova process loads its key manager from the castellan this image
+  # carries. verify_nova_compute.sh runs the same check for the compute.
+  assert_castellan_barbican_session_bounded
+}
+
 # --- Run all tests ---
 echo "=== nova container verification tests ==="
 echo "Image: $IMAGE"
@@ -844,6 +855,8 @@ echo ""
 test_start_waits_for_keystone_and_placement
 echo ""
 test_failed_start_reverts_task_state_after_a_lost_database
+echo ""
+test_castellan_barbican_session_bounded
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 
