@@ -164,7 +164,7 @@ cache is written on the download path, so the upload alone leaves the directory
 empty:
 
 ```bash
-dd if=/dev/urandom of=/tmp/cache-demo.img bs=1048576 count=64
+dd if=/dev/urandom of=/tmp/cache-demo.img bs=1M count=64
 openstack --insecure image create --disk-format raw --container-format bare \
   --file /tmp/cache-demo.img cache-demo
 openstack --insecure image save --file /tmp/cache-demo.out cache-demo
