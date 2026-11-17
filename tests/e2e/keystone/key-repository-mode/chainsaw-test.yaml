@@ -3,12 +3,19 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Chainsaw E2E test for the Fernet/credential key-repository mode hardening
-# Verifies that the upstream Keystone startup warning
-# `key_repository is world readable: <path>` does NOT appear in the keystone
-# container log for either the fernet or credential key paths after the
-# operator's restrictive-mode Secret projections take effect.
+# Keystone's validate_key_repository runs on every key load. The image
+# carries keystone patch 0005, so it logs
+# `key_repository is world readable: <path>` only when a key file is
+# readable by others, and the operator projects the keys as 0440
+# root:42424. Step 3 loads both key repositories on the API pod: it issues
+# and validates a token and creates, reads and deletes a credential.
+# Step 4 requires the request lines of that round trip in the captured log,
+# so a log read before the first key load cannot pass. It then asserts that
+# the API pod logged the warning for neither key path, that no key file in
+# either mounted directory is readable by others, and that no container of
+# any keystone-keymode-* pod logged the warning.
 #
-# The two log assertions are run as SEPARATE grep invocations so that a
+# The two API pod log assertions are run as SEPARATE grep invocations so that a
 # regression on one path fails independently with a-tagged error
 # message — the credential-path warning is otherwise masked by the fernet
 # warning firing first when both paths regress together.
@@ -60,14 +67,77 @@ spec:
           done
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
-  # ── Step 3: Assert no `key_repository is world readable` warnings ──────
-  # Scrapes the keystone container log of a Deployment-managed API pod
-  # (the `pod-template-hash` label scopes the selector to API pods and
-  # excludes any CronJob-managed rotation pods sharing commonLabels) and
-  # asserts ZERO matches for both warning lines independently.
+  # ── Step 3: Load both key repositories ─────────────────────────────────
+  # A token issue loads the fernet keys, a credential create and read load
+  # the credential keys, and every load runs validate_key_repository. The
+  # API pod is selected by `pod-template-hash`, which only Deployment-managed
+  # pods carry. The password goes over stdin, never into an argument.
   - try:
     - script:
-        timeout: 60s
+        timeout: 120s
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          ADMIN_PASS=$(kubectl get secret keystone-admin -n openstack \
+            -o jsonpath='{.data.password}' | base64 -d)
+          if [ -z "$ADMIN_PASS" ]; then
+            echo "ERROR keystone-admin Secret has an empty or missing password field"
+            exit 1
+          fi
+          POD=$(kubectl get pods -n openstack \
+            -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-keymode,pod-template-hash \
+            -o jsonpath='{.items[0].metadata.name}')
+          if [ -z "$POD" ]; then
+            echo "ERROR no keystone API pod matched the selector"
+            exit 1
+          fi
+          echo "Loading both key repositories on pod: $POD"
+
+          printf '%s' "$ADMIN_PASS" | kubectl exec -i -n openstack "$POD" -c keystone -- python3 -c '
+          import json, sys, urllib.error, urllib.request
+          api = "http://localhost:5000/v3"
+          def call(method, path, headers=None, body=None):
+              headers = dict(headers or {}, **{"Content-Type": "application/json"})
+              data = None if body is None else json.dumps(body).encode()
+              req = urllib.request.Request(api + path, data=data, headers=headers, method=method)
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as r:
+                      text = r.read()
+                      return r.headers, json.loads(text) if text else None
+              except urllib.error.HTTPError as e:
+                  sys.exit("{} {} answered HTTP {}".format(method, path, e.code))
+          auth = {"auth": {"identity": {"methods": ["password"], "password": {"user": {"name": "admin", "domain": {"id": "default"}, "password": sys.stdin.read()}}}, "scope": {"project": {"name": "admin", "domain": {"id": "default"}}}}}
+          headers, body = call("POST", "/auth/tokens", body=auth)
+          token = {"X-Auth-Token": headers["X-Subject-Token"]}
+          print("OK token issued")
+          call("GET", "/auth/tokens", dict(token, **{"X-Subject-Token": token["X-Auth-Token"]}))
+          print("OK token validated")
+          cred = {"credential": {"type": "cert", "user_id": body["token"]["user"]["id"], "blob": "key-repository-mode"}}
+          _, body = call("POST", "/credentials", token, cred)
+          path = "/credentials/" + body["credential"]["id"]
+          print("OK credential created")
+          call("GET", path, token)
+          print("OK credential read")
+          call("DELETE", path, token)
+          print("OK credential deleted")
+          '
+    catch:
+    - script:
+        content: |
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-keymode,pod-template-hash -o name 2>/dev/null); do
+            echo "--- $pod (keystone container, last 200 lines) ---"
+            kubectl logs -n $NAMESPACE "$pod" -c keystone --tail=200 2>&1 || true
+          done
+  # ── Step 4: Assert no `key_repository is world readable` warnings ──────
+  # Scrapes the keystone container log of the API pod and asserts ZERO
+  # matches for both warning lines independently, once the log holds the
+  # request lines of step 3. Then checks the key file modes in the pod and
+  # the logs of every container of every keystone-keymode-* pod, which
+  # include the db-sync and bootstrap Job pods.
+  - try:
+    - script:
+        timeout: 120s
         shell: bash
         content: |
           set -euo pipefail
@@ -76,14 +146,31 @@ spec:
             -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-keymode,pod-template-hash \
             -o jsonpath='{.items[0].metadata.name}')
           if [ -z "$POD" ]; then
-            echo "ERROR no keystone API pod matched the selector — cannot scrape startup log"
+            echo "ERROR no keystone API pod matched the selector — cannot scrape its log"
             exit 1
           fi
           echo "Inspecting keystone container log on pod: $POD"
 
-          # Capture once; the two grep invocations operate on the same buffer
-          # so the assertions reflect a single point-in-time view of startup.
-          LOGS=$(kubectl logs -n openstack "$POD" -c keystone --tail=2000 2>&1)
+          # The request lines prove that the captured log covers the key
+          # loads of step 3. uWSGI's threaded logger may write them a moment
+          # after the response, so the capture is retried for 30 seconds.
+          # The here-strings keep grep -q out of a pipe, where its early exit
+          # would fail the pipeline under pipefail.
+          has_requests() {
+            grep -qF 'POST /v3/auth/tokens => generated' <<<"$LOGS" &&
+              grep -qF 'POST /v3/credentials => generated' <<<"$LOGS"
+          }
+          LOGS=""
+          for _ in $(seq 1 15); do
+            LOGS=$(kubectl logs -n openstack "$POD" -c keystone --tail=2000 2>&1)
+            has_requests && break
+            sleep 2
+          done
+          if ! has_requests; then
+            echo "ERROR the pod served no token or credential request: the last 2000 lines of $POD lack 'POST /v3/auth/tokens => generated' or 'POST /v3/credentials => generated'"
+            exit 1
+          fi
+          echo "OK the log holds the token and credential requests of step 3"
 
           FAIL=0
 
@@ -115,6 +202,68 @@ spec:
           else
             echo "OK no 'key_repository is world readable' warning for /etc/keystone/credential-keys"
           fi
+
+          # assert NO key file is readable by others. os.stat follows the
+          # key links of the Secret volume to the projected files.
+          WORLD_READABLE=$(kubectl exec -n openstack "$POD" -c keystone -- python3 -c '
+          import os, stat
+          for d in ("/etc/keystone/fernet-keys", "/etc/keystone/credential-keys"):
+              for name in sorted(os.listdir(d)):
+                  path = os.path.join(d, name)
+                  try:
+                      mode = os.stat(path).st_mode
+                  except FileNotFoundError:
+                      continue
+                  if stat.S_ISREG(mode) and mode & 0o004:
+                      print(path, oct(stat.S_IMODE(mode)))
+          ')
+          if [ -n "$WORLD_READABLE" ]; then
+            echo "ERROR key file(s) readable by others in $POD:"
+            printf '%s\n' "$WORLD_READABLE"
+            FAIL=1
+          else
+            echo "OK no key file in either key directory is readable by others"
+          fi
+
+          # assert NO world-readable warning in any container of any
+          # keystone-keymode-* pod. A completed Job pod may be deleted
+          # between the listing and the read, and a CronJob pod (hourly
+          # trust flush, weekly rotation) may still be Pending; neither
+          # has a log to check, so both are skipped.
+          PODS=$(kubectl get pods -n openstack -o name | grep '^pod/keystone-keymode-' || true)
+          if [ -z "$PODS" ]; then
+            echo "ERROR no pod named keystone-keymode-* found"
+            exit 1
+          fi
+          for pod in $PODS; do
+            # Read the phase before the log: a pod never returns to Pending,
+            # so a pod seen past Pending here has a log to read.
+            if ! PHASE=$(kubectl get -n openstack "$pod" -o jsonpath='{.status.phase}' 2>/dev/null); then
+              echo "INFO $pod is gone, its log is not checked"
+              continue
+            fi
+            if [ "$PHASE" = "Pending" ]; then
+              echo "INFO $pod has not started (phase Pending), it has logged nothing"
+              continue
+            fi
+            if ! POD_LOGS=$(kubectl logs -n openstack "$pod" --all-containers --prefix --tail=-1 2>&1); then
+              if ! kubectl get -n openstack "$pod" >/dev/null 2>&1; then
+                echo "INFO $pod is gone, its log is not checked"
+                continue
+              fi
+              echo "ERROR cannot read the log of $pod: $POD_LOGS"
+              FAIL=1
+              continue
+            fi
+            POD_LINES=$(printf '%s\n' "$POD_LOGS" | grep -F 'key_repository is world readable' || true)
+            if [ -n "$POD_LINES" ]; then
+              echo "ERROR $pod logged 'key_repository is world readable':"
+              printf '%s\n' "$POD_LINES"
+              FAIL=1
+            else
+              echo "OK no 'key_repository is world readable' warning in $pod"
+            fi
+          done
 
           exit $FAIL
     catch:

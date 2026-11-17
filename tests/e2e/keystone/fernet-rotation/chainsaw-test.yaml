@@ -154,6 +154,25 @@ spec:
           kubectl wait --for=condition=complete \
             job/keystone-fernet-manual-rotate -n openstack --timeout=120s
 
+          # The rotate script prints its success line last, and
+          # keystone-manage fernet_rotate validates the emptyDir key
+          # repository, which the image's patch 0005 reports only when a
+          # key file is readable by others.
+          JOB_LOG=$(kubectl logs -n openstack job/keystone-fernet-manual-rotate -c fernet-rotate)
+          if ! grep -qF 'Fernet keys staging Secret updated successfully' <<<"$JOB_LOG"; then
+            echo "ERROR: the manual rotation Job did not report the staging Secret update"
+            printf '%s\n' "$JOB_LOG"
+            exit 1
+          fi
+          echo "OK: the manual rotation Job updated the staging Secret"
+          WARN_LINES=$(printf '%s\n' "$JOB_LOG" | grep -F 'key_repository is world readable' || true)
+          if [ -n "$WARN_LINES" ]; then
+            echo "ERROR: the manual rotation Job logged 'key_repository is world readable'"
+            printf '%s\n' "$WARN_LINES"
+            exit 1
+          fi
+          echo "OK: the manual rotation Job logged no 'key_repository is world readable'"
+
           # The CronJob writes new keys to the staging Secret only; the
           # operator promotes them to the production Secret on the next
           # reconcile triggered by the staging Secret watch. Poll
