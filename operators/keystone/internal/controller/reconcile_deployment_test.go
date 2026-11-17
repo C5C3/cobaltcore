@@ -451,8 +451,9 @@ func TestReconcileDeployment_AutoscalingPreservesLiveReplicas(t *testing.T) {
 
 // TestBuildKeystoneDeployment_PodSecurityContextSetsFSGroup verifies that the
 // Pod template carries SecurityContext.FSGroup = deployment.OpenStackUID so that mounted
-// Secret volumes are owned by the openstack group, satisfying the upstream
-// Keystone "key_repository is world readable" check.
+// Secret volumes are owned by the openstack group. With DefaultMode 0o400 this
+// keeps the key files unreadable for others, which is what the patched Keystone
+// "key_repository is world readable" check (keystone patch 0005) tests.
 // All other PodSecurityContext fields must remain nil — Pod-level FSGroup is
 // orthogonal to the container-level PSS-Restricted SecurityContext.
 func TestBuildKeystoneDeployment_PodSecurityContextSetsFSGroup(t *testing.T) {
@@ -481,9 +482,10 @@ func TestBuildKeystoneDeployment_PodSecurityContextSetsFSGroup(t *testing.T) {
 }
 
 // TestBuildKeystoneDeployment_FernetAndCredentialVolumesSetDefaultMode0400 verifies
-// that the fernet-keys and credential-keys Secret volumes mount with file mode
-// 0o400 (owner read-only), so the Keystone process running under the openstack
-// UID/GID can read the keys while the volume is not group- or world-readable
+// that the fernet-keys and credential-keys Secret volumes mount with DefaultMode
+// 0o400. Under the pod's FSGroup the kubelet projects each key as 0440
+// root:42424, so the Keystone process under the openstack GID reads the keys
+// through the group bit and no other user can read them.
 // The config ConfigMap volume must NOT receive a
 // DefaultMode — it is out of scope and changing it would be scope creep.
 func TestBuildKeystoneDeployment_FernetAndCredentialVolumesSetDefaultMode0400(t *testing.T) {

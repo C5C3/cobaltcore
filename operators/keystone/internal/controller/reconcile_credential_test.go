@@ -784,9 +784,10 @@ func TestReconcileCredentialKeys_CronJobSpec(t *testing.T) {
 // TestCredentialRotationCronJob_PodSecurityContextSetsFSGroup verifies that
 // the rotation Pod template carries SecurityContext.FSGroup = deployment.OpenStackUID so
 // the kubelet group-owns mounted Secret volumes by the openstack GID. Combined
-// with DefaultMode 0o400 this lets keystone-manage read keys while the
-// directory passes upstream Keystone's "key_repository is world readable"
-// check. All other PodSecurityContext fields must
+// with DefaultMode 0o400 this lets keystone-manage read keys and keeps them
+// unreadable for others, which is what the patched Keystone "key_repository
+// is world readable" check (keystone patch 0005) tests. All other
+// PodSecurityContext fields must
 // remain nil — Pod-level FSGroup is orthogonal to the container-level
 // PSS-Restricted SecurityContext on the rotate container.
 func TestCredentialRotationCronJob_PodSecurityContextSetsFSGroup(t *testing.T) {
