@@ -16,9 +16,6 @@ privileged port. For the Keystone identity service reference, see
 the local-build path, the production HelmRelease, E2E and Tempest, see
 [Quick Start (Extended)](./quick-start-extended.md).
 
-On the map of the five quick starts this page is the box Quick Start, the
-shortest path to one standalone Keystone.
-
 ![A map of the five quick starts. Two of them run one standalone Keystone on a kind cluster on the workstation. The Quick Start deploys the infrastructure stack, the keystone-operator and one Keystone resource, and ends with an authenticated token. The Quick Start (Extended) is the same devstack in more depth, with the UIs, the opt-ins, local builds, the E2E suite and Tempest, and going there from the Quick Start needs make teardown-infra first, because its Step 2 creates the same cobaltcore cluster on port 443. The other three run a whole control plane from one ControlPlane resource. The Quick Start (ControlPlane) runs on a fresh kind cluster and ends with a token, an image, a secret, a network and the Horizon dashboard. The Quick Start (metal-stack) runs the same ControlPlane resource on a Gardener shoot on metal-stack, turns every worker into a KVM hypervisor, and ends with a server on every worker, a volume, a live migration, an eviction and a backup. The Quick Start (Orders) extends the ControlPlane devstack without a teardown: a second kind cluster joins it as a registered target, a service owner orders seven pieces from an assigned namespace on each cluster, and it ends with four Secrets on the target and four Jobs that use them. Going from a standalone Keystone to a ControlPlane is a mode change that needs make teardown-infra and a fresh cluster. Four of them begin at git clone; the Quick Start (Orders) begins on the ControlPlane devstack.](./diagrams/quickstart-map.svg)
 
 ## Prerequisites
@@ -26,16 +23,21 @@ shortest path to one standalone Keystone.
 - A running container runtime:
   - Docker Desktop, or
   - Podman with its machine already running.
+- At least 8 GB of RAM, 2 CPU cores, and 10 GB of free disk for the container
+  runtime (see the [Extended Quick Start prerequisites](./quick-start-extended.md#prerequisites)).
 
+- [Git](https://git-scm.com/downloads) on `PATH` to clone the repository
 - `make` on `PATH` for `install-test-deps`, `deploy-infra`, and `teardown-infra`
 - OpenStack CLI ([`python-openstackclient`](https://docs.openstack.org/python-openstackclient/latest/)) on `PATH` for the authenticated token check in Step 6
-- Pinned `kind`, `kubectl`, `Helm`, `jq` on `PATH`:
+- [`curl`](https://curl.se/download.html) on `PATH` for the API checks in Step 6
+- Pinned `kind` and `kubectl` on `PATH`; `make install-test-deps` installs them:
 
   ```bash
   make install-test-deps
   export PATH="${HOME}/.local/bin:${PATH}"
   ```
 
+- [`jq`](https://jqlang.org/download/) on `PATH` for extracting the OpenBao root token in Optional: UIs
 - [`yq`](https://github.com/mikefarah/yq) v4.40.1 or newer on `PATH` (only required because `KIND_HOST_PORT` is overridden)
 - A stable internet connection for the initial image pulls and package downloads
 
@@ -55,16 +57,23 @@ kind's provider:
 export KIND_EXPERIMENTAL_PROVIDER=podman
 ```
 
+kind fixes the host-port mapping when it creates the cluster. If a
+`cobaltcore` cluster already exists with another mapping, remove that devstack
+before this step; `make teardown-infra` deletes it.
+
 ```bash
 KIND_HOST_PORT=8443 make deploy-infra
 ```
 
-The command creates the `cobaltcore` kind cluster with `host:8443 → nodePort 31443`,
-then installs Flux, cert-manager, the Gateway API CRDs,
-prometheus-operator-crds, OpenBao (initialised, unsealed and bootstrapped),
-MariaDB operator + `openstack-db`, External Secrets, Memcached operator +
-`openstack-memcached`, Envoy Gateway and the shared `openstack-gw`. Expect
-5 to 10 minutes on first run.
+The command creates the `cobaltcore` kind cluster with
+`host:8443 → nodePort 31443`, then bootstraps Flux through the Flux Operator
+and a `FluxInstance`. It also installs cert-manager, the Gateway API CRDs,
+prometheus-operator-crds, OpenBao (initialized, unsealed, and bootstrapped),
+the MariaDB operator and `openstack-db`, External Secrets, the Memcached
+operator and `openstack-memcached`, Envoy Gateway, and the shared
+`openstack-gw`. Expect 5 to 10 minutes on first run. The kind overlay also
+installs Headlamp, but its HelmRelease reconciles asynchronously; the
+Optional: UIs section waits for it.
 
 The figure follows a request along that mapping, from the workstation to the
 pods of the Keystone that Step 5 creates.
@@ -80,8 +89,9 @@ optional component later, re-run with its flag set; the opt-in tips are in the
 [Extended Quick Start](./quick-start-extended.md). Removing a flag does not
 uninstall that component. That is `make teardown-infra`'s job.
 
-If the first run fails because a download or image pull flakes out, run
-`make teardown-infra` and then repeat Step 2.
+If a download or image pull fails during the first run, restore connectivity
+and re-run Step 2. Use `make teardown-infra` only when you want to remove the
+devstack.
 
 ## Step 3: Keystone operator
 
@@ -106,8 +116,8 @@ docker pull ghcr.io/c5c3/keystone:${RELEASE}
 kind load docker-image ghcr.io/c5c3/keystone:${RELEASE} --name cobaltcore
 ```
 
-With Podman, keep `KIND_EXPERIMENTAL_PROVIDER=podman` exported from the
-Prerequisites step, pull the image into Podman's image store, and load it into
+With Podman, keep `KIND_EXPERIMENTAL_PROVIDER=podman` exported from Step 2,
+pull the image into Podman's image store, and load it into
 the same kind provider:
 
 ```bash
@@ -165,6 +175,10 @@ kubectl wait keystone/keystone -n openstack \
 
 ## Step 6: Verify
 
+The local Gateway uses a self-signed certificate. `curl -k` and
+`openstack --insecure` skip certificate verification for this devstack; do not
+use those flags with production endpoints.
+
 ```bash
 curl -k https://keystone.127-0-0-1.nip.io:8443/v3
 ```
@@ -176,6 +190,9 @@ Expected output:
 ```
 
 Authenticated token request:
+
+The token ID is a bearer credential. Keep the command output private; the
+example redacts it and uses placeholders for generated values.
 
 ```bash
 export OS_AUTH_URL=https://keystone.127-0-0-1.nip.io:8443/v3
@@ -190,21 +207,21 @@ openstack --insecure token issue
 Expected output:
 
 ```text
-+------------+-------------------------------------------------------------------------------------------------------+
-| Field      | Value                                                                                                 |
-+------------+-------------------------------------------------------------------------------------------------------+
-| expires    | 2026-04-27T10:47:07+0000                                                                              |
-| id         | gAAAAABp7zCb9zhkS7ULijkujyqTFwXQshf_SXm6TMe0APpwHCpTV10gGrEakgWX-                                     |
-|            | OKcFgwDocxHvluFfr9MN2ByqSmuMEJT2vuXfTbOX7mn1zMIecvUTwLFQKgWsKpfQyRFNW71s4S4MVpd93o_EPLleg7aAZPT-      |
-|            | fLjitIFzU7b6sCSUG-CEdg                                                                                |
-| project_id | aed71e82de764a00aaab396e472e7929                                                                      |
-| user_id    | 8ac0e4e97079469dacfd1c5732c6e06b                                                                      |
-+------------+-------------------------------------------------------------------------------------------------------+
++------------+-----------------------------+
+| Field      | Value                       |
++------------+-----------------------------+
+| expires    | <timestamp>                 |
+| id         | [redacted bearer token]     |
+| project_id | <project-id>                |
+| user_id    | <user-id>                   |
++------------+-----------------------------+
 ```
 
 ## Optional: UIs
 
 **Headlamp** (Kubernetes + Flux dashboard):
+
+The token grants dashboard access; keep it private.
 
 ```bash
 kubectl wait helmrelease/headlamp -n headlamp-system \
@@ -217,9 +234,13 @@ Open <http://localhost:8080> and paste the token.
 
 **OpenBao** (root token from `openbao-init-keys`):
 
+The root token grants full OpenBao access. Keep the terminal output private
+and do not paste it into logs.
+
 ```bash
-kubectl get secret openbao-init-keys -n shared-services \
-  -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token'
+export BAO_TOKEN=$(kubectl get secret openbao-init-keys -n shared-services \
+  -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')
+echo "$BAO_TOKEN"
 kubectl port-forward svc/openbao -n shared-services 8200:8200
 ```
 
