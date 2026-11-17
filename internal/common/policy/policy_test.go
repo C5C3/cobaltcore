@@ -516,3 +516,35 @@ func TestLoadPolicyFromConfigMap_invalidYAML(t *testing.T) {
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("parsing " + PolicyConfigMapKey))
 }
+
+func TestBuildPolicyYAML(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-policy", Namespace: "default"},
+		Data: map[string]string{
+			PolicyConfigMapKey: "compute:create: role:admin\ncompute:delete: role:admin\n",
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(newPolicyScheme()).WithObjects(cm).Build()
+
+	out, err := BuildPolicyYAML(ctx, c, "default", nil)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(out).To(BeEmpty())
+
+	out, err = BuildPolicyYAML(ctx, c, "default", &types.PolicySpec{Rules: map[string]string{"compute:create": "role:member"}})
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(out).To(Equal("compute:create: role:member\n"))
+
+	// Inline rules win over the ConfigMap's.
+	out, err = BuildPolicyYAML(ctx, c, "default", &types.PolicySpec{
+		ConfigMapRef: &corev1.LocalObjectReference{Name: "my-policy"},
+		Rules:        map[string]string{"compute:create": "role:member"},
+	})
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(out).To(Equal("compute:create: role:member\ncompute:delete: role:admin\n"))
+
+	// A missing ConfigMap surfaces as an error, not as an empty policy.
+	_, err = BuildPolicyYAML(ctx, c, "other", &types.PolicySpec{ConfigMapRef: &corev1.LocalObjectReference{Name: "my-policy"}})
+	g.Expect(err).To(MatchError(ContainSubstring("loading policy from ConfigMap")))
+}

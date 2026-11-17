@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
+	"github.com/c5c3/cobaltcore/internal/common/naming"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	"github.com/c5c3/cobaltcore/internal/common/validation"
 	commonwebhook "github.com/c5c3/cobaltcore/internal/common/webhook"
@@ -685,21 +686,10 @@ func validateExtraConfigCollision(specPath *field.Path, h *Horizon, owned []stri
 // validateKeystoneEndpoint checks that the keystoneEndpoint URL is non-empty,
 // parses cleanly, uses an http(s) scheme, and carries a host.
 func validateKeystoneEndpoint(fldPath *field.Path, endpoint string) field.ErrorList {
-	var errs field.ErrorList
 	if endpoint == "" {
-		errs = append(errs, field.Required(fldPath, "keystoneEndpoint must be set (the Keystone public endpoint URL)"))
-		return errs
+		return field.ErrorList{field.Required(fldPath, "keystoneEndpoint must be set (the Keystone public endpoint URL)")}
 	}
-	u, err := url.Parse(endpoint)
-	switch {
-	case err != nil:
-		errs = append(errs, field.Invalid(fldPath, endpoint, fmt.Sprintf("must be a valid URL: %v", err)))
-	case u.Scheme != "http" && u.Scheme != "https":
-		errs = append(errs, field.Invalid(fldPath, endpoint, "scheme must be http or https"))
-	case u.Host == "":
-		errs = append(errs, field.Invalid(fldPath, endpoint, "URL must include a host"))
-	}
-	return errs
+	return validation.EndpointURL(fldPath, endpoint)
 }
 
 // APIPodSelector returns the pod selector of the dashboard Deployment of the
@@ -707,8 +697,5 @@ func validateKeystoneEndpoint(fldPath *field.Path, endpoint string) field.ErrorL
 // constraint must equal. The ControlPlane reads it to complete the spread
 // constraints it projects.
 func APIPodSelector(name string) map[string]string {
-	return map[string]string{
-		LabelKeyName:     AppName,
-		LabelKeyInstance: name,
-	}
+	return naming.SelectorLabels(AppName, name)
 }

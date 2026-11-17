@@ -440,27 +440,6 @@ func TestOperatorDefaults_RegistryDriftGuard(t *testing.T) {
 	}
 }
 
-// TestEffectiveLogging pins the render-time resolution of spec.logging: a CR
-// that bypassed the defaulting webhook still renders the production baseline,
-// and the resolver hands back a copy so nothing is written into the CR.
-func TestEffectiveLogging(t *testing.T) {
-	g := NewGomegaWithT(t)
-
-	fromNil := effectiveLogging(nil)
-	g.Expect(fromNil.Format).To(Equal("text"))
-	g.Expect(fromNil.Level).To(Equal("INFO"))
-	g.Expect(fromNil.Debug).NotTo(BeNil())
-	g.Expect(*fromNil.Debug).To(BeFalse())
-
-	// A half-filled block keeps what it sets and defaults the rest.
-	partial := &placementv1alpha1.LoggingSpec{Level: "WARNING"}
-	resolved := effectiveLogging(partial)
-	g.Expect(resolved.Format).To(Equal("text"))
-	g.Expect(resolved.Level).To(Equal("WARNING"))
-	g.Expect(partial.Format).To(BeEmpty(), "the input spec must be left untouched")
-	g.Expect(partial.Debug).To(BeNil(), "the input spec must be left untouched")
-}
-
 // TestRenderSortedPairs pins the deterministic wire format of the oslo.log
 // default_log_levels CSV: an unsorted render would rotate the ConfigMap and roll
 // the Deployment on a reconcile that changed nothing.

@@ -6,10 +6,8 @@ package controller
 
 import (
 	"context"
-	"crypto/sha256"
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -23,6 +21,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/database"
 	"github.com/c5c3/cobaltcore/internal/common/deployment"
 	"github.com/c5c3/cobaltcore/internal/common/job"
+	"github.com/c5c3/cobaltcore/internal/common/naming"
 	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
 	barbicanmetrics "github.com/c5c3/cobaltcore/operators/barbican/internal/metrics"
 )
@@ -72,10 +71,6 @@ const dbCleanActiveDeadlineSeconds int64 = 3600
 // package.
 const dbCleanNameSuffix = "-db-clean"
 
-// dbCleanNameHashLength is what the collapsed form below spends on the hash: a
-// separator plus eight hex characters.
-const dbCleanNameHashLength = 1 + 8
-
 // dbCleanComponent is the app.kubernetes.io/component value the clean-up pods
 // carry. It differs from the value the API pods carry, which is what keeps the
 // clean-up pods out of the API Service selector.
@@ -84,25 +79,10 @@ const dbCleanComponent = "db-clean"
 // dbCleanCronJobName returns the name of the clean-up CronJob, collapsing an
 // over-long Barbican name onto a content-stable hash.
 //
-// Admission bounds metadata.name so the plain "{name}-db-clean" form fits the
-// MaxCronJobNameLength characters Kubernetes allows a CronJob name — but on
-// create only, and it has to be: metadata.name is immutable, so on update the
-// rule could only fire against an object a pre-upgrade operator already
-// admitted, including the finalizer-removal update that completes its deletion.
-// An operator upgrade therefore inherits Barbican CRs the bound would reject,
-// and building their name unconditionally would fail every reconcile on an apply
-// the API server refuses, forever, with no field left to edit to repair it.
-// Every admissible name keeps the documented plain form.
+// naming.BoundedName explains why an over-long name can still reach the
+// reconciler.
 func dbCleanCronJobName(barbicanName string) string {
-	if len(barbicanName) <= barbicanv1alpha1.MaxBarbicanNameLength {
-		return barbicanName + dbCleanNameSuffix
-	}
-	sum := sha256.Sum256([]byte(barbicanName))
-	// The trim keeps the truncation from ending a DNS label on "-" or "." —
-	// which would make the very name this function exists to produce
-	// unapplicable — and only ever shortens, so the cap still holds.
-	kept := strings.TrimRight(barbicanName[:barbicanv1alpha1.MaxBarbicanNameLength-dbCleanNameHashLength], "-.")
-	return fmt.Sprintf("%s-%x%s", kept, sum[:4], dbCleanNameSuffix)
+	return naming.BoundedName(barbicanName, dbCleanNameSuffix, naming.MaxCronJobNameLength)
 }
 
 // effectiveDBClean returns the settings the clean-up CronJob runs with,
@@ -190,7 +170,7 @@ func (r *BarbicanReconciler) reconcileDBClean(ctx context.Context, children clie
 	}
 	// EnsureCronJob decodes the apply response back into cronJob, so it carries
 	// the persisted UID the owner-reference match below compares against.
-	observed := newestTerminalJob(cronJob, jobs.Items)
+	observed := job.NewestTerminalJob(cronJob, jobs.Items)
 
 	switch {
 	// Suspension outranks a failed run, because a suspended CronJob spawns no
@@ -297,28 +277,6 @@ func (r *BarbicanReconciler) reconcileDBClean(ctx context.Context, children clie
 	}
 
 	return ctrl.Result{}, nil
-}
-
-// newestTerminalJob returns the most recently created Job among jobs that the
-// given CronJob controls and that has reached a terminal state, or nil when no
-// such Job exists yet. Newest wins because the CronJob keeps a bounded history:
-// an older failed run must not keep the condition False once a later run has
-// succeeded.
-func newestTerminalJob(cronJob *batchv1.CronJob, jobs []batchv1.Job) *batchv1.Job {
-	var newest *batchv1.Job
-	for i := range jobs {
-		candidate := &jobs[i]
-		if !metav1.IsControlledBy(candidate, cronJob) {
-			continue
-		}
-		if job.TerminalCondition(candidate) == "" {
-			continue
-		}
-		if newest == nil || candidate.CreationTimestamp.After(newest.CreationTimestamp.Time) {
-			newest = candidate
-		}
-	}
-	return newest
 }
 
 // supersededFailedJobs returns the failed runs of cronJob that were created

@@ -120,26 +120,19 @@ func buildHorizonNetworkPolicy(horizon *horizonv1alpha1.Horizon, operatorNamespa
 }
 
 // buildAutoEgressRules constructs the auto-derived egress rules for DNS
-// (UDP+TCP 53), the Keystone endpoint (TCP, port from
-// networkpolicy.KeystoneEndpointPort), and the cache (TCP, ports from the cache
+// (UDP+TCP 53), the Keystone endpoint (networkpolicy.KeystoneEgressRule), and
+// the cache (TCP, ports from the cache
 // spec). The dashboard has no database
 // and no rotation CronJobs, so no DB or kube-apiserver egress is emitted. Rule
 // order is deterministic: DNS, keystone, cache.
 func buildAutoEgressRules(horizon *horizonv1alpha1.Horizon) []networkingv1.NetworkPolicyEgressRule {
-	tcp := corev1.ProtocolTCP
-
 	// DNS egress: always required (UDP+TCP 53).
 	rules := []networkingv1.NetworkPolicyEgressRule{networkpolicy.DNSEgressRule()}
 
 	// Keystone egress: the dashboard authenticates every login against
 	// spec.keystoneEndpoint. Port-only — destination unrestricted, matching the
 	// keystone-operator's DB/cache egress posture.
-	keystonePort := intstr.FromInt32(networkpolicy.KeystoneEndpointPort(horizon.Spec.KeystoneEndpoint))
-	rules = append(rules, networkingv1.NetworkPolicyEgressRule{
-		Ports: []networkingv1.NetworkPolicyPort{
-			{Protocol: &tcp, Port: &keystonePort},
-		},
-	})
+	rules = append(rules, networkpolicy.KeystoneEgressRule(horizon.Spec.KeystoneEndpoint))
 
 	// Cache egress: emitted in both managed and brownfield modes. Cache egress
 	// does not gate readiness, so a wrong cache port degrades caching without

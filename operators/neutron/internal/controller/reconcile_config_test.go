@@ -566,27 +566,6 @@ func TestOperatorDefaults_NovaBlockOmitsRegionWhenEmpty(t *testing.T) {
 	g.Expect(defaults["DEFAULT"]).To(HaveKeyWithValue("notify_nova_on_port_data_changes", "true"))
 }
 
-// TestEffectiveLogging pins the render-time resolution of spec.logging: a CR
-// that bypassed the defaulting webhook still renders the production baseline,
-// and the resolver hands back a copy so nothing is written into the CR.
-func TestEffectiveLogging(t *testing.T) {
-	g := NewGomegaWithT(t)
-
-	fromNil := effectiveLogging(nil)
-	g.Expect(fromNil.Format).To(Equal("text"))
-	g.Expect(fromNil.Level).To(Equal("INFO"))
-	g.Expect(fromNil.Debug).NotTo(BeNil())
-	g.Expect(*fromNil.Debug).To(BeFalse())
-
-	// A half-filled block keeps what it sets and defaults the rest.
-	partial := &neutronv1alpha1.LoggingSpec{Level: "WARNING"}
-	resolved := effectiveLogging(partial)
-	g.Expect(resolved.Format).To(Equal("text"))
-	g.Expect(resolved.Level).To(Equal("WARNING"))
-	g.Expect(partial.Format).To(BeEmpty(), "the input spec must be left untouched")
-	g.Expect(partial.Debug).To(BeNil(), "the input spec must be left untouched")
-}
-
 // TestReconcileConfig_CacheServers covers the server list neutron.conf renders
 // into [keystone_authtoken] memcached_servers: the sorted status.serverList of
 // the referenced Memcached, the Service name while there is none, a brownfield

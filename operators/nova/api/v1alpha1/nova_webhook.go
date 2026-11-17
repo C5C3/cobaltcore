@@ -44,10 +44,8 @@ const (
 // Name-length bounds enforced on metadata.name, driven by the archive CronJob,
 // the child object with the tightest name budget.
 const (
-	// MaxCronJobNameLength is the API server's own cap on a CronJob name:
-	// DNS1035LabelMaxLength (63) minus the 11-character "-<timestamp>" suffix its
-	// controller appends to every Job it spawns.
-	MaxCronJobNameLength = 52
+	// MaxCronJobNameLength is the API server's own cap on a CronJob name.
+	MaxCronJobNameLength = naming.MaxCronJobNameLength
 	// dbArchiveNameSuffix is appended to metadata.name to name the archive
 	// CronJob. It is duplicated from the controller package (which builds the
 	// object) because the api package cannot import the controller.
@@ -600,7 +598,7 @@ func (w *NovaWebhook) validate(ctx context.Context, n *Nova, extra field.ErrorLi
 	if n.Spec.KeystoneEndpoint == "" {
 		allErrs = append(allErrs, field.Required(keystonePath, "keystoneEndpoint must be set"))
 	} else {
-		allErrs = append(allErrs, validateEndpointURL(keystonePath, n.Spec.KeystoneEndpoint)...)
+		allErrs = append(allErrs, validation.EndpointURL(keystonePath, n.Spec.KeystoneEndpoint)...)
 	}
 
 	// Every endpoint is handed to a client library verbatim, so an unparseable
@@ -621,7 +619,7 @@ func (w *NovaWebhook) validate(ctx context.Context, n *Nova, extra field.ErrorLi
 		{endpointsPath.Child("barbican", "override"), n.Spec.Endpoints.Barbican.Override},
 	} {
 		if endpoint.value != "" {
-			allErrs = append(allErrs, validateEndpointURL(endpoint.path, endpoint.value)...)
+			allErrs = append(allErrs, validation.EndpointURL(endpoint.path, endpoint.value)...)
 		}
 	}
 
@@ -633,7 +631,7 @@ func (w *NovaWebhook) validate(ctx context.Context, n *Nova, extra field.ErrorLi
 	// carriage return therefore injects an additional config line, smuggling a
 	// whole section past the (section, key)-keyed ownership and catalog gates,
 	// and into the fragment every hypervisor loads, which spec.extraConfig never
-	// reaches. The URL fields need no entry here: validateEndpointURL's url.Parse
+	// reaches. The URL fields need no entry here: validation.EndpointURL's url.Parse
 	// rejects control bytes, and spec.cache and spec.logging have their own
 	// checks. The console gateway hostname is on the list because it is rendered
 	// into [vnc] novncproxy_base_url.
@@ -1003,23 +1001,6 @@ func validateUWSGIHarakiri(fldPath *field.Path, u *commonv1.UWSGISpec, d *common
 	)}
 }
 
-// validateEndpointURL checks that a non-empty endpoint parses cleanly, uses an
-// http(s) scheme, and carries a host, the same shape the sibling operators
-// enforce on their endpoints. It is applied to every URL field on NovaSpec.
-func validateEndpointURL(fldPath *field.Path, endpoint string) field.ErrorList {
-	var errs field.ErrorList
-	u, err := url.Parse(endpoint)
-	switch {
-	case err != nil:
-		errs = append(errs, field.Invalid(fldPath, endpoint, fmt.Sprintf("must be a valid URL: %v", err)))
-	case u.Scheme != "http" && u.Scheme != "https":
-		errs = append(errs, field.Invalid(fldPath, endpoint, "scheme must be http or https"))
-	case u.Host == "":
-		errs = append(errs, field.Invalid(fldPath, endpoint, "URL must include a host"))
-	}
-	return errs
-}
-
 // validateRemoteCompute checks the remote compute block while it is set. The
 // Keystone URL gets the shape check every URL field on NovaSpec gets; its
 // url.Parse also refuses a control character, so a newline cannot reach the
@@ -1036,7 +1017,7 @@ func validateRemoteCompute(specPath *field.Path, spec *NovaSpec) field.ErrorList
 	var errs field.ErrorList
 	rcPath := specPath.Child("remoteCompute")
 	ksPath := rcPath.Child("keystoneEndpoint")
-	if urlErrs := validateEndpointURL(ksPath, rc.KeystoneEndpoint); len(urlErrs) > 0 {
+	if urlErrs := validation.EndpointURL(ksPath, rc.KeystoneEndpoint); len(urlErrs) > 0 {
 		errs = append(errs, urlErrs...)
 	} else if u, _ := url.Parse(rc.KeystoneEndpoint); u.Scheme != "https" {
 		errs = append(errs, field.Invalid(ksPath, rc.KeystoneEndpoint,

@@ -160,7 +160,7 @@ spec:
             (contains($error, 'should match')): true
   # spec.keystonePublicEndpoint with a non-numeric port must be rejected by the
   # validating webhook: the value clears the CRD pattern, which constrains the
-  # scheme only, so url.Parse in validateEndpointURL is the sole gate.
+  # scheme only, so url.Parse in validation.EndpointURL is the sole gate.
   - try:
     - apply:
         file: 13-keystone-public-endpoint-not-a-url.yaml

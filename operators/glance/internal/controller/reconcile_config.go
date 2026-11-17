@@ -130,7 +130,7 @@ func (r *GlanceReconciler) reconcileConfig(ctx context.Context, children client.
 
 	// logging is re-derived here (operatorDefaults keeps its own copy) for the
 	// later logging.conf data-key decision below.
-	logging := effectiveLogging(glance.Spec.Logging)
+	logging := commonv1.EffectiveLogging(glance.Spec.Logging)
 
 	merged := defaults
 
@@ -153,7 +153,7 @@ func (r *GlanceReconciler) reconcileConfig(ctx context.Context, children client.
 	// Handle PolicyOverrides: render policy.yaml and wire oslo_policy.policy_file.
 	var policyYAML string
 	if glance.Spec.PolicyOverrides != nil {
-		yaml, err := buildPolicyYAML(ctx, children, glance)
+		yaml, err := policy.BuildPolicyYAML(ctx, children, glance.Namespace, glance.Spec.PolicyOverrides)
 		if err != nil {
 			markConfigFailed(glance, err)
 			return ctrl.Result{}, configArtifacts{}, fmt.Errorf("building policy: %w", err)
@@ -209,7 +209,7 @@ func (r *GlanceReconciler) reconcileConfig(ctx context.Context, children client.
 // to assert the rendered defaults stay in lockstep with
 // glancev1alpha1.OwnedConfigKeys. It mirrors keystone's operatorDefaults.
 func operatorDefaults(glance *glancev1alpha1.Glance, projection backendsProjection, cacheServers string) map[string]map[string]string {
-	logging := effectiveLogging(glance.Spec.Logging)
+	logging := commonv1.EffectiveLogging(glance.Spec.Logging)
 	filtering := effectiveImportFiltering(glance.Spec.ImportFiltering)
 	// The image-import plugins. (The variable is not named `plugins` — that is
 	// the pipeline helper package renderPasteINI calls below.)
@@ -493,55 +493,6 @@ func (r *GlanceReconciler) lastGoodArtifacts(ctx context.Context, children clien
 		}
 	}
 	return ctrl.Result{}, art, nil
-}
-
-// buildPolicyYAML builds the policy.yaml content from spec.policyOverrides,
-// merging inline rules over any ConfigMap-sourced rules (inline wins). It
-// mirrors keystone's buildPolicyYAML.
-func buildPolicyYAML(ctx context.Context, c client.Client, glance *glancev1alpha1.Glance) (string, error) {
-	po := glance.Spec.PolicyOverrides
-	if po == nil {
-		return "", nil
-	}
-
-	var rules map[string]string
-	if po.ConfigMapRef != nil {
-		cmRules, err := policy.LoadPolicyFromConfigMap(ctx, c, client.ObjectKey{
-			Namespace: glance.Namespace,
-			Name:      po.ConfigMapRef.Name,
-		})
-		if err != nil {
-			return "", fmt.Errorf("loading policy from ConfigMap: %w", err)
-		}
-		rules = cmRules
-	}
-	if len(po.Rules) > 0 {
-		if rules == nil {
-			rules = make(map[string]string)
-		}
-		for k, v := range po.Rules {
-			rules[k] = v
-		}
-	}
-	return policy.RenderPolicyYAML(rules)
-}
-
-// effectiveLogging returns the LoggingSpec to use for config rendering,
-// materializing the production defaults when spec.logging is nil (a CR that
-// bypassed the defaulting webhook). It mirrors keystone's effectiveLogging.
-func effectiveLogging(spec *glancev1alpha1.LoggingSpec) glancev1alpha1.LoggingSpec {
-	out := glancev1alpha1.LoggingSpec{Format: "text", Level: "INFO"}
-	if spec == nil {
-		return out
-	}
-	out = *spec
-	if out.Format == "" {
-		out.Format = "text"
-	}
-	if out.Level == "" {
-		out.Level = "INFO"
-	}
-	return out
 }
 
 // effectiveImportFiltering returns the six [import_filtering_opts] lists to

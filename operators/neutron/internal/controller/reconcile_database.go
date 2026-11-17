@@ -359,15 +359,8 @@ func (r *NeutronReconciler) rejectReleaseTransition(neutron *neutronv1alpha1.Neu
 // digest-disables-tracking contract; the patch suffix is ignored so a patched
 // image build (e.g. tag 2026.1-p1) still matches release 2026.1.
 func checkImageReleaseMismatch(neutron *neutronv1alpha1.Neutron) (ctrl.Result, bool) {
-	if neutron.Spec.Image.Tag == "" {
-		return ctrl.Result{}, false
-	}
-	tagRel, tagErr := release.ParseRelease(neutron.Spec.Image.Tag)
-	specRel, specErr := release.ParseRelease(neutron.Spec.OpenStackRelease)
-	if tagErr != nil || specErr != nil {
-		return ctrl.Result{}, false
-	}
-	if tagRel.Year == specRel.Year && tagRel.Minor == specRel.Minor {
+	msg, mismatch := release.ImageTagMismatch(neutron.Spec.Image.Tag, neutron.Spec.OpenStackRelease)
+	if !mismatch {
 		return ctrl.Result{}, false
 	}
 	conditions.SetCondition(&neutron.Status.Conditions, metav1.Condition{
@@ -375,9 +368,7 @@ func checkImageReleaseMismatch(neutron *neutronv1alpha1.Neutron) (ctrl.Result, b
 		Status:             metav1.ConditionFalse,
 		ObservedGeneration: neutron.Generation,
 		Reason:             conditionReasonImageReleaseMismatch,
-		Message: fmt.Sprintf("spec.image.tag %q names OpenStack release %d.%d but spec.openStackRelease is %q; "+
-			"bump spec.image in lockstep with spec.openStackRelease",
-			neutron.Spec.Image.Tag, tagRel.Year, tagRel.Minor, neutron.Spec.OpenStackRelease),
+		Message:            msg,
 	})
 	return ctrl.Result{RequeueAfter: RequeueDatabaseWait}, true
 }

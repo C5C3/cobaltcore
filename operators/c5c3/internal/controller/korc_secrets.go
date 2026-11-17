@@ -298,17 +298,14 @@ func (r *ControlPlaneReconciler) regenerateAppCredentialSecretValue(ctx context.
 // The data key defaults to "password" when the SecretRef.Key
 // is unset, matching the keystone admin-password Secret convention.
 //
-// DECISION (hash-helper extraction): the hash derivation lives here as a
-// package-level function so BOTH the ControlPlane reconciler (which reads the
-// cleartext via readAdminPassword and hashes it via hashAdminPassword inline) and
-// the CredentialRotation reconciler compute the SAME hash without duplicating the
-// SHA-256 logic.
+// Both the ControlPlane and CredentialRotation reconcilers use
+// secrets.AdminPasswordDigest to preserve the shared admin-password hash contract.
 func computeAdminPasswordHash(ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane) (string, error) {
 	pw, err := readAdminPassword(ctx, c, cp)
 	if err != nil {
 		return "", err
 	}
-	return hashAdminPassword(pw), nil
+	return secrets.AdminPasswordDigest(pw), nil
 }
 
 // readAdminPassword reads the cleartext admin password from the EFFECTIVE
@@ -328,7 +325,7 @@ func computeAdminPasswordHash(ctx context.Context, c client.Client, cp *c5c3v1al
 // reconcileKORC needs the cleartext — not just
 // its hash — to render the password-based clouds.yaml the admin
 // ApplicationCredential mints with, so the read is factored out here and the
-// hash derived from it via hashAdminPassword.
+// hash derived from it via secrets.AdminPasswordDigest.
 func readAdminPassword(ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane) (string, error) {
 	ref := effectiveAdminPasswordSecretRef(cp)
 	key := ref.Key
@@ -337,11 +334,4 @@ func readAdminPassword(ctx context.Context, c client.Client, cp *c5c3v1alpha1.Co
 	}
 	return secrets.GetSecretValue(ctx, c,
 		types.NamespacedName{Namespace: effectiveAdminPasswordSecretNamespace(cp), Name: ref.Name}, key)
-}
-
-// hashAdminPassword returns the SHA-256 of the admin password as a lowercase hex
-// string — the value stamped onto the AC CR's adminPasswordHashAnnotation.
-func hashAdminPassword(pw string) string {
-	sum := sha256.Sum256([]byte(pw))
-	return hex.EncodeToString(sum[:])
 }

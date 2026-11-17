@@ -318,7 +318,7 @@ FIXTURES: tuple[Fixture, ...] = (
         filename="12-keystone-endpoint-bad-scheme.yaml",
         comment=(
             "spec.keystoneEndpoint with a non-http(s) scheme violates the CRD pattern\n"
-            "(^https?://); the webhook's validateEndpointURL mirrors it. The value is\n"
+            "(^https?://); the webhook's validation.EndpointURL mirrors it. The value is\n"
             "rendered as [keystone_authtoken] auth_url, which keystonemiddleware can\n"
             "only reach over http or https."
         ),
@@ -331,7 +331,7 @@ FIXTURES: tuple[Fixture, ...] = (
             "spec.keystonePublicEndpoint with a non-numeric port is rejected by the\n"
             "validating webhook alone. The value clears the CRD pattern, which\n"
             "constrains the scheme only; url.Parse is what refuses the port, so\n"
-            "validateEndpointURL is the sole gate. Left admitted, the string would\n"
+            "validation.EndpointURL is the sole gate. Left admitted, the string would\n"
             "reach clients as the [keystone_authtoken] www_authenticate_uri a 401\n"
             "points them at."
         ),

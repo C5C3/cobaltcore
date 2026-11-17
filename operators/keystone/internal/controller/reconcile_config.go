@@ -7,8 +7,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"sort"
-	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -22,6 +20,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/plugins"
 	"github.com/c5c3/cobaltcore/internal/common/policy"
 	"github.com/c5c3/cobaltcore/internal/common/release"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 )
 
@@ -174,7 +173,7 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, children clien
 
 	// logging is re-derived here (operatorDefaults keeps its own copy) for the
 	// later logging.conf data-key decisions below.
-	logging := effectiveLogging(keystone.Spec.Logging)
+	logging := commonv1.EffectiveLogging(keystone.Spec.Logging)
 
 	merged := defaults
 
@@ -196,7 +195,7 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, children clien
 	// Step 4: Handle PolicyOverrides.
 	var policyYAML string
 	if keystone.Spec.PolicyOverrides != nil {
-		yaml, err := buildPolicyYAML(ctx, children, keystone)
+		yaml, err := policy.BuildPolicyYAML(ctx, children, keystone.Namespace, keystone.Spec.PolicyOverrides)
 		if err != nil {
 			return "", fmt.Errorf("building policy: %w", err)
 		}
@@ -295,7 +294,7 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, children clien
 // drift-guard test can call it directly to assert the rendered defaults stay
 // in lockstep with keystonev1alpha1.OwnedConfigKeys.
 func operatorDefaults(keystone *keystonev1alpha1.Keystone, domainsProjected bool, fed *federationProjection, cacheServers string) map[string]map[string]string {
-	logging := effectiveLogging(keystone.Spec.Logging)
+	logging := commonv1.EffectiveLogging(keystone.Spec.Logging)
 	defaults := map[string]map[string]string{
 		"DEFAULT": {
 			"keystone_user":  "",
@@ -397,7 +396,7 @@ func operatorDefaults(keystone *keystonev1alpha1.Keystone, domainsProjected bool
 	// CSV with alphabetically sorted keys for deterministic ConfigMap content
 	// hashing. Empty maps omit the key entirely so oslo.log keeps its compiled-in
 	// defaults rather than overriding them with an empty list.
-	if v := renderDefaultLogLevels(logging.PerLoggerLevels); v != "" {
+	if v := config.RenderSortedPairs(logging.PerLoggerLevels, "="); v != "" {
 		defaults["DEFAULT"]["default_log_levels"] = v
 	}
 	// when format=json the operator renders a logging.conf into
@@ -433,7 +432,7 @@ func keystoneReleaseEnforcesScopeAlways(imageTag string) bool {
 // when none is referenced. It is the single render input that lives outside the
 // CR spec, so it is folded into the config-render cache key. A NotFound is
 // reported as "" so the render path runs and surfaces the missing-ConfigMap
-// error via buildPolicyYAML rather than caching against a phantom.
+// error via policy.BuildPolicyYAML rather than caching against a phantom.
 func (r *KeystoneReconciler) policyConfigMapResourceVersion(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone) (string, error) {
 	po := keystone.Spec.PolicyOverrides
 	if po == nil || po.ConfigMapRef == nil {
@@ -555,81 +554,4 @@ func (r *KeystoneReconciler) pruneStaleConfigMaps(ctx context.Context, children 
 // dbPort returns the database port, defaulting to 3306 if not set.
 func dbPort(keystone *keystonev1alpha1.Keystone) int32 {
 	return database.Port(&keystone.Spec.Database)
-}
-
-// buildPolicyYAML builds the policy.yaml content from PolicyOverrides.
-func buildPolicyYAML(ctx context.Context, c client.Client, keystone *keystonev1alpha1.Keystone) (string, error) {
-	po := keystone.Spec.PolicyOverrides
-	if po == nil {
-		return "", nil
-	}
-
-	var rules map[string]string
-
-	// Load external policy from ConfigMap if set.
-	if po.ConfigMapRef != nil {
-		cmRules, err := policy.LoadPolicyFromConfigMap(ctx, c, client.ObjectKey{
-			Namespace: keystone.Namespace,
-			Name:      po.ConfigMapRef.Name,
-		})
-		if err != nil {
-			return "", fmt.Errorf("loading policy from ConfigMap: %w", err)
-		}
-		rules = cmRules
-	}
-
-	// Merge inline rules over external rules (inline wins).
-	if len(po.Rules) > 0 {
-		if rules == nil {
-			rules = make(map[string]string)
-		}
-		for k, v := range po.Rules {
-			rules[k] = v
-		}
-	}
-
-	return policy.RenderPolicyYAML(rules)
-}
-
-// effectiveLogging returns the LoggingSpec to use for config rendering,
-// materializing the production defaults when spec.logging is nil. The
-// defaulting webhook materializes the same baseline at admission, so this
-// fallback only matters when a CR bypasses the webhook (e.g. a pre-existing
-// CR observed by a freshly upgraded operator). Mirrors the UWSGISpec
-// nil-tolerance pattern at reconcile_deployment.go:317.
-func effectiveLogging(spec *keystonev1alpha1.LoggingSpec) keystonev1alpha1.LoggingSpec {
-	out := keystonev1alpha1.LoggingSpec{Format: "text", Level: "INFO"}
-	if spec == nil {
-		return out
-	}
-	out = *spec
-	if out.Format == "" {
-		out.Format = "text"
-	}
-	if out.Level == "" {
-		out.Level = "INFO"
-	}
-	return out
-}
-
-// renderDefaultLogLevels formats PerLoggerLevels as oslo.log's
-// default_log_levels CSV ("name=LEVEL,..."), with keys sorted alphabetically
-// so the rendered keystone.conf — and therefore the immutable ConfigMap
-// content hash — is independent of Go's randomized map iteration order
-// Returns "" for empty input so the caller can omit the
-// key entirely rather than overriding oslo.log defaults with an empty list.
-func renderDefaultLogLevels(perLogger map[string]string) string {
-	if len(perLogger) == 0 {
-		return ""
-	}
-	keys := make([]string, 0, len(perLogger))
-	for k := range perLogger {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	pairs := make([]string, 0, len(keys))
-	for _, k := range keys {
-		pairs = append(pairs, fmt.Sprintf("%s=%s", k, perLogger[k]))
-	}
-	return strings.Join(pairs, ",")
 }

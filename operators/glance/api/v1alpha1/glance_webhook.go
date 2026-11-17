@@ -7,7 +7,6 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"reflect"
 	"slices"
 	"sort"
@@ -117,10 +116,8 @@ const imageCacheFilterName = "cache"
 // Name-length bounds enforced on metadata.name, driven by the purge CronJob —
 // the child object with the tightest name budget.
 const (
-	// MaxCronJobNameLength is the API server's own cap on a CronJob name:
-	// DNS1035LabelMaxLength (63) minus the 11-character "-<timestamp>" suffix its
-	// controller appends to every Job it spawns.
-	MaxCronJobNameLength = 52
+	// MaxCronJobNameLength is the API server's own cap on a CronJob name.
+	MaxCronJobNameLength = naming.MaxCronJobNameLength
 	// dbPurgeNameSuffix is appended to metadata.name to name the purge CronJob.
 	// It is duplicated from the controller package (which builds the object)
 	// because the api package cannot import the controller.
@@ -485,12 +482,12 @@ func (w *GlanceWebhook) validate(ctx context.Context, g *Glance, extra field.Err
 			"keystoneEndpoint must be set (the Keystone auth_url the Glance pods reach)",
 		))
 	} else {
-		allErrs = append(allErrs, validateEndpointURL(specPath.Child("keystoneEndpoint"), g.Spec.KeystoneEndpoint)...)
+		allErrs = append(allErrs, validation.EndpointURL(specPath.Child("keystoneEndpoint"), g.Spec.KeystoneEndpoint)...)
 	}
 	// keystonePublicEndpoint is optional (falls back to keystoneEndpoint at
 	// render time); validate it only when set.
 	if g.Spec.KeystonePublicEndpoint != "" {
-		allErrs = append(allErrs, validateEndpointURL(specPath.Child("keystonePublicEndpoint"), g.Spec.KeystonePublicEndpoint)...)
+		allErrs = append(allErrs, validation.EndpointURL(specPath.Child("keystonePublicEndpoint"), g.Spec.KeystonePublicEndpoint)...)
 	}
 
 	// Defense-in-depth logging validation alongside the CRD enum markers on
@@ -895,23 +892,6 @@ func (w *GlanceWebhook) validate(ctx context.Context, g *Glance, extra field.Err
 		)
 	}
 	return nil
-}
-
-// validateEndpointURL checks that a non-empty endpoint parses cleanly, uses an
-// http(s) scheme, and carries a host — the same shape horizon enforces on its
-// keystoneEndpoint. It is applied to both Glance Keystone endpoint fields.
-func validateEndpointURL(fldPath *field.Path, endpoint string) field.ErrorList {
-	var errs field.ErrorList
-	u, err := url.Parse(endpoint)
-	switch {
-	case err != nil:
-		errs = append(errs, field.Invalid(fldPath, endpoint, fmt.Sprintf("must be a valid URL: %v", err)))
-	case u.Scheme != "http" && u.Scheme != "https":
-		errs = append(errs, field.Invalid(fldPath, endpoint, "scheme must be http or https"))
-	case u.Host == "":
-		errs = append(errs, field.Invalid(fldPath, endpoint, "URL must include a host"))
-	}
-	return errs
 }
 
 // ValidateImportFiltering mirrors the spec.importFiltering schema as defense in

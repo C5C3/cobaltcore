@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # spec.keystoneEndpoint with a non-http(s) scheme violates the CRD
-# pattern (^https?://); the webhook validateEndpointURL mirrors it.
+# pattern (^https?://); the webhook validation.EndpointURL mirrors it.
 apiVersion: glance.openstack.c5c3.io/v1alpha1
 kind: Glance
 metadata:

@@ -6,7 +6,6 @@ package controller
 
 import (
 	"context"
-	"fmt"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -211,15 +210,8 @@ func (r *GlanceReconciler) reconcileDatabase(ctx context.Context, children clien
 // digest-disables-tracking contract; the patch suffix is ignored so a patched
 // image build (e.g. tag 2026.1-p1) still matches release 2026.1.
 func checkImageReleaseMismatch(glance *glancev1alpha1.Glance) (ctrl.Result, bool) {
-	if glance.Spec.Image.Tag == "" {
-		return ctrl.Result{}, false
-	}
-	tagRel, tagErr := release.ParseRelease(glance.Spec.Image.Tag)
-	specRel, specErr := release.ParseRelease(glance.Spec.OpenStackRelease)
-	if tagErr != nil || specErr != nil {
-		return ctrl.Result{}, false
-	}
-	if tagRel.Year == specRel.Year && tagRel.Minor == specRel.Minor {
+	msg, mismatch := release.ImageTagMismatch(glance.Spec.Image.Tag, glance.Spec.OpenStackRelease)
+	if !mismatch {
 		return ctrl.Result{}, false
 	}
 	conditions.SetCondition(&glance.Status.Conditions, metav1.Condition{
@@ -227,9 +219,7 @@ func checkImageReleaseMismatch(glance *glancev1alpha1.Glance) (ctrl.Result, bool
 		Status:             metav1.ConditionFalse,
 		ObservedGeneration: glance.Generation,
 		Reason:             conditionReasonImageReleaseMismatch,
-		Message: fmt.Sprintf("spec.image.tag %q names OpenStack release %d.%d but spec.openStackRelease is %q; "+
-			"bump spec.image in lockstep with spec.openStackRelease",
-			glance.Spec.Image.Tag, tagRel.Year, tagRel.Minor, glance.Spec.OpenStackRelease),
+		Message:            msg,
 	})
 	return ctrl.Result{RequeueAfter: RequeueDatabaseWait}, true
 }

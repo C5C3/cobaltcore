@@ -344,15 +344,8 @@ func (r *BarbicanReconciler) rejectReleaseTransition(barbican *barbicanv1alpha1.
 // digest-disables-tracking contract; the patch suffix is ignored so a patched
 // image build (e.g. tag 2026.1-p1) still matches release 2026.1.
 func checkImageReleaseMismatch(barbican *barbicanv1alpha1.Barbican) (ctrl.Result, bool) {
-	if barbican.Spec.Image.Tag == "" {
-		return ctrl.Result{}, false
-	}
-	tagRel, tagErr := release.ParseRelease(barbican.Spec.Image.Tag)
-	specRel, specErr := release.ParseRelease(barbican.Spec.OpenStackRelease)
-	if tagErr != nil || specErr != nil {
-		return ctrl.Result{}, false
-	}
-	if tagRel.Year == specRel.Year && tagRel.Minor == specRel.Minor {
+	msg, mismatch := release.ImageTagMismatch(barbican.Spec.Image.Tag, barbican.Spec.OpenStackRelease)
+	if !mismatch {
 		return ctrl.Result{}, false
 	}
 	conditions.SetCondition(&barbican.Status.Conditions, metav1.Condition{
@@ -360,9 +353,7 @@ func checkImageReleaseMismatch(barbican *barbicanv1alpha1.Barbican) (ctrl.Result
 		Status:             metav1.ConditionFalse,
 		ObservedGeneration: barbican.Generation,
 		Reason:             conditionReasonImageReleaseMismatch,
-		Message: fmt.Sprintf("spec.image.tag %q names OpenStack release %d.%d but spec.openStackRelease is %q; "+
-			"bump spec.image in lockstep with spec.openStackRelease",
-			barbican.Spec.Image.Tag, tagRel.Year, tagRel.Minor, barbican.Spec.OpenStackRelease),
+		Message:            msg,
 	})
 	return ctrl.Result{RequeueAfter: RequeueDatabaseWait}, true
 }

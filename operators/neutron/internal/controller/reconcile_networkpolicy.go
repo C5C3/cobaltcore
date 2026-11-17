@@ -136,7 +136,7 @@ func buildNeutronNetworkPolicy(neutron *neutronv1alpha1.Neutron, operatorNamespa
 
 // buildAutoEgressRules constructs the auto-derived egress rules for DNS (UDP+TCP
 // 53), the database (TCP, port from the database spec), the Keystone endpoint
-// (TCP, port from networkpolicy.KeystoneEndpointPort), the cache (TCP, ports
+// (networkpolicy.KeystoneEgressRule), the cache (TCP, ports
 // from the cache spec), the OVN databases (TCP, one port per distinct published
 // endpoint), and the message bus (TCP, the transport URL's port). Rule order is
 // deterministic: DNS, database, keystone, cache, OVN, messaging. The database
@@ -162,12 +162,7 @@ func buildAutoEgressRules(neutron *neutronv1alpha1.Neutron, ovn resolvedOVNEndpo
 	// the kubelet probes and the operator health check, keep passing, because both
 	// target the unauthenticated version document. Port-only: destination
 	// unrestricted, matching the DB/cache egress posture.
-	keystonePort := intstr.FromInt32(networkpolicy.KeystoneEndpointPort(neutron.Spec.KeystoneEndpoint))
-	rules = append(rules, networkingv1.NetworkPolicyEgressRule{
-		Ports: []networkingv1.NetworkPolicyPort{
-			{Protocol: &tcp, Port: &keystonePort},
-		},
-	})
+	rules = append(rules, networkpolicy.KeystoneEgressRule(neutron.Spec.KeystoneEndpoint))
 
 	// Cache egress: emitted in both managed and brownfield modes. Cache egress
 	// does not gate readiness, so a wrong cache port degrades caching without

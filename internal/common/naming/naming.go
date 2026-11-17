@@ -4,7 +4,13 @@
 
 package naming
 
-import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+import (
+	"crypto/sha256"
+	"fmt"
+	"strings"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
 
 // Selector label keys used by the workload pod selectors, webhook TSC
 // validation, and CommonLabels. Exported so webhooks and controllers across
@@ -96,4 +102,34 @@ func ComponentLabels(appName, instanceName, component string) map[string]string 
 	labels := CommonLabels(appName, instanceName)
 	labels[LabelKeyComponent] = component
 	return labels
+}
+
+// MaxCronJobNameLength is the API server's own cap on a CronJob name:
+// DNS1035LabelMaxLength (63) minus the 11-character "-<timestamp>" suffix its
+// controller appends to every Job it spawns.
+const MaxCronJobNameLength = 52
+
+// HashSuffixLength is what BoundedName spends on the hash of an over-long
+// name: a "-" separator plus eight hex characters.
+const HashSuffixLength = 1 + 8
+
+// BoundedName returns base+suffix when it fits in maxLen characters, and
+// otherwise collapses base onto a content-stable hash:
+// "{truncated base}-{8 hex of sha256(base)}{suffix}".
+//
+// Webhooks bound metadata.name so the plain form always fits, but on create
+// only: metadata.name is immutable, so a CR admitted by an older operator can
+// still carry a longer name. Building the plain form for it would fail every
+// reconcile on an apply the API server refuses, with no field left to edit.
+//
+// The truncated base is trimmed of trailing "-" and "." so the result never
+// ends a DNS label on one of them. The trim only ever shortens, so the result
+// still fits maxLen.
+func BoundedName(base, suffix string, maxLen int) string {
+	if len(base)+len(suffix) <= maxLen {
+		return base + suffix
+	}
+	sum := sha256.Sum256([]byte(base))
+	kept := strings.TrimRight(base[:maxLen-len(suffix)-HashSuffixLength], "-.")
+	return fmt.Sprintf("%s-%x%s", kept, sum[:4], suffix)
 }

@@ -249,6 +249,28 @@ func TerminalCondition(job *batchv1.Job) batchv1.JobConditionType {
 	return terminal
 }
 
+// NewestTerminalJob returns the most recently created Job among jobs that
+// cronJob controls and that has reached a terminal state, or nil when no such
+// Job exists yet. Newest wins because a CronJob keeps a bounded history: an
+// older failed run must not keep a condition False once a later run has
+// succeeded.
+func NewestTerminalJob(cronJob *batchv1.CronJob, jobs []batchv1.Job) *batchv1.Job {
+	var newest *batchv1.Job
+	for i := range jobs {
+		candidate := &jobs[i]
+		if !metav1.IsControlledBy(candidate, cronJob) {
+			continue
+		}
+		if TerminalCondition(candidate) == "" {
+			continue
+		}
+		if newest == nil || candidate.CreationTimestamp.After(newest.CreationTimestamp.Time) {
+			newest = candidate
+		}
+	}
+	return newest
+}
+
 // isJobComplete returns true if the given Job has a Complete condition with
 // status True.
 func isJobComplete(job *batchv1.Job) bool {

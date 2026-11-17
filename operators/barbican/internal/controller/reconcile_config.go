@@ -122,7 +122,7 @@ func (r *BarbicanReconciler) reconcileConfig(ctx context.Context, children clien
 	// Handle PolicyOverrides: render policy.yaml and wire oslo_policy.policy_file.
 	var policyYAML string
 	if barbican.Spec.PolicyOverrides != nil {
-		rendered, err := buildPolicyYAML(ctx, children, barbican)
+		rendered, err := policy.BuildPolicyYAML(ctx, children, barbican.Namespace, barbican.Spec.PolicyOverrides)
 		if err != nil {
 			markConfigFailed(barbican, err)
 			return ctrl.Result{}, "", fmt.Errorf("building policy: %w", err)
@@ -379,34 +379,4 @@ func (r *BarbicanReconciler) lastGoodConfigSecret(ctx context.Context, children 
 		}
 	}
 	return ctrl.Result{}, "", nil
-}
-
-// buildPolicyYAML builds the policy.yaml content from spec.policyOverrides,
-// merging inline rules over any ConfigMap-sourced rules (inline wins).
-func buildPolicyYAML(ctx context.Context, c client.Client, barbican *barbicanv1alpha1.Barbican) (string, error) {
-	po := barbican.Spec.PolicyOverrides
-	if po == nil {
-		return "", nil
-	}
-
-	var rules map[string]string
-	if po.ConfigMapRef != nil {
-		cmRules, err := policy.LoadPolicyFromConfigMap(ctx, c, client.ObjectKey{
-			Namespace: barbican.Namespace,
-			Name:      po.ConfigMapRef.Name,
-		})
-		if err != nil {
-			return "", fmt.Errorf("loading policy from ConfigMap: %w", err)
-		}
-		rules = cmRules
-	}
-	if len(po.Rules) > 0 {
-		if rules == nil {
-			rules = make(map[string]string)
-		}
-		for k, v := range po.Rules {
-			rules[k] = v
-		}
-	}
-	return policy.RenderPolicyYAML(rules)
 }

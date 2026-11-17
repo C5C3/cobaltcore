@@ -88,6 +88,20 @@ func DatabaseEgressRule(db commonv1.DatabaseSpec) networkingv1.NetworkPolicyEgre
 	}
 }
 
+// KeystoneEgressRule returns the Keystone egress rule (TCP, port from
+// EndpointPort). Every service operator emits it so keystonemiddleware can
+// validate tokens against the endpoint. Destination is unrestricted, matching
+// the DNS/database/cache egress posture.
+func KeystoneEgressRule(endpoint string) networkingv1.NetworkPolicyEgressRule {
+	tcp := corev1.ProtocolTCP
+	port := intstr.FromInt32(EndpointPort(endpoint))
+	return networkingv1.NetworkPolicyEgressRule{
+		Ports: []networkingv1.NetworkPolicyPort{
+			{Protocol: &tcp, Port: &port},
+		},
+	}
+}
+
 // CacheEgressRule returns the cache egress rule (TCP, ports from
 // CacheEgressPorts) and ok=true, or a zero rule and ok=false when no cache is
 // configured (neither ClusterRef nor Servers), in which case no cache egress
@@ -203,15 +217,10 @@ func HostPortsEgressRule(hostURLs []string) (networkingv1.NetworkPolicyEgressRul
 	return networkingv1.NetworkPolicyEgressRule{Ports: rulePorts}, true
 }
 
-// KeystoneEndpointPort returns the TCP port of a Keystone endpoint URL: the
-// explicit URL port when present, otherwise 443 for https and 80 for http. An
-// unparseable URL (rejected by every operator's webhook, but validation can be
-// bypassed) falls back to 443 — the fail-closed choice for an egress rule.
-//
-// Every service operator emits the same port-only Keystone egress rule, and the
-// derivation is the same three-way decision in each: it lives here so the rule
-// cannot drift between them.
-func KeystoneEndpointPort(endpoint string) int32 {
+// EndpointPort returns an endpoint URL's valid explicit TCP port, otherwise
+// 80 for http and 443 for other schemes. An unparseable URL falls back to 443.
+// Service and identity-provider NetworkPolicy egress rules share this derivation.
+func EndpointPort(endpoint string) int32 {
 	const maxPort = 65535
 	u, err := url.Parse(endpoint)
 	if err != nil {

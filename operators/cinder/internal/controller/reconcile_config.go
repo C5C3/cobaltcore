@@ -21,6 +21,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/keystoneauth"
 	"github.com/c5c3/cobaltcore/internal/common/messaging"
 	"github.com/c5c3/cobaltcore/internal/common/policy"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	cinderv1alpha1 "github.com/c5c3/cobaltcore/operators/cinder/api/v1alpha1"
 )
 
@@ -173,7 +174,7 @@ func (r *CinderReconciler) reconcileConfig(ctx context.Context, children client.
 	// PolicyOverrides: render policy.yaml and wire oslo_policy.policy_file.
 	var policyYAML string
 	if cinder.Spec.PolicyOverrides != nil {
-		yaml, err := buildPolicyYAML(ctx, children, cinder)
+		yaml, err := policy.BuildPolicyYAML(ctx, children, cinder.Namespace, cinder.Spec.PolicyOverrides)
 		if err != nil {
 			markConfigFailed(cinder, err)
 			return ctrl.Result{}, configArtifacts{}, fmt.Errorf("building policy: %w", err)
@@ -203,7 +204,7 @@ func (r *CinderReconciler) reconcileConfig(ctx context.Context, children client.
 		// volume is keyed by.
 		schedulerConfDataKey: "[DEFAULT]\nhost = " + cinder.Name + "-scheduler\n",
 	}
-	if logging := effectiveLogging(cinder.Spec.Logging); logging.Format == "json" {
+	if logging := commonv1.EffectiveLogging(cinder.Spec.Logging); logging.Format == "json" {
 		data[loggingINIDataKey] = config.RenderLoggingConf(logging.Level)
 	}
 	if policyYAML != "" {
@@ -245,7 +246,7 @@ func (r *CinderReconciler) reconcileConfig(ctx context.Context, children client.
 // (reconcile_backends.go), so the key never belongs in the document the API and
 // the scheduler read.
 func operatorDefaults(cinder *cinderv1alpha1.Cinder, cacheServers string) map[string]map[string]string {
-	logging := effectiveLogging(cinder.Spec.Logging)
+	logging := commonv1.EffectiveLogging(cinder.Spec.Logging)
 
 	// The WSGI pipeline api-paste.ini serves the API through. keystone is the
 	// only one of them that runs keystonemiddleware, so a Cinder deployed without
@@ -394,54 +395,6 @@ func keystoneServiceUser(cinder *cinderv1alpha1.Cinder) *cinderv1alpha1.ServiceU
 		return nil
 	}
 	return cinder.Spec.ServiceUser
-}
-
-// effectiveLogging returns the LoggingSpec to use for config rendering,
-// materializing the production defaults when spec.logging is nil (a CR that
-// bypassed the defaulting webhook). It mirrors the sibling operators'
-// effectiveLogging.
-func effectiveLogging(spec *cinderv1alpha1.LoggingSpec) cinderv1alpha1.LoggingSpec {
-	out := cinderv1alpha1.LoggingSpec{Format: "text", Level: "INFO"}
-	if spec == nil {
-		return out
-	}
-	out = *spec
-	if out.Format == "" {
-		out.Format = "text"
-	}
-	if out.Level == "" {
-		out.Level = "INFO"
-	}
-	return out
-}
-
-// buildPolicyYAML builds the policy.yaml content from spec.policyOverrides,
-// merging inline rules over any ConfigMap-sourced rules (inline wins). It
-// mirrors the sibling operators' buildPolicyYAML.
-func buildPolicyYAML(ctx context.Context, c client.Client, cinder *cinderv1alpha1.Cinder) (string, error) {
-	po := cinder.Spec.PolicyOverrides
-	if po == nil {
-		return "", nil
-	}
-
-	var rules map[string]string
-	if po.ConfigMapRef != nil {
-		cmRules, err := policy.LoadPolicyFromConfigMap(ctx, c, client.ObjectKey{
-			Namespace: cinder.Namespace,
-			Name:      po.ConfigMapRef.Name,
-		})
-		if err != nil {
-			return "", fmt.Errorf("loading policy from ConfigMap: %w", err)
-		}
-		rules = cmRules
-	}
-	if len(po.Rules) > 0 {
-		if rules == nil {
-			rules = make(map[string]string, len(po.Rules))
-		}
-		maps.Copy(rules, po.Rules)
-	}
-	return policy.RenderPolicyYAML(rules)
 }
 
 // lastGoodArtifacts returns the config ConfigMap the running Cinder API

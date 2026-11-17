@@ -93,6 +93,16 @@ func TestDatabaseEgressRule(t *testing.T) {
 	g.Expect(DatabaseEgressRule(commonv1.DatabaseSpec{Port: 13306}).Ports[0].Port.IntValue()).To(gomega.Equal(13306))
 }
 
+func TestKeystoneEgressRule(t *testing.T) {
+	g := gomega.NewWithT(t)
+	rule := KeystoneEgressRule("http://keystone.default.svc:5000/v3")
+	g.Expect(rule.To).To(gomega.BeEmpty())
+	g.Expect(rule.Ports).To(gomega.HaveLen(1))
+	g.Expect(*rule.Ports[0].Protocol).To(gomega.Equal(corev1.ProtocolTCP))
+	g.Expect(rule.Ports[0].Port.IntValue()).To(gomega.Equal(5000))
+	g.Expect(KeystoneEgressRule("https://keystone.example.com/v3").Ports[0].Port.IntValue()).To(gomega.Equal(443))
+}
+
 func TestCacheEgressRule(t *testing.T) {
 	g := gomega.NewWithT(t)
 	_, ok := CacheEgressRule(commonv1.CacheSpec{})
@@ -144,7 +154,7 @@ func TestHostPortsEgressRule(t *testing.T) {
 	}
 }
 
-func TestKeystoneEndpointPort(t *testing.T) {
+func TestEndpointPort(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		endpoint string
@@ -159,7 +169,7 @@ func TestKeystoneEndpointPort(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			g := gomega.NewWithT(t)
-			g.Expect(KeystoneEndpointPort(tc.endpoint)).To(gomega.Equal(tc.want))
+			g.Expect(EndpointPort(tc.endpoint)).To(gomega.Equal(tc.want))
 		})
 	}
 }

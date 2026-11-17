@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # spec.keystoneEndpoint with a non-http(s) scheme violates the CRD pattern
-# (^https?://); the webhook's validateEndpointURL mirrors it. The value is
+# (^https?://); the webhook's validation.EndpointURL mirrors it. The value is
 # rendered as [keystone_authtoken] auth_url, which keystonemiddleware can
 # only reach over http or https.
 apiVersion: placement.openstack.c5c3.io/v1alpha1

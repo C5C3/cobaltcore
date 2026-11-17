@@ -23,6 +23,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	"github.com/c5c3/cobaltcore/internal/common/config"
+	"github.com/c5c3/cobaltcore/internal/common/naming"
 	"github.com/c5c3/cobaltcore/internal/common/policy"
 	"github.com/c5c3/cobaltcore/internal/common/release"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
@@ -1161,8 +1162,5 @@ func extraConfigCatalogInputsChanged(oldObj, newObj *Keystone) bool {
 // constraint must equal. The ControlPlane reads it to complete the spread
 // constraints it projects.
 func APIPodSelector(name string) map[string]string {
-	return map[string]string{
-		LabelKeyName:     AppName,
-		LabelKeyInstance: name,
-	}
+	return naming.SelectorLabels(AppName, name)
 }

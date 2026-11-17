@@ -7,10 +7,8 @@ package controller
 import (
 	"cmp"
 	"context"
-	"crypto/sha256"
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -61,10 +59,6 @@ const componentBackup = "backup"
 // ovnv1alpha1.MaxOVNCentralNameLength from it) because it cannot import the
 // controller package.
 const backupNameSuffix = "-backup"
-
-// backupNameHashLength is what the collapsed CronJob name below spends on the
-// hash: a separator plus eight hex characters.
-const backupNameHashLength = 1 + 8
 
 // backupMountPath is where the snapshot volume is mounted in both containers of
 // a backup run.
@@ -149,25 +143,10 @@ func effectiveBackup(cr *ovnv1alpha1.OVNCentral) ovnv1alpha1.OVNBackupSpec {
 // backupCronJobName returns the name of the backup CronJob, collapsing an
 // over-long OVNCentral name onto a content-stable hash.
 //
-// Admission bounds metadata.name so the plain "{name}-backup" form fits the
-// MaxCronJobNameLength characters Kubernetes allows a CronJob name, but on
-// create only, and it has to be: metadata.name is immutable, so on update the
-// rule could only fire against an object a pre-upgrade operator already
-// admitted, including the finalizer-removal update that completes its deletion.
-// An operator upgrade therefore inherits OVNCentral CRs the bound would reject,
-// and building their name unconditionally would fail every reconcile on an apply
-// the API server refuses, forever, with no field left to edit to repair it.
-// Every admissible name keeps the documented plain form.
+// naming.BoundedName explains why an over-long name can still reach the
+// reconciler.
 func backupCronJobName(name string) string {
-	if len(name) <= ovnv1alpha1.MaxOVNCentralNameLength {
-		return name + backupNameSuffix
-	}
-	sum := sha256.Sum256([]byte(name))
-	// The trim keeps the truncation from ending a DNS label on "-" or ".",
-	// which would make the very name this function exists to produce
-	// unapplicable. It only ever shortens, so the cap still holds.
-	kept := strings.TrimRight(name[:ovnv1alpha1.MaxOVNCentralNameLength-backupNameHashLength], "-.")
-	return fmt.Sprintf("%s-%x%s", kept, sum[:4], backupNameSuffix)
+	return naming.BoundedName(name, backupNameSuffix, naming.MaxCronJobNameLength)
 }
 
 // backupVolumeName names the PersistentVolumeClaim the snapshots are written to.
@@ -250,7 +229,7 @@ func (r *OVNCentralReconciler) reconcileBackup(ctx context.Context, children cli
 	}
 	// EnsureCronJob decodes the apply response back into cronJob, so it carries
 	// the persisted UID the owner-reference match below compares against.
-	observed := newestTerminalJob(cronJob, jobs.Items)
+	observed := job.NewestTerminalJob(cronJob, jobs.Items)
 	failed := observed != nil && job.TerminalCondition(observed) == batchv1.JobFailed
 
 	switch {
@@ -314,28 +293,6 @@ func (r *OVNCentralReconciler) reconcileBackup(ctx context.Context, children cli
 		})
 
 	return ctrl.Result{}, nil
-}
-
-// newestTerminalJob returns the most recently created Job among jobs that the
-// given CronJob controls and that has reached a terminal state, or nil when no
-// such Job exists yet. Newest wins because the CronJob keeps a bounded history:
-// an older failed run must not keep the condition False once a later run has
-// succeeded.
-func newestTerminalJob(cronJob *batchv1.CronJob, jobs []batchv1.Job) *batchv1.Job {
-	var newest *batchv1.Job
-	for i := range jobs {
-		candidate := &jobs[i]
-		if !metav1.IsControlledBy(candidate, cronJob) {
-			continue
-		}
-		if job.TerminalCondition(candidate) == "" {
-			continue
-		}
-		if newest == nil || candidate.CreationTimestamp.After(newest.CreationTimestamp.Time) {
-			newest = candidate
-		}
-	}
-	return newest
 }
 
 // backupPVC builds the volume the snapshots are written to. It is a plain

@@ -149,3 +149,24 @@ func TestDeploymentSpec_VerticalAutoscalingIsOptIn(t *testing.T) {
 	g.Expect(json.Unmarshal(raw, &got)).To(gomega.Succeed())
 	g.Expect(got).To(gomega.HaveKeyWithValue("verticalAutoscaling", map[string]any{"updateMode": "Off"}))
 }
+
+// TestEffectiveLogging pins the render-time resolution of spec.logging: a CR
+// that bypassed the defaulting webhook still renders the production baseline,
+// and the resolver hands back a copy so nothing is written into the CR.
+func TestEffectiveLogging(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	fromNil := EffectiveLogging(nil)
+	g.Expect(fromNil.Format).To(gomega.Equal("text"))
+	g.Expect(fromNil.Level).To(gomega.Equal("INFO"))
+	g.Expect(fromNil.Debug).NotTo(gomega.BeNil())
+	g.Expect(*fromNil.Debug).To(gomega.BeFalse())
+
+	// A half-filled block keeps what it sets and defaults the rest.
+	partial := &LoggingSpec{Level: "WARNING"}
+	resolved := EffectiveLogging(partial)
+	g.Expect(resolved.Format).To(gomega.Equal("text"))
+	g.Expect(resolved.Level).To(gomega.Equal("WARNING"))
+	g.Expect(partial.Format).To(gomega.BeEmpty(), "the input spec must be left untouched")
+	g.Expect(partial.Debug).To(gomega.BeNil(), "the input spec must be left untouched")
+}
