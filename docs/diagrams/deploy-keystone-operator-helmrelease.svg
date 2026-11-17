@@ -20,7 +20,8 @@
 <text x="60" y="279.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">3</text>
 <polyline points="297.5,208 297.5,233.5" fill="none" stroke="#3A4452" stroke-width="3"/>
 <polygon points="297.5,244 290.3,229 304.7,229" fill="#3A4452"/>
-<text x="515" y="279.2" font-size="20" font-weight="400" fill="#55606E">from crds/: keystone.openstack.c5c3.io_keystones.yaml</text>
+<text x="515" y="266.2" font-size="20" font-weight="400" fill="#55606E">from crds/: keystones.yaml and</text>
+<text x="515" y="292.2" font-size="20" font-weight="400" fill="#55606E">keystoneidentitybackends.yaml</text>
 <rect x="100" y="362" width="395" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
 <text x="297.5" y="398.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Render the templates</text>
 <circle cx="60" cy="390" r="16" fill="#17202B"/>
@@ -37,7 +38,8 @@
 <text x="60" y="515.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">5</text>
 <polyline points="297.5,418 297.5,469.5" fill="none" stroke="#3A4452" stroke-width="3"/>
 <polygon points="297.5,480 290.3,465 304.7,465" fill="#3A4452"/>
-<text x="515" y="515.2" font-size="20" font-weight="400" fill="#55606E">into the keystone-system namespace</text>
+<text x="515" y="502.2" font-size="20" font-weight="400" fill="#55606E">namespaced resources in keystone-system;</text>
+<text x="515" y="528.2" font-size="20" font-weight="400" fill="#55606E">cluster-scoped resources at cluster scope</text>
 <rect x="100" y="572" width="395" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
 <text x="297.5" y="608.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">cert-manager injects the CA</text>
 <circle cx="60" cy="600" r="16" fill="#17202B"/>
