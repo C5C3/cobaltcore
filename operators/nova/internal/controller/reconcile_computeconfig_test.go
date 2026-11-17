@@ -45,6 +45,7 @@ catalog_info = block-storage:cinder:internalURL
 os_region_name = RegionOne
 project_domain_name = Default
 project_name = service
+timeout = 60
 user_domain_name = Default
 username = nova
 
@@ -58,6 +59,7 @@ backend = barbican
 [keystone_authtoken]
 auth_type = password
 auth_url = http://keystone.openstack.svc.cluster.local:5000
+http_connect_timeout = 10
 project_domain_name = Default
 project_name = service
 region_name = RegionOne
@@ -71,6 +73,7 @@ auth_url = http://keystone.openstack.svc.cluster.local:5000
 project_domain_name = Default
 project_name = service
 region_name = RegionOne
+timeout = 60
 user_domain_name = Default
 username = nova
 valid_interfaces = internal
@@ -89,6 +92,7 @@ auth_url = http://keystone.openstack.svc.cluster.local:5000
 project_domain_name = Default
 project_name = service
 region_name = RegionOne
+timeout = 60
 user_domain_name = Default
 username = nova
 valid_interfaces = internal
@@ -100,6 +104,7 @@ project_domain_name = Default
 project_name = service
 region_name = RegionOne
 send_service_user_token = true
+timeout = 60
 user_domain_name = Default
 username = nova
 
@@ -125,6 +130,7 @@ valid_interfaces = internal
 [keystone_authtoken]
 auth_type = password
 auth_url = http://keystone.openstack.svc.cluster.local:5000
+http_connect_timeout = 10
 project_domain_name = 
 project_name = 
 user_domain_name = 
@@ -136,6 +142,7 @@ auth_type = password
 auth_url = http://keystone.openstack.svc.cluster.local:5000
 project_domain_name = 
 project_name = 
+timeout = 60
 user_domain_name = 
 username = 
 valid_interfaces = internal
@@ -153,6 +160,7 @@ auth_type = password
 auth_url = http://keystone.openstack.svc.cluster.local:5000
 project_domain_name = 
 project_name = 
+timeout = 60
 user_domain_name = 
 username = 
 valid_interfaces = internal
@@ -163,6 +171,7 @@ auth_url = http://keystone.openstack.svc.cluster.local:5000
 project_domain_name = 
 project_name = 
 send_service_user_token = true
+timeout = 60
 user_domain_name = 
 username = 
 
@@ -197,6 +206,7 @@ catalog_info = block-storage:cinder:publicURL
 os_region_name = RegionOne
 project_domain_name = Default
 project_name = service
+timeout = 60
 user_domain_name = Default
 username = nova
 
@@ -210,6 +220,7 @@ backend = barbican
 [keystone_authtoken]
 auth_type = password
 auth_url = https://keystone.example.com/v3
+http_connect_timeout = 10
 project_domain_name = Default
 project_name = service
 region_name = RegionOne
@@ -223,6 +234,7 @@ auth_url = https://keystone.example.com/v3
 project_domain_name = Default
 project_name = service
 region_name = RegionOne
+timeout = 60
 user_domain_name = Default
 username = nova
 valid_interfaces = public
@@ -241,6 +253,7 @@ auth_url = https://keystone.example.com/v3
 project_domain_name = Default
 project_name = service
 region_name = RegionOne
+timeout = 60
 user_domain_name = Default
 username = nova
 valid_interfaces = public
@@ -252,6 +265,7 @@ project_domain_name = Default
 project_name = service
 region_name = RegionOne
 send_service_user_token = true
+timeout = 60
 user_domain_name = Default
 username = nova
 
@@ -333,14 +347,19 @@ func TestComputeConfigDefaults_OmitsDatabaseAndMetadataKeys(t *testing.T) {
 			"%s configures something a compute node does not run or cannot reach", absent)
 	}
 
-	// The Placement request bound belongs to the control plane's build path;
-	// the fragment stays the compute contract, in-cluster and remote alike.
+	// The fragment carries the control plane's request bounds, in-cluster and
+	// remote alike: a nova-compute whose peer stops answering fails the call
+	// after the bound instead of waiting out the kernel's retransmissions.
 	for name, fragment := range map[string]string{
 		"in-cluster": rendered,
 		"remote":     config.RenderINI(remoteComputeConfigDefaults(remoteComputeNova())),
 	} {
-		g.Expect(sectionOf(t, fragment, "placement")).NotTo(ContainSubstring("timeout"),
-			"the %s fragment's [placement] carries no request bound", name)
+		g.Expect(sectionOf(t, fragment, "keystone_authtoken")).To(ContainSubstring("http_connect_timeout = 10\n"),
+			"the %s fragment bounds the token middleware", name)
+		for _, section := range []string{"service_user", "placement", "neutron", "cinder"} {
+			g.Expect(sectionOf(t, fragment, section)).To(ContainSubstring("timeout = 60\n"),
+				"the %s fragment's [%s] carries the request bound", name, section)
+		}
 	}
 
 	g.Expect(config.RenderINI(computeConfigDefaults(novaWithMessagingTLS()))).

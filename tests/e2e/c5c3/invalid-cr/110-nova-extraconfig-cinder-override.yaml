@@ -5,13 +5,13 @@
 # [cinder] catalog_info in services.nova.extraConfig is forbidden by the ownership
 # family as soon as services.cinder is declared: the ControlPlane switches the Nova
 # child's volume service on from the sibling block, through endpoints.cinder, and
-# computes every key behind that switch. The override names a catalog tuple this
-# plane does not publish, so nova resolves the volume service from an entry that is
-# not there. The key is only Reported in the nova registry, because a Nova child on
-# its own cannot tell a projected volume service from a hand-configured one, which
-# is why the fixture carries the cinder block too. The step anchors on
-# `catalog_info` and on the sentence the ownership family composes,
-# `is projected by the ControlPlane from services.cinder`.
+# computes every addressing and credential key behind that switch. The override
+# names a catalog tuple this plane does not publish, so nova resolves the volume
+# service from an entry that is not there. The key is only Reported in the nova
+# registry, because a Nova child on its own cannot tell a projected volume service
+# from a hand-configured one, which is why the fixture carries the cinder block too.
+# The step anchors on `catalog_info` and on the sentence the ownership family
+# composes, `is projected by the ControlPlane from services.cinder`.
 apiVersion: c5c3.io/v1alpha1
 kind: ControlPlane
 metadata:

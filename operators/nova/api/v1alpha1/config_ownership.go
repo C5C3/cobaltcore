@@ -43,9 +43,9 @@ import "github.com/c5c3/cobaltcore/internal/common/config"
 // spec.extraConfig; the Rejected entries are blocked at admission by the
 // validating webhook instead. The [keystone_authtoken] and [service_user]
 // entries mirror the maps keystoneauth.Section and keystoneauth.ServiceUserSection
-// render, the [placement], [neutron] and [cinder] credential keys the map
-// keystoneauth.ClientSection renders, and the [oslo_messaging_rabbit] entries
-// the map messaging.RabbitSection renders.
+// render, request bounds included, the [placement], [neutron] and [cinder]
+// credential keys and timeout the map keystoneauth.ClientSection renders, and
+// the [oslo_messaging_rabbit] entries the map messaging.RabbitSection renders.
 var OwnedConfigKeys = []config.OwnedKey{
 	// [DEFAULT]
 	{Section: "DEFAULT", Key: "use_stderr", OwnedBy: "operator-computed"},
@@ -91,6 +91,9 @@ var OwnedConfigKeys = []config.OwnedKey{
 	{Section: "keystone_authtoken", Key: "project_domain_name", OwnedBy: "operator-computed"},
 	{Section: "keystone_authtoken", Key: "region_name", OwnedBy: "operator-computed"},
 	{Section: "keystone_authtoken", Key: "memcached_servers", OwnedBy: "operator-computed"},
+	// http_connect_timeout is Reported, not Rejected: an override is how a
+	// deployment whose Keystone legitimately answers slower raises the bound.
+	{Section: "keystone_authtoken", Key: "http_connect_timeout", OwnedBy: "operator-computed", Impact: "the bound fails a request whose Keystone stops answering within 43.5 seconds; without it every token validation on an established connection waits out the kernel's retransmission limit, about 15 minutes, and holds the API worker"},
 	// password is never emitted by keystoneauth.Section: the middleware reads it
 	// from the OS_KEYSTONE_AUTHTOKEN__PASSWORD env override, so a file value is
 	// inert at runtime. It is Rejected for the same reason transport_url is.
@@ -108,6 +111,7 @@ var OwnedConfigKeys = []config.OwnedKey{
 	{Section: "service_user", Key: "user_domain_name", OwnedBy: "operator-computed"},
 	{Section: "service_user", Key: "project_domain_name", OwnedBy: "operator-computed"},
 	{Section: "service_user", Key: "region_name", OwnedBy: "operator-computed"},
+	{Section: "service_user", Key: "timeout", OwnedBy: "operator-computed", Impact: "the bound turns a Keystone that stops answering into a failed call after 60 seconds per attempt; without it a request of nova's service-user session on an established connection waits out the kernel's retransmission limit, about 15 minutes, and holds the worker that sent it"},
 	// password is env-injected via OS_SERVICE_USER__PASSWORD, so a file value is
 	// inert at runtime. Rejected for the same reason its keystone_authtoken twin
 	// is.
@@ -141,6 +145,7 @@ var OwnedConfigKeys = []config.OwnedKey{
 	{Section: "neutron", Key: "region_name", OwnedBy: "spec.region"},
 	{Section: "neutron", Key: "valid_interfaces", OwnedBy: "spec.endpoints.neutron", Impact: "the interface decides which catalog entry nova resolves; the public one commonly names an address the pods cannot reach"},
 	{Section: "neutron", Key: "endpoint_override", OwnedBy: "spec.endpoints.neutron.override", Impact: "the address is where the instance ports are created; another one serves a network this deployment does not own"},
+	{Section: "neutron", Key: "timeout", OwnedBy: "operator-computed", Impact: "the bound turns a Neutron that stops answering into a failed call after 60 seconds per attempt; without it a port create or bind for a boot on an established connection waits out the kernel's retransmission limit, about 15 minutes, and holds the worker that sent it"},
 	{Section: "neutron", Key: "service_metadata_proxy", OwnedBy: "operator-computed", Impact: "the switch is what makes the metadata API trust the proxied request headers, so turning it off leaves every instance without metadata"},
 	{Section: "neutron", Key: "password", Rejected: true, OwnedBy: "spec.serviceUser.secretRef", Impact: "the client password is env-injected via OS_NEUTRON__PASSWORD; a file override is ignored at runtime and copies credential material into the rendered config Secret"},
 	// metadata_proxy_shared_secret is what the metadata API verifies the proxied
@@ -167,6 +172,7 @@ var OwnedConfigKeys = []config.OwnedKey{
 	{Section: "cinder", Key: "os_region_name", OwnedBy: "spec.region"},
 	{Section: "cinder", Key: "catalog_info", OwnedBy: "spec.endpoints.cinder", Impact: "the catalog tuple decides which entry nova resolves the volume service from; another one names a service type this deployment does not publish"},
 	{Section: "cinder", Key: "endpoint_template", OwnedBy: "spec.endpoints.cinder.override", Impact: "the template is where the volume attachments are made; another one addresses a volume service this deployment does not own"},
+	{Section: "cinder", Key: "timeout", OwnedBy: "operator-computed", Impact: "the bound turns a Cinder that stops answering into a failed call after 60 seconds per attempt; without it a volume attach or detach on an established connection waits out the kernel's retransmission limit, about 15 minutes, and holds the worker that sent it"},
 	{Section: "cinder", Key: "password", Rejected: true, OwnedBy: "spec.serviceUser.secretRef", Impact: "the client password is env-injected via OS_CINDER__PASSWORD; a file override is ignored at runtime and copies credential material into the rendered config Secret"},
 
 	// [key_manager] / [barbican] — rendered while spec.endpoints.barbican is

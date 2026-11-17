@@ -117,14 +117,18 @@ func TestReconcileConfig_RendersFiveClientSections(t *testing.T) {
 			"[%s] reads its password from the OS_<SECTION>__PASSWORD override", section)
 	}
 
-	// The request bound is a [placement] key alone: every control-plane process
-	// reads it for its Placement client, and the scheduler's build path is why
-	// it exists. A Placement that drops packets fails the build after it
-	// instead of stalling it for the kernel's retransmissions.
-	g.Expect(sectionOf(t, conf, "placement")).To(ContainSubstring("timeout = 60\n"))
-	for _, section := range []string{"neutron", "cinder", "glance", "barbican"} {
+	// Every client section carries the request bound keystoneauth.ClientSection
+	// renders, and the token middleware its validation bound: a peer that stops
+	// answering fails the call after the bound instead of stalling it for the
+	// kernel's retransmissions.
+	for _, section := range []string{"service_user", "placement", "neutron", "cinder"} {
+		g.Expect(sectionOf(t, conf, section)).To(ContainSubstring("timeout = 60\n"),
+			"[%s] bounds every request of its session", section)
+	}
+	g.Expect(sectionOf(t, conf, "keystone_authtoken")).To(ContainSubstring("http_connect_timeout = 10\n"))
+	for _, section := range []string{"glance", "barbican"} {
 		g.Expect(sectionOf(t, conf, section)).NotTo(ContainSubstring("timeout"),
-			"[%s] is not the Placement client, so it carries no request bound", section)
+			"[%s] is not built from keystoneauth.ClientSection", section)
 	}
 
 	// Glance is reached with the token of the request nova is serving, so the

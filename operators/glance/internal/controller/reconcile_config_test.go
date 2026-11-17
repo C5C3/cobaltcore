@@ -118,6 +118,9 @@ func TestReconcileConfig_RendersGlanceAPIConf(t *testing.T) {
 	g.Expect(conf).To(ContainSubstring("project_name = service"))
 	g.Expect(conf).To(ContainSubstring("region_name = RegionOne"))
 	g.Expect(conf).To(ContainSubstring("memcached_servers = mc:11211"))
+	// The validation bound keeps a Keystone that stops answering from holding a
+	// worker for the kernel's retransmission limit.
+	g.Expect(conf).To(ContainSubstring("http_connect_timeout = 10"))
 	g.Expect(conf).NotTo(ContainSubstring("password ="))
 	// Reserved stores are always rendered.
 	g.Expect(conf).To(ContainSubstring("[os_glance_staging_store]"))

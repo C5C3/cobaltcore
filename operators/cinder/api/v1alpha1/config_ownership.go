@@ -44,8 +44,9 @@ import "github.com/c5c3/cobaltcore/internal/common/config"
 // spec.extraConfig; the Rejected entries are blocked at admission by the
 // validating webhook instead. The [keystone_authtoken] and [service_user]
 // entries mirror the maps keystoneauth.Section and keystoneauth.ServiceUserSection
-// render, and the [oslo_messaging_rabbit] entries the map messaging.RabbitSection
-// renders.
+// render, request bounds included, the [nova] credential keys and timeout the
+// map keystoneauth.ClientSection renders, and the [oslo_messaging_rabbit]
+// entries the map messaging.RabbitSection renders.
 var OwnedConfigKeys = []config.OwnedKey{
 	// [DEFAULT]
 	//
@@ -104,6 +105,9 @@ var OwnedConfigKeys = []config.OwnedKey{
 	{Section: "keystone_authtoken", Key: "project_domain_name", OwnedBy: "operator-computed"},
 	{Section: "keystone_authtoken", Key: "region_name", OwnedBy: "operator-computed"},
 	{Section: "keystone_authtoken", Key: "memcached_servers", OwnedBy: "operator-computed"},
+	// http_connect_timeout is Reported, not Rejected: an override is how a
+	// deployment whose Keystone legitimately answers slower raises the bound.
+	{Section: "keystone_authtoken", Key: "http_connect_timeout", OwnedBy: "operator-computed", Impact: "the bound fails a request whose Keystone stops answering within 43.5 seconds; without it every token validation on an established connection waits out the kernel's retransmission limit, about 15 minutes, and holds the API worker"},
 	// password is never emitted by keystoneauth.Section — the middleware reads it
 	// from the OS_KEYSTONE_AUTHTOKEN__PASSWORD env override, so a file value is
 	// inert at runtime. It is Rejected for the same reason transport_url is.
@@ -120,6 +124,7 @@ var OwnedConfigKeys = []config.OwnedKey{
 	{Section: "service_user", Key: "user_domain_name", OwnedBy: "operator-computed"},
 	{Section: "service_user", Key: "project_domain_name", OwnedBy: "operator-computed"},
 	{Section: "service_user", Key: "region_name", OwnedBy: "operator-computed"},
+	{Section: "service_user", Key: "timeout", OwnedBy: "operator-computed", Impact: "the bound turns a Keystone that stops answering into a failed call after 60 seconds per attempt; without it a request of cinder's service-user session on an established connection waits out the kernel's retransmission limit, about 15 minutes, and holds the worker that sent it"},
 	// password is env-injected via OS_SERVICE_USER__PASSWORD, so a file value is
 	// inert at runtime. Rejected for the same reason its keystone_authtoken twin
 	// is.
@@ -137,6 +142,7 @@ var OwnedConfigKeys = []config.OwnedKey{
 	{Section: "nova", Key: "project_domain_name", OwnedBy: "operator-computed"},
 	{Section: "nova", Key: "region_name", OwnedBy: "operator-computed"},
 	{Section: "nova", Key: "interface", OwnedBy: "operator-computed", Impact: "the interface picks which catalog entry cinder-volume reaches Nova through; the public one may not resolve from inside the cluster"},
+	{Section: "nova", Key: "timeout", OwnedBy: "operator-computed", Impact: "the bound turns a Nova that stops answering into a failed call after 60 seconds per attempt; without it an assisted snapshot or volume event call on an established connection waits out the kernel's retransmission limit, about 15 minutes, and holds the worker that sent it"},
 	// password is env-injected via OS_NOVA__PASSWORD; rejected like its twins.
 	{Section: "nova", Key: "password", Rejected: true, OwnedBy: "spec.serviceUser.secretRef", Impact: "the Nova client password is env-injected via OS_NOVA__PASSWORD; a file override is ignored at runtime and copies credential material into the rendered config Secret"},
 

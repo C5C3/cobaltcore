@@ -38,6 +38,7 @@ func TestSection(t *testing.T) {
 				"project_domain_name":  "Default",
 				"region_name":          "RegionOne",
 				"memcached_servers":    "mc-0:11211,mc-1:11211",
+				"http_connect_timeout": "10",
 			},
 		},
 		{
@@ -58,8 +59,24 @@ func TestSection(t *testing.T) {
 				"project_name":         "service",
 				"user_domain_name":     "Default",
 				"project_domain_name":  "Default",
+				"http_connect_timeout": "10",
 			},
 			absent: []string{"region_name", "memcached_servers"},
+		},
+		{
+			name:   "zero value still renders the validation bound",
+			params: SectionParams{},
+			want: map[string]string{
+				"auth_type":            "password",
+				"auth_url":             "",
+				"www_authenticate_uri": "",
+				"username":             "",
+				"project_name":         "",
+				"user_domain_name":     "",
+				"project_domain_name":  "",
+				"http_connect_timeout": "10",
+			},
+			absent: []string{"region_name", "memcached_servers", "password"},
 		},
 	}
 
@@ -148,6 +165,7 @@ func TestServiceUserSection(t *testing.T) {
 				"user_domain_name":        "Default",
 				"project_domain_name":     "Default",
 				"region_name":             "RegionOne",
+				"timeout":                 "60",
 			},
 		},
 		{
@@ -167,6 +185,7 @@ func TestServiceUserSection(t *testing.T) {
 				"project_name":            "service",
 				"user_domain_name":        "Default",
 				"project_domain_name":     "Default",
+				"timeout":                 "60",
 			},
 			absent: []string{"region_name"},
 		},
@@ -279,6 +298,7 @@ func TestClientSection_RendersPasswordAuthWithoutSecrets(t *testing.T) {
 		"user_domain_name":    "Default",
 		"project_domain_name": "Default",
 		"region_name":         "RegionOne",
+		"timeout":             "60",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ClientSection() = %#v, want %#v", got, want)
@@ -308,6 +328,7 @@ func TestClientSection_OmitsRegionWhenEmpty(t *testing.T) {
 				"project_name":        "service",
 				"user_domain_name":    "Default",
 				"project_domain_name": "Default",
+				"timeout":             "60",
 			},
 		},
 		{
@@ -320,6 +341,7 @@ func TestClientSection_OmitsRegionWhenEmpty(t *testing.T) {
 				"project_name":        "",
 				"user_domain_name":    "",
 				"project_domain_name": "",
+				"timeout":             "60",
 			},
 		},
 	}

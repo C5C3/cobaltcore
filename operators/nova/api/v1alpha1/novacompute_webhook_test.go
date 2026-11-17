@@ -433,6 +433,31 @@ func TestNovaComputeWebhook_CatalogCheck(t *testing.T) {
 	})
 }
 
+// TestNovaComputeWebhook_ValidateCreate_AdmitsRaisedRequestBounds pins the
+// escape hatch of the compute fragment's request bounds: Nova.spec.extraConfig
+// does not reach the fragment, so a pool whose calls legitimately run longer
+// raises a bound here.
+func TestNovaComputeWebhook_ValidateCreate_AdmitsRaisedRequestBounds(t *testing.T) {
+	for _, tc := range []struct {
+		section, key, value string
+	}{
+		{"neutron", "timeout", "120"},
+		{"placement", "timeout", "120"},
+		{"cinder", "timeout", "120"},
+		{"keystone_authtoken", "http_connect_timeout", "30"},
+	} {
+		t.Run(tc.section+" "+tc.key, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			// The referenced Nova is present, so the catalog check runs.
+			w, _ := novaComputeWebhookWith(referencedNova())
+			nc := validNovaCompute()
+			nc.Spec.ExtraConfig = map[string]map[string]string{tc.section: {tc.key: tc.value}}
+			_, err := w.ValidateCreate(context.Background(), nc)
+			g.Expect(err).NotTo(HaveOccurred())
+		})
+	}
+}
+
 func TestNovaComputeWebhook_ValidateUpdate(t *testing.T) {
 	t.Run("a nodeSelector change is admitted", func(t *testing.T) {
 		g := NewGomegaWithT(t)

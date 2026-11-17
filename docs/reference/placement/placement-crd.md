@@ -169,6 +169,20 @@ behind it. With the key set, to any value including the empty string, the
 operator renders that value into `placement.conf` and sets no variable. See
 [Database socket timeouts](../../guides/advanced-configuration.md#database-socket-timeouts).
 
+`[keystone_authtoken] http_connect_timeout` is rendered as `10`.
+keystonemiddleware sets no default, so without the key a token validation
+against a Keystone that stops answering waits out the kernel's TCP
+retransmission limit (`tcp_retries2 = 15`, about 15 minutes) and holds the
+Placement API worker that serves the request. With the bound, keystonemiddleware
+retries a timed-out validation three times, 0.5, 1 and 2 seconds apart, so the
+request fails within 43.5 seconds. A Keystone that takes longer than 10 seconds
+for a validation sees it up to four times. The key is honored and reported:
+`spec.extraConfig.keystone_authtoken.http_connect_timeout` raises the bound and
+sets `ExtraConfigHealthy=False`. The operator upgrade that brings the key
+changes the rendered ConfigMap once, so the pods that mount it roll once; a
+value a deployment already sets through `spec.extraConfig` stays in force and is
+reported from then on.
+
 The catalog check re-runs on update only when one of its inputs changed
 (`spec.extraConfig` or `spec.openStackRelease`), so an unrelated edit such as a
 replica change cannot retroactively reject a CR whose `extraConfig` a

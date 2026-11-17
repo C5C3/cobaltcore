@@ -1003,6 +1003,92 @@ func TestValidateCreate_ReportsNovaKeyManagerOverrideWithoutBarbican(t *testing.
 	g.Expect(warnings).To(ContainElement(ContainSubstring("barbican_endpoint")))
 }
 
+// TestValidateCreate_ReportsNovaRequestBoundBesideSibling pins the one key the
+// sibling takeover leaves alone. timeout is rendered by the nova operator from
+// keystoneauth.ClientTimeoutSeconds, never by the projection, and addresses no
+// service, so raising it beside a declared sibling is honored-but-reported like
+// every other operator-computed key.
+func TestValidateCreate_ReportsNovaRequestBoundBesideSibling(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	for _, tc := range []struct {
+		section string
+		cp      func() *ControlPlane
+	}{
+		{"cinder", novaAndCinderControlPlane},
+	} {
+		t.Run(tc.section, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := tc.cp()
+			cp.Spec.Services.Nova.ExtraConfig = map[string]map[string]string{
+				tc.section: {"timeout": "120"},
+			}
+
+			warnings, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(warnings).To(ContainElement(And(
+				ContainSubstring("["+tc.section+"] timeout overrides an operator-owned key"),
+				ContainSubstring("spec.services.nova.extraConfig["+tc.section+"][timeout]"),
+			)))
+			g.Expect(warnings).NotTo(ContainElement(ContainSubstring("is projected by the ControlPlane")))
+		})
+	}
+}
+
+// TestValidateUpdate_KeepsNovaRequestBoundBesideSibling pins the update path a
+// Forbidden would break: a stored plane that declares services.cinder and
+// carries a raised [cinder] timeout stays updatable, the finalizer removal
+// included.
+func TestValidateUpdate_KeepsNovaRequestBoundBesideSibling(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := novaAndCinderControlPlane()
+	oldCP.Spec.Services.Nova.ExtraConfig = map[string]map[string]string{
+		"cinder": {"timeout": "120"},
+	}
+	newCP := oldCP.DeepCopy()
+	newCP.Finalizers = nil
+
+	warnings, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(warnings).To(ContainElement(ContainSubstring("[cinder] timeout overrides an operator-owned key")))
+}
+
+// TestValidateCreate_ReportsValidationBoundOverride pins that the token
+// middleware's request bound is an operator-computed key of every INI service
+// that validates tokens: raising it through the ControlPlane is admitted and
+// reported, the way each child registry classifies it.
+func TestValidateCreate_ReportsValidationBoundOverride(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+	bound := map[string]map[string]string{"keystone_authtoken": {"http_connect_timeout": "30"}}
+
+	for _, tc := range []struct {
+		service string
+		cp      func() *ControlPlane
+		set     func(cp *ControlPlane)
+	}{
+		{"glance", novaControlPlane, func(cp *ControlPlane) { cp.Spec.Services.Glance.ExtraConfig = bound }},
+		{"placement", novaControlPlane, func(cp *ControlPlane) { cp.Spec.Services.Placement.ExtraConfig = bound }},
+		{"neutron", novaControlPlane, func(cp *ControlPlane) { cp.Spec.Services.Neutron.ExtraConfig = bound }},
+		{"nova", novaControlPlane, func(cp *ControlPlane) { cp.Spec.Services.Nova.ExtraConfig = bound }},
+		{"barbican", novaAndBarbicanControlPlane, func(cp *ControlPlane) { cp.Spec.Services.Barbican.ExtraConfig = bound }},
+		{"cinder", novaAndCinderControlPlane, func(cp *ControlPlane) { cp.Spec.Services.Cinder.ExtraConfig = bound }},
+	} {
+		t.Run(tc.service, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := tc.cp()
+			tc.set(cp)
+
+			warnings, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(warnings).To(ContainElement(And(
+				ContainSubstring("[keystone_authtoken] http_connect_timeout overrides an operator-owned key (managed by operator-computed)"),
+				ContainSubstring("spec.services."+tc.service+".extraConfig[keystone_authtoken][http_connect_timeout]"),
+			)))
+		})
+	}
+}
+
 // TestValidateCreate_ReportsNovaOwnedKeyOutsideSiblingSections pins the default
 // branch of the sibling-section rule: an ordinary operator-owned key such as
 // [DEFAULT] debug belongs to no sibling block, so it is honored-but-reported, the

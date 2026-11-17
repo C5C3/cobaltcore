@@ -561,6 +561,7 @@ func TestOperatorDefaults_NovaBlockOmitsRegionWhenEmpty(t *testing.T) {
 	g.Expect(defaults["nova"]).To(HaveKeyWithValue("auth_url", neutron.Spec.KeystoneEndpoint))
 	g.Expect(defaults["nova"]).To(HaveKeyWithValue("username", "neutron-nova"))
 	g.Expect(defaults["nova"]).To(HaveKeyWithValue("endpoint_type", "internal"))
+	g.Expect(defaults["nova"]).To(HaveKeyWithValue("timeout", "60"))
 	g.Expect(defaults["DEFAULT"]).To(HaveKeyWithValue("notify_nova_on_port_status_changes", "true"))
 	g.Expect(defaults["DEFAULT"]).To(HaveKeyWithValue("notify_nova_on_port_data_changes", "true"))
 }

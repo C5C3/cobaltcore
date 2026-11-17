@@ -2462,13 +2462,13 @@ FIXTURES: tuple[Fixture, ...] = (
             "[cinder] catalog_info in services.nova.extraConfig is forbidden by the ownership\n"
             "family as soon as services.cinder is declared: the ControlPlane switches the Nova\n"
             "child's volume service on from the sibling block, through endpoints.cinder, and\n"
-            "computes every key behind that switch. The override names a catalog tuple this\n"
-            "plane does not publish, so nova resolves the volume service from an entry that is\n"
-            "not there. The key is only Reported in the nova registry, because a Nova child on\n"
-            "its own cannot tell a projected volume service from a hand-configured one, which\n"
-            "is why the fixture carries the cinder block too. The step anchors on\n"
-            "`catalog_info` and on the sentence the ownership family composes,\n"
-            "`is projected by the ControlPlane from services.cinder`."
+            "computes every addressing and credential key behind that switch. The override\n"
+            "names a catalog tuple this plane does not publish, so nova resolves the volume\n"
+            "service from an entry that is not there. The key is only Reported in the nova\n"
+            "registry, because a Nova child on its own cannot tell a projected volume service\n"
+            "from a hand-configured one, which is why the fixture carries the cinder block too.\n"
+            "The step anchors on `catalog_info` and on the sentence the ownership family\n"
+            "composes, `is projected by the ControlPlane from services.cinder`."
         ),
         name="cp-nova-cinder-override",
         keystone="      mode: Managed\n",

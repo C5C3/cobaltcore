@@ -56,6 +56,7 @@ catalog_info = block-storage:cinder:internalURL
 os_region_name = RegionOne
 project_domain_name = Default
 project_name = service
+timeout = 60
 user_domain_name = Default
 username = nova
 
@@ -76,6 +77,7 @@ backend = barbican
 [keystone_authtoken]
 auth_type = password
 auth_url = http://keystone.openstack.svc.cluster.local:5000
+http_connect_timeout = 10
 memcached_servers = memcached:11211
 project_domain_name = Default
 project_name = service
@@ -90,6 +92,7 @@ auth_url = http://keystone.openstack.svc.cluster.local:5000
 project_domain_name = Default
 project_name = service
 region_name = RegionOne
+timeout = 60
 user_domain_name = Default
 username = nova
 valid_interfaces = internal
@@ -126,6 +129,7 @@ project_domain_name = Default
 project_name = service
 region_name = RegionOne
 send_service_user_token = true
+timeout = 60
 user_domain_name = Default
 username = nova
 
@@ -169,6 +173,7 @@ valid_interfaces = internal
 [keystone_authtoken]
 auth_type = password
 auth_url = http://keystone.openstack.svc.cluster.local:5000
+http_connect_timeout = 10
 memcached_servers = memcached:11211
 project_domain_name = 
 project_name = 
@@ -181,6 +186,7 @@ auth_type = password
 auth_url = http://keystone.openstack.svc.cluster.local:5000
 project_domain_name = 
 project_name = 
+timeout = 60
 user_domain_name = 
 username = 
 valid_interfaces = internal
@@ -215,6 +221,7 @@ auth_url = http://keystone.openstack.svc.cluster.local:5000
 project_domain_name = 
 project_name = 
 send_service_user_token = true
+timeout = 60
 user_domain_name = 
 username = 
 

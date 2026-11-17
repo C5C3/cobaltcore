@@ -889,6 +889,20 @@ via `spec.imageCache`), and the four image-import plugin keys
 `[inject_metadata_properties] inject` and `ignore_user_roles`, owned via
 `spec.importPlugins`).
 
+`[keystone_authtoken] http_connect_timeout` is rendered as `10`.
+keystonemiddleware sets no default, so without the key a token validation
+against a Keystone that stops answering waits out the kernel's TCP
+retransmission limit (`tcp_retries2 = 15`, about 15 minutes) and holds the
+glance-api worker that serves the request. With the bound, keystonemiddleware
+retries a timed-out validation three times, 0.5, 1 and 2 seconds apart, so the
+request fails within 43.5 seconds. A Keystone that takes longer than 10 seconds
+for a validation sees it up to four times. The key is honored and reported:
+`spec.extraConfig.keystone_authtoken.http_connect_timeout` raises the bound and
+sets `ExtraConfigHealthy=False`. The operator upgrade that brings the key
+changes the rendered ConfigMap once, so the pods that mount it roll once; a
+value a deployment already sets through `spec.extraConfig` stays in force and is
+reported from then on.
+
 Two `importFiltering` rules have no schema-layer counterpart. A host carrying a
 newline or carriage return is rejected outright: the host lists are the only
 free-form strings in the block and are joined verbatim into

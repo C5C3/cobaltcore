@@ -13,9 +13,16 @@
 // non-secret options into the service's shared ConfigMap and injects the
 // passwords separately through oslo.config's OS_<GROUP>__<OPTION> env override
 // so the secrets never land in the ConfigMap.
+//
+// Every section the package renders carries a request bound: the token
+// middleware gets ValidationTimeoutSeconds and every outgoing session
+// ClientTimeoutSeconds. Without one, a request whose peer stops answering on an
+// established connection waits out the kernel's retransmission limit
+// (tcp_retries2 = 15, about 15.6 minutes) and holds the worker that sent it.
 package keystoneauth
 
 import (
+	"strconv"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -27,6 +34,32 @@ import (
 // password from a Secret via PasswordEnvVar instead of from the rendered
 // ConfigMap, keeping the secret out of the config.
 const PasswordEnvVarName = "OS_KEYSTONE_AUTHTOKEN__PASSWORD" //nolint:gosec // G101 false positive: env var name, not a credential.
+
+// ValidationTimeoutSeconds is [keystone_authtoken] http_connect_timeout, the
+// bound of each request the token middleware sends to Keystone. keystonemiddleware
+// sets no default, so without it a validation against a Keystone that stops
+// answering waits out the kernel's retransmission limit. keystonemiddleware
+// retries a timed-out request three times (http_request_max_retries) with delays
+// of 0.5, 1 and 2 seconds, so a validation fails within 4 x 10 + 3.5 = 43.5
+// seconds. keystonemiddleware 12.0.0 does not turn that last ConnectTimeout into
+// its 503: the exception leaves the middleware, and the service's own error
+// handling answers the request, a 500 behind a fault-wrapping middleware or a
+// connection closed without a response where none sits in the pipeline
+// (Barbican). The cost is that a Keystone slower than 10 seconds sees a
+// validation up to four times. Cinder's quota project lookup reads the same
+// option for its own Keystone session. A deployment raises the bound through
+// spec.extraConfig.
+const ValidationTimeoutSeconds = 10
+
+// ClientTimeoutSeconds is the timeout option of every client section and of
+// [service_user]. keystoneauth passes it to every request of the session as
+// both the connect and the read timeout, turns a timeout into ConnectTimeout,
+// and retries it as often as the caller's connect_retries allow. So where the
+// caller passes retries (nova's [neutron] and [cinder], neutron's [nova]), a
+// request the peer is still working on after 60 seconds is sent again, a POST
+// included, and a legitimate call longer than 60 seconds fails. A deployment
+// with such calls raises the bound through spec.extraConfig.
+const ClientTimeoutSeconds = 60
 
 // SectionParams carries the non-secret options a service operator renders into
 // [keystone_authtoken], [service_user] and its client sections: the three share
@@ -61,8 +94,9 @@ type SectionParams struct {
 }
 
 // Section returns the key/value map for the [keystone_authtoken] INI section.
-// auth_type is fixed to "password"; the remaining always-present keys are taken
-// from p. The optional region_name and memcached_servers keys are emitted only
+// auth_type is fixed to "password" and http_connect_timeout to
+// ValidationTimeoutSeconds; the remaining always-present keys are taken from p.
+// The optional region_name and memcached_servers keys are emitted only
 // when their SectionParams fields are non-empty, so an unset field falls back to
 // oslo.config's compiled-in default rather than an empty override.
 //
@@ -78,6 +112,7 @@ func Section(p SectionParams) map[string]string {
 		"project_name":         p.ProjectName,
 		"user_domain_name":     p.UserDomainName,
 		"project_domain_name":  p.ProjectDomainName,
+		"http_connect_timeout": strconv.Itoa(ValidationTimeoutSeconds),
 	}
 	if p.RegionName != "" {
 		section["region_name"] = p.RegionName
@@ -109,10 +144,11 @@ const ServiceUserPasswordEnvVarName = "OS_SERVICE_USER__PASSWORD" //nolint:gosec
 // token of the user whose request it is serving, which the receiving service
 // needs to accept a long-running request whose user token has since expired
 // (Cinder calling Glance or Barbican, for example). send_service_user_token is
-// fixed to "true" and auth_type to "password"; the credentials are taken from
-// p and are the same service account [keystone_authtoken] uses. region_name is
-// emitted only when p.RegionName is non-empty, so an unset field falls back to
-// oslo.config's compiled-in default rather than an empty override.
+// fixed to "true", auth_type to "password" and timeout to ClientTimeoutSeconds;
+// the credentials are taken from p and are the same service account
+// [keystone_authtoken] uses. region_name is emitted only when p.RegionName is
+// non-empty, so an unset field falls back to oslo.config's compiled-in default
+// rather than an empty override.
 //
 // The map never contains a password key: the password arrives exclusively
 // through the ServiceUserPasswordEnvVar env override, keeping the secret out of
@@ -136,10 +172,10 @@ func ServiceUserPasswordEnvVar(secretName, key string) corev1.EnvVar {
 
 // ClientSection returns the key/value map for the INI section a service renders
 // to talk to another service as a client, such as [placement], [neutron] or
-// [cinder]. auth_type is fixed to "password" and the remaining always-present
-// keys are taken from p. region_name is emitted only when p.RegionName is
-// non-empty, so an unset field falls back to oslo.config's compiled-in default
-// rather than an empty override.
+// [cinder]. auth_type is fixed to "password" and timeout to
+// ClientTimeoutSeconds; the remaining always-present keys are taken from p.
+// region_name is emitted only when p.RegionName is non-empty, so an unset field
+// falls back to oslo.config's compiled-in default rather than an empty override.
 //
 // The map never contains a password key: the password stays env-injected
 // through ClientPasswordEnvVar, which oslo.config reads from the
@@ -156,6 +192,7 @@ func ClientSection(p SectionParams) map[string]string {
 		"project_name":        p.ProjectName,
 		"user_domain_name":    p.UserDomainName,
 		"project_domain_name": p.ProjectDomainName,
+		"timeout":             strconv.Itoa(ClientTimeoutSeconds),
 	}
 	if p.RegionName != "" {
 		section["region_name"] = p.RegionName

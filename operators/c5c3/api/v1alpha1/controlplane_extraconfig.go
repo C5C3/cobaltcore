@@ -387,8 +387,9 @@ func validateExtraConfigOwnership(cp, old *ControlPlane) (admission.Warnings, fi
 			// ControlPlane projects both, so an override there addresses a service
 			// the plane does own; without the sibling the keys stay Reported, which
 			// is what lets an externally-run volume service or key manager be
-			// configured by hand.
-			if sibling, declared := novaSiblingSectionOwner(cp, owned.Section); declared {
+			// configured by hand. The request bound timeout stays Reported beside
+			// the sibling too: the nova operator renders it, not the projection.
+			if sibling, declared := novaSiblingSectionOwner(cp, owned.Section); declared && owned.Key != novaRequestBoundKey {
 				for _, p := range paths {
 					errs = append(errs, field.Forbidden(p, fmt.Sprintf(
 						"is projected by the ControlPlane from %s (%s); remove the override or unset %s",
@@ -504,6 +505,13 @@ func cinderKeyManagerKey(section, key string) bool {
 	return section == "barbican" && (key == "barbican_endpoint" || key == "auth_endpoint")
 }
 
+// novaRequestBoundKey is the key of a sibling-owned nova.conf section that the
+// sibling never owns: the nova operator renders it from
+// keystoneauth.ClientTimeoutSeconds, the projection never sets it, and it
+// addresses no service. An override raises the request bound of nova's client
+// and stays Reported like any other operator-computed key.
+const novaRequestBoundKey = "timeout"
+
 // novaSiblingSectionOwner names the ControlPlane block that owns a nova.conf
 // section as soon as it is declared, and reports whether cp declares it.
 //
@@ -511,9 +519,10 @@ func cinderKeyManagerKey(section, key string) bool {
 // [key_manager] / [barbican] follow services.barbican. The projection switches
 // each of them on from the sibling block, through the Nova child's
 // endpoints.cinder.enabled and endpoints.barbican.enabled, and then computes
-// every key behind that switch. The nova registry classifies those keys as
-// Reported, because a Nova child on its own cannot tell a projected volume
-// service or key manager from a hand-configured one; the ControlPlane can.
+// every addressing and credential key behind that switch. The nova registry
+// classifies those keys as Reported, because a Nova child on its own cannot tell
+// a projected volume service or key manager from a hand-configured one; the
+// ControlPlane can.
 func novaSiblingSectionOwner(cp *ControlPlane, section string) (string, bool) {
 	switch section {
 	case "cinder":

@@ -93,6 +93,9 @@ var OwnedConfigKeys = []config.OwnedKey{
 	{Section: "keystone_authtoken", Key: "user_domain_name", OwnedBy: "operator-computed"},
 	{Section: "keystone_authtoken", Key: "region_name", OwnedBy: "operator-computed"},
 	{Section: "keystone_authtoken", Key: "memcached_servers", OwnedBy: "operator-computed"},
+	// http_connect_timeout is Reported, not Rejected: an override is how a
+	// deployment whose Keystone legitimately answers slower raises the bound.
+	{Section: "keystone_authtoken", Key: "http_connect_timeout", OwnedBy: "operator-computed", Impact: "the bound fails a request whose Keystone stops answering within 43.5 seconds; without it every token validation on an established connection waits out the kernel's retransmission limit, about 15 minutes, and holds the API worker"},
 	// password is never emitted by keystoneauth.Section — the middleware reads it
 	// from the OS_KEYSTONE_AUTHTOKEN__PASSWORD env override, so a file value is
 	// inert at runtime. It is Rejected for the same reason transport_url is.
@@ -109,6 +112,9 @@ var OwnedConfigKeys = []config.OwnedKey{
 	{Section: "nova", Key: "project_domain_name", OwnedBy: "spec.nova.serviceUser"},
 	{Section: "nova", Key: "region_name", OwnedBy: "spec.nova.region"},
 	{Section: "nova", Key: "endpoint_type", OwnedBy: "operator-computed", Impact: "the interface is pinned to the catalog entry a colocated control plane can reach; the public one routes the notifications out of the cluster and back"},
+	// timeout is Reported: neutron retries a timed-out notification under
+	// [DEFAULT] http_retries (3), so one call ends within 4 x 60 + 3.5 seconds.
+	{Section: "nova", Key: "timeout", OwnedBy: "operator-computed", Impact: "the bound turns a Nova that stops answering into a failed call after 60 seconds per attempt; without it a port event notification on an established connection waits out the kernel's retransmission limit, about 15 minutes, and holds the worker that sent it"},
 	// password is never emitted by keystoneauth.ClientSection — the notifier
 	// reads it from the OS_NOVA__PASSWORD env override, so a file value is inert
 	// at runtime. It is Rejected for the same reason the two other passwords are.
