@@ -373,13 +373,14 @@ Every process reads the same `nova.conf`. These are its sections:
 | `[DEFAULT]` | `use_stderr = true`, `debug` from `spec.logging.debug`, and `state_path = /var/lib/nova`. `default_log_levels` joins them while `spec.logging.perLoggerLevels` is non-empty, and `log_config_append` while the format is `json` |
 | `[api]` | `local_metadata_per_cell = false`: one global metadata front end instead of one per cell, so it resolves an instance through the API database |
 | `[api_database]`, `[database]` | `connection = mysql+pymysql://placeholder` in both. The real URLs arrive as environment overrides, and the placeholder is there so oslo.config parses the file before they apply |
-| `[keystone_authtoken]` | The token middleware: `auth_type`, `auth_url`, `www_authenticate_uri`, the four identity fields, `memcached_servers`, and `region_name` while `spec.region` is set. No password |
-| `[service_user]` | The same identity plus `send_service_user_token = true`, which is what lets a call outlive the user token that started the request |
+| `[keystone_authtoken]` | The token middleware: `auth_type`, `auth_url`, `www_authenticate_uri`, the four identity fields, `memcached_servers`, `http_connect_timeout = 10`, and `region_name` while `spec.region` is set. No password. The bound fails a validation against a Keystone that stops answering within 43.5 seconds: four attempts of 10 seconds, 0.5, 1 and 2 seconds apart |
+| `[service_user]` | The same identity plus `send_service_user_token = true`, which is what lets a call outlive the user token that started the request, and `timeout = 60` |
 | `[placement]` | The client credentials plus `valid_interfaces = internal`, `endpoint_override` when the block pins one, and `timeout = 60`. keystoneauth applies the timeout to every Placement request as both the connect and the read timeout, and openstacksdk retries a timed-out request once, so a build whose Placement call gets no answer fails with ERROR after about two minutes. Without it the scheduler waits out the kernel's retransmissions, about 15 minutes on an established connection, and logs nothing |
-| `[neutron]` | The client credentials plus `valid_interfaces = internal`, and `endpoint_override` when the block pins one |
-| `[glance]` | `valid_interfaces = internal`, plus `region_name` and `endpoint_override` when set. No credentials: Nova reads an image with the token of the request it is serving |
-| `[cinder]` | Only while `spec.endpoints.cinder.enabled`: the client credentials, `catalog_info = block-storage:cinder:internalURL`, `os_region_name` and `endpoint_template` when set |
-| `[key_manager]`, `[barbican]` | Only while `spec.endpoints.barbican.enabled`: `backend = barbican`, then `auth_endpoint`, `barbican_endpoint_type = internal`, `send_service_user_token = true`, plus `barbican_region_name` and `barbican_endpoint` when set |
+| `[neutron]` | The client credentials plus `valid_interfaces = internal`, `timeout = 60`, and `endpoint_override` when the block pins one. Nova retries a timed-out Neutron call three times (`http_retries`), so a Neutron that never answers costs a call at most 4 x 60 + 3.5 = 243.5 seconds |
+| `[glance]` | `valid_interfaces = internal` and `timeout = 60`, plus `region_name` and `endpoint_override` when set. No credentials: Nova reads an image with the token of the request it is serving |
+| `[cinder]` | Only while `spec.endpoints.cinder.enabled`: the client credentials, `catalog_info = block-storage:cinder:internalURL`, `timeout = 60`, `os_region_name` and `endpoint_template` when set. A timed-out Cinder call is retried like a Neutron one |
+| `[key_manager]`, `[barbican]` | Only while `spec.endpoints.barbican.enabled`: `backend = barbican`, then `auth_endpoint`, `barbican_endpoint_type = internal`, `send_service_user_token = true`, `timeout = 60`, plus `barbican_region_name` and `barbican_endpoint` when set. castellan hands `timeout` to its session only with the castellan library patch the image build applies (see [Container images](../ci-cd/container-images.md)) |
+| `[keystone]` | `timeout = 60`. The quota-set and flavor-access APIs look a project up through this session, with the token of the request they serve, so the section carries no credentials |
 | `[oslo_messaging_rabbit]` | `rabbit_quorum_queue`, `rabbit_transient_quorum_queue` and `use_queue_manager`, plus `ssl` and `ssl_ca_file` while `spec.messaging.tls` is set |
 | `[oslo_messaging_notifications]` | `driver = noop` |
 | `[oslo_concurrency]` | `lock_path = /var/lib/nova/tmp` |
@@ -430,8 +431,21 @@ db-sync Job runs once more, and the archive CronJob mounts the new ConfigMap on
 its next run. A deployment whose Placement calls take longer than 60 seconds
 sets `timeout: "<seconds>"` under `placement` in `extraConfig`. The value is
 honored and reported with `ExtraConfigHealthy=False` and an
-`ExtraConfigOwnedKeyOverride` Warning event. `nova-compute.conf` does not carry
-the key, so the compute contract is unchanged.
+`ExtraConfigOwnedKeyOverride` Warning event.
+
+The operator upgrade that brings `[keystone_authtoken] http_connect_timeout`
+and the `timeout` of `[service_user]`, `[neutron]`, `[glance]`, `[cinder]`,
+`[barbican]` and `[keystone]` renders a new `nova.conf` for every Nova. The
+config ConfigMap rotates once and the same processes roll as above. Both
+compute contract Secrets change once as well, because the fragment carries the
+same bounds, and every NovaCompute pool rolls once through its
+`computeConfigHash`. Nothing has to be set. Each key is honored and reported:
+a deployment raises a bound with `timeout: "<seconds>"` under the section, or
+`http_connect_timeout: "<seconds>"` under `keystone_authtoken`, in
+`extraConfig`, and a value a deployment already sets there stays in force and
+is reported from then on. On a compute the bound is raised through
+`NovaCompute.spec.extraConfig`, because `Nova.spec.extraConfig` does not reach
+the fragment.
 
 Four overlays ship beside `nova.conf` in the same ConfigMap, one per role that
 owns options the others must not read. They are assembled by string formatting
@@ -667,14 +681,22 @@ What the fragment leaves out is the more interesting half:
 - No `[scheduler]`, `[conductor]` or `[oslo_concurrency]`, which configure
   processes a compute node does not run, and no `state_path` or
   `log_config_append`, which name paths inside a pod this operator builds.
-- No `[placement] timeout`. The 60-second request bound is for the control
-  plane's Placement clients. A compute's inventory updates are periodic and
-  retried, and the fragment is loaded by hypervisors in another trust domain.
+- No `[keystone]`. Only the API's project lookup reads it, and a compute
+  serves no API.
 - No `spec.extraConfig`. The overrides configure the control plane the CR
   author runs, while the fragment is loaded by hypervisors in another trust
   domain, where a section of the author's choosing would reach options no typed
   field exposes: the privsep helpers, libvirt, the instance paths. An override a
   compute needs as well belongs to the compute deployment.
+
+The fragment carries the control plane's request bounds:
+`[keystone_authtoken] http_connect_timeout = 10` and `timeout = 60` in
+`[service_user]`, `[placement]`, `[neutron]`, `[glance]`, and in `[cinder]` and
+`[barbican]` while those are enabled. A compute whose peer stops answering fails
+the call after the bound instead of waiting out the kernel's retransmission
+limit, about 15 minutes. A pool that needs a longer bound raises it through
+[`NovaCompute.spec.extraConfig`](./novacompute-crd.md), whose pool file
+`nova-compute` reads after the fragment.
 
 The mount path is part of the contract. `[oslo_messaging_rabbit] ssl_ca_file`
 resolves to `/etc/nova/compute-config/ca.crt`, so a compute that projects the

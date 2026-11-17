@@ -1316,6 +1316,41 @@ func TestNovaValidate_ExtraConfigPlacementTimeoutAdmitted(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 }
 
+// The client and validation bounds are reported owned keys like the Placement
+// one, so raising any of them is admitted. A stray key beside one is still
+// scanned against the catalog.
+func TestNovaValidate_ExtraConfigRequestBoundsAdmitted(t *testing.T) {
+	for _, tc := range []struct {
+		section, key, value string
+	}{
+		{"neutron", "timeout", "120"},
+		{"glance", "timeout", "120"},
+		{"keystone", "timeout", "120"},
+		{"keystone_authtoken", "http_connect_timeout", "30"},
+	} {
+		t.Run(tc.section+" "+tc.key, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			w := &NovaWebhook{}
+
+			obj := validNova()
+			obj.Spec.ExtraConfig = map[string]map[string]string{tc.section: {tc.key: tc.value}}
+			_, err := w.ValidateCreate(context.Background(), obj)
+			g.Expect(err).NotTo(gomega.HaveOccurred())
+		})
+	}
+
+	t.Run("an unknown option beside the bound is still rejected", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		w := &NovaWebhook{}
+
+		obj := validNova()
+		obj.Spec.ExtraConfig = map[string]map[string]string{"keystone": {"timeout": "120", "not_an_option": "x"}}
+		_, err := w.ValidateCreate(context.Background(), obj)
+		g.Expect(err).To(gomega.HaveOccurred())
+		g.Expect(err.Error()).To(gomega.ContainSubstring("not_an_option"))
+	})
+}
+
 func TestNovaValidate_ExtraConfigUnknownOptionRejected(t *testing.T) {
 	g := gomega.NewWithT(t)
 	w := &NovaWebhook{}

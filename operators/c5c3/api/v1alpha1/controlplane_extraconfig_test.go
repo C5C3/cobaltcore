@@ -1016,6 +1016,7 @@ func TestValidateCreate_ReportsNovaRequestBoundBesideSibling(t *testing.T) {
 		cp      func() *ControlPlane
 	}{
 		{"cinder", novaAndCinderControlPlane},
+		{"barbican", novaAndBarbicanControlPlane},
 	} {
 		t.Run(tc.section, func(t *testing.T) {
 			g := NewGomegaWithT(t)

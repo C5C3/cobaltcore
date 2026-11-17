@@ -37,6 +37,7 @@ auth_endpoint = http://keystone.openstack.svc.cluster.local:5000
 barbican_endpoint_type = internal
 barbican_region_name = RegionOne
 send_service_user_token = true
+timeout = 60
 
 [cinder]
 auth_type = password
@@ -51,6 +52,7 @@ username = nova
 
 [glance]
 region_name = RegionOne
+timeout = 60
 valid_interfaces = internal
 
 [key_manager]
@@ -125,6 +127,7 @@ debug = false
 use_stderr = true
 
 [glance]
+timeout = 60
 valid_interfaces = internal
 
 [keystone_authtoken]
@@ -198,6 +201,7 @@ auth_endpoint = https://keystone.example.com/v3
 barbican_endpoint_type = public
 barbican_region_name = RegionOne
 send_service_user_token = true
+timeout = 60
 
 [cinder]
 auth_type = password
@@ -212,6 +216,7 @@ username = nova
 
 [glance]
 region_name = RegionOne
+timeout = 60
 valid_interfaces = public
 
 [key_manager]
@@ -340,7 +345,7 @@ func TestComputeConfigDefaults_OmitsDatabaseAndMetadataKeys(t *testing.T) {
 		"the address a 401 points a client at is not one this process dials, so it stays")
 
 	for _, absent := range []string{
-		"[database]", "[api_database]", "[api]", "[cache]",
+		"[database]", "[api_database]", "[api]", "[cache]", "[keystone]",
 		"memcached_servers", "service_metadata_proxy", "metadata_proxy_shared_secret", "state_path",
 	} {
 		g.Expect(rendered).NotTo(ContainSubstring(absent),
@@ -356,7 +361,7 @@ func TestComputeConfigDefaults_OmitsDatabaseAndMetadataKeys(t *testing.T) {
 	} {
 		g.Expect(sectionOf(t, fragment, "keystone_authtoken")).To(ContainSubstring("http_connect_timeout = 10\n"),
 			"the %s fragment bounds the token middleware", name)
-		for _, section := range []string{"service_user", "placement", "neutron", "cinder"} {
+		for _, section := range []string{"service_user", "placement", "neutron", "glance", "cinder", "barbican"} {
 			g.Expect(sectionOf(t, fragment, section)).To(ContainSubstring("timeout = 60\n"),
 				"the %s fragment's [%s] carries the request bound", name, section)
 		}

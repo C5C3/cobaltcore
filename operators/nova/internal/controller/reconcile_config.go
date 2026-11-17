@@ -85,16 +85,6 @@ const (
 // and is not something to run on every periodic tick.
 const discoverHostsIntervalSeconds = 300
 
-// placementRequestTimeoutSeconds is [placement] timeout. keystoneauth passes it
-// to every Placement request as both the connect and the read timeout, so it
-// bounds a Placement that drops packets: without it the scheduler's call on an
-// established keep-alive connection waits out the kernel's retransmission
-// ladder, about 15 minutes, and the build sits in BUILD with nothing logged.
-// The cost is that a legitimate Placement call longer than 60 seconds fails in
-// whichever control-plane process makes it; a deployment with such calls raises
-// the bound through spec.extraConfig.
-const placementRequestTimeoutSeconds = 60
-
 // buildFailureWeightMultiplier is [filter_scheduler]
 // build_failure_weight_multiplier. Nova normalizes each weigher's raw weights
 // over the candidate hosts to the range 0 to 1 before it multiplies, so Nova's
@@ -335,7 +325,7 @@ func operatorDefaults(nova *novav1alpha1.Nova, cacheServers string) map[string]m
 		// a boot that outlives the user token still reaches Placement, Neutron,
 		// Glance and Cinder.
 		"service_user":          keystoneauth.ServiceUserSection(params),
-		"placement":             placementSection(params, spec.Endpoints.Placement.Override),
+		"placement":             catalogClientSection(params, spec.Endpoints.Placement.Override),
 		"neutron":               catalogClientSection(params, spec.Endpoints.Neutron.Override),
 		"glance":                glanceSection(spec),
 		"oslo_messaging_rabbit": messaging.RabbitSection(spec.Messaging.TLS, rabbitmqCAFilePath),
@@ -369,6 +359,11 @@ func operatorDefaults(nova *novav1alpha1.Nova, cacheServers string) map[string]m
 			"shuffle_best_same_weighed_hosts": shuffleBestSameWeighedHosts,
 		},
 		"vnc": vncSection(nova),
+		// The session the quota-set and flavor-access APIs look a project up
+		// through (nova/api/openstack/identity.py). Only the API reads it, with
+		// the token of the request it serves, so the section carries the request
+		// bound alone.
+		"keystone": {"timeout": strconv.Itoa(keystoneauth.ClientTimeoutSeconds)},
 	}
 
 	// PerLoggerLevels render into oslo.log's default_log_levels CSV; empty omits
@@ -420,10 +415,11 @@ func clientSectionParams(spec *novav1alpha1.NovaSpec) keystoneauth.SectionParams
 	}
 }
 
-// catalogClientSection renders the credentials plus the two addressing keys a
-// client section resolved from the Keystone catalog carries. valid_interfaces
-// pins the internal entry, which is the one a colocated control plane can reach;
-// an override addresses the service directly and leaves the catalog out of it.
+// catalogClientSection renders the credentials and the request bound of
+// keystoneauth.ClientSection plus the two addressing keys a client section
+// resolved from the Keystone catalog carries. valid_interfaces pins the internal
+// entry, which is the one a colocated control plane can reach; an override
+// addresses the service directly and leaves the catalog out of it.
 func catalogClientSection(params keystoneauth.SectionParams, override string) map[string]string {
 	section := keystoneauth.ClientSection(params)
 	section["valid_interfaces"] = "internal"
@@ -433,25 +429,16 @@ func catalogClientSection(params keystoneauth.SectionParams, override string) ma
 	return section
 }
 
-// placementSection renders the control plane's [placement]: the catalog client
-// section plus the request bound. The bound applies to every control-plane
-// process that calls Placement; the build path, where the scheduler asks
-// Placement for allocation candidates while a user waits, is why it exists.
-// computeFragment keeps catalogClientSection on purpose: a compute's inventory
-// updates are periodic and retried, and the fragment is loaded by hypervisors
-// in another trust domain.
-func placementSection(params keystoneauth.SectionParams, override string) map[string]string {
-	section := catalogClientSection(params, override)
-	section["timeout"] = strconv.Itoa(placementRequestTimeoutSeconds)
-	return section
-}
-
 // glanceSection renders [glance], the section nova reads the image of every
 // instance it boots through. It carries no credentials of its own: nova reaches
 // Glance with the token of the request it is serving, backed by the outgoing
-// service token from [service_user].
+// service token from [service_user]. timeout is the request bound the client
+// sections take from keystoneauth.ClientSection.
 func glanceSection(spec *novav1alpha1.NovaSpec) map[string]string {
-	section := map[string]string{"valid_interfaces": "internal"}
+	section := map[string]string{
+		"valid_interfaces": "internal",
+		"timeout":          strconv.Itoa(keystoneauth.ClientTimeoutSeconds),
+	}
 	if spec.Region != "" {
 		section["region_name"] = spec.Region
 	}
@@ -488,10 +475,14 @@ func cinderSection(spec *novav1alpha1.NovaSpec) map[string]string {
 // encrypted volume through. It carries no credentials either: castellan
 // authenticates against the Keystone named here with the service account, and
 // send_service_user_token is what lets a key read outlive the user token that
-// started the request.
+// started the request. timeout is the request bound the client sections take
+// from keystoneauth.ClientTimeoutSeconds; castellan registers the option but
+// hands it to its session only with the castellan patch the image build
+// applies (nix/lib/python-env.nix).
 func barbicanSection(spec *novav1alpha1.NovaSpec) map[string]string {
 	section := map[string]string{
 		"auth_endpoint": spec.KeystoneEndpoint,
+		"timeout":       strconv.Itoa(keystoneauth.ClientTimeoutSeconds),
 		// The endpoint type pins the internal catalog entry. It matters for the
 		// deployment that configures no barbican_endpoint below and resolves the
 		// address from the catalog instead.
