@@ -818,8 +818,9 @@ spec:
             (contains($error, 'forbidden when services.keystone.mode is External')): true
     # [cinder] catalog_info in services.nova.extraConfig is forbidden beside a
     # declared services.cinder (webhook-only): the ControlPlane switches the Nova
-    # child's volume service on from the sibling block and computes every key behind
-    # that switch, so the override names a catalog tuple this plane does not publish.
+    # child's volume service on from the sibling block and computes every addressing
+    # and credential key behind that switch, so the override names a catalog tuple
+    # this plane does not publish.
     - apply:
         file: 110-nova-extraconfig-cinder-override.yaml
         expect:

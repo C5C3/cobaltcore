@@ -30,6 +30,7 @@ auth_strategy = keystone
 [keystone_authtoken]
 auth_type = password
 auth_url = http://keystone.default.svc:5000
+http_connect_timeout = 10
 memcached_servers = mc:11211
 project_domain_name = Default
 project_name = service

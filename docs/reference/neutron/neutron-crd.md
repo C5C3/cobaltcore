@@ -259,6 +259,7 @@ What a CR that says nothing beyond the required fields gets in `neutron.conf`:
 | `[keystone_authtoken]` | `auth_type` | `password` |
 | `[keystone_authtoken]` | `auth_url`, `www_authenticate_uri`, `username`, `project_name`, `user_domain_name`, `project_domain_name` | from `spec.keystoneEndpoint`, the effective public endpoint, and `spec.serviceUser` |
 | `[keystone_authtoken]` | `region_name`, `memcached_servers` | from `spec.region` and `spec.cache`; each omitted when its source is empty |
+| `[keystone_authtoken]` | `http_connect_timeout` | `10`, the bound of each token validation request; see below |
 | `[oslo_messaging_notifications]` | `driver` | `noop` |
 | `[oslo_messaging_rabbit]` | `rabbit_quorum_queue`, `rabbit_transient_quorum_queue`, `use_queue_manager` | `true` |
 | `[oslo_messaging_rabbit]` | `ssl`, `ssl_ca_file` | `true` and `/etc/rabbitmq-ca/ca.crt`; written only while `spec.messaging.tls` is set |
@@ -266,6 +267,7 @@ What a CR that says nothing beyond the required fields gets in `neutron.conf`:
 | `[nova]` | `auth_type`, `auth_url`, `username`, `project_name`, `user_domain_name`, `project_domain_name` | `password`, `spec.keystoneEndpoint`, and the four `spec.nova.serviceUser` identity fields; written only while `spec.nova` is set |
 | `[nova]` | `region_name` | from `spec.nova.region`; omitted when empty |
 | `[nova]` | `endpoint_type` | `internal`, the catalog entry a co-located control plane can reach. The public one routes the notifications out of the cluster and back |
+| `[nova]` | `timeout` | `60`, the bound of each notifier request; written only while `spec.nova` is set |
 | `[nova]` | none | Without `spec.nova` the section is rendered empty. The header is what a Nova option added through `spec.extraConfig` fills in |
 
 And in `ml2_conf.ini`:
@@ -322,6 +324,30 @@ The operator omits it while `spec.extraConfig.database.connection_parameters` is
 set and renders the user's value into `neutron.conf`. The RPC and maintenance
 workers, the OVN database sync CronJob and the migration Jobs carry nothing; see
 [Database socket timeouts](../../guides/advanced-configuration.md#database-socket-timeouts).
+
+`[keystone_authtoken] http_connect_timeout` is rendered as `10`.
+keystonemiddleware sets no default, so without the key a token validation
+against a Keystone that stops answering waits out the kernel's TCP
+retransmission limit (`tcp_retries2 = 15`, about 15 minutes) and holds the
+Neutron API worker that serves the request. With the bound, keystonemiddleware
+retries a timed-out validation three times, 0.5, 1 and 2 seconds apart, so the
+request fails within 43.5 seconds. A Keystone that takes longer than 10 seconds
+for a validation sees it up to four times. The key is honored and reported:
+`spec.extraConfig.keystone_authtoken.http_connect_timeout` raises the bound and
+sets `ExtraConfigHealthy=False`. The operator upgrade that brings the key
+changes the rendered ConfigMap once, so the pods that mount it roll once; a
+value a deployment already sets through `spec.extraConfig` stays in force and is
+reported from then on.
+
+While `spec.nova` is set, `[nova] timeout` is rendered as `60`. keystoneauth
+passes it to every request of the notifier's session as both the connect and the
+read timeout, and neutron retries a timed-out call under
+`[DEFAULT] http_retries` (3), so a Nova that stops answering costs one
+notification at most 4 x 60 + 3.5 = 243.5 seconds instead of about 15 minutes. A
+notification Nova is still working on after 60 seconds is sent again. The key is
+honored and reported like `http_connect_timeout`, and
+`spec.extraConfig.nova.timeout` raises it. Without `spec.nova` the `[nova]`
+section stays empty and carries no `timeout`.
 
 ## Defaulting and validation
 
@@ -615,7 +641,7 @@ CR with no update to remove it through. A new or changed value is still refused.
 Every other entry in the registry is honored and reported: the remaining
 `[DEFAULT]` keys, including the two `notify_nova_on_port_*` switches
 `spec.nova` owns; the `[keystone_authtoken]` keys `keystoneauth.Section` renders
-and the eight `[nova]` keys it renders beside them, owned by `spec.nova`,
+and the nine `[nova]` keys it renders beside them, owned by `spec.nova`,
 `spec.keystoneEndpoint` and the operator; the
 `[oslo_messaging_notifications]`, `[oslo_messaging_rabbit]` and
 `[oslo_concurrency]` keys; the `[ml2]` and per-type-driver keys; and the two

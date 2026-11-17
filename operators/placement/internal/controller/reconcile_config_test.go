@@ -104,6 +104,9 @@ func TestReconcileConfig_RendersPlacementConf(t *testing.T) {
 	g.Expect(conf).To(ContainSubstring("project_name = service"))
 	g.Expect(conf).To(ContainSubstring("region_name = RegionOne"))
 	g.Expect(conf).To(ContainSubstring("memcached_servers = mc:11211"))
+	// The validation bound keeps a Keystone that stops answering from holding a
+	// worker for the kernel's retransmission limit.
+	g.Expect(conf).To(ContainSubstring("http_connect_timeout = 10"))
 	// The service password reaches the pod through
 	// OS_KEYSTONE_AUTHTOKEN__PASSWORD only: a file value would leak it into a
 	// namespace-readable ConfigMap. The auth_type = password line is the

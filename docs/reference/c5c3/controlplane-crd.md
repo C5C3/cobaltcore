@@ -3366,6 +3366,8 @@ ControlPlane never provisioned. The message reads
 `is projected by the ControlPlane from services.barbican (<owner>); remove the
 override or unset services.barbican`. Without `services.barbican` the three keys
 stay Reported, which is what lets an external key manager be configured by hand.
+`[barbican] timeout` is not among the three and stays Reported beside
+`services.barbican`.
 
 A backend name that collides with a `cinder.conf` catalog section other than
 `default` is admitted here and refused downstream: that catalog lives in the
@@ -3394,14 +3396,18 @@ Three sections are rejected only beside the sibling block that owns them.
 `[cinder]` follows `services.cinder`, and `[key_manager]` and `[barbican]`
 follow `services.barbican`: the projection switches each on through the Nova
 child's `endpoints.cinder.enabled` and `endpoints.barbican.enabled` and computes
-every key behind that switch, so beside a declared sibling an override names a
-service the plane does own. The message reads `is projected by the ControlPlane
-from services.cinder (<owner>); remove the override or unset services.cinder`,
-and the same with `services.barbican`. Without the sibling those keys stay
-Reported, which is what lets an externally-run volume service or key manager be
-configured by hand. The nova registry classifies them that way because a `Nova`
-child on its own cannot tell a projected volume service or key manager from a
-hand-configured one; the ControlPlane can.
+every addressing and credential key behind that switch, so beside a declared
+sibling an override names a service the plane does own. The message reads
+`is projected by the ControlPlane from services.cinder (<owner>); remove the
+override or unset services.cinder`, and the same with `services.barbican`.
+Without the sibling those keys stay Reported, which is what lets an
+externally-run volume service or key manager be configured by hand. The nova
+registry classifies them that way because a `Nova` child on its own cannot tell
+a projected volume service or key manager from a hand-configured one; the
+ControlPlane can. The request bound `timeout` in `[cinder]` and `[barbican]`
+stays Reported beside the sibling as well: the nova operator renders it, the
+projection never sets it, and it addresses no service, so raising it is admitted
+with a warning.
 
 The catalogs consulted here are the ones embedded in the **c5c3-operator** build.
 A deployed service operator of a different build may embed a different catalog;

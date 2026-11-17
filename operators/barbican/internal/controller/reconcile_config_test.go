@@ -132,6 +132,9 @@ func TestReconcileConfig_OperatorOwnedOptions(t *testing.T) {
 	g.Expect(sectionOf(t, rendered, "keystone_authtoken")).NotTo(ContainElement(HavePrefix("password =")))
 	g.Expect(sectionOf(t, rendered, "keystone_authtoken")).To(ContainElement("auth_url = " + barbican.Spec.KeystoneEndpoint))
 	g.Expect(sectionOf(t, rendered, "keystone_authtoken")).To(ContainElement("memcached_servers = mc:11211"))
+	// The validation bound keeps a Keystone that stops answering from holding a
+	// worker for the kernel's retransmission limit.
+	g.Expect(sectionOf(t, rendered, "keystone_authtoken")).To(ContainElement("http_connect_timeout = 10"))
 	// Secure-RBAC defaults are on, enforce_scope is not rendered, and
 	// policy_file is absent without spec.policyOverrides.
 	g.Expect(sectionOf(t, rendered, "oslo_policy")).To(ConsistOf("enforce_new_defaults = true"))

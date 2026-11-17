@@ -83,6 +83,9 @@ var OwnedConfigKeys = []config.OwnedKey{
 	{Section: "keystone_authtoken", Key: "user_domain_name", OwnedBy: "operator-computed"},
 	{Section: "keystone_authtoken", Key: "region_name", OwnedBy: "operator-computed"},
 	{Section: "keystone_authtoken", Key: "memcached_servers", OwnedBy: "operator-computed"},
+	// http_connect_timeout is Reported, not Rejected: an override is how a
+	// deployment whose Keystone legitimately answers slower raises the bound.
+	{Section: "keystone_authtoken", Key: "http_connect_timeout", OwnedBy: "operator-computed", Impact: "the bound fails a request whose Keystone stops answering within 43.5 seconds; without it every token validation on an established connection waits out the kernel's retransmission limit, about 15 minutes, and holds the API worker"},
 	// password is never emitted by operatorDefaults — keystoneauth.Section
 	// deliberately omits it and the middleware reads it from the
 	// OS_KEYSTONE_AUTHTOKEN__PASSWORD env override, so a file value is inert at

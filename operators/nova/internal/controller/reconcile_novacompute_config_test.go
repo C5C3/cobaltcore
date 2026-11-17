@@ -154,6 +154,29 @@ func TestReconcileNovaComputeConfig_RendersThePool(t *testing.T) {
 	g.Expect(health.Message).To(ContainSubstring("virt_type"))
 }
 
+// TestReconcileNovaComputeConfig_RendersRaisedRequestBounds pins that a pool
+// override of a fragment bound lands in the pool file, which nova-compute reads
+// after the fragment, so the pool's value is the one in force.
+func TestReconcileNovaComputeConfig_RendersRaisedRequestBounds(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cr := validNovaCompute()
+	cr.Spec.ExtraConfig = map[string]map[string]string{
+		"neutron":            {"timeout": "120"},
+		"placement":          {"timeout": "120"},
+		"cinder":             {"timeout": "120"},
+		"keystone_authtoken": {"http_connect_timeout": "30"},
+	}
+	r, pass := runPoolConfig(t, cr, computeContractSecret("pw"))
+
+	cm := &corev1.ConfigMap{}
+	g.Expect(r.Get(context.Background(), client.ObjectKey{Namespace: testNamespace, Name: pass.configMapName}, cm)).To(Succeed())
+	poolFile := cm.Data[poolConfigFile]
+	g.Expect(sectionOf(t, poolFile, "neutron")).To(ContainSubstring("timeout = 120\n"))
+	g.Expect(sectionOf(t, poolFile, "placement")).To(ContainSubstring("timeout = 120\n"))
+	g.Expect(sectionOf(t, poolFile, "cinder")).To(ContainSubstring("timeout = 120\n"))
+	g.Expect(sectionOf(t, poolFile, "keystone_authtoken")).To(ContainSubstring("http_connect_timeout = 30\n"))
+}
+
 // TestReconcileNovaComputeConfig_RendersTLSMigrationWithoutOverrides pins the
 // migration transport for a pool without spec.extraConfig: it needs no
 // override, and nothing is reported as overridden.

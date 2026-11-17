@@ -43,6 +43,7 @@ connection = mysql+pymysql://placeholder
 [keystone_authtoken]
 auth_type = password
 auth_url = http://keystone.openstack.svc:5000
+http_connect_timeout = 10
 memcached_servers = mc:11211
 project_domain_name = Default
 project_name = service
@@ -163,6 +164,7 @@ connection = mysql+pymysql://placeholder
 [keystone_authtoken]
 auth_type = password
 auth_url = http://keystone.openstack.svc:5000
+http_connect_timeout = 10
 memcached_servers = mc:11211
 project_domain_name = Default
 project_name = service
@@ -178,6 +180,7 @@ endpoint_type = internal
 project_domain_name = Default
 project_name = service
 region_name = RegionOne
+timeout = 60
 user_domain_name = Default
 username = neutron-nova
 

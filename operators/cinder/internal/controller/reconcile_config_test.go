@@ -112,6 +112,12 @@ func TestReconcileConfig_KeystoneBackedRendersAuthSections(t *testing.T) {
 	g.Expect(nova).To(HaveKeyWithValue("region_name", "RegionOne"))
 	g.Expect(nova).NotTo(HaveKey("send_service_user_token"),
 		"the client section carries no middleware or service-token key")
+
+	// The request bounds keep a Keystone or Nova that stops answering from
+	// holding a worker for the kernel's retransmission limit.
+	g.Expect(iniSection(conf, "keystone_authtoken")).To(HaveKeyWithValue("http_connect_timeout", "10"))
+	g.Expect(iniSection(conf, "service_user")).To(HaveKeyWithValue("timeout", "60"))
+	g.Expect(nova).To(HaveKeyWithValue("timeout", "60"))
 }
 
 // iniSection returns the key/value pairs of one section of a rendered INI
