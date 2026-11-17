@@ -347,6 +347,73 @@ for name, call in CALLS:
   assert_eq "every login write is retried after a DBDeadlock" "0" "$exit_code"
 }
 
+# --- Test 9: a key repository is judged by its key files ---
+test_key_repository_mode_patch_applied() {
+  echo "Test: a world-readable key repository warns only for a world-readable key"
+  # Proves the image build applied
+  # patches/keystone/<release>/0005-judge-a-world-readable-key-repository-by-its-key-files.patch
+  # (#1786). Upstream FernetUtils.validate_key_repository warns "key_repository
+  # is world readable" whenever others may read or enter the directory, and
+  # the kubelet creates every volume mount point with such a mode. The patched
+  # image warns only when a key file in it is readable by others. The program
+  # builds a 0755 repository in the kubelet's Secret volume layout (0 ->
+  # ..data/0, ..data -> a 0755 directory) with a 0400 key, which must stay
+  # silent, and then makes the key 0444, which must warn. An unpatched image
+  # warns on the first call already. Stderr carries the logged warning and is
+  # echoed on failure.
+  local exit_code=0 err=""
+  err=$(docker run --rm "$IMAGE" \
+    /var/lib/openstack/bin/python -c \
+    'import logging
+import os
+import sys
+import tempfile
+
+from keystone.common import fernet_utils
+
+WARNING = "key_repository is world readable"
+
+
+class Collect(logging.Handler):
+    def __init__(self):
+        super().__init__()
+        self.messages = []
+
+    def emit(self, record):
+        self.messages.append(record.getMessage())
+
+
+handler = Collect()
+fernet_utils.LOG.logger.addHandler(handler)
+fernet_utils.LOG.logger.setLevel(logging.WARNING)
+
+directory = tempfile.mkdtemp()
+os.chmod(directory, 0o755)
+data_dir = os.path.join(directory, "..2026_11_17_00_00_00.1")
+os.mkdir(data_dir)
+os.chmod(data_dir, 0o755)
+key = os.path.join(data_dir, "0")
+with open(key, "w") as key_file:
+    key_file.write("key")
+os.chmod(key, 0o400)
+os.symlink(os.path.basename(data_dir), os.path.join(directory, "..data"))
+os.symlink(os.path.join("..data", "0"), os.path.join(directory, "0"))
+utils = fernet_utils.FernetUtils(directory, 3, "fernet_tokens")
+if not utils.validate_key_repository():
+    sys.exit("validate_key_repository rejected %s" % directory)
+for message in handler.messages:
+    if WARNING in message:
+        sys.exit("a 0400 key in a 0755 repository is reported: %s" % message)
+os.chmod(key, 0o444)
+utils.validate_key_repository()
+if not any(WARNING in message for message in handler.messages):
+    sys.exit("a 0444 key in a 0755 repository is not reported")' \
+    2>&1 > /dev/null) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "    $err"
+
+  assert_eq "only a key file readable by others is reported" "0" "$exit_code"
+}
+
 # --- Run all tests ---
 echo "=== keystone container verification tests ==="
 echo "Image: $IMAGE"
@@ -366,6 +433,8 @@ echo ""
 test_lost_database_patch_applied
 echo ""
 test_login_write_retry_patch_applied
+echo ""
+test_key_repository_mode_patch_applied
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 

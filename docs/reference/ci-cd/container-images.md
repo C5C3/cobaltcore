@@ -293,6 +293,52 @@ of each method raise `DBDeadlock` in the built image and asserts that the
 method opens a second one. The patches need no operator configuration.
 Upstream status: not yet proposed.
 
+**Source patch:**
+`patches/keystone/2026.1/0005-judge-a-world-readable-key-repository-by-its-key-files.patch`
+and its 2026.2 twin
+`patches/keystone/2026.2/0005-judge-a-world-readable-key-repository-by-its-key-files.patch`
+make Keystone warn about a world-readable key repository only when a key in it
+is readable by others (issue #1786). Upstream
+`FernetUtils.validate_key_repository` in `keystone/common/fernet_utils.py` logs
+`key_repository is world readable: <path>` when the key directory has the
+`S_IROTH` or `S_IXOTH` bit, and never looks at a file. `load_keys` calls it on
+every token issue, every uncached token validation and every credential
+encryption or decryption. The kubelet creates the mount point of a Secret
+volume with mode `1777`, adds the setgid and group bits under `fsGroup`, and
+applies `defaultMode` to the files only. Measured on 2026-11-17 in a kind
+cluster, the API pod the keystone-operator renders (`fsGroup: 42424`,
+`defaultMode: 0400`) has a key directory of `3777 root:42424` and key files of
+`0440 root:42424`. Secret keys mounted one level down through `items[].path`
+give a `2755` directory, and the `emptyDir` key path of the rotation CronJob is
+`2777 root:42424` with `0400` and `0600` keys. Without `fsGroup` and with the
+default mode, the directory is `1777 root:root` and the keys are
+`0644 root:root`. No pod spec reaches a directory mode the upstream check
+accepts, so every key load of every Keystone pod logged the warning. Three
+replicas wrote about 967,000 such lines in 24 hours, although their keys were
+readable only by the openstack group. The patches add `_has_world_readable_key`,
+and `validate_key_repository` warns only when the directory is open to others
+and a regular file in it has the `S_IROTH` bit. `os.stat` follows the key links
+of a Secret volume, so the projected file's mode counts. An entry `os.stat`
+cannot resolve is skipped and logged at `DEBUG`: a file that disappears between
+`os.listdir` and `os.stat`, as during a rotation or the kubelet's `..data`
+swap, and a link loop or a link into a directory Keystone cannot search, which
+`load_keys` skips as well. The message text, the return value and the error for
+a repository Keystone cannot access are unchanged. No existing upstream test
+moves, because the key repository fixture is a `0700` directory and
+`test_cli.py` mocks the check. The patches add nine tests to
+`FernetUtilsTestCase` in `keystone/tests/unit/common/test_utils.py`: a `0755`
+directory with a `0400` key, the same in the kubelet's `..data` layout, with a
+`0644` key, with a `0644` `0.tmp` beside a `0400` key, an empty one, one with a
+dangling key link and one with a link loop, a `0700` directory with a `0644`
+key, and a missing directory. `test_key_repository_mode_patch_applied` in
+`tests/container-images/verify_keystone.sh` asserts in the built image that a
+`0400` key in a `0755` directory with the `..data` layout logs nothing and a
+`0444` key logs the warning.
+The patches keep the warning silent only for keys that are not readable by
+others, which the keystone-operator renders with `defaultMode: 0400` on the key
+volumes and `fsGroup: 42424` on the pod.
+Upstream status: not yet proposed.
+
 ### horizon
 
 **Location:** `images/horizon/image.nix`, built from the lock

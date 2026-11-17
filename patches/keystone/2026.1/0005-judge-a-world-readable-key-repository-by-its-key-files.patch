@@ -1,0 +1,266 @@
+SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+SPDX-License-Identifier: Apache-2.0
+
+Judge a world-readable key repository by its key files
+
+FernetUtils.validate_key_repository in keystone/common/fernet_utils.py
+logs "key_repository is world readable: <path>" at WARNING whenever the
+key directory has S_IROTH or S_IXOTH, and never looks at a file in it.
+load_keys calls it on every call: the token formatter on every token
+issue and every uncached validation, the receipt formatter, the
+credential provider on every encryption and decryption, and the key
+commands of keystone-manage. The kubelet creates the mount point of a
+Secret volume with mode 1777, ORs the setgid and group bits in under
+fsGroup and applies defaultMode to the files only. Measured on
+2026-11-17 in a kind cluster (Kubernetes v1.37.0): the API pod the
+keystone-operator renders has a key directory of 3777 root:42424, a
+Secret mounted one level down through items[].path gives 2755, and an
+emptyDir mount point gives 2777. No field of a pod spec reaches a mode
+the check accepts, so the warning fires on every key load of every
+CobaltCore OpenStack Keystone pod: three replicas wrote about 967,000
+of these lines in 24 hours (C5C3/cobaltcore#1786).
+
+The warning is false there. The keystone-operator projects every key
+as 0440 root:42424: `defaultMode: 0400` on the fernet-keys and
+credential-keys volumes
+(operators/keystone/internal/controller/reconcile_deployment.go) and
+`fsGroup: 42424` on the pod (internal/common/deployment/workload.go).
+Before those settings the keys were 0644 root:root, readable by every
+user of the container.
+
+validate_key_repository now warns only when the directory is open to
+others and _has_world_readable_key finds a regular file in it that
+others can read. The message text, the return value and the LOG.error
+for a repository the process cannot access are unchanged. Every regular
+file counts, not only the digit-named keys, because the 0.tmp of a
+running rotation is key material too. os.stat follows symlinks, so the
+mode of a Secret volume's key (0 -> ..data/0) is the mode of the
+projected file; the ..data link and the timestamped directory are not
+regular files and are skipped. An entry os.stat cannot resolve is
+skipped and logged at DEBUG: a FileNotFoundError, because a rotation or
+the kubelet's ..data swap can remove a file between os.listdir and
+os.stat, and any other OSError, such as a link loop or a link into a
+directory Keystone cannot search, because load_keys skips that entry
+as well (os.path.isfile is False for it). An OSError of os.listdir
+reaches the caller, like the os.stat of the directory above it. A
+private repository (0700) never reaches the file check.
+
+An init container that copies the keys into a 0750 memory emptyDir
+would end in-place key rotation, because every rotation would need a
+rollout. A sidecar that mirrors the Secret into such a directory adds a
+container to every API pod and a sync that can serve stale keys.
+
+Tests: no upstream test moves. ksfixtures.KeyRepository builds its
+repository with fixtures.TempDir(), whose mode is 0700, and
+keystone/tests/unit/test_cli.py mocks validate_key_repository, so no
+test reaches the warning. The patch adds nine tests to
+FernetUtilsTestCase in keystone/tests/unit/common/test_utils.py, each
+on a TempDir whose modes it sets with os.chmod:
+
+- test_world_readable_repository_with_private_keys_logs_no_warning:
+  a 0755 directory with a 0400 key loads the key without the warning.
+- test_secret_volume_layout_with_private_keys_logs_no_warning: a 0755
+  directory in the kubelet's Secret volume layout (0 -> ..data/0,
+  ..data -> a 0755 directory) with a 0400 key loads the key without
+  the warning.
+- test_world_readable_repository_with_world_readable_key_logs_warning:
+  a 0755 directory with a 0644 key logs the warning with its path.
+- test_world_readable_temporary_key_logs_warning: a 0644 0.tmp beside
+  a 0400 key in a 0755 directory logs the warning.
+- test_private_repository_with_world_readable_key_logs_no_warning:
+  a 0700 directory with a 0644 key stays silent, as upstream.
+- test_world_readable_empty_repository_logs_no_warning: an empty 0755
+  directory is valid and stays silent.
+- test_missing_repository_is_reported_without_a_mode_check: a missing
+  directory returns False with the unchanged error and raises nothing.
+- test_key_removed_after_listing_is_skipped: a symlink whose target is
+  gone beside a 0400 key raises nothing and stays silent.
+- test_unresolvable_key_entry_is_skipped: a symlink loop beside a 0400
+  key raises nothing and stays silent.
+
+With only the test hunks applied, the first, the second, the sixth, the
+eighth and the ninth fail.
+
+Proof: test_key_repository_mode_patch_applied in
+tests/container-images/verify_keystone.sh calls validate_key_repository
+in the built image on a 0755 directory in the Secret volume layout,
+asserts no warning for a 0400 key and the warning once the key is 0444.
+
+The fernet_utils.py and test_utils.py blobs are the same in keystone
+29.0.0 and 30.0.0, and the twins under patches/keystone/2026.1/ and
+patches/keystone/2026.2/ differ only in their Applies-to line.
+
+Applies to keystone 29.0.0 (2026.1).
+
+Upstream status: not yet proposed.
+
+diff --git a/keystone/common/fernet_utils.py b/keystone/common/fernet_utils.py
+index 36dd70671..0b1da2af3 100644
+--- a/keystone/common/fernet_utils.py
++++ b/keystone/common/fernet_utils.py
+@@ -62,18 +62,39 @@ class FernetUtils:
+                 },
+             )
+         else:
+-            # ensure the key repository isn't world-readable
++            # Warn only when others may list or enter the repository and
++            # a regular file in it is readable by others; a repository
++            # without such a file exposes no key material.
+             stat_info = os.stat(self.key_repository)
+             if (
+                 stat_info.st_mode & stat.S_IROTH
+                 or stat_info.st_mode & stat.S_IXOTH
+-            ):
++            ) and self._has_world_readable_key():
+                 LOG.warning(
+                     'key_repository is world readable: %s', self.key_repository
+                 )
+ 
+         return is_valid
+ 
++    def _has_world_readable_key(self):
++        """Tell whether others can read a file of the key repository."""
++        for filename in os.listdir(self.key_repository):
++            path = os.path.join(self.key_repository, filename)
++            try:
++                file_info = os.stat(path)
++            except OSError as e:
++                # A rotation or the kubelet removed the file after listdir,
++                # or the entry cannot be resolved (a link loop, a link into
++                # a directory Keystone cannot search). load_keys skips such
++                # an entry as well, because os.path.isfile is False for it.
++                LOG.debug('Skipping %s in the key mode check: %s', path, e)
++                continue
++            if stat.S_ISREG(file_info.st_mode) and (
++                file_info.st_mode & stat.S_IROTH
++            ):
++                return True
++        return False
++
+     def create_key_directory(
+         self, keystone_user_id=None, keystone_group_id=None
+     ):
+diff --git a/keystone/tests/unit/common/test_utils.py b/keystone/tests/unit/common/test_utils.py
+index f7f6de73d..ae5b226a3 100644
+--- a/keystone/tests/unit/common/test_utils.py
++++ b/keystone/tests/unit/common/test_utils.py
+@@ -10,6 +10,7 @@
+ # License for the specific language governing permissions and limitations
+ # under the License.
+ 
++import os
+ import uuid
+ 
+ import fixtures
+@@ -419,3 +420,111 @@ class FernetUtilsTestCase(unit.BaseTestCase):
+             'been enough key rotations to reach `max_active_keys` yet?'
+         )
+         self.assertNotIn(debug_message, logging_fixture.output)
++
++    def _key_repository(self, directory_mode, key_modes):
++        directory = self.useFixture(fixtures.TempDir()).path
++        for name, mode in key_modes.items():
++            path = os.path.join(directory, name)
++            with open(path, 'w') as key_file:
++                key_file.write('key-' + name)
++            os.chmod(path, mode)
++        os.chmod(directory, directory_mode)
++        return directory
++
++    def _fernet_utils(self, directory):
++        return fernet_utils.FernetUtils(directory, 3, 'fernet_tokens')
++
++    def test_world_readable_repository_with_private_keys_logs_no_warning(self):
++        directory = self._key_repository(0o755, {'0': 0o400})
++        logger = self.useFixture(fixtures.FakeLogger(level=log.WARNING))
++        keys = self._fernet_utils(directory).load_keys()
++        self.assertEqual(['key-0'], keys)
++        self.assertNotIn('key_repository is world readable', logger.output)
++
++    def test_secret_volume_layout_with_private_keys_logs_no_warning(self):
++        # The kubelet projects a Secret as <key> -> ..data/<key>, with ..data
++        # a link to a 0755 timestamped directory; neither is a regular file.
++        directory = self.useFixture(fixtures.TempDir()).path
++        data_dir = os.path.join(directory, '..2026_11_17_00_00_00.1')
++        os.mkdir(data_dir)
++        key = os.path.join(data_dir, '0')
++        with open(key, 'w') as key_file:
++            key_file.write('key-0')
++        os.chmod(key, 0o400)
++        os.chmod(data_dir, 0o755)
++        os.symlink(
++            os.path.basename(data_dir), os.path.join(directory, '..data')
++        )
++        os.symlink(os.path.join('..data', '0'), os.path.join(directory, '0'))
++        os.chmod(directory, 0o755)
++        logger = self.useFixture(fixtures.FakeLogger(level=log.WARNING))
++        keys = self._fernet_utils(directory).load_keys()
++        self.assertEqual(['key-0'], keys)
++        self.assertNotIn('key_repository is world readable', logger.output)
++
++    def test_world_readable_repository_with_world_readable_key_logs_warning(
++        self,
++    ):
++        directory = self._key_repository(0o755, {'0': 0o644})
++        logger = self.useFixture(fixtures.FakeLogger(level=log.WARNING))
++        self._fernet_utils(directory).load_keys()
++        self.assertIn(
++            f'key_repository is world readable: {directory}', logger.output
++        )
++
++    def test_world_readable_temporary_key_logs_warning(self):
++        # The 0.tmp of a running rotation is key material as well.
++        directory = self._key_repository(0o755, {'0': 0o400, '0.tmp': 0o644})
++        logger = self.useFixture(fixtures.FakeLogger(level=log.WARNING))
++        self.assertTrue(
++            self._fernet_utils(directory).validate_key_repository()
++        )
++        self.assertIn(
++            f'key_repository is world readable: {directory}', logger.output
++        )
++
++    def test_private_repository_with_world_readable_key_logs_no_warning(self):
++        directory = self._key_repository(0o700, {'0': 0o644})
++        logger = self.useFixture(fixtures.FakeLogger(level=log.WARNING))
++        self._fernet_utils(directory).load_keys()
++        self.assertNotIn('key_repository is world readable', logger.output)
++
++    def test_world_readable_empty_repository_logs_no_warning(self):
++        directory = self._key_repository(0o755, {})
++        logger = self.useFixture(fixtures.FakeLogger(level=log.WARNING))
++        self.assertTrue(
++            self._fernet_utils(directory).validate_key_repository()
++        )
++        self.assertNotIn('key_repository is world readable', logger.output)
++
++    def test_missing_repository_is_reported_without_a_mode_check(self):
++        directory = os.path.join(
++            self.useFixture(fixtures.TempDir()).path, 'missing'
++        )
++        logger = self.useFixture(fixtures.FakeLogger(level=log.WARNING))
++        self.assertFalse(
++            self._fernet_utils(directory).validate_key_repository()
++        )
++        self.assertIn('key_repository does not exist', logger.output)
++        self.assertNotIn('key_repository is world readable', logger.output)
++
++    def test_key_removed_after_listing_is_skipped(self):
++        # A symlink to a removed file is what a Secret volume holds between
++        # the kubelet's ..data swap and the removal of the old key link.
++        directory = self._key_repository(0o755, {'0': 0o400})
++        os.symlink(
++            os.path.join(directory, 'gone'), os.path.join(directory, '1')
++        )
++        logger = self.useFixture(fixtures.FakeLogger(level=log.WARNING))
++        keys = self._fernet_utils(directory).load_keys()
++        self.assertEqual(['key-0'], keys)
++        self.assertNotIn('key_repository is world readable', logger.output)
++
++    def test_unresolvable_key_entry_is_skipped(self):
++        # os.stat of a link loop raises ELOOP; load_keys skips the entry.
++        directory = self._key_repository(0o755, {'0': 0o400})
++        os.symlink('1', os.path.join(directory, '1'))
++        logger = self.useFixture(fixtures.FakeLogger(level=log.WARNING))
++        keys = self._fernet_utils(directory).load_keys()
++        self.assertEqual(['key-0'], keys)
++        self.assertNotIn('key_repository is world readable', logger.output)
