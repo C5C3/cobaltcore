@@ -43,6 +43,7 @@ auth_endpoint = http://keystone.openstack.svc.cluster.local:5000
 barbican_endpoint_type = internal
 barbican_region_name = RegionOne
 send_service_user_token = true
+timeout = 60
 
 [cache]
 backend = dogpile.cache.pymemcache
@@ -69,10 +70,14 @@ shuffle_best_same_weighed_hosts = true
 
 [glance]
 region_name = RegionOne
+timeout = 60
 valid_interfaces = internal
 
 [key_manager]
 backend = barbican
+
+[keystone]
+timeout = 60
 
 [keystone_authtoken]
 auth_type = password
@@ -168,7 +173,11 @@ build_failure_weight_multiplier = 0
 shuffle_best_same_weighed_hosts = true
 
 [glance]
+timeout = 60
 valid_interfaces = internal
+
+[keystone]
+timeout = 60
 
 [keystone_authtoken]
 auth_type = password

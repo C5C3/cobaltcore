@@ -117,19 +117,17 @@ func TestReconcileConfig_RendersFiveClientSections(t *testing.T) {
 			"[%s] reads its password from the OS_<SECTION>__PASSWORD override", section)
 	}
 
-	// Every client section carries the request bound keystoneauth.ClientSection
-	// renders, and the token middleware its validation bound: a peer that stops
-	// answering fails the call after the bound instead of stalling it for the
-	// kernel's retransmissions.
-	for _, section := range []string{"service_user", "placement", "neutron", "cinder"} {
+	// Every session nova opens carries a request bound, and the token middleware
+	// its validation bound: a peer that stops answering fails the call after the
+	// bound instead of stalling it for the kernel's retransmissions.
+	for _, section := range []string{"service_user", "placement", "neutron", "glance", "cinder", "barbican", "keystone"} {
 		g.Expect(sectionOf(t, conf, section)).To(ContainSubstring("timeout = 60\n"),
 			"[%s] bounds every request of its session", section)
 	}
 	g.Expect(sectionOf(t, conf, "keystone_authtoken")).To(ContainSubstring("http_connect_timeout = 10\n"))
-	for _, section := range []string{"glance", "barbican"} {
-		g.Expect(sectionOf(t, conf, section)).NotTo(ContainSubstring("timeout"),
-			"[%s] is not built from keystoneauth.ClientSection", section)
-	}
+	// [keystone] is the project lookup's session, which authenticates with the
+	// token of the request it serves, so it carries the bound alone.
+	g.Expect(strings.TrimSpace(sectionOf(t, conf, "keystone"))).To(Equal("timeout = 60"))
 
 	// Glance is reached with the token of the request nova is serving, so the
 	// section addresses the service and carries no identity at all.
@@ -163,6 +161,9 @@ func TestReconcileConfig_OptionalSiblingsOff(t *testing.T) {
 	for _, section := range []string{"[cinder]", "[key_manager]", "[barbican]"} {
 		g.Expect(conf).NotTo(ContainSubstring(section))
 	}
+	// The project lookup's bound does not follow the siblings: the API reads
+	// [keystone] whatever services the deployment runs.
+	g.Expect(sectionOf(t, conf, "keystone")).To(ContainSubstring("timeout = 60\n"))
 	g.Expect(conf).NotTo(ContainSubstring("endpoint_override"),
 		"an empty override leaves nova resolving the address from the catalog")
 	g.Expect(conf).NotTo(ContainSubstring("endpoint_template"))
@@ -701,6 +702,39 @@ func TestReconcileConfig_ExtraConfigOverlay(t *testing.T) {
 				ContainSubstring("[placement] timeout"),
 			)))
 	})
+
+	// The client and validation bounds are reported like the Placement one: a
+	// deployment whose calls legitimately run longer raises them here.
+	for _, tc := range []struct {
+		section, key, value, bound string
+	}{
+		{"neutron", "timeout", "120", "timeout = 60\n"},
+		{"keystone_authtoken", "http_connect_timeout", "30", "http_connect_timeout = 10\n"},
+	} {
+		t.Run("a user value raises ["+tc.section+"] "+tc.key, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			nova := validNova()
+			nova.Spec.ExtraConfig = map[string]map[string]string{
+				tc.section: {tc.key: tc.value},
+			}
+			r, art := renderConfig(t, nova)
+			section := sectionOf(t, renderedConfigMap(t, r, art.configMapName).Data[novaConfDataKey], tc.section)
+
+			g.Expect(section).To(ContainSubstring(tc.key + " = " + tc.value + "\n"))
+			g.Expect(section).NotTo(ContainSubstring(tc.bound))
+
+			owned := "[" + tc.section + "] " + tc.key
+			cond := novaCondition(nova, "ExtraConfigHealthy")
+			g.Expect(cond).NotTo(BeNil())
+			g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			g.Expect(cond.Message).To(ContainSubstring(owned))
+			g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).To(ConsistOf(
+				SatisfyAll(
+					HavePrefix("Warning "+config.EventReasonExtraConfigOwnedKeyOverride+" "),
+					ContainSubstring(owned),
+				)))
+		})
+	}
 }
 
 // TestReconcileConfig_UserConnectionParametersRenderIntoTheFile pins the opt-out

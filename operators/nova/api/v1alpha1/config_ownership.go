@@ -44,8 +44,10 @@ import "github.com/c5c3/cobaltcore/internal/common/config"
 // validating webhook instead. The [keystone_authtoken] and [service_user]
 // entries mirror the maps keystoneauth.Section and keystoneauth.ServiceUserSection
 // render, request bounds included, the [placement], [neutron] and [cinder]
-// credential keys and timeout the map keystoneauth.ClientSection renders, and
-// the [oslo_messaging_rabbit] entries the map messaging.RabbitSection renders.
+// credential keys and timeout the map keystoneauth.ClientSection renders, the
+// [glance], [barbican] and [keystone] timeout the operator sets from
+// keystoneauth.ClientTimeoutSeconds, and the [oslo_messaging_rabbit] entries the
+// map messaging.RabbitSection renders.
 var OwnedConfigKeys = []config.OwnedKey{
 	// [DEFAULT]
 	{Section: "DEFAULT", Key: "use_stderr", OwnedBy: "operator-computed"},
@@ -117,9 +119,9 @@ var OwnedConfigKeys = []config.OwnedKey{
 	// is.
 	{Section: "service_user", Key: "password", Rejected: true, OwnedBy: "spec.serviceUser.secretRef", Impact: "the service-user password is env-injected via OS_SERVICE_USER__PASSWORD; a file override is ignored at runtime and copies credential material into the rendered config Secret"},
 
-	// [placement] — the credentials rendered by keystoneauth.ClientSection plus
-	// the two keys that address the service and the request bound. Nova claims
-	// an allocation here before every instance boots.
+	// [placement] — the credentials and the request bound rendered by
+	// keystoneauth.ClientSection plus the two keys that address the service.
+	// Nova claims an allocation here before every instance boots.
 	{Section: "placement", Key: "auth_type", OwnedBy: "operator-computed"},
 	{Section: "placement", Key: "auth_url", OwnedBy: "spec.keystoneEndpoint"},
 	{Section: "placement", Key: "username", OwnedBy: "spec.serviceUser"},
@@ -159,6 +161,7 @@ var OwnedConfigKeys = []config.OwnedKey{
 	{Section: "glance", Key: "region_name", OwnedBy: "spec.region"},
 	{Section: "glance", Key: "valid_interfaces", OwnedBy: "spec.endpoints.glance", Impact: "the interface decides which catalog entry nova resolves; the public one commonly names an address the pods cannot reach"},
 	{Section: "glance", Key: "endpoint_override", OwnedBy: "spec.endpoints.glance.override", Impact: "the address is where the instance images are read; another one holds none of the images this deployment boots from"},
+	{Section: "glance", Key: "timeout", OwnedBy: "operator-computed", Impact: "the bound turns a Glance that stops answering into a failed call after 60 seconds per attempt; without it an image download for a boot on an established connection waits out the kernel's retransmission limit, about 15 minutes, and holds the worker that sent it"},
 
 	// [cinder] — rendered while spec.endpoints.cinder is enabled. The section
 	// addresses the volume service by catalog entry rather than by interface,
@@ -183,6 +186,15 @@ var OwnedConfigKeys = []config.OwnedKey{
 	{Section: "barbican", Key: "barbican_endpoint_type", OwnedBy: "spec.endpoints.barbican", Impact: "the endpoint type picks which catalog entry castellan resolves, which the operator pins because it configures the endpoint explicitly"},
 	{Section: "barbican", Key: "barbican_region_name", OwnedBy: "spec.region"},
 	{Section: "barbican", Key: "send_service_user_token", OwnedBy: "operator-computed", Impact: "the switch is what lets a key read outlive the user token that started the request"},
+	// timeout reaches castellan's session only with the castellan patch the image
+	// build applies; against an unpatched image the key is a registered option
+	// nothing reads.
+	{Section: "barbican", Key: "timeout", OwnedBy: "operator-computed", Impact: "the bound turns a Barbican that stops answering into a failed call after 60 seconds per attempt; without it a volume-encryption key read on an established connection waits out the kernel's retransmission limit, about 15 minutes, and holds the worker that sent it"},
+
+	// [keystone] — the session the quota-set and flavor-access APIs look a
+	// project up through. Only the API reads it, with the token of the request
+	// it serves, so the operator renders the request bound alone.
+	{Section: "keystone", Key: "timeout", OwnedBy: "operator-computed", Impact: "the bound turns a Keystone that stops answering into a failed call after 60 seconds per attempt; without it the project lookup of a quota or flavor-access request on an established connection waits out the kernel's retransmission limit, about 15 minutes, and holds the worker that sent it"},
 
 	// [oslo_messaging_rabbit] — rendered by messaging.RabbitSection.
 	{Section: "oslo_messaging_rabbit", Key: "rabbit_quorum_queue", OwnedBy: "operator-computed", Impact: "the queue type is fixed when the queue is declared, so a mismatch with the broker's existing queues fails the declaration"},

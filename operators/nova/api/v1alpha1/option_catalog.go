@@ -38,6 +38,7 @@ var RenderedSections = []string{
 	"api",
 	"api_database",
 	"database",
+	"keystone",
 	"keystone_authtoken",
 	"service_user",
 	"placement",
