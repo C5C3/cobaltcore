@@ -753,6 +753,30 @@ func TestCinderValidate_ExtraConfigRejectedOwnedKeys(t *testing.T) {
 	}
 }
 
+// The request bounds are Reported, not Rejected: raising one through extraConfig
+// is how a deployment whose calls legitimately run longer keeps them working.
+func TestCinderValidate_ExtraConfigRequestBoundsAdmitted(t *testing.T) {
+	for _, tc := range []struct {
+		section, key, value string
+	}{
+		{"DEFAULT", "glance_request_timeout", "300"},
+		{"keystone_authtoken", "http_connect_timeout", "30"},
+		{"service_user", "timeout", "120"},
+		{"nova", "timeout", "120"},
+		{"barbican", "timeout", "120"},
+	} {
+		t.Run(tc.section+" "+tc.key, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			w := &CinderWebhook{}
+
+			obj := validCinder()
+			obj.Spec.ExtraConfig = map[string]map[string]string{tc.section: {tc.key: tc.value}}
+			_, err := w.ValidateCreate(context.Background(), obj)
+			g.Expect(err).NotTo(gomega.HaveOccurred())
+		})
+	}
+}
+
 // A backend's own section is rendered from its CinderBackend CR, so naming it in
 // extraConfig reaches the catalog as a section it does not know.
 func TestCinderValidate_ExtraConfigBackendSectionRejected(t *testing.T) {

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 
 	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -272,6 +273,11 @@ func operatorDefaults(cinder *cinderv1alpha1.Cinder, cacheServers string) map[st
 			// specifically, independent of the root logger level. Debug is a
 			// nil-preserving *bool: nil renders as the default (false).
 			"debug": fmt.Sprintf("%t", logging.Debug != nil && *logging.Debug),
+			// The bound of every request of cinder's Glance session. cinder builds
+			// that session from this key (cinder/image/glance.py), on the noauth
+			// path too, and never reads the registered [glance] timeout, so the
+			// key renders whether or not the Keystone sections do.
+			"glance_request_timeout": strconv.Itoa(keystoneauth.ClientTimeoutSeconds),
 		},
 		"database": {
 			// The real URL is materialized by reconcileDBConnectionSecret into a
@@ -357,6 +363,10 @@ func operatorDefaults(cinder *cinderv1alpha1.Cinder, cacheServers string) map[st
 			// if it ever does.
 			"barbican_endpoint_type": "internal",
 			"auth_endpoint":          cinder.Spec.KeystoneEndpoint,
+			// castellan registers the session options for [barbican] but hands
+			// timeout to its session only with the castellan patch the image
+			// build applies (nix/lib/python-env.nix).
+			"timeout": strconv.Itoa(keystoneauth.ClientTimeoutSeconds),
 		}
 	}
 

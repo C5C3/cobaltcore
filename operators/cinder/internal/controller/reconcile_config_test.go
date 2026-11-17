@@ -118,6 +118,10 @@ func TestReconcileConfig_KeystoneBackedRendersAuthSections(t *testing.T) {
 	g.Expect(iniSection(conf, "keystone_authtoken")).To(HaveKeyWithValue("http_connect_timeout", "10"))
 	g.Expect(iniSection(conf, "service_user")).To(HaveKeyWithValue("timeout", "60"))
 	g.Expect(nova).To(HaveKeyWithValue("timeout", "60"))
+	// cinder reads its Glance session's bound from [DEFAULT], never from
+	// [glance] timeout.
+	g.Expect(iniSection(conf, "DEFAULT")).To(HaveKeyWithValue("glance_request_timeout", "60"))
+	g.Expect(conf).NotTo(ContainSubstring("[glance]"))
 }
 
 // iniSection returns the key/value pairs of one section of a rendered INI
@@ -152,6 +156,9 @@ func TestReconcileConfig_NoauthOmitsKeystoneSections(t *testing.T) {
 	for _, section := range []string{"[keystone_authtoken]", "[service_user]", "[nova]", "[key_manager]", "[barbican]"} {
 		g.Expect(conf).NotTo(ContainSubstring(section))
 	}
+	// The noauth path builds its Glance session from the same key, so the
+	// bound renders without Keystone too.
+	g.Expect(iniSection(conf, "DEFAULT")).To(HaveKeyWithValue("glance_request_timeout", "60"))
 }
 
 // TestReconcileConfig_KeyManagerRenderedOnlyWhenSet covers both halves of the
@@ -182,6 +189,7 @@ func TestReconcileConfig_KeyManagerRenderedOnlyWhenSet(t *testing.T) {
 		} {
 			g.Expect(conf).To(ContainSubstring(line))
 		}
+		g.Expect(iniSection(conf, "barbican")).To(HaveKeyWithValue("timeout", "60"))
 	})
 
 	// The union rule pairs type Barbican with the block; a CR that bypassed it
@@ -476,6 +484,45 @@ func TestReconcileConfig_ExtraConfigOverlay(t *testing.T) {
 		g.Expect(cond).NotTo(BeNil())
 		g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	})
+}
+
+// TestReconcileConfig_RequestBoundOverridesReported pins the escape hatch of
+// every request bound: a deployment whose calls legitimately run longer raises
+// the bound through spec.extraConfig, the value wins over the operator's, and
+// the override is reported through the condition and one Warning event.
+func TestReconcileConfig_RequestBoundOverridesReported(t *testing.T) {
+	for _, tc := range []struct {
+		section, key, value, bound string
+	}{
+		{"DEFAULT", "glance_request_timeout", "300", "60"},
+		{"keystone_authtoken", "http_connect_timeout", "30", "10"},
+		{"service_user", "timeout", "120", "60"},
+		{"nova", "timeout", "120", "60"},
+		{"barbican", "timeout", "120", "60"},
+	} {
+		owned := "[" + tc.section + "] " + tc.key
+		t.Run(owned, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cinder := keyManagerCinder()
+			g.Expect(iniSection(renderCinderConf(t, cinder), tc.section)).To(HaveKeyWithValue(tc.key, tc.bound),
+				"the default must render, or the override below proves nothing")
+
+			cinder.Spec.ExtraConfig = map[string]map[string]string{tc.section: {tc.key: tc.value}}
+			r, art := renderConfig(t, cinder)
+			conf := renderedConfigMap(t, r, art.configMapName).Data[cinderConfDataKey]
+
+			g.Expect(iniSection(conf, tc.section)).To(HaveKeyWithValue(tc.key, tc.value))
+			cond := cinderCondition(cinder, "ExtraConfigHealthy")
+			g.Expect(cond).NotTo(BeNil())
+			g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			g.Expect(cond.Message).To(ContainSubstring(owned))
+			g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).To(ConsistOf(
+				SatisfyAll(
+					HavePrefix("Warning "+config.EventReasonExtraConfigOwnedKeyOverride+" "),
+					ContainSubstring(owned),
+				)))
+		})
+	}
 }
 
 // TestReconcileConfig_UserConnectionParametersRenderIntoTheFile pins the opt-out

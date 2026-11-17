@@ -27,6 +27,7 @@ const pinCinderConfKeystoneGolden = `[DEFAULT]
 api_paste_config = /var/lib/openstack/etc/cinder/api-paste.ini
 auth_strategy = keystone
 debug = false
+glance_request_timeout = 60
 host = cinder
 image_conversion_dir = /var/lib/cinder/conversion
 resource_query_filters_file = /var/lib/openstack/etc/cinder/resource_filters.json
@@ -93,6 +94,90 @@ user_domain_name = Default
 username = cinder
 `
 
+// pinCinderConfKeyManagerGolden is the cinder.conf rendered for the Keystone-backed
+// fixture with spec.keyManager set: the keystone golden plus [key_manager] and
+// [barbican], the section castellan reads the key of an encrypted volume
+// through.
+const pinCinderConfKeyManagerGolden = `[DEFAULT]
+api_paste_config = /var/lib/openstack/etc/cinder/api-paste.ini
+auth_strategy = keystone
+debug = false
+glance_request_timeout = 60
+host = cinder
+image_conversion_dir = /var/lib/cinder/conversion
+resource_query_filters_file = /var/lib/openstack/etc/cinder/resource_filters.json
+state_path = /var/lib/cinder
+use_stderr = true
+
+[barbican]
+auth_endpoint = http://keystone.openstack.svc:5000
+barbican_endpoint = http://barbican.openstack.svc:9311
+barbican_endpoint_type = internal
+timeout = 60
+
+[cinder_sys_admin]
+capabilities = 
+helper_command = privsep-helper --config-dir /etc/cinder/cinder.conf.d
+
+[coordination]
+backend_url = file:///var/lib/cinder/coordination
+
+[database]
+connection = mysql+pymysql://placeholder
+
+[key_manager]
+backend = barbican
+
+[keystone_authtoken]
+auth_type = password
+auth_url = http://keystone.openstack.svc:5000
+http_connect_timeout = 10
+memcached_servers = mc:11211
+project_domain_name = Default
+project_name = service
+region_name = RegionOne
+user_domain_name = Default
+username = cinder
+www_authenticate_uri = http://keystone.openstack.svc:5000
+
+[nova]
+auth_type = password
+auth_url = http://keystone.openstack.svc:5000
+interface = internal
+project_domain_name = Default
+project_name = service
+region_name = RegionOne
+timeout = 60
+user_domain_name = Default
+username = cinder
+
+[oslo_concurrency]
+lock_path = /var/lib/cinder/tmp
+
+[oslo_messaging_notifications]
+driver = noop
+
+[oslo_messaging_rabbit]
+rabbit_quorum_queue = true
+rabbit_transient_quorum_queue = true
+use_queue_manager = true
+
+[privsep_osbrick]
+capabilities = 
+helper_command = privsep-helper --config-dir /etc/cinder/cinder.conf.d
+
+[service_user]
+auth_type = password
+auth_url = http://keystone.openstack.svc:5000
+project_domain_name = Default
+project_name = service
+region_name = RegionOne
+send_service_user_token = true
+timeout = 60
+user_domain_name = Default
+username = cinder
+`
+
 // pinCinderConfNoauthGolden is the cinder.conf rendered for the Keystone-free
 // fixture: the same file minus the two identity sections, with the pipeline on
 // noauth. The privsep contexts stay, because the volume services need their
@@ -101,6 +186,7 @@ const pinCinderConfNoauthGolden = `[DEFAULT]
 api_paste_config = /var/lib/openstack/etc/cinder/api-paste.ini
 auth_strategy = noauth
 debug = false
+glance_request_timeout = 60
 host = cinder
 image_conversion_dir = /var/lib/cinder/conversion
 resource_query_filters_file = /var/lib/openstack/etc/cinder/resource_filters.json
@@ -143,8 +229,9 @@ func TestPinCinderConf_ReleasesRenderIdentically(t *testing.T) {
 		fixture func() *cinderv1alpha1.Cinder
 		golden  string
 	}{
-		"keystone": {fixture: cinderForConfig, golden: pinCinderConfKeystoneGolden},
-		"noauth":   {fixture: keystoneFreeCinder, golden: pinCinderConfNoauthGolden},
+		"keystone":    {fixture: cinderForConfig, golden: pinCinderConfKeystoneGolden},
+		"key manager": {fixture: keyManagerCinder, golden: pinCinderConfKeyManagerGolden},
+		"noauth":      {fixture: keystoneFreeCinder, golden: pinCinderConfNoauthGolden},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -166,6 +253,16 @@ func TestPinCinderConf_ReleasesRenderIdentically(t *testing.T) {
 			}
 		})
 	}
+}
+
+// keyManagerCinder is the Keystone-backed fixture with a Barbican key manager.
+func keyManagerCinder() *cinderv1alpha1.Cinder {
+	cinder := cinderForConfig()
+	cinder.Spec.KeyManager = &cinderv1alpha1.KeyManagerSpec{
+		Type:     cinderv1alpha1.KeyManagerTypeBarbican,
+		Barbican: &cinderv1alpha1.BarbicanKeyManagerSpec{Endpoint: "http://barbican.openstack.svc:9311"},
+	}
+	return cinder
 }
 
 // TestPinSchedulerConf pins the scheduler overlay, which is assembled by string

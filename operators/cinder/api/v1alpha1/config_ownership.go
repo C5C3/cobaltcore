@@ -45,8 +45,10 @@ import "github.com/c5c3/cobaltcore/internal/common/config"
 // validating webhook instead. The [keystone_authtoken] and [service_user]
 // entries mirror the maps keystoneauth.Section and keystoneauth.ServiceUserSection
 // render, request bounds included, the [nova] credential keys and timeout the
-// map keystoneauth.ClientSection renders, and the [oslo_messaging_rabbit]
-// entries the map messaging.RabbitSection renders.
+// map keystoneauth.ClientSection renders, the [DEFAULT] glance_request_timeout
+// and [barbican] timeout the operator sets from keystoneauth.ClientTimeoutSeconds,
+// and the [oslo_messaging_rabbit] entries the map messaging.RabbitSection
+// renders.
 var OwnedConfigKeys = []config.OwnedKey{
 	// [DEFAULT]
 	//
@@ -75,6 +77,10 @@ var OwnedConfigKeys = []config.OwnedKey{
 	// no process serves.
 	{Section: "DEFAULT", Key: "host", OwnedBy: "operator-computed", Impact: "the volumes a backend owns are keyed by this identity, so renaming it strands them on a host no service backs"},
 	{Section: "DEFAULT", Key: "glance_api_servers", OwnedBy: "spec.glanceEndpoint", Impact: "the address is what create-volume-from-image reads the image through; another one points the request at an image service this deployment does not own"},
+	// glance_request_timeout is the bound of cinder's Glance session; cinder never
+	// reads [glance] timeout. Reported: an override is how a deployment whose image
+	// transfers legitimately stall longer raises it.
+	{Section: "DEFAULT", Key: "glance_request_timeout", OwnedBy: "operator-computed", Impact: "the bound turns a Glance that stops answering into a failed call after 60 seconds per attempt; without it an image download or upload of a volume on an established connection waits out the kernel's retransmission limit, about 15 minutes, and holds the worker that sent it"},
 	{Section: "DEFAULT", Key: "cinder_internal_tenant_project_id", OwnedBy: "spec.internalTenant.projectID", Impact: "the ID owns the image-volume cache's volumes; another one creates them under a project the deployment does not control"},
 	{Section: "DEFAULT", Key: "cinder_internal_tenant_user_id", OwnedBy: "spec.internalTenant.userID", Impact: "the ID owns the image-volume cache's volumes; another one creates them under a user the deployment does not control"},
 	{Section: "DEFAULT", Key: "use_stderr", OwnedBy: "operator-computed"},
@@ -151,6 +157,10 @@ var OwnedConfigKeys = []config.OwnedKey{
 	{Section: "barbican", Key: "barbican_endpoint", OwnedBy: "spec.keyManager.barbican.endpoint", Impact: "the address is where the volume-encryption keys live; another one holds none of the keys this deployment's encrypted volumes were written with"},
 	{Section: "barbican", Key: "barbican_endpoint_type", OwnedBy: "operator-computed", Impact: "the endpoint type picks which catalog entry castellan resolves, which the operator pins because it configures the endpoint explicitly"},
 	{Section: "barbican", Key: "auth_endpoint", OwnedBy: "operator-computed", Impact: "castellan authenticates against this Keystone; another one issues tokens Barbican does not accept"},
+	// timeout reaches castellan's session only with the castellan patch the image
+	// build applies; against an unpatched image the key is a registered option
+	// nothing reads.
+	{Section: "barbican", Key: "timeout", OwnedBy: "operator-computed", Impact: "the bound turns a Barbican that stops answering into a failed call after 60 seconds per attempt; without it a volume-encryption key read or write on an established connection waits out the kernel's retransmission limit, about 15 minutes, and holds the worker that sent it"},
 
 	// [oslo_messaging_rabbit] — rendered by messaging.RabbitSection.
 	{Section: "oslo_messaging_rabbit", Key: "rabbit_quorum_queue", OwnedBy: "operator-computed", Impact: "the queue type is fixed when the queue is declared, so a mismatch with the broker's existing queues fails the declaration"},
