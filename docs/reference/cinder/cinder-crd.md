@@ -277,6 +277,7 @@ is the full document for a Cinder with the Keystone integration, an untouched
 api_paste_config = /var/lib/openstack/etc/cinder/api-paste.ini
 auth_strategy = keystone
 debug = false
+glance_request_timeout = 60
 host = cinder
 image_conversion_dir = /var/lib/cinder/conversion
 resource_query_filters_file = /var/lib/openstack/etc/cinder/resource_filters.json
@@ -296,6 +297,7 @@ connection = mysql+pymysql://placeholder
 [keystone_authtoken]
 auth_type = password
 auth_url = http://keystone.openstack.svc:5000
+http_connect_timeout = 10
 memcached_servers = mc:11211
 project_domain_name = Default
 project_name = service
@@ -311,6 +313,7 @@ interface = internal
 project_domain_name = Default
 project_name = service
 region_name = RegionOne
+timeout = 60
 user_domain_name = Default
 username = cinder
 
@@ -336,6 +339,7 @@ project_domain_name = Default
 project_name = service
 region_name = RegionOne
 send_service_user_token = true
+timeout = 60
 user_domain_name = Default
 username = cinder
 ```
@@ -365,9 +369,31 @@ The conditional sections and keys:
 | `[DEFAULT] default_log_levels` | `spec.logging.perLoggerLevels` is non-empty |
 | `[DEFAULT] log_config_append` | `spec.logging.format` is `json`; the file `logging.ini` is rendered beside `cinder.conf` |
 | `[keystone_authtoken] region_name`, `[service_user] region_name` | `spec.region` is set |
-| `[key_manager] backend`, `[barbican] barbican_endpoint` / `barbican_endpoint_type` / `auth_endpoint` | `spec.keyManager` is set |
+| `[key_manager] backend`, `[barbican] barbican_endpoint` / `barbican_endpoint_type` / `auth_endpoint` / `timeout` | `spec.keyManager` is set |
 | `[oslo_messaging_rabbit] ssl` / `ssl_ca_file` | `spec.messaging.tls` is set |
 | `[oslo_policy] policy_file` | `spec.policyOverrides` renders a non-empty `policy.yaml` |
+
+Every HTTP session Cinder opens carries a request bound, so a peer that stops
+answering fails the call after the bound instead of holding the worker for the
+kernel's TCP retransmission limit (`tcp_retries2 = 15`, about 15 minutes):
+
+| Key | Value | What it bounds |
+| --- | --- | --- |
+| `[keystone_authtoken] http_connect_timeout` | `10` | Each token validation. keystonemiddleware retries a timed-out one three times, 0.5, 1 and 2 seconds apart, so the request fails within 43.5 seconds. The quota project lookup reads the same option |
+| `[service_user] timeout`, `[nova] timeout` | `60` | Each request of the service-user session and of the Nova client |
+| `[DEFAULT] glance_request_timeout` | `60` | Each request of the Glance session. Cinder builds that session from this key on both pipelines and never reads `[glance] timeout`, so the key renders without Keystone too |
+| `[barbican] timeout` | `60` | Each request castellan sends while `spec.keyManager` is set |
+
+Two of the bounds hold only on an image that carries a patch: castellan hands
+`[barbican] timeout` to its session only with the castellan library patch, and
+the quota project lookup reads `http_connect_timeout` only with cinder source
+patch `bound-the-keystone-session-of-the-quota-project-lookup` (see
+[Container images](../ci-cd/container-images.md)). Each key is honored and
+reported: a deployment raises a bound through `spec.extraConfig`, which sets
+`ExtraConfigHealthy=False`. The operator upgrade that brings the keys changes
+the rendered ConfigMap once, so every Cinder pod rolls once; a value a
+deployment already sets through `spec.extraConfig` stays in force and is
+reported from then on.
 
 `[DEFAULT] enabled_backends` is deliberately absent from `cinder.conf`. Each
 `cinder-volume` gets a per-backend overlay naming the single backend it serves,
