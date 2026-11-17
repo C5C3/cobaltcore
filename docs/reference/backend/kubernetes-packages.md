@@ -7,28 +7,28 @@ quadrant: shared-library
 
 Reference documentation for the `internal/common/` packages that interact with the
 Kubernetes API server. These packages provide reconciler building blocks for
-managing external operator CRDs (MariaDB, External Secrets Operator, cert-manager) and
-core Kubernetes resources (Deployments, Services, Jobs, CronJobs, ConfigMaps).
+managing external operator CRDs (MariaDB, External Secrets Operator, cert-manager)
+and Kubernetes resources such as Deployments, Services, Jobs, CronJobs, ConfigMaps,
+Secrets, and cert-manager Certificates.
 
-All packages share these conventions:
+Packages that use `apply.EnsureObject` share these conventions:
 
-- **Idempotent create-or-update via Server-Side Apply** — `Ensure*` functions apply the
-  desired object through the generic `apply.EnsureObject` helper, which uses Server-Side
-  Apply under the fixed field manager `cobaltcore-operator`. The field manager owns only the
-  fields the builder sets, so server-defaulted fields the builder omits are never claimed
-  or overwritten and a converged object is applied without a write. The apply is wrapped
-  in `retry.RetryOnConflict`, so a benign field-manager conflict is absorbed as an internal
-  retry rather than surfacing as condition noise.
-- **Ownership claims** — Local children carry a controller owner reference, re-enforced
-  on every apply. Children written to a target cluster carry the three ownership
-  labels instead, because that cluster cannot resolve an owner on the management
-  cluster. The remote-child finalizer sweeps those labels on deletion.
-- **Readiness reporting** — Helpers that gate reconciliation on a resource's readiness
+- **Server-Side Apply:** The helper applies desired fields under the stable field
+  manager `cobaltcore-operator`. It owns only fields the builder sets, so omitted
+  server defaults are not claimed or overwritten. A converged object is applied
+  without a write. The helper retries field-manager conflicts internally with
+  `retry.RetryOnConflict`.
+- **Ownership claims:** `apply.EnsureObject` sets a controller owner reference
+  for local children and re-enforces it on each apply. A target-cluster child
+  carries the three ownership labels because that cluster cannot resolve an
+  owner from the management cluster. The remote-child finalizer uses those
+  labels to find children during deletion.
+- **Readiness reporting:** Helpers that gate reconciliation on a resource's readiness
   return `(bool, error)`: `true` means it is ready, and `false` means it exists but is
   not yet ready. Helpers that only apply or create an object return an `error`, or the
   created object's name and an `error` when callers need that name.
-- **Error wrapping** — All errors include context via `fmt.Errorf` with `%w` for
-  `errors.Is`/`errors.As` compatibility.
+- **Error wrapping:** Functions that add context to an error use `fmt.Errorf` with
+  `%w`, preserving `errors.Is` and `errors.As` checks.
 
 ## Import Paths
 
@@ -51,8 +51,8 @@ These packages import typed Go structs from external operator modules:
 
 | Operator | Go Module | API Version | Types Used |
 | --- | --- | --- | --- |
-| mariadb-operator | `github.com/mariadb-operator/mariadb-operator` | `v1alpha1` | `Database`, `User`, `Grant` |
-| External Secrets Operator | `github.com/external-secrets/external-secrets` | `v1` (ExternalSecret, ClusterSecretStore), `v1alpha1` (PushSecret) | `ExternalSecret`, `PushSecret` |
+| mariadb-operator | `github.com/mariadb-operator/mariadb-operator/v26` | `v1alpha1` | `Database`, `User`, `Grant` |
+| External Secrets Operator | `github.com/external-secrets/external-secrets/apis` | `v1` (ExternalSecret, ClusterSecretStore), `v1alpha1` (PushSecret) | `ExternalSecret`, `PushSecret` |
 | cert-manager | `github.com/cert-manager/cert-manager` | `v1` | `Certificate` |
 
 > **Note:** The PushSecret API is `v1alpha1` (unstable). Its schema may change in future
@@ -86,18 +86,18 @@ target cluster.
 
 - Claims the object through `multicluster.Claim` and stamps its GVK (objects built
   in-code carry an empty `TypeMeta`, which Server-Side Apply requires). A same-named
-  object on a target cluster that carries neither the owner labels nor the owner's
-  controller reference is refused rather than adopted.
+  foreign object on a target cluster is refused when it carries neither the owner
+  labels nor the owner's controller reference.
 - Applies the object with `client.FieldOwner(fieldManager)` and `client.ForceOwnership`,
-  wrapped in `retry.RetryOnConflict` so a benign field-manager conflict is retried
-  internally rather than surfaced.
+  wrapped in `retry.RetryOnConflict`. This retries benign field-manager conflicts
+  internally and avoids surfacing them as condition noise.
 - The field manager owns only the fields the builder sets, so server-defaulted fields the
   builder omits are never claimed and a converged object is applied without a write.
 - Decodes the server response back into `obj`, so callers may read fresh status (e.g.
   readiness) without an extra `Get`.
 
 **Field manager:** the package exports `apply.FieldManager` (`"cobaltcore-operator"`), the
-stable field-manager name shared by all `Ensure*` helpers.
+stable field-manager name used by helpers that call `apply.EnsureObject`.
 
 ---
 
@@ -151,7 +151,7 @@ pod restarts when the ConfigMap is referenced in a Deployment's volume spec.
 - Claims the ConfigMap for its owner: a controller reference locally or ownership
   labels on a target cluster.
 - If a ConfigMap with the same name already exists, verifies that it belongs to the
-  owner and returns the name. A foreign same-name ConfigMap is refused.
+  owner and returns the name; otherwise, it returns an ownership error.
 - Same data always produces the same hash (deterministic).
 - Different data normally produces a different hash. The eight-hex-character suffix
   has a collision probability of about 1 in 4 billion per base name.
@@ -166,15 +166,38 @@ name, err := config.CreateImmutableConfigMap(ctx, client, scheme, owner,
 // name == "keystone-config-a1b2c3d4"
 ```
 
+### CreateImmutableSecret
+
+```go
+func CreateImmutableSecret(
+    ctx context.Context,
+    c client.Client,
+    scheme *runtime.Scheme,
+    owner client.Object,
+    baseName, namespace string,
+    data map[string][]byte,
+) (string, error)
+```
+
+Creates an immutable Secret whose name includes an 8-character SHA-256 hash of
+its data. Sorted keys and length-prefixed key/value pairs make the hash
+deterministic. A changed data map normally produces a new name; the truncated
+hash can collide. A new Secret name lets a workload roll out when it mounts the
+Secret. The helper claims the Secret for its owner and verifies ownership when
+the same name already exists.
+
+Use this helper for rendered sensitive configuration, such as per-domain
+Keystone files with LDAP bind credentials.
+
 ### PruneImmutableConfigMaps
 
 ```go
 func PruneImmutableConfigMaps(
     ctx context.Context,
     c client.Client,
+    scheme *runtime.Scheme,
     owner client.Object,
-    baseName, namespace, currentName string,
-    retain int,
+    opts PruneOptions,
 ) error
 ```
 
@@ -190,11 +213,9 @@ cycles.
 | --- | --- | --- |
 | `ctx` | `context.Context` | Request context |
 | `c` | `client.Client` | Kubernetes API client |
-| `owner` | `client.Object` | Owning CR — local controller references or target-cluster ownership labels are checked through `multicluster.Controls` |
-| `baseName` | `string` | Base name prefix for candidate ConfigMaps (matches `baseName-*`) |
-| `namespace` | `string` | Namespace to list ConfigMaps in |
-| `currentName` | `string` | Name of the currently active ConfigMap (never deleted, even with `retain=0`) |
-| `retain` | `int` | Number of historical ConfigMaps to keep beyond the current one |
+| `scheme` | `*runtime.Scheme` | Scheme used to resolve the owner's kind when checking ownership |
+| `owner` | `client.Object` | Owning CR whose children may be pruned |
+| `opts` | `PruneOptions` | Base name, namespace, current name, and historical retention count |
 
 **Returns:**
 
@@ -202,13 +223,18 @@ cycles.
 | --- | --- |
 | `error` | Non-nil on list or delete failure; `nil` on success or when no pruning is needed |
 
+`PruneOptions` contains `BaseName`, `Namespace`, `CurrentName`, and `Retain`.
+`CurrentName` is excluded from deletion. An empty value leaves no ConfigMap
+protected as current. Negative `Retain` values are treated as zero.
+
 **Algorithm:**
 
 1. Lists ConfigMaps matching the `cobaltcore.c5c3.io/config-base` label in the namespace.
 2. Filters to ConfigMaps matching the `baseName + "-"` prefix.
 3. Excludes the ConfigMap named `currentName` (the active one).
 4. Excludes ConfigMaps that `multicluster.Controls` does not identify as owned by `owner`.
-5. Sorts remaining candidates by `CreationTimestamp` descending (newest first).
+5. Sorts remaining candidates by `CreationTimestamp` descending (newest first),
+   then by name descending to break timestamp ties deterministically.
 6. If the number of candidates is less than or equal to `retain`, returns `nil` (no-op).
 7. Deletes candidates from index `retain` onwards (oldest first).
 8. Logs each deletion at info level for auditability.
@@ -236,7 +262,9 @@ cycles.
 | --- | --- |
 | No historical ConfigMaps exist | No-op, returns `nil` |
 | Fewer historical ConfigMaps than `retain` | No-op, returns `nil` |
-| `retain=0` | All historical ConfigMaps deleted, only `currentName` survives |
+| `retain=0` | All historical ConfigMaps are deleted; the named current ConfigMap remains |
+| `currentName=""` | No ConfigMap is protected as current |
+| Negative `retain` | Treated as `retain=0` |
 | ConfigMap deleted between list and delete | `NotFound` silently ignored |
 | Overlapping prefix (e.g., `test-config-` vs `test-config-extra-`) | Strict `baseName + "-"` prefix prevents false matches |
 | Pre-existing ConfigMaps without `cobaltcore.c5c3.io/config-base` label | Not pruned — invisible to the server-side selector. Local objects with owner references are garbage-collected with the CR; recognized remote children are handled by the remote-child sweep. |
@@ -245,18 +273,38 @@ cycles.
 
 ```go
 // After creating a new ConfigMap, prune old ones keeping 3 historical:
-err := config.PruneImmutableConfigMaps(ctx, client, keystoneCR,
-    "keystone-config", "openstack", "keystone-config-a1b2c3d4", 3,
+err := config.PruneImmutableConfigMaps(ctx, client, scheme, keystoneCR,
+    config.PruneOptions{
+        BaseName: "keystone-config", Namespace: "openstack",
+        CurrentName: "keystone-config-a1b2c3d4", Retain: 3,
+    },
 )
 // With 5 historical ConfigMaps, the 2 oldest are deleted, 3 newest + current remain.
 ```
+
+### PruneImmutableSecrets
+
+```go
+func PruneImmutableSecrets(
+    ctx context.Context,
+    c client.Client,
+    scheme *runtime.Scheme,
+    owner client.Object,
+    opts PruneOptions,
+) error
+```
+
+Prunes owned, hash-suffixed Secrets with the same filtering, ordering, and
+retention rules as `PruneImmutableConfigMaps`. Set `CurrentName` to the mounted
+Secret and `Retain` to the number of historical Secrets to keep. An empty
+`CurrentName` with `Retain` set to zero removes all matching owned Secrets.
 
 ---
 
 ## Package: `database`
 
 Manages MariaDB database resources for CobaltCore OpenStack operators. Uses typed structs from
-`github.com/mariadb-operator/mariadb-operator/api/v1alpha1`.
+`github.com/mariadb-operator/mariadb-operator/v26/api/v1alpha1`.
 
 ### EnsureDatabase
 
@@ -304,7 +352,9 @@ Creates or updates a MariaDB User CR and a Grant CR in a single call.
 
 **Behavior:**
 
-- Processes User first, then Grant. If User creation/update fails, Grant is not attempted.
+- Applies the User first. It applies the Grant only after the User reports
+  `Ready=True`; the MariaDB operator needs the SQL user to exist before it can
+  issue the grant.
 - Both resources are claimed for the owner: local resources receive controller owner references, while target-cluster resources carry ownership labels.
 - Readiness of the User and Grant is determined by the package-internal
   `isUserReady` and `isGrantReady` helpers.
@@ -337,7 +387,8 @@ Deployment exists but is not yet ready; `(false, error)` on failure.
 - Applies the desired Deployment via `apply.EnsureObject` (Server-Side Apply); a converged
   Deployment is not rewritten on every reconcile.
 - Retains a pre-apply `Get` only to delete-and-recreate on an immutable-selector change and
-  to preserve the HPA-owned replica count when `spec.deployment.replicas` is left nil.
+  to preserve the HPA-owned replica count when the desired `Spec.Replicas` is nil. On
+  create, a nil replica count is set to `1`.
 - Readiness is determined by `IsDeploymentReady` on the server-fresh apply response.
 
 ### EnsureService
@@ -352,16 +403,15 @@ func EnsureService(
 ) error
 ```
 
-Creates or updates a Service. Does not report readiness (Services are ready immediately).
+Creates or updates a Service; the return value contains only apply errors.
 
 **Behavior:**
 
-- Applies the desired Service via `apply.EnsureObject` (Server-Side Apply). The builder
-  leaves server-assigned fields (`ClusterIP`, `ClusterIPs`, `IPFamilies`, `NodePort`)
-  unset, so the field manager never owns them and the API server keeps the values it
-  assigned — no hand-rolled preservation is needed.
-- Retains a pre-apply `Get` only to fail fast when the caller explicitly sets one of those
-  immutable fields to a conflicting value.
+- Applies the desired Service via `apply.EnsureObject` (Server-Side Apply). Callers
+  should leave server-assigned fields (`ClusterIP`, `ClusterIPs`, `IPFamilies`, and
+  `NodePort`) unset so the field manager does not claim their values.
+- Retains a pre-apply `Get` to reject conflicting explicit values for `ClusterIP`,
+  `ClusterIPs`, or `IPFamilies`. `NodePort` is not part of this conflict check.
 
 ### IsDeploymentReady
 
@@ -369,17 +419,19 @@ Creates or updates a Service. Does not report readiness (Services are ready imme
 func IsDeploymentReady(deploy *appsv1.Deployment) bool
 ```
 
-Pure function. Returns `true` when both conditions are met:
+Pure function. Returns `true` when all of these conditions are met:
 
-1. `deploy.Status.ReadyReplicas >= *deploy.Spec.Replicas` (defaults to 1 if
+1. `deploy.Status.ObservedGeneration >= deploy.Generation`.
+2. `deploy.Status.ReadyReplicas >= *deploy.Spec.Replicas` (defaults to 1 if
    `Spec.Replicas` is nil).
-2. The Deployment has an `Available` condition with status `True`.
+3. The Deployment has an `Available` condition with status `True`.
 
 **Edge cases:**
 
 | Scenario | Result |
 | --- | --- |
 | `Spec.Replicas` is nil | Defaults to 1 |
+| `ObservedGeneration < Generation` | `false` |
 | No `Available` condition | `false` |
 | `ReadyReplicas < desired` | `false` |
 | `ReadyReplicas >= desired` and `Available=True` | `true` |
@@ -399,36 +451,58 @@ func RunJob(
     scheme *runtime.Scheme,
     owner client.Object,
     job *batchv1.Job,
-  ) (bool, *batchv1.Job, error)
+) (bool, *batchv1.Job, error)
 ```
 
-  Creates a Job if it does not already exist and reports completion status. The
-  second return value is the Job observed at the start of the pass, which lets
-  callers record terminal metrics without an extra `Get`.
+Creates a Job if it does not already exist and reports completion status. The
+second return value is the Job observed at the start of the pass, which lets
+callers record terminal metrics without an extra `Get`.
 
-  **Returns:** `(true, observed, nil)` when the Job has a `Complete` condition with
-  status `True` and its re-run key is unchanged; `(false, observed, nil)` when the
-  Job exists but is still running, or was deleted and re-created because its re-run
-  key changed; `(false, observed, error)` wrapping `ErrJobFailed` when the Job has
-  permanently failed (e.g. exceeded `backoffLimit`) and its re-run key is unchanged;
-  `(false, nil, error)` on unexpected API failures.
+**Returns:** `(true, observed, nil)` when the Job has a `Complete` condition
+with status `True` and its re-run key is unchanged; `(false, observed, nil)`
+when it is still running or was deleted and re-created because its re-run key
+changed; `(false, observed, error)` wrapping `ErrJobFailed` when the Job has
+permanently failed and its key is unchanged. API failures after a Job is read
+return `(false, observed, error)`; a failed `Get` returns `(false, nil, error)`.
 
 **Behavior:**
 
-- If the Job does not exist: claims it with a local controller reference or remote ownership labels, then returns
-  `(false, nil)` (newly created Jobs are never immediately complete).
+- If the Job does not exist, it is claimed with a local controller reference or
+  target-cluster ownership labels and created. The return is `(false, nil, nil)`;
+  a newly created Job is not complete.
 - If the Job already exists: checks completion via the package-internal
   `isJobComplete` helper and permanent failure via `isJobFailed`. A completed
   **or permanently failed** Job whose stored re-run key (the
   `cobaltcore.c5c3.io/pod-spec-hash` annotation) no longer matches the desired pod
-  template is deleted (background propagation) and re-created — so a Job that
+  template is deleted (background propagation) and re-created. This lets a Job that
   failed under a since-fixed spec (new container image, corrected ConfigMap,
   rotated password) re-runs instead of wedging. A permanently failed Job whose
   re-run key is unchanged returns an error wrapping `ErrJobFailed` to prevent
-  infinite requeue loops. Jobs are never updated in place.
+  infinite requeue loops; the helper does not update Jobs in place.
 - Reconcilers should call `RunJob` on each reconciliation loop. The function is
   idempotent: calling it when the Job already exists and is complete returns
-  `(true, nil)` without side effects.
+  `(true, observed, nil)`, with the existing Job in `observed`.
+
+`RunJob` uses a SHA-256 hash of the full desired pod template as its re-run key.
+Changes to template metadata, including annotations, also change the key.
+
+### RunJobWithRerunKey
+
+```go
+func RunJobWithRerunKey(
+    ctx context.Context,
+    c client.Client,
+    scheme *runtime.Scheme,
+    owner client.Object,
+    job *batchv1.Job,
+    rerunKey string,
+) (bool, *batchv1.Job, error)
+```
+
+Uses the supplied `rerunKey` instead of hashing the pod template. A completed
+or permanently failed Job is re-created only when this key changes. The
+Keystone bootstrap Job uses the admin-password digest, so a password rotation
+triggers a rerun while a container-image change alone does not.
 
 ### EnsureCronJob
 
@@ -450,8 +524,21 @@ on a target cluster with ownership labels.
 - Applies the desired CronJob via `apply.EnsureObject` (Server-Side Apply); a converged
   CronJob is not rewritten, and spec changes take effect on the next scheduled run.
 
-The Job completion and permanent-failure checks (`isJobComplete` / `isJobFailed`)
-are package-internal helpers consumed by `RunJob`.
+`isJobComplete` and `isJobFailed` are package-internal checks used by `RunJob`.
+The exported `TerminalCondition` helper returns `JobComplete` or `JobFailed`
+when that condition is `True`; `JobFailed` takes precedence if both are `True`.
+
+### DeleteCronJob
+
+```go
+func DeleteCronJob(
+    ctx context.Context,
+    c client.Client,
+    namespace, name string,
+) error
+```
+
+Deletes the named CronJob. It returns `nil` if the CronJob does not exist.
 
 ---
 
@@ -486,7 +573,7 @@ Reads a ConfigMap by namespace/name and extracts the `policy.yaml` key as a
 | Value | Description |
 | --- | --- |
 | `map[string]string` | Parsed policy rules (action → rule expression) |
-| `error` | Non-nil when ConfigMap is missing, key is absent, or YAML is invalid |
+| `error` | Non-nil when the ConfigMap is missing, the key is absent, YAML is invalid, or YAML parses to `nil` |
 
 **Error conditions:**
 
@@ -495,6 +582,7 @@ Reads a ConfigMap by namespace/name and extracts the `policy.yaml` key as a
 | ConfigMap does not exist | Wrapped API server error (compatible with `apierrors.IsNotFound`) |
 | `policy.yaml` key absent | `ConfigMap <key> does not contain key "policy.yaml"` |
 | Invalid YAML content | `parsing policy.yaml from ConfigMap <key>: <parse error>` |
+| YAML is empty or parses to `nil` | `ConfigMap <key> key "policy.yaml" is empty or parsed to nil` |
 
 **Example:**
 
@@ -517,9 +605,9 @@ the Deployment the parent runs. `GlanceBackend`, `CinderBackend` and
 `CinderBackupBackend` consumes resolve, collect and the volume lookup, and
 `KeystoneIdentityBackend` the volume lookup alone.
 
-The condition vocabulary, the messages, the events and the requeue intervals
-stay in the operator. Each helper either hands a decision back for the operator
-to stamp, or takes the condition texts as parameters.
+The condition vocabulary, messages, events, and requeue intervals stay in the
+operator. Each helper either returns a decision for the operator to use or takes
+the condition texts as parameters.
 
 ### The handshake {#satellite-handshake}
 
@@ -580,8 +668,8 @@ parent and resolving the cluster that parent targets.
 
 - `ResolveParams.Client` reads the parent on the management cluster into
   `Parent` at `ParentKey`; `ParentKind` names the kind in the error text.
-  `TargetClusterRef` then reads the ref off `Parent`, and `Resolver` looks the
-  cluster up. A nil resolver keeps everything local. Conditions land in the
+  `TargetClusterRef` then reads the ref from `Parent`, and `Resolver` looks the
+  cluster up. A nil resolver keeps everything local. Conditions are added to the
   satellite's own `Conditions` slice at `Generation`.
 - A non-`NotFound` Get on the parent returns a nil client and
   `fetching parent <kind> <key>: <cause>`.
@@ -704,7 +792,7 @@ Turns a parent's list of attached satellites into one pass's view of them.
 ## Package: `secrets`
 
 Manages External Secrets Operator resources and Kubernetes Secrets for CobaltCore OpenStack
-operators. Uses typed structs from `github.com/external-secrets/external-secrets`.
+operators. Uses typed structs from `github.com/external-secrets/external-secrets/apis`.
 
 ### WaitForExternalSecret
 
@@ -728,12 +816,12 @@ condition with status `True` (the ESO `ExternalSecretReady` condition type).
 
 **Behavior:**
 
-- This is a point-in-time check, not a blocking wait. Reconcilers should call it on each
-  reconciliation loop and requeue while `ready` is `false`.
+- Evaluates the observed ExternalSecret once, without waiting for completion.
+  Reconcilers call it on each loop and requeue while `ready` is `false`.
 - The separate `exists` return lets callers surface a clearer status —
   "ExternalSecret not found yet" versus "waiting for ESO to sync" — instead of
   collapsing both into a single not-ready signal.
-- Uses the ESO `ExternalSecretReady` condition type constant, not a raw string.
+- Uses ESO's `ExternalSecretReady` condition-type constant.
 
 ### IsSecretReady
 
@@ -756,7 +844,7 @@ the Secret's `.Data` field.
 
 **Behavior:**
 
-- A `NotFound` error is treated as a normal condition (`(false, nil)`), not a failure.
+- A `NotFound` result returns `(false, nil)` and does not indicate an API failure.
 - When no `expectedKeys` are provided, only checks for Secret existence.
 - When `expectedKeys` are provided, returns `(false, nil)` if any key is absent
   from `Secret.Data`.
@@ -772,7 +860,8 @@ func GetSecretValue(
 ) (string, error)
 ```
 
-Retrieves and decodes the value of a specific data key from a Secret.
+Returns the bytes stored at a specific Secret data key as a Go string. The
+Kubernetes client has already decoded the API's base64 representation.
 
 **Parameters:**
 
@@ -788,7 +877,7 @@ Retrieves and decodes the value of a specific data key from a Secret.
 | Condition | Error |
 | --- | --- |
 | Secret does not exist | Wrapped API server error |
-| Key not in `Secret.Data` | Wraps `ErrKeyNotFound`: `key not found in Secret: key "<dataKey>" in Secret <namespace>/<name>` — test with `errors.Is(err, secrets.ErrKeyNotFound)` |
+| Key not in `Secret.Data` | Wraps `ErrKeyNotFound`: `key not found in Secret: key "<dataKey>" in Secret <namespace>/<name>`; check with `errors.Is(err, secrets.ErrKeyNotFound)` |
 
 ### EnsurePushSecret
 
@@ -809,25 +898,43 @@ or on a target cluster with ownership labels.
 
 - Applies the desired PushSecret via `apply.EnsureObject` (Server-Side Apply). The field
   manager owns only the fields the builder sets, so the server defaults on `updatePolicy`
-  and `refreshInterval` are preserved and a converged PushSecret is not rewritten — ESO is
-  not woken to re-push an unchanged credential.
-- Uses the ESO `v1alpha1` PushSecret API (unstable — see [External CRD Dependencies](#external-crd-dependencies)).
+  and `refreshInterval` are preserved. A converged PushSecret is not rewritten, so ESO
+  does not re-push an unchanged credential.
+- Uses the ESO `v1alpha1` PushSecret API. This API is unstable; see
+  [External CRD Dependencies](#external-crd-dependencies).
 
 ### Per-CR secret store selection
 
-These helpers back the optional per-CR `spec.secretStoreRef`: each CR routes its
-ExternalSecrets and PushSecrets through the store it selects (a cluster-scoped
-`ClusterSecretStore`, default `openbao-cluster-store`, or a namespaced
-`SecretStore`), while the `IsClusterSecretStoreReady` /
-`OpenBaoClusterStoreName` primitives above remain.
+These helpers back the optional per-CR `spec.secretStoreRef`. Each CR routes
+its ExternalSecrets and PushSecrets through a selected cluster-scoped
+`ClusterSecretStore` or namespaced `SecretStore`. `OpenBaoClusterStoreName`
+names the default `ClusterSecretStore`, `openbao-cluster-store`.
+`IsClusterSecretStoreReady(ctx, c, name) (bool, error)` checks that store's
+`Ready` condition. `IsSecretStoreReady` checks the namespaced equivalent.
 
-- `EffectiveStoreRef(ref *commonv1.SecretStoreRefSpec) commonv1.SecretStoreRefSpec` — resolves a nil or empty-kind ref to the shared cluster store `{ClusterSecretStore, openbao-cluster-store}`, so a CR that omits the field behaves as before.
-- `IsStoreRefReady(ctx, c, ref commonv1.SecretStoreRefSpec, namespace string) (bool, error)` — reports store readiness, dispatching on kind: a cluster store is looked up by name, a namespaced store in `namespace`; an unknown kind returns an error.
-- `IsSecretStoreReady(ctx, c, name, namespace string) (bool, error)` — the namespaced twin of `IsClusterSecretStoreReady`, checking a `SecretStore`'s `Ready` condition.
-- `GateStoreReady(ctx, c, ref, namespace string, namespaceScoped bool, conds *[]metav1.Condition, generation int64, conditionType string) (bool, error)` — store-ref-aware readiness gate; on a not-ready store it sets a `SecretStoreNotReady` condition whose message names the store kind and name (`"%s %q is not ready; upstream secret backend unreachable"`) and returns `(false, nil)`. With `namespaceScoped` set, a ref of kind `ClusterSecretStore` is refused without any client call: the condition gets reason `ReasonClusterSecretStoreUnsupported` (`ClusterSecretStoreUnsupported`) and the message `"ClusterSecretStore %q cannot be read by a namespace-scoped operator; set spec.secretStoreRef to a SecretStore in namespace %q"`, and the gate returns `(false, nil)`.
-- `AddStoreWatches(b *mcbuilder.Builder, scheme *runtime.Scheme, targets multicluster.TargetClusterFunc, namespaceScoped bool, c client.Reader, mapper func(client.Reader, commonv1.SecretStoreRefKind) handler.MapFunc) (*mcbuilder.Builder, error)` — adds the `multicluster.AddInputWatch` legs for the stores a CR can select: `ClusterSecretStore` unless `namespaceScoped`, then `SecretStore`, each mapped through `mapper(c, kind)`. A nil `mapper` returns the error `secrets: store watch mapper must not be nil`; an `AddInputWatch` error (`resolving input kind for remote watch: …`) is returned unchanged. Both return a nil builder.
-- `ESOSecretStoreRef(ref commonv1.SecretStoreRefSpec) esov1.SecretStoreRef` — builds the ESO ExternalSecret store ref from a resolved store reference.
-- `PushSecretStoreRefs(ref commonv1.SecretStoreRefSpec) []esov1alpha1.PushSecretStoreRef` — builds the single-element ESO PushSecret store-ref slice from a resolved store reference.
+- `EffectiveStoreRef(ref *commonv1.SecretStoreRefSpec) commonv1.SecretStoreRefSpec`:
+  resolves a nil ref to the default cluster store and normalizes an empty kind
+  to `ClusterSecretStore`, preserving the supplied name. A CR that omits the
+  field uses `{ClusterSecretStore, openbao-cluster-store}`.
+- `IsStoreRefReady(ctx, c, ref commonv1.SecretStoreRefSpec, namespace string) (bool, error)`:
+  checks the selected store. It looks up a cluster store by name and a namespaced
+  store in `namespace`; an unsupported kind returns an error.
+- `GateStoreReady(ctx, c, ref, namespace string, namespaceScoped bool, conds *[]metav1.Condition, generation int64, conditionType string) (bool, error)`:
+  checks the selected store and sets a `SecretStoreNotReady` condition when it
+  is not ready. The message names the kind and name. A namespace-scoped operator
+  refuses a `ClusterSecretStore` without a client call and sets the
+  `ClusterSecretStoreUnsupported` reason with guidance to select a namespaced
+  `SecretStore`.
+- `AddStoreWatches(b *mcbuilder.Builder, scheme *runtime.Scheme, targets multicluster.TargetClusterFunc, namespaceScoped bool, c client.Reader, mapper func(client.Reader, commonv1.SecretStoreRefKind) handler.MapFunc) (*mcbuilder.Builder, error)`:
+  adds a watch for `ClusterSecretStore` unless `namespaceScoped` is true, and
+  always adds a watch for `SecretStore`. Each watch uses `mapper(c, kind)`.
+  A nil mapper returns `secrets: store watch mapper must not be nil`. Errors
+  from `multicluster.AddInputWatch` are returned unchanged with a nil builder.
+- `ESOSecretStoreRef(ref commonv1.SecretStoreRefSpec) esov1.SecretStoreRef`:
+  builds an ESO ExternalSecret store ref from a resolved store reference.
+- `PushSecretStoreRefs(ref commonv1.SecretStoreRefSpec) []esov1alpha1.PushSecretStoreRef`:
+  builds the single-element ESO PushSecret store-ref slice from a resolved
+  store reference.
 
 ---
 
@@ -866,8 +973,8 @@ Creates or updates a cert-manager Certificate CR.
 
 ## Cross-Package Dependencies
 
-These are reusable helpers, not dependency-free packages: higher-level helpers
-such as `database.ReconcileProvision` and `deployment.EnsureDeployment` compose
+These helpers compose lower-level packages. For example,
+`database.ReconcileProvision` and `deployment.EnsureDeployment` compose
 lower-level packages, and reconcilers compose those helpers in their pipelines.
 
 ## Reconciler Integration Pattern
@@ -881,12 +988,12 @@ of this page each of its steps calls.
 | Step | Functions of this page it calls |
 | --- | --- |
 | `DatabaseTLS` | `tls.EnsureCertificate` |
-| `IdentityBackends` | `secrets.GetSecretValue`, `satellite.SecretNameForVolume` |
+| `IdentityBackends` | `config.CreateImmutableSecret`, `secrets.GetSecretValue`, `satellite.SecretNameForVolume` |
 | `Config` | `policy.LoadPolicyFromConfigMap`, `config.CreateImmutableConfigMap` |
 | `FernetKeys`, `CredentialKeys` | `config.CreateImmutableConfigMap`, `job.EnsureCronJob`, `secrets.EnsurePushSecret` |
 | `PolicyValidation` | `job.RunJob` |
 | `Deployment` | `deployment.EnsureDeployment`, `deployment.EnsureService` |
-| `(prune)` | `config.PruneImmutableConfigMaps` |
+| `(prune)` | `config.PruneImmutableConfigMaps`, `config.PruneImmutableSecrets` |
 | `Bootstrap` | `secrets.GetSecretValue` |
 | `TrustFlush` | `job.EnsureCronJob` |
 | `PasswordRotation` | `config.CreateImmutableConfigMap`, `config.PruneImmutableConfigMaps`, `job.EnsureCronJob`, `secrets.EnsurePushSecret` |
