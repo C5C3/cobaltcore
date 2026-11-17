@@ -35,8 +35,9 @@ KIND_HOST_PORT=8443 make deploy-infra
 ```
 
 Follow that tutorial through to its final **Verify** step, so the Keystone CR
-`keystone` is `Ready` in the `openstack` namespace and `openstack token issue`
-answers. Every resource name below is one that devstack produces: the admin
+`keystone` is `Ready` in the `openstack` namespace and
+`openstack --insecure token issue` answers. Every resource name below is one
+that devstack produces: the admin
 credentials Secret `keystone-admin`, the shared `openstack-db` and
 `openstack-memcached`, the ESO-synced `placement-db` Secret, and the
 `openstack-gw` Gateway.
@@ -67,6 +68,10 @@ The controller runs in `placement-system`; the Placement workload it manages run
 in `openstack`, the same controller-vs-workload split the keystone-operator uses.
 
 ## Step 2: Create the Keystone identity objects
+
+The `openstack` commands in this guide use `--insecure` because the local
+devstack uses a self-signed TLS certificate. The flag disables certificate
+verification; do not use it in production.
 
 Placement authenticates every incoming token against Keystone using a service
 user of its own, so that user, its project, and its role assignment have to exist
@@ -104,8 +109,8 @@ chain silently skips the create. `--or-show` is the idiom that works.
 
 `--or-show` on `user create` returns the existing user untouched, so on a re-run
 the password you type at the prompt is not the one Keystone holds. To rotate it,
-use `openstack user set --password-prompt placement` and update the
-Secret below in the same breath.
+use `openstack --insecure user set --password-prompt placement` and update the
+Secret below immediately afterward.
 
 Store the password where the CR can read it. `--from-file=password=/dev/stdin`
 keeps it on a pipe for the same reason `--password-prompt` does above. The two
@@ -220,9 +225,17 @@ openstack --insecure endpoint create --region RegionOne placement public \
   https://placement.127-0-0-1.nip.io:8443
 ```
 
-Neither `service create` nor `endpoint create` takes `--or-show`, and both are
-happy to create a duplicate row, so run each once. `openstack catalog list`
-shows what is registered.
+Neither `service create` nor `endpoint create` supports `--or-show`; inspect
+the catalog before retrying these create commands:
+
+```bash
+openstack --insecure service list
+openstack --insecure endpoint list
+```
+
+Check for Placement services and their endpoints. If multiple services have the
+same name, use a service ID from the first command with
+`openstack --insecure endpoint list --service <service-id>` to inspect each one.
 
 The internal endpoint is the in-cluster Service the operator owns (`placement` in
 `openstack`, port 8778). The public one goes through the Gateway on the kind host
@@ -230,9 +243,11 @@ port from `KIND_HOST_PORT=8443`.
 
 ## Step 5: Verify
 
-`resource class list` is a read-only call that Placement answers only for an
-authenticated request, so a listing proves the catalog entry, the gateway, and
-the service user's token validation all work:
+`resource class list` is read-only and sends the admin token from Step 2 to
+Placement. A successful response confirms that Keystone's catalog resolves the
+endpoint, the Gateway serves it, and Placement accepts the admin token. Step 2's
+separate `token issue` check confirms that the Placement service user's
+credentials can authenticate to Keystone:
 
 ```bash
 openstack --insecure resource class list
@@ -241,9 +256,13 @@ openstack --insecure resource class list
 The output is a one-column table of the standard resource classes a fresh
 Placement seeds, `VCPU`, `MEMORY_MB` and `DISK_GB` among them.
 
-An `EndpointNotFound` here means Step 4 did not register the catalog entry. A `401` means the service
-user cannot validate tokens: re-check the `service` role assignment from Step 2
-and that `placement-service-user` holds the password Keystone actually has.
+An `EndpointNotFound` here means the client could not find a matching catalog
+endpoint. Check the Placement service, region, and interface in Step 4. A `401`
+means the request was not authenticated; this CLI request uses the admin
+credentials exported in Step 2, not the Placement service user. First confirm
+that `openstack --insecure token issue` succeeds with those admin credentials.
+If it does but this request still returns `401`, inspect the Placement pod logs
+and verify the service user's role assignment and password Secret.
 
 ## See also
 
