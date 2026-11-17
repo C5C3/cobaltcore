@@ -9,11 +9,11 @@
 # fail-closed probe and the asserts under the fault take. pod-failure swaps the
 # keystone container for a pause image, so the pod stays scheduled, its
 # readiness probe on /v3 fails, it leaves the endpoints of the Service, and a
-# connection to keystone-barbican-ks-outage:5000 is refused at once. That refusal is
-# what gives the probe a bounded answer. A NetworkChaos partition would leave
-# every validation waiting out its TCP connect retries instead: the operators
-# set no http_connect_timeout in [keystone_authtoken], and keystonemiddleware
-# has no default for it.
+# connection to keystone-barbican-ks-outage:5000 is refused at once. That
+# refusal gives the probe a bounded answer and needs no kernel module. A
+# NetworkChaos partition drops packets instead and makes each validation wait
+# out [keystone_authtoken] http_connect_timeout, which the operator renders as
+# 10 seconds; ../barbican-keystone-partition/ proves that case.
 #
 # The selector is the API pods of this suite's Keystone. The three labels are
 # what reconcile_deployment.go puts on the API pod template. The trust-flush

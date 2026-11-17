@@ -2684,11 +2684,12 @@ Keystone CR, the pod logs of the Glance CR and of the glance-operator, and every
 
 - `pod-failure` swaps the keystone container for a pause image. The pod stays
   scheduled, its readiness probe on `/v3` fails, the Service loses its endpoint, and
-  every connection is refused at once, which gives the probe a bounded answer. A
-  `NetworkChaos` partition would leave every validation waiting out its TCP connect
-  retries instead: the operators set no `http_connect_timeout` in
-  `[keystone_authtoken]`, and keystonemiddleware has no default for it. The same
-  refusal needs no kernel module, so the suite runs in the `pod` entry.
+  every connection is refused at once, which gives the probe a bounded answer. The
+  refusal needs no kernel module, so the suite runs in the `pod` entry. A
+  `NetworkChaos` partition drops packets instead and makes each validation wait out
+  `[keystone_authtoken] http_connect_timeout`, which the operators render as 10
+  seconds; [barbican-keystone-partition](#barbican-keystone-partition) proves that
+  case.
 - The probe uses a token the service has never seen. keystonemiddleware caches a
   validated token for `token_cache_time` (300 s by default) in the shared Memcached,
   so a token the workload presented before the outage can keep working through it.
