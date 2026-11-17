@@ -202,6 +202,12 @@ target cluster is resolved, a finalizer is added or any sub-reconciler runs.
 `GateSuspend` in `internal/common/reconcile/suspend.go` sets `Suspended=True`
 with reason `ReconciliationSuspended` and returns an empty result. Nothing
 requeues the CR: no health probe runs, so the re-probe requeue stops as well.
+The exception is a failed status write by the gate, on suspend or on resume.
+On a 409 Conflict the gate logs the Info line
+`status update conflict, requeueing` and requeues the pass after
+`RequeueNextPass` (1 s), which retries the write. On any other failure it
+returns the wrapped error, and controller-runtime retries the pass with its
+error backoff.
 `Ready` and `status.observedGeneration` keep the values of the last full pass,
 and a spec change made meanwhile shows as `status.observedGeneration` below
 `metadata.generation`. `Suspended` is never part of the `Ready` aggregation.

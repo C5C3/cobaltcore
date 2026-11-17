@@ -325,8 +325,14 @@ One pass, in order:
 3. Ends the pass while `spec.suspend` is `true`. `GateSuspend` in
    `internal/common/reconcile/suspend.go` sets `Suspended=True` with reason
    `ReconciliationSuspended` and returns an empty result, so nothing requeues
-   the CR. `Ready` and `status.observedGeneration` keep the values of the last
-   full pass. A spec change made meanwhile shows as `status.observedGeneration`
+   the CR. The exception is a failed status write by the gate, on suspend or
+   on resume. On a 409 Conflict the gate logs the Info line
+   `status update conflict, requeueing` and requeues the pass after
+   `RequeueNextPass` (1 s), which retries the write. On any other failure it
+   returns the wrapped error, and controller-runtime retries the pass with its
+   error backoff. `Ready` and
+   `status.observedGeneration` keep the values of the last full pass. A spec
+   change made meanwhile shows as `status.observedGeneration`
    below `metadata.generation`. No target is resolved, no finalizer is added,
    no entry below runs, and the health re-probe stops. The rotations the
    pipeline drives stop with it: the `PasswordRotation` entry does not run, and
@@ -451,8 +457,14 @@ behavior depends on whether a reconcile error is also present:
 | --- | --- | --- |
 | nil | succeeds | nil |
 | non-nil | succeeds | reconcileErr (unchanged) |
-| nil | fails | `fmt.Errorf("updating status: %w", statusErr)` |
-| non-nil | fails | `errors.Join(reconcileErr, fmt.Errorf("updating status: %w", statusErr))` |
+| nil | fails (not 409) | `fmt.Errorf("updating status: %w", statusErr)` |
+| non-nil | fails (not 409) | `errors.Join(reconcileErr, fmt.Errorf("updating status: %w", statusErr))` |
+| nil | 409 Conflict | nil; result is the shorter of the pass's `RequeueAfter` and `RequeueNextPass` (1 s) |
+| non-nil | 409 Conflict | reconcileErr (unchanged) |
+
+On a 409 Conflict, `commonreconcile.UpdateStatus` drops the computed status,
+logs the Info line `status update conflict, requeueing`, and leaves the status
+to the next pass, which reads the Keystone again.
 
 In the dual-failure case, `errors.Join` preserves both the original reconcile error and
 the status update error. Both are unwrappable via `errors.Is` and `errors.As`, and both
