@@ -7,16 +7,15 @@ package v1alpha1
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/c5c3/cobaltcore/internal/common/naming"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
 
 // Name-length bounds enforced on metadata.name, driven by the ovn-db-sync
 // CronJob, the child object with the tightest name budget.
 const (
-	// MaxCronJobNameLength is the API server's own cap on a CronJob name:
-	// DNS1035LabelMaxLength (63) minus the 11-character "-<timestamp>" suffix its
-	// controller appends to every Job it spawns.
-	MaxCronJobNameLength = 52
+	// MaxCronJobNameLength is the API server's own cap on a CronJob name.
+	MaxCronJobNameLength = naming.MaxCronJobNameLength
 	// ovnDBSyncNameSuffix is appended to metadata.name to name the OVN
 	// database-synchronisation CronJob. It is duplicated from the controller
 	// package (which builds the object) because the api package cannot import the

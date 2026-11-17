@@ -279,15 +279,8 @@ func (r *PlacementReconciler) rejectReleaseTransition(placement *placementv1alph
 // digest-disables-tracking contract; the patch suffix is ignored so a patched
 // image build (e.g. tag 2026.1-p1) still matches release 2026.1.
 func checkImageReleaseMismatch(placement *placementv1alpha1.Placement) (ctrl.Result, bool) {
-	if placement.Spec.Image.Tag == "" {
-		return ctrl.Result{}, false
-	}
-	tagRel, tagErr := release.ParseRelease(placement.Spec.Image.Tag)
-	specRel, specErr := release.ParseRelease(placement.Spec.OpenStackRelease)
-	if tagErr != nil || specErr != nil {
-		return ctrl.Result{}, false
-	}
-	if tagRel.Year == specRel.Year && tagRel.Minor == specRel.Minor {
+	msg, mismatch := release.ImageTagMismatch(placement.Spec.Image.Tag, placement.Spec.OpenStackRelease)
+	if !mismatch {
 		return ctrl.Result{}, false
 	}
 	conditions.SetCondition(&placement.Status.Conditions, metav1.Condition{
@@ -295,9 +288,7 @@ func checkImageReleaseMismatch(placement *placementv1alpha1.Placement) (ctrl.Res
 		Status:             metav1.ConditionFalse,
 		ObservedGeneration: placement.Generation,
 		Reason:             conditionReasonImageReleaseMismatch,
-		Message: fmt.Sprintf("spec.image.tag %q names OpenStack release %d.%d but spec.openStackRelease is %q; "+
-			"bump spec.image in lockstep with spec.openStackRelease",
-			placement.Spec.Image.Tag, tagRel.Year, tagRel.Minor, placement.Spec.OpenStackRelease),
+		Message:            msg,
 	})
 	return ctrl.Result{RequeueAfter: RequeueDatabaseWait}, true
 }

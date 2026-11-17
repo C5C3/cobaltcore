@@ -14,7 +14,6 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -28,6 +27,7 @@ import (
 
 	"github.com/c5c3/cobaltcore/internal/common/config"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
+	"github.com/c5c3/cobaltcore/internal/common/networkpolicy"
 	"github.com/c5c3/cobaltcore/internal/common/secrets"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
@@ -271,26 +271,6 @@ func effectiveOIDCStateInputHeaders(o *keystonev1alpha1.OIDCBackendSpec) string 
 	return string(keystonev1alpha1.OIDCStateInputHeadersNone)
 }
 
-// urlEgressPort derives the TCP port of one identity-provider URL for the
-// NetworkPolicy egress rule, defaulting by scheme (443 https, 80 http) when
-// the URL carries no explicit port.
-func urlEgressPort(rawURL string) int32 {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return 443
-	}
-	if p := u.Port(); p != "" {
-		const maxPort = 65535
-		if n, err := strconv.ParseInt(p, 10, 32); err == nil && n > 0 && n <= maxPort {
-			return int32(n)
-		}
-	}
-	if u.Scheme == "http" {
-		return 80
-	}
-	return 443
-}
-
 // oidcBackendEgressPorts collects the deduplicated identity-provider ports
 // one backend needs egress to: the issuer, the metadata URL, and — when
 // discovery is explicit — every endpoint URL (the sidecar connects to the
@@ -311,7 +291,7 @@ func oidcBackendEgressPorts(o *keystonev1alpha1.OIDCBackendSpec) []int32 {
 	seen := make(map[int32]struct{}, len(urls))
 	var ports []int32
 	for _, u := range urls {
-		port := urlEgressPort(u)
+		port := networkpolicy.EndpointPort(u)
 		if _, ok := seen[port]; ok {
 			continue
 		}
@@ -771,7 +751,7 @@ func providerMetadataEgressPorts(document []byte) []int32 {
 		doc.UserinfoEndpoint, doc.EndSessionEndpoint, doc.IntrospectionEndpoint,
 	} {
 		if u != "" {
-			ports = append(ports, urlEgressPort(u))
+			ports = append(ports, networkpolicy.EndpointPort(u))
 		}
 	}
 	return ports

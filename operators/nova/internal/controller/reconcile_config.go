@@ -22,6 +22,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/database"
 	"github.com/c5c3/cobaltcore/internal/common/keystoneauth"
 	"github.com/c5c3/cobaltcore/internal/common/messaging"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	novav1alpha1 "github.com/c5c3/cobaltcore/operators/nova/api/v1alpha1"
 )
 
@@ -263,7 +264,7 @@ func (r *NovaReconciler) reconcileConfig(ctx context.Context, children client.Cl
 		conductorConfDataKey:  conductorOverlay(effectiveWorkers(nova.Spec.Conductor.Workers)),
 		novncproxyConfDataKey: novncproxyOverlay,
 	}
-	if logging := effectiveLogging(nova.Spec.Logging); logging.Format == "json" {
+	if logging := commonv1.EffectiveLogging(nova.Spec.Logging); logging.Format == "json" {
 		data[loggingINIDataKey] = config.RenderLoggingConf(logging.Level)
 	}
 
@@ -304,7 +305,7 @@ func (r *NovaReconciler) reconcileConfig(ctx context.Context, children client.Cl
 // identity would collapse the fleet into a single record.
 func operatorDefaults(nova *novav1alpha1.Nova, cacheServers string) map[string]map[string]string {
 	spec := &nova.Spec
-	logging := effectiveLogging(spec.Logging)
+	logging := commonv1.EffectiveLogging(spec.Logging)
 	params := clientSectionParams(spec)
 	// Only the token middleware caches in memcached; the client sections and
 	// the compute fragment render from params without it.
@@ -533,25 +534,6 @@ func consoleBaseURL(nova *novav1alpha1.Nova) string {
 	}
 	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d%s",
 		consoleProxyName(nova), nova.Namespace, novaConsolePort, consoleProxyVNCPath)
-}
-
-// effectiveLogging returns the LoggingSpec to use for config rendering,
-// materializing the production defaults when spec.logging is nil (a CR that
-// bypassed the defaulting webhook). It mirrors the sibling operators'
-// effectiveLogging.
-func effectiveLogging(spec *novav1alpha1.LoggingSpec) novav1alpha1.LoggingSpec {
-	out := novav1alpha1.LoggingSpec{Format: "text", Level: "INFO"}
-	if spec == nil {
-		return out
-	}
-	out = *spec
-	if out.Format == "" {
-		out.Format = "text"
-	}
-	if out.Level == "" {
-		out.Level = "INFO"
-	}
-	return out
 }
 
 // lastGoodArtifacts returns the config ConfigMap the running Nova API Deployment

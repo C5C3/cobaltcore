@@ -168,59 +168,32 @@ func (r *KeystoneReconciler) getValidationErrorMessage(ctx context.Context, chil
 // oslopolicy-validator reads keystone.conf from the mounted config dir to
 // resolve [oslo_policy] policy_file.
 func buildPolicyValidationJob(keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName string) *batchv1.Job {
-	backoffLimit := int32(2)
-
-	j := &batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("%s-policy-validation", keystone.Name),
-			Namespace: keystone.Namespace,
+	p := job.MigrationJobParams{
+		Name:            fmt.Sprintf("%s-policy-validation", keystone.Name),
+		Namespace:       keystone.Namespace,
+		ContainerName:   "validator",
+		Image:           keystone.Spec.Image.Reference(),
+		ImagePullPolicy: keystone.Spec.Image.EffectivePullPolicy(),
+		Command: []string{
+			"oslopolicy-validator",
+			"--namespace", "keystone",
+			"--config-dir", "/etc/keystone/keystone.conf.d/",
 		},
-		Spec: batchv1.JobSpec{
-			BackoffLimit: &backoffLimit,
-			Template: corev1.PodTemplateSpec{
-				Spec: corev1.PodSpec{
-					RestartPolicy: corev1.RestartPolicyNever,
-					Containers: []corev1.Container{{
-						Name:            "validator",
-						Image:           keystone.Spec.Image.Reference(),
-						ImagePullPolicy: keystone.Spec.Image.EffectivePullPolicy(),
-						Command: []string{
-							"oslopolicy-validator",
-							"--namespace", "keystone",
-							"--config-dir", "/etc/keystone/keystone.conf.d/",
-						},
-						SecurityContext:          deployment.RestrictedSecurityContext(),
-						TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
-						VolumeMounts: []corev1.VolumeMount{{
-							Name:      "config",
-							MountPath: "/etc/keystone/keystone.conf.d/",
-							ReadOnly:  true,
-						}},
-					}},
-					Volumes: []corev1.Volume{{
-						Name: "config",
-						VolumeSource: corev1.VolumeSource{
-							ConfigMap: &corev1.ConfigMapVolumeSource{
-								LocalObjectReference: corev1.LocalObjectReference{
-									Name: configMapName,
-								},
-							},
-						},
-					}},
-				},
-			},
-		},
+		ConfigMapName:   configMapName,
+		ConfigMountPath: "/etc/keystone/keystone.conf.d/",
+		SecurityContext: deployment.RestrictedSecurityContext(),
+		BackoffLimit:    2,
+		Pod:             keystoneJobPod(keystone),
 	}
 	// Project the per-domain identity-backend config so the validator loads
 	// the same config surface the API pods do; empty when nothing projected.
 	if domainsSecretName != "" {
 		domVol, domMount := domainsVolumeAndMount(domainsSecretName)
-		j.Spec.Template.Spec.Volumes = append(j.Spec.Template.Spec.Volumes, domVol)
-		j.Spec.Template.Spec.Containers[0].VolumeMounts = append(
-			j.Spec.Template.Spec.Containers[0].VolumeMounts, domMount,
-		)
+		p.ExtraVolumes = []corev1.Volume{domVol}
+		p.ExtraVolumeMounts = []corev1.VolumeMount{domMount}
 	}
-	keystoneJobPod(keystone).Apply(&j.Spec.Template.Spec)
+	j := job.BuildMigrationJob(p)
+	j.Spec.Template.Spec.Containers[0].TerminationMessagePolicy = corev1.TerminationMessageFallbackToLogsOnError
 	return j
 }
 

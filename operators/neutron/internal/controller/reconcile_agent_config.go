@@ -14,6 +14,7 @@ import (
 
 	"github.com/c5c3/cobaltcore/internal/common/config"
 	"github.com/c5c3/cobaltcore/internal/common/messaging"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	neutronv1alpha1 "github.com/c5c3/cobaltcore/operators/neutron/api/v1alpha1"
 )
 
@@ -51,7 +52,7 @@ func (r *NeutronMetadataAgentReconciler) reconcileAgentConfig(ctx context.Contex
 
 	// logging is re-derived here (agentOperatorDefaults keeps its own copy) for
 	// the logging.conf data-key decision below.
-	logging := effectiveLogging(cr.Spec.Logging)
+	logging := commonv1.EffectiveLogging(cr.Spec.Logging)
 
 	// extraConfig overrides everything (the true escape hatch).
 	if cr.Spec.ExtraConfig != nil {
@@ -101,7 +102,7 @@ func (r *NeutronMetadataAgentReconciler) reconcileAgentConfig(ctx context.Contex
 // so it finds no privsep-helper. The container already runs as uid 0, so sudo
 // has no privilege to add.
 func agentOperatorDefaults(cr *neutronv1alpha1.NeutronMetadataAgent, chassis resolvedChassis) map[string]map[string]string {
-	logging := effectiveLogging(cr.Spec.Logging)
+	logging := commonv1.EffectiveLogging(cr.Spec.Logging)
 	defaults := map[string]map[string]string{
 		"DEFAULT": {
 			"state_path": neutronStatePath,

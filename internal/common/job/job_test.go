@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	. "github.com/onsi/gomega"
 
@@ -1055,4 +1056,38 @@ func TestIsJobFailed_false_failedNotTrue(t *testing.T) {
 		},
 	}
 	g.Expect(isJobFailed(job)).To(BeFalse())
+}
+
+func TestNewestTerminalJob(t *testing.T) {
+	g := NewWithT(t)
+	cronJob := &batchv1.CronJob{ObjectMeta: metav1.ObjectMeta{Name: "purge", UID: "cj-uid"}}
+	owned := func(name string, created time.Time, conds ...batchv1.JobConditionType) batchv1.Job {
+		isController := true
+		j := batchv1.Job{ObjectMeta: metav1.ObjectMeta{
+			Name:              name,
+			CreationTimestamp: metav1.NewTime(created),
+			OwnerReferences:   []metav1.OwnerReference{{UID: cronJob.UID, Controller: &isController}},
+		}}
+		for _, c := range conds {
+			j.Status.Conditions = append(j.Status.Conditions, batchv1.JobCondition{Type: c, Status: corev1.ConditionTrue})
+		}
+		return j
+	}
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	g.Expect(NewestTerminalJob(cronJob, nil)).To(BeNil())
+
+	foreign := owned("foreign", base.Add(3*time.Hour), batchv1.JobComplete)
+	foreign.OwnerReferences[0].UID = "other-uid"
+	jobs := []batchv1.Job{
+		owned("old-failed", base, batchv1.JobFailed),
+		owned("new-complete", base.Add(time.Hour), batchv1.JobComplete),
+		owned("running", base.Add(2*time.Hour)),
+		foreign,
+	}
+	got := NewestTerminalJob(cronJob, jobs)
+	g.Expect(got).NotTo(BeNil())
+	g.Expect(got.Name).To(Equal("new-complete"))
+
+	g.Expect(NewestTerminalJob(cronJob, []batchv1.Job{owned("running", base)})).To(BeNil())
 }

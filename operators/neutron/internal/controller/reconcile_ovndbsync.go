@@ -144,7 +144,7 @@ func (r *NeutronReconciler) reconcileOVNDBSync(ctx context.Context, children cli
 	}
 	// EnsureCronJob decodes the apply response back into cronJob, so it carries
 	// the persisted UID the owner-reference match below compares against.
-	observed := newestTerminalJob(cronJob, jobs.Items)
+	observed := job.NewestTerminalJob(cronJob, jobs.Items)
 
 	switch {
 	// Suspension outranks a failed run, because a suspended CronJob spawns no
@@ -204,30 +204,6 @@ func (r *NeutronReconciler) reconcileOVNDBSync(ctx context.Context, children cli
 		})
 
 	return ctrl.Result{}, nil
-}
-
-// newestTerminalJob returns the most recently created Job among jobs that the
-// given CronJob controls and that has reached a terminal state, or nil when no
-// such Job exists yet. Newest wins because the CronJob keeps a bounded history:
-// an older failed run must not keep the condition False once a later run has
-// succeeded. The controller reference is what separates a scheduled run from a
-// Job someone created from the CronJob by hand, which carries the same labels
-// but no controller.
-func newestTerminalJob(cronJob *batchv1.CronJob, jobs []batchv1.Job) *batchv1.Job {
-	var newest *batchv1.Job
-	for i := range jobs {
-		candidate := &jobs[i]
-		if !metav1.IsControlledBy(candidate, cronJob) {
-			continue
-		}
-		if job.TerminalCondition(candidate) == "" {
-			continue
-		}
-		if newest == nil || candidate.CreationTimestamp.After(newest.CreationTimestamp.Time) {
-			newest = candidate
-		}
-	}
-	return newest
 }
 
 // buildOVNDBSyncCronJob builds the CronJob that runs neutron-ovn-db-sync-util

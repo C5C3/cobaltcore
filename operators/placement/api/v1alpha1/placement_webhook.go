@@ -7,7 +7,6 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"reflect"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -235,12 +234,12 @@ func (w *PlacementWebhook) validate(ctx context.Context, p *Placement, extra fie
 			"keystoneEndpoint must be set (the Keystone auth_url the Placement pods reach)",
 		))
 	} else {
-		allErrs = append(allErrs, validateEndpointURL(specPath.Child("keystoneEndpoint"), p.Spec.KeystoneEndpoint)...)
+		allErrs = append(allErrs, validation.EndpointURL(specPath.Child("keystoneEndpoint"), p.Spec.KeystoneEndpoint)...)
 	}
 	// keystonePublicEndpoint is optional (falls back to keystoneEndpoint at
 	// render time); validate it only when set.
 	if p.Spec.KeystonePublicEndpoint != "" {
-		allErrs = append(allErrs, validateEndpointURL(specPath.Child("keystonePublicEndpoint"), p.Spec.KeystonePublicEndpoint)...)
+		allErrs = append(allErrs, validation.EndpointURL(specPath.Child("keystonePublicEndpoint"), p.Spec.KeystonePublicEndpoint)...)
 	}
 
 	// Typed spec fields reach the same verbatim INI renderer as extraConfig: each
@@ -249,7 +248,7 @@ func (w *PlacementWebhook) validate(ctx context.Context, p *Placement, extra fie
 	// whole key past the (section, key)-keyed ownership (FindOwnedOverrides) and
 	// catalog (FindUnknownOptions) gates, exactly the bypass the extraConfig check
 	// below blocks. The two Keystone endpoint fields need no entry here: they go
-	// through validateEndpointURL, whose url.Parse rejects control bytes; spec.cache
+	// through validation.EndpointURL, whose url.Parse rejects control bytes; spec.cache
 	// feeds the same section and is covered by CacheNoControlChars above.
 	for _, f := range []struct {
 		path  *field.Path
@@ -644,24 +643,6 @@ func (w *PlacementWebhook) validate(ctx context.Context, p *Placement, extra fie
 		)
 	}
 	return nil
-}
-
-// validateEndpointURL checks that a non-empty endpoint parses cleanly, uses an
-// http(s) scheme, and carries a host — the same shape the sibling operators
-// enforce on their Keystone endpoints. It is applied to both Placement Keystone
-// endpoint fields.
-func validateEndpointURL(fldPath *field.Path, endpoint string) field.ErrorList {
-	var errs field.ErrorList
-	u, err := url.Parse(endpoint)
-	switch {
-	case err != nil:
-		errs = append(errs, field.Invalid(fldPath, endpoint, fmt.Sprintf("must be a valid URL: %v", err)))
-	case u.Scheme != "http" && u.Scheme != "https":
-		errs = append(errs, field.Invalid(fldPath, endpoint, "scheme must be http or https"))
-	case u.Host == "":
-		errs = append(errs, field.Invalid(fldPath, endpoint, "URL must include a host"))
-	}
-	return errs
 }
 
 // validateExtraConfigOptions validates the option names in spec.extraConfig

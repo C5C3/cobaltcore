@@ -5,6 +5,7 @@
 package naming
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/onsi/gomega"
@@ -122,4 +123,26 @@ func TestExcludeJobPods_CoversAPIPodsButNoJobPod(t *testing.T) {
 
 	// Another instance is out of scope regardless of the Job label.
 	g.Expect(selector.Matches(labels.Set(ComponentLabels("keystone", "other", ComponentAPI)))).To(gomega.BeFalse())
+}
+
+func TestBoundedName(t *testing.T) {
+	long := strings.Repeat("a", 50)
+	dashAtCut := strings.Repeat("a", 33) + "-" + strings.Repeat("b", 20)
+	for _, tc := range []struct {
+		name string
+		base string
+		want string
+	}{
+		{name: "fits keeps the plain form", base: "keystone", want: "keystone-db-purge"},
+		{name: "exactly at the cap keeps the plain form", base: strings.Repeat("a", 43), want: strings.Repeat("a", 43) + "-db-purge"},
+		{name: "over-long collapses onto the hash", base: long, want: strings.Repeat("a", 34) + "-160b4e43-db-purge"},
+		{name: "trailing dash at the cut is trimmed", base: dashAtCut, want: strings.Repeat("a", 33) + "-c90ee561-db-purge"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			got := BoundedName(tc.base, "-db-purge", MaxCronJobNameLength)
+			g.Expect(got).To(gomega.Equal(tc.want))
+			g.Expect(len(got)).To(gomega.BeNumerically("<=", MaxCronJobNameLength))
+		})
+	}
 }

@@ -413,3 +413,16 @@ func (l *LoggingSpec) Default() {
 		l.Debug = ptr.To(false)
 	}
 }
+
+// EffectiveLogging returns a defaulted copy of spec, or the defaults alone when
+// spec is nil. Reconcilers render from it so a CR that bypassed the defaulting
+// webhook still gets the production baseline, and nothing is written back into
+// the CR.
+func EffectiveLogging(spec *LoggingSpec) LoggingSpec {
+	var out LoggingSpec
+	if spec != nil {
+		out = *spec
+	}
+	out.Default()
+	return out
+}

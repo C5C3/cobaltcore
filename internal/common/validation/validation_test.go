@@ -1313,3 +1313,29 @@ func TestExtraOptions(t *testing.T) {
 		g.Expect(DefaultExtraOptionKeyPattern.MatchString("s3_store_host")).To(gomega.BeTrue())
 	})
 }
+
+func TestEndpointURL(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		endpoint string
+		wantErr  bool
+	}{
+		{name: "https with host", endpoint: "https://keystone.example.com/v3"},
+		{name: "http with port", endpoint: "http://keystone.default.svc:5000/v3"},
+		{name: "unparseable", endpoint: "http://[::bad", wantErr: true},
+		{name: "non-http scheme", endpoint: "ftp://keystone.example.com", wantErr: true},
+		{name: "missing scheme", endpoint: "keystone.example.com", wantErr: true},
+		{name: "missing host", endpoint: "https:///v3", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			errs := EndpointURL(testPath, tc.endpoint)
+			if tc.wantErr {
+				g.Expect(errs).To(gomega.HaveLen(1))
+				g.Expect(errs[0].Field).To(gomega.Equal("spec.test"))
+			} else {
+				g.Expect(errs).To(gomega.BeEmpty())
+			}
+		})
+	}
+}

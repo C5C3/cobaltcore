@@ -7,7 +7,6 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
-	"net/url"
 
 	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -40,10 +39,8 @@ const (
 // Name-length bounds enforced on metadata.name, driven by the purge CronJob —
 // the child object with the tightest name budget.
 const (
-	// MaxCronJobNameLength is the API server's own cap on a CronJob name:
-	// DNS1035LabelMaxLength (63) minus the 11-character "-<timestamp>" suffix its
-	// controller appends to every Job it spawns.
-	MaxCronJobNameLength = 52
+	// MaxCronJobNameLength is the API server's own cap on a CronJob name.
+	MaxCronJobNameLength = naming.MaxCronJobNameLength
 	// dbPurgeNameSuffix is appended to metadata.name to name the purge CronJob.
 	// It is duplicated from the controller package (which builds the object)
 	// because the api package cannot import the controller.
@@ -401,7 +398,7 @@ func (w *CinderWebhook) validate(ctx context.Context, c *Cinder, extra field.Err
 		{specPath.Child("glanceEndpoint"), c.Spec.GlanceEndpoint},
 	} {
 		if endpoint.value != "" {
-			allErrs = append(allErrs, validateEndpointURL(endpoint.path, endpoint.value)...)
+			allErrs = append(allErrs, validation.EndpointURL(endpoint.path, endpoint.value)...)
 		}
 	}
 
@@ -450,7 +447,7 @@ func (w *CinderWebhook) validate(ctx context.Context, c *Cinder, extra field.Err
 			))
 		}
 		if c.Spec.KeyManager.Barbican != nil {
-			allErrs = append(allErrs, validateEndpointURL(
+			allErrs = append(allErrs, validation.EndpointURL(
 				keyManagerPath.Child("barbican", "endpoint"), c.Spec.KeyManager.Barbican.Endpoint)...)
 		}
 	}
@@ -808,23 +805,6 @@ func validateSingletonDeployment(fldPath *field.Path, d *commonv1.DeploymentSpec
 			fldPath.Child("strategy", "type"), d.Strategy.Type,
 			"volume/backup deployments must use the Recreate strategy",
 		))
-	}
-	return errs
-}
-
-// validateEndpointURL checks that a non-empty endpoint parses cleanly, uses an
-// http(s) scheme, and carries a host — the same shape the sibling operators
-// enforce on their endpoints. It is applied to every URL field on CinderSpec.
-func validateEndpointURL(fldPath *field.Path, endpoint string) field.ErrorList {
-	var errs field.ErrorList
-	u, err := url.Parse(endpoint)
-	switch {
-	case err != nil:
-		errs = append(errs, field.Invalid(fldPath, endpoint, fmt.Sprintf("must be a valid URL: %v", err)))
-	case u.Scheme != "http" && u.Scheme != "https":
-		errs = append(errs, field.Invalid(fldPath, endpoint, "scheme must be http or https"))
-	case u.Host == "":
-		errs = append(errs, field.Invalid(fldPath, endpoint, "URL must include a host"))
 	}
 	return errs
 }

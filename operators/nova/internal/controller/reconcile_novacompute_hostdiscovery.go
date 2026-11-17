@@ -6,7 +6,6 @@ package controller
 
 import (
 	"context"
-	"crypto/sha256"
 	"fmt"
 	"strings"
 	"time"
@@ -22,6 +21,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/deployment"
 	"github.com/c5c3/cobaltcore/internal/common/job"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
+	"github.com/c5c3/cobaltcore/internal/common/naming"
 	novav1alpha1 "github.com/c5c3/cobaltcore/operators/nova/api/v1alpha1"
 )
 
@@ -48,14 +48,7 @@ const (
 // admitted before the name bound, collapses onto a hash as
 // dbArchiveCronJobName does.
 func hostDiscoveryJobName(novaName string) string {
-	suffix := "-" + componentHostDiscovery
-	if len(novaName)+len(suffix) <= validation.LabelValueMaxLength {
-		return novaName + suffix
-	}
-	sum := sha256.Sum256([]byte(novaName))
-	kept := strings.TrimRight(
-		novaName[:validation.LabelValueMaxLength-len(suffix)-dbArchiveNameHashLength], "-.")
-	return fmt.Sprintf("%s-%x%s", kept, sum[:4], suffix)
+	return naming.BoundedName(novaName, "-"+componentHostDiscovery, validation.LabelValueMaxLength)
 }
 
 // hostDiscoveryJob builds the Job that maps the compute hosts of the Nova's

@@ -143,7 +143,7 @@ func remoteComputeConfigSecretName(nova *novav1alpha1.Nova) string {
 // compute cluster reaches.
 func computeFragment(nova *novav1alpha1.Nova, remote bool) map[string]map[string]string {
 	spec := &nova.Spec
-	logging := effectiveLogging(spec.Logging)
+	logging := commonv1.EffectiveLogging(spec.Logging)
 	params := clientSectionParams(spec)
 	if remote {
 		params.AuthURL = spec.RemoteCompute.KeystoneEndpoint

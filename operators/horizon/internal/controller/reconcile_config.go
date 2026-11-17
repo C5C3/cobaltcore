@@ -21,6 +21,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	"github.com/c5c3/cobaltcore/internal/common/config"
 	"github.com/c5c3/cobaltcore/internal/common/pysettings"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
 )
 
@@ -138,7 +139,7 @@ func renderLocalSettings(horizon *horizonv1alpha1.Horizon, cacheServers string) 
 
 // defaultSettings returns the operator-managed Django settings.
 func defaultSettings(horizon *horizonv1alpha1.Horizon, cacheServers string) (map[string]apiextensionsv1.JSON, error) {
-	logging := effectiveLogging(horizon.Spec.Logging)
+	logging := commonv1.EffectiveLogging(horizon.Spec.Logging)
 
 	backend := effectiveCacheBackend(horizon)
 	cacheDefault := map[string]any{
@@ -420,25 +421,6 @@ func djangoLogging(logging horizonv1alpha1.LoggingSpec) map[string]any {
 	loggers["django"] = map[string]any{"level": djangoLevel, "handlers": []any{"mail_admins"}}
 	cfg["loggers"] = loggers
 	return cfg
-}
-
-// effectiveLogging returns the LoggingSpec to use for config rendering,
-// materializing the production defaults when spec.logging is nil. The
-// defaulting webhook materializes the same baseline at admission, so this
-// fallback only matters when a CR bypasses the webhook.
-func effectiveLogging(spec *horizonv1alpha1.LoggingSpec) horizonv1alpha1.LoggingSpec {
-	out := horizonv1alpha1.LoggingSpec{Format: "text", Level: "INFO"}
-	if spec == nil {
-		return out
-	}
-	out = *spec
-	if out.Format == "" {
-		out.Format = "text"
-	}
-	if out.Level == "" {
-		out.Level = "INFO"
-	}
-	return out
 }
 
 // effectiveCacheBackend returns the Django cache backend, defaulting to

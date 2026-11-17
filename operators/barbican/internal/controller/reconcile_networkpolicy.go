@@ -122,15 +122,13 @@ func buildBarbicanNetworkPolicy(barbican *barbicanv1alpha1.Barbican, operatorNam
 
 // buildAutoEgressRules constructs the auto-derived egress rules for DNS
 // (UDP+TCP 53), the database (TCP, port from the database spec), the Keystone
-// endpoint (TCP, port from networkpolicy.KeystoneEndpointPort), the cache (TCP,
+// endpoint (networkpolicy.KeystoneEgressRule), the cache (TCP,
 // ports from the cache spec), and the OpenBao servers (TCP, one port per distinct store host).
 // Rule order is deterministic: DNS, database, keystone, cache, OpenBao. The
 // database and keystone rules are always emitted (Barbican always has a database
 // and always validates tokens); the cache and OpenBao rules are emitted only when
 // their inputs yield ports.
 func buildAutoEgressRules(barbican *barbicanv1alpha1.Barbican, hosts []string) []networkingv1.NetworkPolicyEgressRule {
-	tcp := corev1.ProtocolTCP
-
 	rules := []networkingv1.NetworkPolicyEgressRule{
 		// DNS egress: always required (UDP+TCP 53).
 		networkpolicy.DNSEgressRule(),
@@ -145,12 +143,7 @@ func buildAutoEgressRules(barbican *barbicanv1alpha1.Barbican, hosts []string) [
 	// the kubelet probes and the operator health check — keep passing, because
 	// both target the unauthenticated healthcheck app. Port-only — destination
 	// unrestricted, matching the DB/cache egress posture.
-	keystonePort := intstr.FromInt32(networkpolicy.KeystoneEndpointPort(barbican.Spec.KeystoneEndpoint))
-	rules = append(rules, networkingv1.NetworkPolicyEgressRule{
-		Ports: []networkingv1.NetworkPolicyPort{
-			{Protocol: &tcp, Port: &keystonePort},
-		},
-	})
+	rules = append(rules, networkpolicy.KeystoneEgressRule(barbican.Spec.KeystoneEndpoint))
 
 	// Cache egress: emitted in both managed and brownfield modes. Cache egress
 	// does not gate readiness, so a wrong cache port degrades caching without

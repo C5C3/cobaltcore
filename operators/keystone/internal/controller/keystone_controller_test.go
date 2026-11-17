@@ -721,7 +721,7 @@ func TestReconcile_ConfigFailureDoesNotLeaveReadyTrue(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
 	// Break reconcileConfig: point policyOverrides at a ConfigMap that does not
-	// exist so buildPolicyYAML → LoadPolicyFromConfigMap returns NotFound.
+	// exist so policy.BuildPolicyYAML → LoadPolicyFromConfigMap returns NotFound.
 	ks.Spec.PolicyOverrides = &commonv1.PolicySpec{
 		ConfigMapRef: &corev1.LocalObjectReference{Name: "missing-policy-cm"},
 	}

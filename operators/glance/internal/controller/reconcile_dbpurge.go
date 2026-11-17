@@ -6,10 +6,8 @@ package controller
 
 import (
 	"context"
-	"crypto/sha256"
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -23,6 +21,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/database"
 	"github.com/c5c3/cobaltcore/internal/common/deployment"
 	"github.com/c5c3/cobaltcore/internal/common/job"
+	"github.com/c5c3/cobaltcore/internal/common/naming"
 	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
 	"github.com/c5c3/cobaltcore/operators/glance/internal/metrics"
 )
@@ -75,32 +74,13 @@ const dbPurgeActiveDeadlineSeconds int64 = 3600
 // because it cannot import this package.
 const dbPurgeNameSuffix = "-db-purge"
 
-// dbPurgeNameHashLength is what the collapsed form below spends on the hash: a
-// separator plus eight hex characters.
-const dbPurgeNameHashLength = 1 + 8
-
 // dbPurgeCronJobName returns the name of the purge CronJob, collapsing an
 // over-long Glance name onto a content-stable hash.
 //
-// Admission bounds metadata.name so the plain "{name}-db-purge" form fits the
-// MaxCronJobNameLength characters Kubernetes allows a CronJob name — but on
-// create only, and it has to be: metadata.name is immutable, so on update the
-// rule could only fire against an object a pre-upgrade operator already
-// admitted, including the finalizer-removal update that completes its deletion.
-// An operator upgrade therefore inherits Glance CRs the bound would reject, and
-// building their name unconditionally would fail every reconcile on an apply the
-// API server refuses, forever, with no field left to edit to repair it. Every
-// admissible name keeps the documented plain form.
+// naming.BoundedName explains why an over-long name can still reach the
+// reconciler.
 func dbPurgeCronJobName(glanceName string) string {
-	if len(glanceName) <= glancev1alpha1.MaxGlanceNameLength {
-		return glanceName + dbPurgeNameSuffix
-	}
-	sum := sha256.Sum256([]byte(glanceName))
-	// The trim keeps the truncation from ending a DNS label on "-" or "." —
-	// which would make the very name this function exists to produce
-	// unapplicable — and only ever shortens, so the cap still holds.
-	kept := strings.TrimRight(glanceName[:glancev1alpha1.MaxGlanceNameLength-dbPurgeNameHashLength], "-.")
-	return fmt.Sprintf("%s-%x%s", kept, sum[:4], dbPurgeNameSuffix)
+	return naming.BoundedName(glanceName, dbPurgeNameSuffix, naming.MaxCronJobNameLength)
 }
 
 // effectiveDBPurge returns the settings the purge CronJob runs with,
@@ -162,7 +142,7 @@ func (r *GlanceReconciler) reconcileDBPurge(ctx context.Context, children client
 	}
 	// EnsureCronJob decodes the apply response back into cronJob, so it carries
 	// the persisted UID the owner-reference match below compares against.
-	observed := newestTerminalJob(cronJob, jobs.Items)
+	observed := job.NewestTerminalJob(cronJob, jobs.Items)
 
 	switch {
 	// Suspension outranks a failed run, because a suspended CronJob spawns no
@@ -220,28 +200,6 @@ func (r *GlanceReconciler) reconcileDBPurge(ctx context.Context, children client
 		})
 
 	return ctrl.Result{}, nil
-}
-
-// newestTerminalJob returns the most recently created Job among jobs that the
-// given CronJob controls and that has reached a terminal state, or nil when no
-// such Job exists yet. Newest wins because the CronJob keeps a bounded history:
-// an older failed run must not keep the condition False once a later run has
-// succeeded.
-func newestTerminalJob(cronJob *batchv1.CronJob, jobs []batchv1.Job) *batchv1.Job {
-	var newest *batchv1.Job
-	for i := range jobs {
-		candidate := &jobs[i]
-		if !metav1.IsControlledBy(candidate, cronJob) {
-			continue
-		}
-		if job.TerminalCondition(candidate) == "" {
-			continue
-		}
-		if newest == nil || candidate.CreationTimestamp.After(newest.CreationTimestamp.Time) {
-			newest = candidate
-		}
-	}
-	return newest
 }
 
 // dbPurgeCronJob builds the CronJob that hard-deletes the rows glance only ever

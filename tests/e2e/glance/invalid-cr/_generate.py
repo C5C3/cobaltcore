@@ -182,7 +182,7 @@ FIXTURES: tuple[Fixture, ...] = (
         filename="04-keystone-endpoint-bad-scheme.yaml",
         comment=(
             "spec.keystoneEndpoint with a non-http(s) scheme violates the CRD\n"
-            "pattern (^https?://); the webhook validateEndpointURL mirrors it."
+            "pattern (^https?://); the webhook validation.EndpointURL mirrors it."
         ),
         name="glance-invalid-endpoint",
         endpoint="ftp://keystone.openstack.svc.cluster.local:5000/v3",

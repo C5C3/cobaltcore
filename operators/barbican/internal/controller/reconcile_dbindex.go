@@ -5,14 +5,11 @@
 package controller
 
 import (
-	"crypto/sha256"
-	"fmt"
-	"strings"
-
 	batchv1 "k8s.io/api/batch/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/c5c3/cobaltcore/internal/common/database"
+	"github.com/c5c3/cobaltcore/internal/common/naming"
 )
 
 // The db-index Job builds one index per list query on (project_id, deleted,
@@ -83,14 +80,7 @@ func dbIndexCommand() []string {
 // dbCleanCronJobName does. Such a name of 55 characters still fits
 // {name}-db-sync, so its Barbican reconciled before the db-index Job existed.
 func dbIndexJobName(barbicanName string) string {
-	suffix := "-" + dbIndexJobSuffix
-	if len(barbicanName)+len(suffix) <= validation.LabelValueMaxLength {
-		return barbicanName + suffix
-	}
-	sum := sha256.Sum256([]byte(barbicanName))
-	kept := strings.TrimRight(
-		barbicanName[:validation.LabelValueMaxLength-len(suffix)-dbCleanNameHashLength], "-.")
-	return fmt.Sprintf("%s-%x%s", kept, sum[:4], suffix)
+	return naming.BoundedName(barbicanName, "-"+dbIndexJobSuffix, validation.LabelValueMaxLength)
 }
 
 // dbIndexJob builds the db-index Job from the Job set the db-sync Job is built

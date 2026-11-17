@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
+	"github.com/c5c3/cobaltcore/internal/common/naming"
 	"github.com/c5c3/cobaltcore/internal/common/validation"
 	commonwebhook "github.com/c5c3/cobaltcore/internal/common/webhook"
 )
@@ -77,10 +78,8 @@ const (
 // Name-length bounds enforced on metadata.name, driven by the backup CronJob,
 // the child object with the tightest name budget.
 const (
-	// MaxCronJobNameLength is the API server's own cap on a CronJob name:
-	// DNS1035LabelMaxLength (63) minus the 11-character "-<timestamp>" suffix its
-	// controller appends to every Job it spawns.
-	MaxCronJobNameLength = 52
+	// MaxCronJobNameLength is the API server's own cap on a CronJob name.
+	MaxCronJobNameLength = naming.MaxCronJobNameLength
 	// backupNameSuffix is appended to metadata.name to name the backup CronJob.
 	// It is duplicated from the controller package (which builds the object)
 	// because the api package cannot import the controller.

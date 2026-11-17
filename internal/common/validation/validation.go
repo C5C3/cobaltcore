@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"net/url"
 	"regexp"
 	"slices"
 	"strconv"
@@ -127,6 +128,23 @@ func CacheNoControlChars(fldPath *field.Path, cache *commonv1.CacheSpec) field.E
 // could drift from it.
 func HasControlChars(s string) bool {
 	return strings.ContainsAny(s, "\n\r")
+}
+
+// EndpointURL checks that endpoint parses cleanly, uses an http(s) scheme, and
+// carries a host. It is the shape every service operator enforces on its
+// Keystone and sibling-service endpoint fields; whether an empty endpoint is
+// allowed is the caller's decision.
+func EndpointURL(fldPath *field.Path, endpoint string) field.ErrorList {
+	u, err := url.Parse(endpoint)
+	switch {
+	case err != nil:
+		return field.ErrorList{field.Invalid(fldPath, endpoint, fmt.Sprintf("must be a valid URL: %v", err))}
+	case u.Scheme != "http" && u.Scheme != "https":
+		return field.ErrorList{field.Invalid(fldPath, endpoint, "scheme must be http or https")}
+	case u.Host == "":
+		return field.ErrorList{field.Invalid(fldPath, endpoint, "URL must include a host")}
+	}
+	return nil
 }
 
 // DynamicCredentialsRequireClusterRef enforces that CredentialsMode Dynamic

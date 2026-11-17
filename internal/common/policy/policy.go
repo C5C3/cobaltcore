@@ -7,6 +7,7 @@ package policy
 import (
 	"context"
 	"fmt"
+	"maps"
 	"sort"
 
 	corev1 "k8s.io/api/core/v1"
@@ -46,6 +47,31 @@ func LoadPolicyFromConfigMap(ctx context.Context, c client.Client, key client.Ob
 	}
 
 	return rules, nil
+}
+
+// BuildPolicyYAML renders the policy.yaml content of a service CR from its
+// spec.policyOverrides: the rules of the referenced ConfigMap in namespace,
+// with the inline rules merged over them (inline wins). A nil po, or one that
+// yields no rules, renders "".
+func BuildPolicyYAML(ctx context.Context, c client.Client, namespace string, po *types.PolicySpec) (string, error) {
+	if po == nil {
+		return "", nil
+	}
+	var rules map[string]string
+	if po.ConfigMapRef != nil {
+		cmRules, err := LoadPolicyFromConfigMap(ctx, c, client.ObjectKey{Namespace: namespace, Name: po.ConfigMapRef.Name})
+		if err != nil {
+			return "", fmt.Errorf("loading policy from ConfigMap: %w", err)
+		}
+		rules = cmRules
+	}
+	if len(po.Rules) > 0 {
+		if rules == nil {
+			rules = make(map[string]string, len(po.Rules))
+		}
+		maps.Copy(rules, po.Rules)
+	}
+	return RenderPolicyYAML(rules)
 }
 
 // RenderPolicyYAML renders oslo.policy rules as a YAML string.

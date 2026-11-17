@@ -406,3 +406,31 @@ func TestMinimumSupported_RawMatchesItsParts(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(parsed).To(Equal(MinimumSupported))
 }
+
+func TestImageTagMismatch(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		tag      string
+		release  string
+		mismatch bool
+	}{
+		{name: "digest-pinned image", tag: "", release: "2026.1"},
+		{name: "same release", tag: "2026.1", release: "2026.1"},
+		{name: "patch suffix ignored", tag: "2026.1-p1", release: "2026.1"},
+		{name: "unparseable tag", tag: "latest", release: "2026.1"},
+		{name: "unparseable release", tag: "2026.1", release: "next"},
+		{name: "different release", tag: "2025.2", release: "2026.1", mismatch: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+			msg, mismatch := ImageTagMismatch(tc.tag, tc.release)
+			g.Expect(mismatch).To(Equal(tc.mismatch))
+			if tc.mismatch {
+				g.Expect(msg).To(Equal(`spec.image.tag "2025.2" names OpenStack release 2025.2 but spec.openStackRelease is "2026.1"; ` +
+					"bump spec.image in lockstep with spec.openStackRelease"))
+			} else {
+				g.Expect(msg).To(BeEmpty())
+			}
+		})
+	}
+}

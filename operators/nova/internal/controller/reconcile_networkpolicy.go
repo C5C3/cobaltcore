@@ -252,7 +252,6 @@ func buildAutoEgressRules(nova *novav1alpha1.Nova, egressPort int32) []networkin
 	// The two schemas carry their own connection parameters and may sit on
 	// different MariaDB instances, so each contributes its own rule rather than
 	// one rule standing in for both.
-	keystonePort := intstr.FromInt32(networkpolicy.KeystoneEndpointPort(nova.Spec.KeystoneEndpoint))
 	rules := []networkingv1.NetworkPolicyEgressRule{
 		networkpolicy.DNSEgressRule(),
 		networkpolicy.DatabaseEgressRule(nova.Spec.APIDatabase),
@@ -270,11 +269,7 @@ func buildAutoEgressRules(nova *novav1alpha1.Nova, egressPort int32) []networkin
 	// authenticated request against spec.keystoneEndpoint server-side, and every
 	// call Nova makes to a sibling starts by fetching a token from it. Port-only:
 	// destination unrestricted, matching the DB/cache egress posture.
-	rules = append(rules, networkingv1.NetworkPolicyEgressRule{
-		Ports: []networkingv1.NetworkPolicyPort{
-			{Protocol: &tcp, Port: &keystonePort},
-		},
-	})
+	rules = append(rules, networkpolicy.KeystoneEgressRule(nova.Spec.KeystoneEndpoint))
 
 	// Sibling egress: Placement holds the allocation of every instance, Neutron
 	// the ports, Glance the images, and the two optional ones the volumes and

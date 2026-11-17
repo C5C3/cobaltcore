@@ -15,6 +15,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/config"
 	"github.com/c5c3/cobaltcore/internal/common/keystoneauth"
 	"github.com/c5c3/cobaltcore/internal/common/policy"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	placementv1alpha1 "github.com/c5c3/cobaltcore/operators/placement/api/v1alpha1"
 )
 
@@ -81,7 +82,7 @@ func (r *PlacementReconciler) reconcileConfig(ctx context.Context, children clie
 
 	// logging is re-derived here (operatorDefaults keeps its own copy) for the
 	// logging.conf data-key decision below.
-	logging := effectiveLogging(placement.Spec.Logging)
+	logging := commonv1.EffectiveLogging(placement.Spec.Logging)
 
 	// extraConfig overrides everything (the true escape hatch).
 	if placement.Spec.ExtraConfig != nil {
@@ -91,7 +92,7 @@ func (r *PlacementReconciler) reconcileConfig(ctx context.Context, children clie
 	// Handle PolicyOverrides: render policy.yaml and wire oslo_policy.policy_file.
 	var policyYAML string
 	if placement.Spec.PolicyOverrides != nil {
-		rendered, err := buildPolicyYAML(ctx, children, placement)
+		rendered, err := policy.BuildPolicyYAML(ctx, children, placement.Namespace, placement.Spec.PolicyOverrides)
 		if err != nil {
 			markConfigFailed(placement, err)
 			return ctrl.Result{}, "", fmt.Errorf("building policy: %w", err)
@@ -143,7 +144,7 @@ func (r *PlacementReconciler) reconcileConfig(ctx context.Context, children clie
 // WSGI application and the same option names across the supported releases, so
 // two CRs differing only in their release render byte-identical files.
 func operatorDefaults(placement *placementv1alpha1.Placement, cacheServers string) map[string]map[string]string {
-	logging := effectiveLogging(placement.Spec.Logging)
+	logging := commonv1.EffectiveLogging(placement.Spec.Logging)
 	defaults := map[string]map[string]string{
 		"DEFAULT": {
 			// Route oslo.log records to stderr so kubectl logs surfaces them.
@@ -191,49 +192,4 @@ func operatorDefaults(placement *placementv1alpha1.Placement, cacheServers strin
 	}
 
 	return defaults
-}
-
-// buildPolicyYAML builds the policy.yaml content from spec.policyOverrides,
-// merging inline rules over any ConfigMap-sourced rules (inline wins).
-func buildPolicyYAML(ctx context.Context, c client.Client, placement *placementv1alpha1.Placement) (string, error) {
-	po := placement.Spec.PolicyOverrides
-	if po == nil {
-		return "", nil
-	}
-
-	var rules map[string]string
-	if po.ConfigMapRef != nil {
-		cmRules, err := policy.LoadPolicyFromConfigMap(ctx, c, client.ObjectKey{
-			Namespace: placement.Namespace,
-			Name:      po.ConfigMapRef.Name,
-		})
-		if err != nil {
-			return "", fmt.Errorf("loading policy from ConfigMap: %w", err)
-		}
-		rules = cmRules
-	}
-	if len(po.Rules) > 0 {
-		if rules == nil {
-			rules = make(map[string]string)
-		}
-		for k, v := range po.Rules {
-			rules[k] = v
-		}
-	}
-	return policy.RenderPolicyYAML(rules)
-}
-
-// effectiveLogging returns the LoggingSpec to use for config rendering,
-// materializing the production defaults (text/INFO/debug=false) through the
-// shared LoggingSpec.Default when spec.logging is nil or partially filled — the
-// case of a CR that bypassed the defaulting webhook. The returned value is a
-// copy, so defaulting never writes back into the CR, and its Debug pointer is
-// always non-nil.
-func effectiveLogging(spec *placementv1alpha1.LoggingSpec) placementv1alpha1.LoggingSpec {
-	var out placementv1alpha1.LoggingSpec
-	if spec != nil {
-		out = *spec
-	}
-	out.Default()
-	return out
 }

@@ -117,3 +117,26 @@ var MinimumSupported = Release{Year: 2026, Minor: 1, Raw: "2026.1"}
 func (r Release) IsSupported() bool {
 	return r.AtLeast(MinimumSupported.Year, MinimumSupported.Minor)
 }
+
+// ImageTagMismatch reports whether an image tag names a different OpenStack
+// release (year and minor) than spec.openStackRelease, and the message a
+// reconciler surfaces when it does. A digest-pinned image (empty tag) or a tag
+// that does not parse as a release carries no comparable release and reports no
+// mismatch; the patch suffix is ignored, so a patched build such as 2026.1-p1
+// still matches release 2026.1.
+func ImageTagMismatch(imageTag, openStackRelease string) (string, bool) {
+	if imageTag == "" {
+		return "", false
+	}
+	tagRel, tagErr := ParseRelease(imageTag)
+	specRel, specErr := ParseRelease(openStackRelease)
+	if tagErr != nil || specErr != nil {
+		return "", false
+	}
+	if tagRel.Year == specRel.Year && tagRel.Minor == specRel.Minor {
+		return "", false
+	}
+	return fmt.Sprintf("spec.image.tag %q names OpenStack release %d.%d but spec.openStackRelease is %q; "+
+		"bump spec.image in lockstep with spec.openStackRelease",
+		imageTag, tagRel.Year, tagRel.Minor, openStackRelease), true
+}

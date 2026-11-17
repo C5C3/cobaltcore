@@ -15,6 +15,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/config"
 	"github.com/c5c3/cobaltcore/internal/common/keystoneauth"
 	"github.com/c5c3/cobaltcore/internal/common/messaging"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	neutronv1alpha1 "github.com/c5c3/cobaltcore/operators/neutron/api/v1alpha1"
 )
 
@@ -160,7 +161,7 @@ func (r *NeutronReconciler) reconcileConfig(ctx context.Context, children client
 
 	// logging is re-derived here (operatorDefaults keeps its own copy) for the
 	// logging.conf data-key decision below.
-	logging := effectiveLogging(neutron.Spec.Logging)
+	logging := commonv1.EffectiveLogging(neutron.Spec.Logging)
 
 	// extraConfig overrides everything (the true escape hatch).
 	if neutron.Spec.ExtraConfig != nil {
@@ -223,7 +224,7 @@ func splitML2Sections(merged map[string]map[string]string) (neutronConf, ml2Conf
 // have not moved across the supported releases, so two CRs differing only in
 // their release render byte-identical files.
 func operatorDefaults(neutron *neutronv1alpha1.Neutron, ovn resolvedOVNEndpoints, cacheServers string) map[string]map[string]string {
-	logging := effectiveLogging(neutron.Spec.Logging)
+	logging := commonv1.EffectiveLogging(neutron.Spec.Logging)
 	notifyNova := fmt.Sprintf("%t", neutron.Spec.Nova != nil)
 	defaults := map[string]map[string]string{
 		"DEFAULT": {
@@ -378,19 +379,4 @@ func novaSection(neutron *neutronv1alpha1.Neutron) map[string]string {
 	})
 	section["endpoint_type"] = "internal"
 	return section
-}
-
-// effectiveLogging returns the LoggingSpec to use for config rendering,
-// materializing the production defaults (text/INFO/debug=false) through the
-// shared LoggingSpec.Default when spec.logging is nil or partially filled — the
-// case of a CR that bypassed the defaulting webhook. The returned value is a
-// copy, so defaulting never writes back into the CR, and its Debug pointer is
-// always non-nil.
-func effectiveLogging(spec *neutronv1alpha1.LoggingSpec) neutronv1alpha1.LoggingSpec {
-	var out neutronv1alpha1.LoggingSpec
-	if spec != nil {
-		out = *spec
-	}
-	out.Default()
-	return out
 }

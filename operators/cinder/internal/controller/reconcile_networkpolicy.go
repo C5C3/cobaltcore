@@ -179,12 +179,7 @@ func buildAutoEgressRules(cinder *cinderv1alpha1.Cinder, egressPort int32,
 	// unrestricted, matching the DB/cache egress posture. A Cinder without
 	// spec.keystoneEndpoint validates no tokens and gets no rule.
 	if cinder.Spec.KeystoneEndpoint != "" {
-		keystonePort := intstr.FromInt32(networkpolicy.KeystoneEndpointPort(cinder.Spec.KeystoneEndpoint))
-		rules = append(rules, networkingv1.NetworkPolicyEgressRule{
-			Ports: []networkingv1.NetworkPolicyPort{
-				{Protocol: &tcp, Port: &keystonePort},
-			},
-		})
+		rules = append(rules, networkpolicy.KeystoneEgressRule(cinder.Spec.KeystoneEndpoint))
 	}
 
 	// Service egress: Glance serves the image a create-volume-from-image request

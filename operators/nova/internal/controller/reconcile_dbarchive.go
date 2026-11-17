@@ -6,10 +6,8 @@ package controller
 
 import (
 	"context"
-	"crypto/sha256"
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -22,6 +20,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	"github.com/c5c3/cobaltcore/internal/common/deployment"
 	"github.com/c5c3/cobaltcore/internal/common/job"
+	"github.com/c5c3/cobaltcore/internal/common/naming"
 	novav1alpha1 "github.com/c5c3/cobaltcore/operators/nova/api/v1alpha1"
 	"github.com/c5c3/cobaltcore/operators/nova/internal/metrics"
 )
@@ -88,10 +87,6 @@ const (
 	dbArchiveRetentionDaysEnvVarName = "RETENTION_DAYS"
 )
 
-// dbArchiveNameHashLength is what the collapsed form below spends on the hash: a
-// separator plus eight hex characters.
-const dbArchiveNameHashLength = 1 + 8
-
 // dbArchiveScript runs one archive run, a loop of bounded batches, and decides
 // what the exit codes mean.
 //
@@ -133,25 +128,10 @@ var dbArchiveScript = `before=""; ` +
 // dbArchiveCronJobName returns the name of the archive CronJob, collapsing an
 // over-long Nova name onto a content-stable hash.
 //
-// Admission bounds metadata.name so the plain "{name}-db-archive" form fits the
-// MaxCronJobNameLength characters Kubernetes allows a CronJob name, but on
-// create only, and it has to be: metadata.name is immutable, so on update the
-// rule could only fire against an object a pre-upgrade operator already
-// admitted, including the finalizer-removal update that completes its deletion.
-// An operator upgrade therefore inherits Nova CRs the bound would reject, and
-// building their name unconditionally would fail every reconcile on an apply the
-// API server refuses, forever, with no field left to edit to repair it. Every
-// admissible name keeps the documented plain form.
+// naming.BoundedName explains why an over-long name can still reach the
+// reconciler.
 func dbArchiveCronJobName(novaName string) string {
-	if len(novaName) <= novav1alpha1.MaxNovaNameLength {
-		return novaName + dbArchiveNameSuffix
-	}
-	sum := sha256.Sum256([]byte(novaName))
-	// The trim keeps the truncation from ending a DNS label on "-" or ".", which
-	// would make the very name this function exists to produce unapplicable, and
-	// only ever shortens, so the cap still holds.
-	kept := strings.TrimRight(novaName[:novav1alpha1.MaxNovaNameLength-dbArchiveNameHashLength], "-.")
-	return fmt.Sprintf("%s-%x%s", kept, sum[:4], dbArchiveNameSuffix)
+	return naming.BoundedName(novaName, dbArchiveNameSuffix, naming.MaxCronJobNameLength)
 }
 
 // effectiveDBArchive returns the settings the archive CronJob runs with,
@@ -211,7 +191,7 @@ func (r *NovaReconciler) reconcileDBArchive(ctx context.Context, children client
 	}
 	// EnsureCronJob decodes the apply response back into cronJob, so it carries
 	// the persisted UID the owner-reference match below compares against.
-	observed := newestTerminalJob(cronJob, jobs.Items)
+	observed := job.NewestTerminalJob(cronJob, jobs.Items)
 
 	switch {
 	// Suspension outranks a failed run, because a suspended CronJob spawns no
@@ -280,28 +260,6 @@ func dbArchiveRetentionMessage(retentionDays *int32) string {
 		return ""
 	}
 	return fmt.Sprintf(", keeping rows deleted in the last %d days in place", *retentionDays)
-}
-
-// newestTerminalJob returns the most recently created Job among jobs that the
-// given CronJob controls and that has reached a terminal state, or nil when no
-// such Job exists yet. Newest wins because the CronJob keeps a bounded history:
-// an older failed run must not keep the condition False once a later run has
-// succeeded.
-func newestTerminalJob(cronJob *batchv1.CronJob, jobs []batchv1.Job) *batchv1.Job {
-	var newest *batchv1.Job
-	for i := range jobs {
-		candidate := &jobs[i]
-		if !metav1.IsControlledBy(candidate, cronJob) {
-			continue
-		}
-		if job.TerminalCondition(candidate) == "" {
-			continue
-		}
-		if newest == nil || candidate.CreationTimestamp.After(newest.CreationTimestamp.Time) {
-			newest = candidate
-		}
-	}
-	return newest
 }
 
 // dbArchiveCronJob builds the CronJob that moves the rows nova only ever

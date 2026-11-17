@@ -5,7 +5,7 @@
 # spec.keystonePublicEndpoint with a non-numeric port is rejected by the
 # validating webhook alone. The value clears the CRD pattern, which
 # constrains the scheme only; url.Parse is what refuses the port, so
-# validateEndpointURL is the sole gate. Left admitted, the string would
+# validation.EndpointURL is the sole gate. Left admitted, the string would
 # reach clients as the [keystone_authtoken] www_authenticate_uri a 401
 # points them at.
 apiVersion: placement.openstack.c5c3.io/v1alpha1

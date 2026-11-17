@@ -122,7 +122,7 @@ func buildPlacementNetworkPolicy(placement *placementv1alpha1.Placement, operato
 
 // buildAutoEgressRules constructs the auto-derived egress rules for DNS
 // (UDP+TCP 53), the database (TCP, port from the database spec), the Keystone
-// endpoint (TCP, port from networkpolicy.KeystoneEndpointPort), and the cache
+// endpoint (networkpolicy.KeystoneEgressRule), and the cache
 // (TCP, ports from
 // the cache spec). Rule order is deterministic: DNS, database, keystone, cache.
 // The database and keystone rules are always emitted (Placement always has a
@@ -130,8 +130,6 @@ func buildPlacementNetworkPolicy(placement *placementv1alpha1.Placement, operato
 // cache spec yields ports. Placement reads and writes nothing but its own
 // database, so it needs no object-store egress.
 func buildAutoEgressRules(placement *placementv1alpha1.Placement) []networkingv1.NetworkPolicyEgressRule {
-	tcp := corev1.ProtocolTCP
-
 	rules := []networkingv1.NetworkPolicyEgressRule{
 		// DNS egress: always required (UDP+TCP 53).
 		networkpolicy.DNSEgressRule(),
@@ -146,12 +144,7 @@ func buildAutoEgressRules(placement *placementv1alpha1.Placement) []networkingv1
 	// the kubelet probes and the operator health check — keep passing, because
 	// both target the unauthenticated version document. Port-only — destination
 	// unrestricted, matching the DB/cache egress posture.
-	keystonePort := intstr.FromInt32(networkpolicy.KeystoneEndpointPort(placement.Spec.KeystoneEndpoint))
-	rules = append(rules, networkingv1.NetworkPolicyEgressRule{
-		Ports: []networkingv1.NetworkPolicyPort{
-			{Protocol: &tcp, Port: &keystonePort},
-		},
-	})
+	rules = append(rules, networkpolicy.KeystoneEgressRule(placement.Spec.KeystoneEndpoint))
 
 	// Cache egress: emitted in both managed and brownfield modes. Cache egress
 	// does not gate readiness, so a wrong cache port degrades caching without

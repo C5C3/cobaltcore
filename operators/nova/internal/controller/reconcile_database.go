@@ -6,7 +6,6 @@ package controller
 
 import (
 	"context"
-	"fmt"
 	"regexp"
 	"strings"
 	"time"
@@ -480,15 +479,8 @@ func (r *NovaReconciler) reconcileDatabase(ctx context.Context, children client.
 // digest-disables-tracking contract; the patch suffix is ignored so a patched
 // image build (e.g. tag 2026.1-p1) still matches release 2026.1.
 func checkImageReleaseMismatch(nova *novav1alpha1.Nova) (ctrl.Result, bool) {
-	if nova.Spec.Image.Tag == "" {
-		return ctrl.Result{}, false
-	}
-	tagRel, tagErr := release.ParseRelease(nova.Spec.Image.Tag)
-	specRel, specErr := release.ParseRelease(nova.Spec.OpenStackRelease)
-	if tagErr != nil || specErr != nil {
-		return ctrl.Result{}, false
-	}
-	if tagRel.Year == specRel.Year && tagRel.Minor == specRel.Minor {
+	msg, mismatch := release.ImageTagMismatch(nova.Spec.Image.Tag, nova.Spec.OpenStackRelease)
+	if !mismatch {
 		return ctrl.Result{}, false
 	}
 	conditions.SetCondition(&nova.Status.Conditions, metav1.Condition{
@@ -496,9 +488,7 @@ func checkImageReleaseMismatch(nova *novav1alpha1.Nova) (ctrl.Result, bool) {
 		Status:             metav1.ConditionFalse,
 		ObservedGeneration: nova.Generation,
 		Reason:             conditionReasonImageReleaseMismatch,
-		Message: fmt.Sprintf("spec.image.tag %q names OpenStack release %d.%d but spec.openStackRelease is %q; "+
-			"bump spec.image in lockstep with spec.openStackRelease",
-			nova.Spec.Image.Tag, tagRel.Year, tagRel.Minor, nova.Spec.OpenStackRelease),
+		Message:            msg,
 	})
 	return ctrl.Result{RequeueAfter: RequeueDatabaseWait}, true
 }
