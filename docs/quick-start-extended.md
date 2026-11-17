@@ -49,10 +49,15 @@ cluster `cobaltcore` on host port 443. The Quick Start creates a cluster of the 
 | Tool | Install |
 |------|---------|
 | Container runtime | [Docker](https://docs.docker.com/get-docker/) or [Podman](https://podman.io/docs/installation) |
+| [Git](https://git-scm.com/downloads) | required to clone the repository |
 | [kind](https://kind.sigs.k8s.io/docs/user/quick-start/#installation) | see below |
 | [kubectl](https://kubernetes.io/docs/tasks/tools/) | see below |
 | [Helm](https://helm.sh/docs/intro/install/) | platform installer |
 | [jq](https://jqlang.org/download/) | platform installer |
+| [curl](https://curl.se/download.html) | required for the API and Prometheus checks |
+| Chainsaw | installed by `make install-test-deps`; needed for the E2E section |
+| [python-openstackclient](https://docs.openstack.org/python-openstackclient/latest/) | required for the external `openstack token issue` check |
+| [OpenSSL](https://docs.openssl.org/) CLI | required for the optional OpenBao client-certificate setup in Step 4b |
 
 **Optional:** [Flux CLI](https://fluxcd.io/flux/installation/) for ad-hoc debugging only. `make deploy-infra` bootstraps Flux via flux-operator + `FluxInstance` and does not require the CLI.
 
@@ -64,13 +69,11 @@ You need `make` for the install and deployment targets below. The `KIND_HOST_POR
 override path also needs [`yq`](https://github.com/mikefarah/yq) v4.40.1 or
 newer on `PATH`.
 
-::: tip Nix users
-Instead of `make install-test-deps`, you can run `nix develop` to get every
-tool in the table above, plus `controller-gen`, `gofumpt`, `golangci-lint`,
-`kustomize`, `chainsaw`, and the envtest assets, at the versions CI pins. See
+Nix users can run `nix develop` instead of `make install-test-deps` to enter the
+repository's pinned development environment. It also provides `controller-gen`,
+`gofumpt`, `golangci-lint`, `kustomize`, `chainsaw`, and the envtest assets. See
 [Nix Development Environment](./contributing/nix-dev-environment.md). Docker
-still has to be installed separately (kind needs a running daemon).
-:::
+still has to be installed separately because kind needs a running daemon.
 
 ---
 
@@ -153,27 +156,24 @@ installs the helper), or run
 Docker Desktop. Other Docker runtimes do not ship `vmnetd`. Use the override
 below instead.
 
-**Override the host port without privileged binding (any OS):** export
-`KIND_HOST_PORT` before `make deploy-infra` and the script renders a
-non-privileged kind config on the fly. The Envoy proxy still listens on
-NodePort `31443` inside the cluster; only the host-side bind moves.
+**Override the host port without privileged binding (any OS):** skip the
+manual cluster creation and `kubectl cluster-info` commands above. Leave the
+cluster absent, then export `KIND_HOST_PORT` before Step 3. `make deploy-infra`
+creates the cluster with a non-privileged kind config; the script only renders
+that config when it creates a fresh cluster. If the cluster already exists,
+run `make teardown-infra` first. The Envoy proxy still listens on NodePort
+`31443` inside the cluster; only the host-side bind moves.
 
 ```bash
 export KIND_HOST_PORT=8443
-make deploy-infra
-# Endpoint becomes https://keystone.127-0-0-1.nip.io:8443/v3 — your
-# Keystone CR's `spec.bootstrap.publicEndpoint` must include the same
-# `:8443` suffix so the issued service catalog matches the reachable URL.
-# See Step 7 for a ready-to-apply CR example.
 ```
 
 The `KIND_HOST_PORT` override needs `yq` on PATH (only required when the value
-differs from `443`). The Chainsaw E2E suites under
-`tests/e2e/keystone/gateway-quick-start*` hard-code the default
-`https://keystone.127-0-0-1.nip.io/v3` URL and **will not pass with an
-override**. Use the
-[`kubectl port-forward` fallback](#fallback-kubectl-port-forward) for those
-suites, or run them in CI (Linux + rootful Docker).
+differs from `443`). The `gateway-quick-start-smoke` Chainsaw suite curls the
+default `https://keystone.127-0-0-1.nip.io/v3` URL on port 443, so use a
+default-port cluster when running that suite. The
+[`kubectl port-forward` fallback](#fallback-kubectl-port-forward) is for
+manual API checks; it does not change the suite's URL.
 
 The same kind config also binds host loopback port `8428` (mapped to NodePort
 `30428`) unconditionally, so you can enable the opt-in dizzy load/chaos stack
@@ -207,12 +207,12 @@ Step 2. The Deployment Sequence linked above has the details of every step.
 
 | Step | What happens |
 |------|-------------|
-| 1 | The kind cluster already exists from Step 2 of this page, so the script keeps it. |
+| 1 | Create the kind cluster if it does not exist; otherwise keep the existing cluster. With `EXTERNAL_CLUSTER=true`, check the current context instead. |
 | 2 | **Install flux-operator** and apply `FluxInstance/flux`, then wait until the instance is `Ready`. |
 | 2a | **Install the Gateway API CRDs** of `GATEWAY_API_VERSION`. The keystone-operator watches `HTTPRoute`. |
 | 2b | **Install the Envoy Gateway CRDs** of `ENVOY_GATEWAY_VERSION`. The `envoy-gateway` release and `Gateway/openstack-gw` follow in Step 3, and Keystone attaches its HTTPRoute in Step 7 of this page. |
 | 3 | Apply the base overlay `deploy/kind/base`: namespaces, sources, releases and the Gateway. |
-| 4 | Wait for the releases in four phases, cert-manager first and the `rabbitmq-cluster-operator` Kustomization last. |
+| 4 | Wait for the infrastructure releases in four phases, cert-manager first and the `rabbitmq-cluster-operator` Kustomization last. |
 | 5 | Apply the infrastructure overlay `deploy/kind/infrastructure` and wait until `Gateway/openstack-gw` is `Programmed`. |
 | 6 | Wait for the OpenBao pod to reach the phase `Running`. |
 | 7 | **Bootstrap OpenBao**: initialise, unseal, configure, and seed the bootstrap secrets. |
@@ -221,7 +221,6 @@ Step 2. The Deployment Sequence linked above has the details of every step.
 The script also triggers a re-reconciliation of the `openstack-db` MariaDB CR and waits for it to
 become `Ready` before returning.
 
-::: tip ExternalSecret shims of the kind overlay
 The `keystone-admin`, `keystone-db`, and `mariadb-root-password` ExternalSecrets applied
 in Step 5 and awaited in Step 8 are **kind-overlay shims**
 (`deploy/kind/infrastructure/`) that keep this standalone Keystone flow self-contained.
@@ -229,29 +228,23 @@ The production stack (`deploy/eso/`) ships only the `ClusterSecretStore`: in a
 ControlPlane-based deployment the admin password is projected per ControlPlane by the
 c5c3-operator, and the MariaDB root password is expected from a non-kind Flux MariaDB
 baseline.
-:::
 
 Expected duration: 5 to 10 minutes on first run.
 
-::: tip Configurable timeouts
-Override the default timeouts via environment variables if your machine is slow:
+If your machine is slow, override the default timeouts with environment variables:
 
 ```bash
 HELMRELEASE_TIMEOUT=900 POD_TIMEOUT=600 make deploy-infra
 ```
-:::
-
-::: tip Inspect the Flux installation
-flux-operator publishes a `FluxReport/flux` that summarizes the state of every Flux
-controller, its version, and the entitlement status. Inspect it at any time:
+To inspect the Flux installation, query the `FluxReport/flux`, which summarizes
+the state and version of each Flux controller and the entitlement status:
 
 ```bash
 kubectl get fluxreport/flux -n flux-system -o yaml
 ```
-:::
-
 ::: details What gets deployed
-After `make deploy-infra` completes the following are running in the cluster:
+`make deploy-infra` installs the following workloads. UI releases marked
+`Starting` may still be reconciling:
 
 ```
 flux-system           flux-operator-*                Ready (reconciles FluxInstance/flux)
@@ -259,7 +252,7 @@ flux-system           source-controller-*            Ready
 flux-system           kustomize-controller-*         Ready
 flux-system           helm-controller-*              Ready
 flux-system           notification-controller-*      Ready
-flux-system           flux-web-*                     Ready (kind-only; see Step 4a)
+flux-system           flux-web-*                     Starting or Ready (kind-only; see Step 4a)
 envoy-gateway-system  envoy-gateway-*                Ready (kind-only; provides openstack-gw; see Step 2b)
 cert-manager          cert-manager-*         Ready
 mariadb-system        mariadb-operator-*     Ready
@@ -282,6 +275,9 @@ Headlamp is deployed asynchronously and is **not** part of the `deploy-infra` wa
 broken upstream chart release must never block E2E runs. Step 4 below waits for it explicitly
 at the point you actually need the UI.
 
+The Flux Web UI is also installed asynchronously and is not part of that wait list. Step 4a
+waits for its HelmRelease before starting the port-forward.
+
 The OpenBao UI is served by the same `openbao` Service that backs the bootstrap scripts; the
 kind overlay flips `ui = true` in the standalone Raft config, while the production
 flux-system overlay keeps it disabled.
@@ -294,7 +290,6 @@ openstack   keystone-db           (database credentials from OpenBao)
 ```
 :::
 
-::: tip Enabling Chaos Mesh
 Chaos Mesh is **not installed by default** in the kind Quick Start. The default
 `make deploy-infra` flow leaves the `chaos-mesh` namespace absent so first-run
 deployments are faster and do not require the `chaos-daemon` privileged
@@ -313,13 +308,10 @@ HelmRelease to become Ready alongside the other operators. It is required
 before running the chaos E2E suites;
 [Chaos E2E Tests](./reference/testing/chaos-e2e-tests.md) has the full prerequisite
 list and `make e2e-chaos` workflow.
-:::
 
-::: tip Re-running deploy-infra
-`make deploy-infra` is idempotent: a re-run with the same parameters converges
-and leaves a healthy stack unchanged, and you can enable each `WITH_*` opt-in
-below later by re-running against the existing cluster. Only the newly
-enabled components are installed.
+`make deploy-infra` is idempotent: it converges without changing a stack when
+rerun with the same parameters, and it installs components added by newly
+enabled `WITH_*` opt-ins.
 
 Two caveats apply. `WITH_REGISTRY_CACHE=true` only becomes fully active on a
 cluster **created** with it. On a pre-existing cluster the deploy prints a
@@ -330,9 +322,7 @@ its own MariaDB/Memcached. Use a fresh cluster (`make teardown-infra` first).
 
 Removing a previously enabled flag does not uninstall that component; cleanup is
 `make teardown-infra`'s job.
-:::
 
-::: tip Enabling Prometheus & Grafana
 The kube-prometheus-stack is **not installed by default** in the kind Quick Start. The default
 `make deploy-infra` flow puts no workload into the `monitoring` namespace, so
 first-run deployments stay lean and do not pin extra CPU/memory on a developer laptop.
@@ -351,9 +341,7 @@ keystone-operator HelmRelease to enable its `ServiceMonitor`. Use it when you
 want to visualise the keystone-operator metrics live (reconcile p95,
 error rate); [Step 4c: Open the Grafana UI](#step-4c-grafana-ui) has the
 port-forward and the bundled `Keystone Operator` dashboard.
-:::
 
-::: tip Enabling metrics-server
 `metrics-server` is **not installed by default** in the kind Quick Start. The
 default `make deploy-infra` flow leaves the `kube-system` metrics-server absent
 so first-run deployments stay lean. Production overlays (`deploy/flux-system/`)
@@ -377,9 +365,7 @@ sizing measurement reads the recommender, and the `e2e-autoscaling` job
 deploys it so the operators create the VerticalPodAutoscalers a
 `verticalAutoscaling` block opts into
 ([VPA recommender](./reference/infrastructure/infrastructure-manifests.md#vpa-recommender-kind-only-opt-in)).
-:::
 
-::: tip Enabling the dizzy load/chaos stack
 The dizzy load/chaos stack is **not installed by default** in the kind Quick
 Start, and the production overlays (`deploy/flux-system/`) ship none of it.
 Opt in by setting `WITH_DIZZY=true` before `make deploy-infra`:
@@ -394,9 +380,7 @@ Grafana serves the dizzy dashboards at `https://dizzy.127-0-0-1.nip.io`; append
 `:<KIND_HOST_PORT>` when that override is set to something other than 443. To
 drive a soak, run the `make dizzy-keystone` or `make dizzy-glance` targets
 documented in [dizzy Chaos Testing](./reference/testing/dizzy-chaos-testing.md).
-:::
 
-::: tip Enabling the local registry pull-through cache
 Every **fresh** kind cluster pulls every third-party image (from `docker.io`,
 `ghcr.io`, `registry.k8s.io`, `quay.io`, and the per-project vanity registry
 `oci.external-secrets.io`) from its upstream registry inside the node's
@@ -421,7 +405,7 @@ registry mirror (`/etc/containerd/certs.d/<host>/hosts.toml`). Each registry is
 backed by a persistent Docker volume, so the cache persists through `kind delete` and
 recreate cycles. It is fully transparent: no `spec.image` or chart `image:`
 edits, no `localhost:5000/...` rewrites. A
-workload referencing `ghcr.io/c5c3/keystone:2026.1` is served from the local
+workload referencing `ghcr.io/c5c3/keystone:2026.2` is served from the local
 cache on the second pull, and the distribution proxy streams each blob from
 the upstream while caching it inline, so even the first (cold) pull runs at
 roughly origin speed. Mirror entries advertise `pull` + `resolve` capabilities,
@@ -443,7 +427,6 @@ PURGE_REGISTRY_CACHE=true make teardown-infra
 Because the containerd mirror is configured at cluster-creation time, enabling
 the cache takes effect on a **freshly created** cluster (`make teardown-infra`
 then `WITH_REGISTRY_CACHE=true make deploy-infra`).
-:::
 
 ---
 
@@ -470,9 +453,10 @@ bound to a read-only ClusterRole covering Flux toolkit API groups and the Cobalt
 
 ### Accessing the Flux UI
 
-The Headlamp Flux plugin is the primary Flux UI used by this project. The `flux-operator`
-also ships an embedded Flux Web UI ([fluxoperator.dev/web-ui](https://fluxoperator.dev/web-ui/))
-that the kind overlay turns on as a demo addon;
+The Headlamp Flux plugin is the primary Flux UI used by this project. The Flux
+Operator also provides a Web UI
+([fluxoperator.dev/web-ui](https://fluxoperator.dev/web-ui/)) that the kind
+overlay installs as a separate demo release.
 [Step 4a: Open the Flux Web UI](#step-4a-flux-web-ui) covers how to reach it.
 Once Headlamp is open and you are authenticated, click **Flux** in the left sidebar
 to switch into the Flux views:
@@ -482,25 +466,35 @@ to switch into the Flux views:
 | **Helm Releases** | Every `HelmRelease` with reconciliation status, last applied revision, and the values that were rendered |
 | **Kustomizations** | `Kustomization` objects (empty in the kind Quick Start because `FluxInstance` has no `spec.sync` block) |
 | **Sources** | `HelmRepository` objects (and `GitRepository`/`OCIRepository` if present) with the last successful fetch and artifact revision |
-| **Flux Runtime** | The flux-operator's `FluxInstance/flux` and `FluxReport/flux`, which report controller versions, reconciliation state, and entitlement status |
 
-Use this instead of the legacy `flux get` / `flux logs` CLI. All state the CLI would
-print is rendered live here, and every resource row links to the controller logs and
-Kubernetes events that produced it.
+Headlamp shows the resources listed above, but it does not replace every Flux CLI
+command or expose all controller logs. Use the Flux Web UI in Step 4a for the
+flux-operator resources, and the optional Flux CLI for diagnostics not covered by
+these views.
 
 ---
 
 ## Step 4a: Open the Flux Web UI {#step-4a-flux-web-ui}
 
-The kind overlay also ships the flux-operator's own
-[Flux Web UI](https://fluxoperator.dev/web-ui/) as a demo surface (and, alongside it,
-the optional Grafana UI from [Step 4c](#step-4c-grafana-ui) when `WITH_PROMETHEUS=true`).
+The kind overlay installs the flux-operator's [Flux Web UI](https://fluxoperator.dev/web-ui/)
+as a separate demo release. The optional Grafana UI is available alongside it
+when `WITH_PROMETHEUS=true`; see [Step 4c](#step-4c-grafana-ui).
 This is a kind-only convenience. The production `deploy/flux-system/` overlay keeps the
 Web UI disabled (no token, no TLS, no Ingress) until the upstream project ships token
 auth, TLS termination, and an Ingress story suitable for a shared cluster. Forward the
-service port and browse directly:
+service port and browse directly. The UI is reconciled asynchronously, so wait for its
+HelmRelease before starting the port-forward:
 
 ```bash
+kubectl wait --for=create helmrelease/flux-web \
+  -n flux-system \
+  --timeout=300s
+
+kubectl wait helmrelease/flux-web \
+  -n flux-system \
+  --for=condition=Ready \
+  --timeout=300s
+
 kubectl port-forward svc/flux-web -n flux-system 9080:9080
 ```
 
@@ -532,7 +526,9 @@ kubectl port-forward svc/openbao -n shared-services 8200:8200
 > **not** `svc/openbao-internal` (the headless Service used for Raft peer
 > discovery between OpenBao pods).
 
-In a second terminal, extract the root token from the `openbao-init-keys` Secret:
+In a second terminal, extract the root token from the `openbao-init-keys` Secret.
+It grants full OpenBao access; keep the terminal output private and do not paste it
+into logs:
 
 ```bash
 export BAO_TOKEN=$(kubectl get secret openbao-init-keys -n shared-services \
@@ -550,35 +546,56 @@ mTLS posture here.
 
 Build a PKCS#12 bundle from the `openbao-client-tls` Secret. Its keypair is signed by the same
 CA as the server cert, `openbao-ca` (ClusterIssuer `openbao-ca-issuer`), and the listener
-verifies only chain-to-CA (not SANs) on client auth, so this certificate is accepted:
+verifies only chain-to-CA (not SANs) on client auth, so this certificate is accepted. Keep
+the exported key and bundle in a private temporary directory; do not leave them in the
+repository:
 
 ```bash
+set -euo pipefail
+umask 077
+OPENBAO_CERT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/openbao-client.XXXXXX")
+# Generate a one-use passphrase for the temporary bundle.
+P12_PASSWORD=$(openssl rand -hex 24)
+
 kubectl get secret openbao-client-tls -n shared-services \
-  -o jsonpath='{.data.tls\.crt}' | base64 -d > openbao-client.crt
+  -o jsonpath='{.data.tls\.crt}' | base64 -d > "$OPENBAO_CERT_DIR/openbao-client.crt"
 kubectl get secret openbao-client-tls -n shared-services \
-  -o jsonpath='{.data.tls\.key}' | base64 -d > openbao-client.key
+  -o jsonpath='{.data.tls\.key}' | base64 -d > "$OPENBAO_CERT_DIR/openbao-client.key"
 kubectl get secret openbao-client-tls -n shared-services \
-  -o jsonpath='{.data.ca\.crt}'  | base64 -d > openbao-ca.crt
-# The passphrase only protects this throwaway local .p12 during the browser
-# import — it is not an OpenBao credential, so pick any value you like.
-openssl pkcs12 -export -inkey openbao-client.key -in openbao-client.crt \
-  -certfile openbao-ca.crt -name "OpenBao Client (kind)" \
-  -out openbao-client.p12 -passout pass:changeit
+  -o jsonpath='{.data.ca\.crt}'  | base64 -d > "$OPENBAO_CERT_DIR/openbao-ca.crt"
+openssl pkcs12 -export -inkey "$OPENBAO_CERT_DIR/openbao-client.key" \
+  -in "$OPENBAO_CERT_DIR/openbao-client.crt" \
+  -certfile "$OPENBAO_CERT_DIR/openbao-ca.crt" \
+  -name "OpenBao Client (kind)" \
+  -out "$OPENBAO_CERT_DIR/openbao-client.p12" \
+  -passout "pass:${P12_PASSWORD}"
+printf 'PKCS#12 passphrase: %s\n' "$P12_PASSWORD"
+printf 'Certificate files: %s\n' "$OPENBAO_CERT_DIR"
 ```
+
+Keep the printed passphrase and directory private.
 
 Import the bundle into Firefox once. This walkthrough is verified with Firefox;
 Chrome, Edge, and Safari also accept client certificates but import them through
 the OS keychain / system certificate store, so the menu path differs:
 
 1. *Settings → Privacy & Security → Certificates → View Certificates…*
-2. Tab **Your Certificates → Import…** → select `openbao-client.p12` and enter the
-   passphrase you chose above.
+2. Tab **Your Certificates → Import…** → select `openbao-client.p12` from the
+   directory printed above and enter the printed passphrase.
 3. *(Optional: removes the trust warning.)* Tab **Authorities → Import…** → select
-   `openbao-ca.crt` → tick "Trust this CA to identify websites". The server cert carries
+   `openbao-ca.crt` from that directory → tick "Trust this CA to identify websites".
+   The server cert carries
    `IP:127.0.0.1` as a SAN, so `https://localhost:8200` then validates cleanly.
 
 Open `https://localhost:8200/ui/`. Firefox asks which client certificate to send: pick
 **"OpenBao Client (kind)"**, then paste the root token to sign in.
+
+After importing the certificate and CA, remove the temporary files in the same terminal:
+
+```bash
+rm -r "$OPENBAO_CERT_DIR"
+unset BAO_TOKEN OPENBAO_CERT_DIR P12_PASSWORD
+```
 
 For the full token lifecycle, secret engines, auth methods, and the bootstrap sequence that
 produced this token, see
@@ -592,7 +609,7 @@ The kind overlay can ship a slimmed-down `kube-prometheus-stack` (Prometheus +
 Grafana + the prometheus-operator) under the `monitoring` namespace. This is a
 **kind-only opt-in**: production overlays (`deploy/flux-system/`) omit the
 stack so production clusters can wire their own Prometheus. If you have not
-already opted in, see the Enabling Prometheus & Grafana tip in
+already opted in, see the Prometheus and Grafana opt-in instructions in
 [Step 3](#step-3-deploy-the-infrastructure-stack) (`WITH_PROMETHEUS=true make deploy-infra`).
 
 Forward the Grafana service port:
@@ -630,10 +647,11 @@ curl -fsS 'http://localhost:9090/api/v1/targets?state=active' \
   | jq '.data.activeTargets[] | select(.labels.job=="keystone-operator") | {health, lastScrape: .lastScrape}'
 ```
 
-A healthy target reports `"health": "up"`; an empty result means the
-keystone-operator HelmRelease has not been patched yet. Re-run
-`WITH_PROMETHEUS=true make deploy-infra` so the deploy script can flip
-`monitoring.serviceMonitor.enabled=true`.
+A healthy target reports `"health": "up"`. An empty result means Prometheus has
+no active target with that job label. Check that the operator's ServiceMonitor
+exists and that Prometheus selects it. If the ServiceMonitor is missing, rerun
+`WITH_PROMETHEUS=true make deploy-infra` to enable
+`monitoring.serviceMonitor.enabled`.
 
 For non-kind clusters (production overlays, shared dev clusters, anything that
 already runs Prometheus), follow
@@ -667,7 +685,7 @@ kubectl wait helmrelease/keystone-operator \
   --timeout=120s
 ```
 
-The `HelmRelease` references chart version `>=0.1.0 <1.0.0` from the `c5c3-charts` repository and
+The `HelmRelease` references chart version `>=0.8.0 <1.0.0` from the `c5c3-charts` repository and
 deploys 2 replicas with leader election enabled.
 
 ### Option B: From the local Helm chart (recommended for development)
@@ -768,9 +786,9 @@ kind load docker-image "ghcr.io/c5c3/keystone:${RELEASE}" --name cobaltcore
 Apply the following manifest to deploy a Keystone instance in **managed mode**. In this mode the
 operator creates and manages the MariaDB database (via `clusterRef`) and configures Memcached
 for session caching. The `spec.gateway` block attaches the Keystone API to the
-`openstack-gw` Gateway provisioned in Step 2b, so the service is reachable at
+`openstack-gw` Gateway provisioned in Step 3, so the service is reachable at
 `https://keystone.127-0-0-1.nip.io/v3` from your workstation with no port-forward.
-Replace `<RELEASE>` with the same value used in Step 6 (e.g. `2026.1`):
+Replace `<RELEASE>` with the same value used in Step 6 (e.g. `2026.2`):
 
 ```yaml
 # keystone.yaml
@@ -784,7 +802,7 @@ spec:
     replicas: 3
   image:
     repository: ghcr.io/c5c3/keystone
-    tag: "<RELEASE>"   # e.g. 2026.1, must match the image loaded in Step 6
+    tag: "<RELEASE>"   # e.g. 2026.2, must match the image loaded in Step 6
   database:
     clusterRef:
       name: openstack-db
@@ -812,12 +830,10 @@ spec:
     path: /
 ```
 
-::: tip Why `127-0-0-1.nip.io`?
-[nip.io](https://nip.io/) is a free wildcard DNS service: any hostname of the form
+The hostname uses [nip.io](https://nip.io/), a free wildcard DNS service. Any hostname of the form
 `anything.<ip-with-dashes>.nip.io` resolves to `<ip>`. `keystone.127-0-0-1.nip.io`
-therefore resolves to `127.0.0.1` without touching `/etc/hosts`, which pairs with
-the `hostPort: 443 → containerPort: 31443` mapping in `hack/kind-config.yaml`.
-:::
+resolves to `127.0.0.1` without changing `/etc/hosts`. The kind config maps
+host port `443` to container port `31443`.
 
 ```bash
 kubectl apply -f keystone.yaml
@@ -844,7 +860,7 @@ spec:
     replicas: 3
   image:
     repository: ghcr.io/c5c3/keystone
-    tag: "<RELEASE>"   # e.g. 2026.1, must match the image loaded in Step 6
+    tag: "<RELEASE>"   # e.g. 2026.2, must match the image loaded in Step 6
   database:
     clusterRef:
       name: openstack-db
@@ -1037,7 +1053,9 @@ A successful `curl` response begins with `{"version": {"id": "v3", ...}}`. A suc
 The Gateway terminates TLS with a certificate issued by the in-cluster
 `selfsigned-cluster-issuer`, which is not in any OS trust store. Pick one of:
 
-**Option A: quick, one-off runs.** Pass `-k` / `--insecure` on the CLI.
+**Option A: quick, one-off local checks.** `--insecure` disables TLS certificate
+verification. Use it only with this local kind endpoint; the token command sends
+the admin password.
 
 ```bash
 curl -k https://keystone.127-0-0-1.nip.io/v3
@@ -1151,8 +1169,8 @@ For the full field reference of the Keystone CR, see
 
 ## Running the E2E test suite
 
-The project ships a full [Chainsaw](https://kyverno.github.io/chainsaw/) test suite that validates
-all operator behaviour. With the cluster running from the steps above, execute:
+The project ships a [Chainsaw](https://kyverno.github.io/chainsaw/) test suite
+for operator behaviour. With the cluster running from the steps above, execute:
 
 ```bash
 # Chainsaw discovers every suite under tests/e2e/ and runs up to 4 in parallel.
@@ -1174,12 +1192,12 @@ catalogue):
 | `basic-deployment` | Full happy-path reconciliation, API accessibility |
 | `missing-secret` | Recovery when a referenced Secret is absent |
 | `fernet-rotation` | Manual key rotation with in-place delivery (no rollout) |
-| `scale` | Replicas scale from 3 → 5 → 2 correctly |
+| `scale` | Replicas scale from 3 → 5 → 2 → 1; the PDB policy changes at one replica |
 | `deletion-cleanup` | All owned resources are garbage-collected on CR deletion |
 | `policy-overrides` | `oslo.policy` ConfigMap integration |
 | `middleware-config` | WSGI `api-paste.ini` middleware pipeline customization |
-| `brownfield-database` | Explicit database host (no MariaDB CR created) |
-| `image-upgrade` | Rolling image update with zero downtime |
+| `brownfield-database` | Uses an explicit database host; checks that the operator creates no Database, User, or Grant CRs for the Keystone CR |
+| `image-upgrade` | Patches the image tag and verifies the Deployment image, available replica, and Keystone `Ready` condition |
 | `invalid-cr` | Webhook rejects invalid cron expressions and duplicate plugins |
 
 JUnit XML reports are written to `_output/reports/` after each run.
@@ -1222,13 +1240,7 @@ Results are written to `_output/tempest/`:
 | `tempest-results.xml` | JUnit XML, which you can open in your IDE or import into a CI viewer |
 | `tempest.subunit` | Raw subunit stream for further processing |
 
-To skip the local image build on a supported Linux host, set `BUILD_IMAGE=false`:
-
-```bash
-RELEASE=2026.2 BUILD_IMAGE=false \
-  TEMPEST_IMAGE=ghcr.io/c5c3/tempest:2026.2 SERVICE=keystone \
-  hack/run-tempest.sh
-```
+The published-image command above also works on Linux when you want to skip the local image build.
 
 ---
 
