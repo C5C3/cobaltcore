@@ -21,8 +21,9 @@ Ceph and keeps it through a live migration and the eviction of its node. The
 volume is backed up after the detach and restored into a new volume, and the
 key of the Ceph user is rotated under the running servers. With the optional
 lab NFS stack, Part 3 adds an NFS volume backend beside Ceph. The teardown
-leaves the cluster as bare as it was. The ControlPlane CR is the one of the
-[Quick Start (ControlPlane)](./quick-start-controlplane.md) with its
+removes the lab's in-cluster resources but does not restore all worker-local
+state, as the teardown and caveats below describe. The ControlPlane CR is the
+one of the [Quick Start (ControlPlane)](./quick-start-controlplane.md) with its
 block-storage block on Ceph and three lab settings; read Steps 3 and 4 there
 for its anatomy.
 
@@ -55,10 +56,11 @@ The lab assumes a cluster of this shape:
 | No `libvirtd`, `qemu-system-x86_64` or `ovs-vswitchd` on the host | probe, `== host os / binaries` |
 | A pod-network MTU of 1460 or more, the value of `global_physnet_mtu` | probe, `== nics`, the `cali*` lines |
 | A default StorageClass, which every volume of the stack binds to, and no DaemonSet `kube-system/node-local-dns` | Step 1 of `EXTERNAL_CLUSTER=true make deploy-infra` exits 1 otherwise |
-| Room in that class for three 100Gi raw block volumes and one 10Gi volume of the Ceph, from a provisioner that serves `volumeMode: Block` | the Ceph wait of the deploy in Step 3, which exits 1 otherwise |
+| Room in that class for nine 100Gi raw block volumes and one 10Gi Ceph monitor volume in the checked-in three-worker setup, from a provisioner that serves `volumeMode: Block`; for another worker count, set `storageClassDeviceSets[].count` in `deploy/overlays/metal-stack/ceph/cluster/cluster.yaml` to three per worker and size the class accordingly | the Ceph wait of the deploy in Step 3, which exits 1 otherwise |
 | Only with the optional `WITH_NFS=true` of Part 3: room in that class for a 100Gi volume, the claim `nfs-server-exports` of the NFS server | the `nfs-server` rollout wait of the deploy, which exits 1 otherwise |
-| Egress on TCP 443 to `ghcr.io`, the Helm repositories and the cirros download | the shoot's firewall |
+| Egress on TCP 443 to every chart source and image registry used by the enabled manifests (including `ghcr.io`, `quay.io` and `docker.io`), and to `download.cirros-cloud.net` | the shoot's firewall |
 | An address from the shoot's load balancer for a Service of type `LoadBalancer`, which metal-stack's cloud controller takes from the project's internet network, reachable on TCP 443 from where you work | the address wait of Step 3, which exits 1 otherwise |
+| UDP 6081 open between the workers for OVN Geneve tunnels | the cross-worker traffic in the lab diagram |
 | TCP 16514 and 49152 to 49215 open between the workers | `hack/lab-node-ports.sh` |
 
 The shoot's kubeconfig is saved as `kubeconfig` in the root of the clone;
@@ -69,6 +71,13 @@ OpenStack CLI
 with the [`osc-placement`](https://docs.openstack.org/osc-placement/latest/)
 plugin. Neither Docker nor kind is needed: the deploy creates no cluster and
 loads no image.
+The host-side examples also need GNU coreutils for `timeout` and `sha256sum`.
+On macOS, install it and add it to `PATH`:
+
+```bash
+brew install coreutils
+export PATH="$(brew --prefix coreutils)/libexec/gnubin:$PATH"
+```
 
 ## Part 1: The control plane {#control-plane}
 
@@ -161,7 +170,8 @@ port-forward on local port 443, which needs root:
 `WITH_CEPH=true` deploys the
 [Lab Ceph](./reference/infrastructure/infrastructure-manifests.md#lab-ceph)
 that holds Cinder's volumes and backups: the Rook operator and a Ceph with
-three OSDs per worker on raw block volumes of the default class, the RBD pools
+nine OSDs on raw block volumes of the default class (three per worker in the
+checked-in three-worker setup), the RBD pools
 `volumes` and `backups`, and the users `cinder` and `cinder-backup`, whose keys
 reach the Secrets `ceph-client-cinder` and `ceph-client-cinder-backup` in
 `openstack` through OpenBao. The deploy waits until the Ceph reports
@@ -1130,7 +1140,8 @@ worker first. With one worker left, no node can receive them.
 
 Every Cinder volume and backup of the lab lives on the
 [Lab Ceph](./reference/infrastructure/infrastructure-manifests.md#lab-ceph):
-one monitor, one manager and nine OSDs, three per worker, whose disks are
+one monitor, one manager and nine OSDs, three per worker in the checked-in
+three-worker setup, whose disks are
 Lightbits volumes of the default class, reached over NVMe/TCP. A write reaches two OSDs and, below
 them, the replicas the platform keeps of each Lightbits volume; on newforge the
 default class is `premium`, which keeps three, as the survey of
