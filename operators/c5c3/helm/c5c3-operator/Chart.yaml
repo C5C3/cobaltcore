@@ -28,7 +28,7 @@ annotations:
     - kind: added
       description: "webhook.standalone runs the release as a standalone admission webhook for namespace-scoped installs: --enable-controllers=false, no leader election, a ClusterRole reduced to the webhook reads (operator-library 0.11.0)"
     - kind: added
-      description: controller.defaultImagePullPolicy is accepted for parity with the service operator charts and not consumed, because the operator renders no container (operator-library 0.10.0)
+      description: controller.defaultImagePullPolicy is accepted for parity with the service operator charts and not consumed because the operator does not render workload containers (operator-library 0.10.0)
     - kind: added
       description: pullPolicy on every image reference of the ControlPlane CRD (services.<service>.image, federationProxyImage), projected into the service CRs
     - kind: added
