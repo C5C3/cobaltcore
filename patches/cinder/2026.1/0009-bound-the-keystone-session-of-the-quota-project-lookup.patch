@@ -1,0 +1,78 @@
+SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+SPDX-License-Identifier: Apache-2.0
+
+Bound the Keystone session of the quota project lookup
+
+`_keystone_client` (cinder/api/api_utils.py) builds the session the quota
+code looks a project and its hierarchy up through, with the token of the
+request it serves. It takes the TLS options of `[keystone_authtoken]` and
+passes no timeout, so the session has none, and no option of cinder.conf
+reaches it. A lookup whose Keystone stops answering on an established
+connection then waits out the kernel's retransmission limit
+(`tcp_retries2 = 15`, about 15.6 minutes) and holds the API worker that
+serves the request. On 2026-11-17 Barbican requests behind a killed
+Keystone pod hung for 939 to 952 seconds the same way (#1799).
+
+The patch passes `timeout=CONF.keystone_authtoken.http_connect_timeout`
+to the session, the bound the cinder-operator renders as `10` for the
+token middleware. keystoneauth applies it as both the connect and the read
+timeout; the lookup passes no retries, so it fails after 10 seconds. With
+the option unset the session gets `timeout=None`, which is what it gets
+today.
+
+Tests: no upstream test pins the arguments of the session; the existing
+tests in cinder/tests/unit/test_quota_utils.py mock it and assert the auth
+plugin only. The patch adds two tests there that assert the `timeout`
+argument with the option set and unset, and both fail without it.
+
+Proof: tests/container-images/verify_cinder.sh asserts in the built image
+that `_keystone_client` passes `timeout=7` with
+`[keystone_authtoken] http_connect_timeout = 7` and `timeout=None` with the
+option unset.
+
+The 2026.2 twin is 0008 of the same name, cut from 29.0.0.
+
+Applies to cinder 28.0.0 (2026.1).
+
+Upstream status: not yet proposed.
+
+diff --git a/cinder/api/api_utils.py b/cinder/api/api_utils.py
+index 4a21381..23819bf 100644
+--- a/cinder/api/api_utils.py
++++ b/cinder/api/api_utils.py
+@@ -205,6 +205,7 @@ def _keystone_client(context: 'context.RequestContext',
+         cacert=CONF.keystone_authtoken.cafile,
+         key=CONF.keystone_authtoken.keyfile,
+         cert=CONF.keystone_authtoken.certfile,
++        timeout=CONF.keystone_authtoken.http_connect_timeout,
+         split_loggers=CONF.service_user.split_loggers)
+     return client.Client(auth_url=CONF.keystone_authtoken.auth_url,
+                          session=client_session, version=version)
+diff --git a/cinder/tests/unit/test_quota_utils.py b/cinder/tests/unit/test_quota_utils.py
+index 35aae9f..56c6c02 100644
+--- a/cinder/tests/unit/test_quota_utils.py
++++ b/cinder/tests/unit/test_quota_utils.py
+@@ -48,6 +48,23 @@ class QuotaUtilsTest(test.TestCase):
+                                                session=ksclient_session(),
+                                                version=(3, 0))
+ 
++    @mock.patch('keystoneclient.client.Client')
++    @mock.patch('keystoneauth1.session.Session')
++    def test_keystone_client_session_timeout(self, ksclient_session,
++                                             ksclient_class):
++        self.fixture.config(http_connect_timeout=7,
++                            group='keystone_authtoken')
++        api_utils._keystone_client(self.context)
++        self.assertEqual(7, ksclient_session.call_args.kwargs['timeout'])
++
++    @mock.patch('keystoneclient.client.Client')
++    @mock.patch('keystoneauth1.session.Session')
++    def test_keystone_client_session_timeout_unset(self, ksclient_session,
++                                                   ksclient_class):
++        api_utils._keystone_client(self.context)
++        self.assertIn('timeout', ksclient_session.call_args.kwargs)
++        self.assertIsNone(ksclient_session.call_args.kwargs['timeout'])
++
+     @mock.patch('keystoneclient.client.Client')
+     @mock.patch('keystoneauth1.session.Session')
+     @mock.patch('keystoneauth1.identity.Token')
