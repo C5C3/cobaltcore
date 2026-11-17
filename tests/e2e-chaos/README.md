@@ -47,9 +47,9 @@ as in `tests/e2e/README.md`. Chaos-specific rules:
   `glance-garage-outage`, `barbican-openbao-outage`,
   `neutron-mariadb-outage`, `neutron-broker-outage`, `cinder-broker-outage`,
   `glance-mariadb-outage`, `placement-mariadb-outage`,
-  `barbican-mariadb-outage`, `cinder-mariadb-outage`,
-  `memcached-network-partition`, `nova-broker-outage`,
-  `nova-mariadb-outage`, `nova-placement-outage`,
+  `barbican-mariadb-outage`, `barbican-keystone-partition`,
+  `cinder-mariadb-outage`, `memcached-network-partition`,
+  `nova-broker-outage`, `nova-mariadb-outage`, `nova-placement-outage`,
   `korc-network-partition`) need the `sch_netem`/`ip_set` kernel modules,
   which `hack/deploy-infra.sh` loads (installing
   `linux-modules-extra-$(uname -r)` on demand). The `network`

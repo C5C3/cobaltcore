@@ -15,7 +15,7 @@ For happy-path E2E tests, see [Keystone E2E Test Suites](./keystone-e2e-tests.md
 
 ## Overview
 
-The 71 chaos test suites validate operator behavior during and after fault
+The 72 chaos test suites validate operator behavior during and after fault
 injection. Phase 1 covers infrastructure dependency pod kills. Phase 2 adds
 operator self-recovery, CronJob workload fault tolerance, and PDB availability
 guarantee scenarios. Phase 3 adds an all-pod operator kill with leader
@@ -90,7 +90,7 @@ and roles its fault reaches, and lists it with its scenario and its budget.
 
 ## Prerequisites
 
-All 71 test suites require the infrastructure stack to be deployed and healthy.
+All 72 test suites require the infrastructure stack to be deployed and healthy.
 The suites that apply a chaos resource require Chaos Mesh as well.
 
 ::: warning Run `WITH_CHAOS_MESH=true make deploy-infra` first
@@ -477,7 +477,7 @@ NetworkChaos suites and every suite that needs the neutron, cinder or ovn
 operators: the four Neutron suites (`neutron-mariadb-outage`,
 `neutron-broker-outage`, `neutron-keystone-outage`, `neutron-operator-pod-kill`),
 `ovn-operator-pod-kill`, the database outages of Glance, Placement, Barbican and
-Cinder, and `memcached-network-partition`. It therefore deploys the
+Cinder, `barbican-keystone-partition`, and `memcached-network-partition`. It therefore deploys the
 neutron-operator, the ovn-operator and the placement-operator alongside keystone,
 the last for `placement-mariadb-outage`. The seven Cinder suites
 (`cinder-operator-pod-kill`, `cinder-broker-outage`, `cinder-nfs-outage`,
@@ -603,7 +603,7 @@ the six-hour soak (see
 
 ### The catalogue
 
-`tests/chaos-random/catalogue.yaml` lists the 51 distinct faults of the
+`tests/chaos-random/catalogue.yaml` lists the 52 distinct faults of the
 suites, one entry per fault:
 
 ```yaml
@@ -669,11 +669,11 @@ chaos-random-draw` begins:
 
 | Step | Offset (s) | Entries | Length (s) | Pause (s) |
 | --- | --- | --- | --- | --- |
-| 1 | 0 | `barbican-mariadb-partition` | 120 | 170 |
-| 2 | 290 | `eso-pod-kill`, `cinder-volume-pod-kill` | 30 | 252 |
-| 3 | 572 | `nova-mariadb-partition` | 120 | 154 |
+| 1 | 0 | `placement-mariadb-partition` | 120 | 170 |
+| 2 | 290 | `envoy-gateway-pod-failure`, `nova-placement-partition` | 120 | 102 |
+| 3 | 512 | `cinder-mariadb-partition` | 120 | 184 |
 
-and holds eight steps within its 30-minute window. A red night replays its
+and holds seven steps within its 30-minute window. A red night replays its
 draw without a cluster: the seed is the run id, so
 `CHAOS_RANDOM_ENV=ci CHAOS_RANDOM_SEED=<run id> make chaos-random-draw` prints
 the plan that night ran.
@@ -817,7 +817,7 @@ these lists fails the generator.
 | horizon | [horizon-operator-pod-kill](#horizon-operator-pod-kill) (pod-kill) | [horizon-dashboard-pod-kill](#horizon-dashboard-pod-kill) (pod-kill) | — | — | [horizon-memcached-pod-kill](#horizon-memcached-pod-kill) (pod-kill) | — | — |
 | glance | [glance-operator-pod-kill](#glance-operator-pod-kill) (pod-kill) | — | [glance-mariadb-outage](#glance-mariadb-outage) (partition) | — | — | [glance-keystone-outage](#glance-keystone-outage) (pod-failure) | [glance-garage-outage](#glance-garage-outage) (partition) |
 | placement | [placement-operator-pod-kill](#placement-operator-pod-kill) (pod-kill) | [api-worker-loss](#api-worker-loss) (node-pause) | [placement-mariadb-outage](#placement-mariadb-outage) (partition) | — | — | [placement-keystone-outage](#placement-keystone-outage) (pod-failure) | — |
-| barbican | [barbican-operator-pod-kill](#barbican-operator-pod-kill) (pod-kill) | — | [barbican-mariadb-outage](#barbican-mariadb-outage) (partition) | — | — | [barbican-keystone-outage](#barbican-keystone-outage) (pod-failure) | [barbican-openbao-outage](#barbican-openbao-outage) (partition) |
+| barbican | [barbican-operator-pod-kill](#barbican-operator-pod-kill) (pod-kill) | — | [barbican-mariadb-outage](#barbican-mariadb-outage) (partition) | — | — | [barbican-keystone-outage](#barbican-keystone-outage) (pod-failure)<br>[barbican-keystone-partition](#barbican-keystone-partition) (partition) | [barbican-openbao-outage](#barbican-openbao-outage) (partition) |
 | neutron | [neutron-operator-pod-kill](#neutron-operator-pod-kill) (pod-kill) | [api-worker-loss](#api-worker-loss) (node-pause)<br>[neutron-metadata-agent-pod-kill](#neutron-metadata-agent-pod-kill) (pod-kill) | [neutron-mariadb-outage](#neutron-mariadb-outage) (partition) | [neutron-broker-outage](#neutron-broker-outage) (partition) | — | [neutron-keystone-outage](#neutron-keystone-outage) (pod-failure) | — |
 | ovn | [ovn-operator-pod-kill](#ovn-operator-pod-kill) (pod-kill) | [ovn-chassis-loss](#ovn-chassis-loss) (node-kill)<br>[ovn-controller-pod-kill](#ovn-controller-pod-kill) (pod-kill)<br>[ovn-northd-pod-kill](#ovn-northd-pod-kill) (pod-kill)<br>[ovn-southbound-outage](#ovn-southbound-outage) (pod-failure) | — | — | — | — | — |
 | cinder | [cinder-operator-pod-kill](#cinder-operator-pod-kill) (pod-kill) | [cinder-volume-pod-kill](#cinder-volume-pod-kill) (pod-kill) | [cinder-mariadb-outage](#cinder-mariadb-outage) (partition)<br>[cinder-upgrade-db-partition](#cinder-upgrade-db-partition) (partition) | [cinder-broker-outage](#cinder-broker-outage) (partition)<br>[cinder-broker-pod-kill](#cinder-broker-pod-kill) (pod-kill)<br>[cinder-upgrade-broker-pod-kill](#cinder-upgrade-broker-pod-kill) (pod-kill) | — | [cinder-keystone-outage](#cinder-keystone-outage) (pod-failure) | [cinder-nfs-outage](#cinder-nfs-outage) (scale-to-zero) |
@@ -843,6 +843,7 @@ these lists fails the generator.
 | [api-priority-preemption](#api-priority-preemption) | — | `keystone/self` | failures=0 recovery=0s | none |
 | [api-worker-loss](#api-worker-loss) | — | `keystone/self`, `neutron/self`, `placement/self` | failures=30 recovery=30s | none |
 | [barbican-keystone-outage](#barbican-keystone-outage) | — | `barbican/keystone` | failures=400 recovery=150s | `keystone-api-pod-failure` |
+| [barbican-keystone-partition](#barbican-keystone-partition) | — | `barbican/keystone` | failures=400 recovery=150s | `barbican-keystone-partition` |
 | [barbican-mariadb-outage](#barbican-mariadb-outage) | — | `barbican/database`, `mariadb/self` | failures=40 recovery=90s | `barbican-mariadb-partition` |
 | [barbican-openbao-outage](#barbican-openbao-outage) | — | `barbican/backend`, `openbao/self` | — | `barbican-openbao-partition` |
 | [barbican-operator-pod-kill](#barbican-operator-pod-kill) | — | `barbican/operator` | failures=0 recovery=0s | `barbican-operator-pod-kill` |
@@ -2809,6 +2810,86 @@ Keystone CR, the pod logs of the Barbican CR and of the barbican-operator, and e
   token cannot be validated is answered at once.
 - The `PodChaos`, the token the service has never seen and the unbuffered probe
   follow `glance-keystone-outage`, which gives the reasons.
+
+---
+
+### barbican-keystone-partition
+
+**File:** `tests/e2e-chaos/barbican-keystone-partition/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** A `NetworkChaos` partition cuts the API pods of the suite's own
+Barbican off from the API pods of its own Keystone. Nothing is refused, so every
+token validation waits until a timeout ends it. The suite proves that the
+`[keystone_authtoken] http_connect_timeout = 10` the barbican-operator renders is
+that timeout. keystonemiddleware sends a validation four times, 10 seconds per
+attempt, 0.5, 1 and 2 seconds apart, so a request with a token Barbican has never
+validated ends within 43.5 seconds instead of the kernel's retransmission limit of
+about 15 minutes. keystonemiddleware 12.0.0 does not answer that request with its
+503: the last `ConnectTimeout` leaves the middleware, Barbican's pipeline has no
+middleware that catches it, and uWSGI closes the connection without a response. A
+gateway in front of Barbican answers 503. The Barbican log carries keystoneauth's
+warning `timed out. Retrying in` for each attempt, and the Barbican CR stays
+`Ready=True/AllReady`. Once the partition is lifted a fresh token gets 200 from the
+same request.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Keystone CR | `apply` + `assert` (5m) | `keystone-barbican-ks-part` (database `keystone_barbican_ks_part`) reaches `Ready=True/AllReady` |
+| 2 | Apply Barbican and its store | `apply` + `assert` (5m) + `script` (6m) | `barbican-ks-part` (database `barbican_ks_part`, one replica, no `extraConfig`) and the store `barbican-ks-part-store` on `openbao-instance` reach `Ready=True/AllReady`, the CR with `SecretStoresReady=True/AllStoresProjected`. `workload.sh start` then starts the workload and waits for `READY` |
+| 3 | Partition Keystone | `script` (8m) + `assert` (5m) | Pod `barbican-ks-part-warmup-probe` sends eight requests at once, each with a fresh token, and requires eight 200s (`WARM-OK`). The script then runs `workload.sh mark fault-start`, applies `03-networkchaos.yaml` and waits for `AllInjected`. Pod `barbican-ks-part-bounded-probe` on `ghcr.io/c5c3/tempest:2026.1` sends `GET /v1/secrets` three times, each with a fresh token and a 90-second client timeout. Each answer must arrive after 30 and within 55 seconds and be a 5xx or a connection closed without a response; then the probe prints `BOUNDED-OK`. A 2xx, another status, an answer within 30 seconds and the client timeout fail it. The script then requires `timed out. Retrying in` in the log of the Barbican API pods, and the assert reads `Ready=True/AllReady` on the Barbican CR. The step cleanup deletes the `NetworkChaos` |
+| 4 | Lift the partition | `delete` + `script` (1m) | Removes `NetworkChaos/partition-keystone-barbican`, then `workload.sh mark fault-end` |
+| 5 | Assert recovery | `script` (7m) | Pod `barbican-ks-part-recovery-probe` issues a fresh token and repeats the request, retrying a 401, a 5xx or a closed connection every 5 s for up to 180 s, until a 200 prints `RECOVERY-OK` |
+| 6 | Judge the workload | `script` (15m) | `workload.sh verify` waits out the recovery window, stops the workload and judges its records and consistency checks against the budget |
+
+**Fixtures:** `00-keystone-cr.yaml`, `01-barbican-cr.yaml`,
+`02-barbican-secretstore.yaml`, `03-networkchaos.yaml`.
+
+**Workload:** the `token` and `secret` streams against `keystone-barbican-ks-part`
+and `barbican-ks-part`, started in step 2 and judged in step 6 against
+`failures=400 recovery=150s`, an estimate no run has measured yet. The suite runs in
+the `network` matrix entry, which loads the kernel modules `NetworkChaos` needs. The
+token stream reaches Keystone from outside the partition and keeps working; the
+`secret` stream keeps working while Barbican has its token cached and fails once
+Barbican has to validate it again. Every step from 2 to 6 dumps the workload in its
+catch block.
+
+**Catch blocks:** step 1 calls `../diagnostics.sh baseline
+keystone-barbican-ks-part`. The later steps share a YAML anchor that calls
+`../diagnostics.sh chaos barbican-ks-part` with `--cr-kind=barbican` and
+`--dep-label=app.kubernetes.io/instance=keystone-barbican-ks-part`, dumps the
+Keystone CR, the pod logs of the Barbican CR and of the barbican-operator, and every
+`NetworkChaos`, and dumps the workload.
+
+**Design notes:**
+
+- The rule sits on the Keystone pods and targets the Barbican pods, as in
+  `nova-placement-outage`: Barbican dials the Keystone Service, and a rule on the
+  client side would match pod IPs the packet does not carry yet.
+- The probe uses a fresh token per request. keystonemiddleware caches a validated
+  token for `token_cache_time` (300 s by default) in the shared Memcached.
+- Every uWSGI worker loads its own middleware with its own service token, and the
+  workload's one cached token reaches a single worker. A worker that still has to
+  fetch its service token under the partition times out on that fetch, which
+  keystoneauth does not retry: the request ends after 10 or 20 seconds and logs no
+  retry warning. The warm-up pod has every worker validate a fresh token before the
+  partition, so every request that times out under the partition is a validation,
+  which keystoneauth retries and logs. The probe fails a request that ends within
+  30 seconds, so a worker the warm-up missed fails the suite.
+- The Barbican CR keeps the default two uWSGI workers. The probe sends its requests
+  one at a time and the workload's token stays cached for the window, so one worker
+  waits on a validation and the other answers the readiness probe.
+- Without the bound a request does not reach the probe's 90-second client timeout:
+  uWSGI's HTTP router gives up after its default 60-second `http-timeout` and
+  closes the connection, while the worker behind it keeps waiting on Keystone. The
+  probe's bound of 55 seconds sits between that cut and the 43.5 seconds the bound
+  allows. A throwaway run with
+  `extraConfig: {keystone_authtoken: {http_connect_timeout: "900"}}` in
+  `01-barbican-cr.yaml` fails step 3 with
+  `request 1 took 60.5 s, expected under 55 s`.
 
 ---
 
@@ -5536,6 +5617,12 @@ tests/e2e-chaos/
 │   ├── 02-barbican-secretstore.yaml  BarbicanSecretStore barbican-ks-outage-store
 │   ├── 03-podchaos.yaml              PodChaos pod-failure on the Keystone API pods
 │   └── chainsaw-test.yaml            Test: an unvalidated token gets 503, then 200 after the outage
+├── barbican-keystone-partition/      Keystone partition under the Barbican API
+│   ├── 00-keystone-cr.yaml           Keystone keystone-barbican-ks-part, the one the partition cuts off
+│   ├── 01-barbican-cr.yaml           Barbican barbican-ks-part, proves the operator's validation bound
+│   ├── 02-barbican-secretstore.yaml  BarbicanSecretStore barbican-ks-part-store
+│   ├── 03-networkchaos.yaml          NetworkChaos severing keystone-api↔barbican-api traffic (server-side)
+│   └── chainsaw-test.yaml            Test: each validation ends within 55 s, then 200 after the partition
 ├── barbican-mariadb-outage/          Database partition under the Barbican API
 │   ├── 00-keystone-cr.yaml           Keystone keystone-barbican-db-chaos
 │   ├── 01-barbican-cr.yaml           Barbican barbican-db-chaos, proves the operator's database socket timeouts

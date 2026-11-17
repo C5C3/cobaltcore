@@ -263,6 +263,10 @@ test_chaos_legs_run_the_barbican_suites() {
     "tests/e2e-chaos/barbican-openbao-outage"
   assert_contains "the network leg runs the MariaDB outage suite" "$network" \
     "tests/e2e-chaos/barbican-mariadb-outage"
+  assert_contains "the network leg runs the Keystone partition suite" "$network" \
+    "tests/e2e-chaos/barbican-keystone-partition"
+  assert_not_contains "the pod leg leaves the partition suite to the network leg" "$pod" \
+    "tests/e2e-chaos/barbican-keystone-partition"
 
   # Both legs need the images, so the pull is gated on everything but the ovn
   # leg rather than on one of the two.

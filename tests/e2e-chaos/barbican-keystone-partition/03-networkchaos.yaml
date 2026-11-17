@@ -1,0 +1,62 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# NetworkChaos CR that partitions the Barbican API from the Keystone of this
+# suite.
+#
+# action partition, not the pod-failure of ../barbican-keystone-outage/: a
+# partition drops packets and refuses nothing, so a token validation on an
+# established connection or on a new one waits until a timeout ends it. That
+# timeout is [keystone_authtoken] http_connect_timeout, which the operator
+# renders as 10 seconds; without it the validation waits out the kernel's
+# retransmission limit, about 15 minutes, and holds the uWSGI worker that serves
+# the request.
+#
+# The partition is enforced on the Keystone (server) side on purpose, as in
+# ../nova-placement-outage/13-networkchaos.yaml. Barbican does not connect to a
+# Keystone pod IP: it dials the ClusterIP Service
+# keystone-barbican-ks-part.openstack.svc. chaos-mesh installs its drop rule
+# inside the selector pods' network namespace and matches the target pods by
+# their pod IPs. On the Barbican (client) side the packet still carries the
+# Service ClusterIP, which kube-proxy translates to a pod IP only after the
+# packet has left the pod, so the rule would never match. On the Keystone pods
+# the packet has been translated already and carries the Barbican pod IP as its
+# source. direction both severs the link either way.
+#
+# The selector is the API pods of this suite's Keystone, the target the API pods
+# of this suite's Barbican. The three labels of each are what the two operators
+# put on their API pod templates. The probes and the workload reach Keystone
+# from pods outside the target, so a fresh token is still issued under the
+# partition. mode all covers every replica of either side.
+#
+# The duration is a safety net for a run that never reaches the delete; the
+# suite lifts the partition explicitly. It must exceed the bounded step, whose
+# probe sends three requests of at most 90 seconds each, and the log read and
+# assert that follow it. 600s sits above that with margin.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: partition-keystone-barbican
+  namespace: openstack
+spec:
+  action: partition
+  mode: all
+  selector:
+    namespaces:
+      - openstack
+    labelSelectors:
+      app.kubernetes.io/name: keystone
+      app.kubernetes.io/instance: keystone-barbican-ks-part
+      app.kubernetes.io/component: api
+  direction: both
+  target:
+    mode: all
+    selector:
+      namespaces:
+        - openstack
+      labelSelectors:
+        app.kubernetes.io/name: barbican
+        app.kubernetes.io/instance: barbican-ks-part
+        app.kubernetes.io/component: api
+  duration: "600s"
