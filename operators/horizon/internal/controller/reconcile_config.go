@@ -47,6 +47,15 @@ const (
 	// cache. It is the default of oslo.cache's [cache] socket_timeout, the
 	// bound of Keystone's and Nova's cache client (issue #1560).
 	cacheSocketTimeoutSeconds = 1
+	// requestTimeoutSeconds is OPENSTACK_REQUEST_TIMEOUT, the bound of every
+	// keystoneauth session and service client the dashboard builds (horizon
+	// patch 0002). Horizon's sessions pass no retries, so a call to a service
+	// that stops answering ends after 30 seconds, inside the gateway's
+	// 60-second route, and the user sees Horizon's own error message. The
+	// Glance client's own 600-second default gives way to it too. The cost is
+	// that a call that is legitimately silent for longer fails, such as the
+	// wait for Glance's answer at the end of an image upload through Horizon.
+	requestTimeoutSeconds = 30
 	// horizonTextLogFormat is oslo.log's logging_default_format_string without
 	// %(instance)s, which only oslo.log's ContextFormatter fills and the stdlib
 	// logging.Formatter cannot resolve, so a Horizon text line has the shape
@@ -186,6 +195,9 @@ func defaultSettings(horizon *horizonv1alpha1.Horizon, cacheServers string) (map
 		// only knows publicURL/internalURL/adminURL, and a bare "internal"
 		// fails every catalog lookup.
 		"OPENSTACK_ENDPOINT_TYPE": "internalURL",
+		// Read only by an image that carries horizon patch 0002; Django ignores
+		// a setting no code reads, so the key is inert against another image.
+		"OPENSTACK_REQUEST_TIMEOUT": requestTimeoutSeconds,
 		// ALLOWED_HOSTS is a closed allow-list of the Hosts the dashboard is
 		// actually reached under (see allowedHosts). Keeping Django's
 		// Host-header validation in force — rather than disabling it with "*"

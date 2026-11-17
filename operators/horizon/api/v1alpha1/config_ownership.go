@@ -51,6 +51,7 @@ func buildOwnedConfigKeys() []config.OwnedKey {
 		{Key: "COMPRESS_OFFLINE", OwnedBy: "operator-computed", Impact: "static assets are pre-compressed at image build; disagreement breaks template rendering"},
 		{Key: "STATIC_ROOT", OwnedBy: "operator-computed"},
 		{Key: "WEBROOT", OwnedBy: "operator-computed"},
+		{Key: "OPENSTACK_REQUEST_TIMEOUT", OwnedBy: "operator-computed", Impact: "the bound turns a service that stops answering into Horizon's own error after 30 seconds; without it a dashboard request waits out the kernel's retransmission limit, about 15 minutes, or Glance's 600 seconds, and holds the worker that serves it"},
 		// Rejected: blocked at admission by the validating webhook.
 		{Key: "SECRET_KEY", Rejected: true, OwnedBy: "spec.secretKeyRef"},
 	}

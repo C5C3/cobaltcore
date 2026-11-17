@@ -45,6 +45,23 @@ The v1 operator resolves the onboarding decisions as follows:
   `tests/e2e/horizon/release-upgrade/` suite moves a Horizon from 2026.1 to
   2026.2 and asserts that the prefix the Deployment mounts changes with the
   image, and that the login page renders on both sides of the hop.
+- **Requests to the services: bounded at 30 seconds.** The operator renders
+  `OPENSTACK_REQUEST_TIMEOUT = 30`, which horizon patch 0002 passes as
+  `timeout` to every keystoneauth session and service client the dashboard
+  builds, the login included. The sessions pass no retries, so a call to a
+  service that stops answering ends after 30 seconds, inside the gateway's
+  60-second route, and the user sees Horizon's own error message instead of a
+  gateway 503 or 504. Without the bound the call waits out the kernel's TCP
+  retransmission limit, about 15 minutes, or glanceclient's own 600 seconds,
+  and holds the uWSGI process that serves it. The cost is that a call that is
+  legitimately silent for longer fails, which includes the wait for Glance's
+  answer at the end of an image upload through Horizon.
+  `spec.extraConfig` raises the bound (`OPENSTACK_REQUEST_TIMEOUT: 60`), which
+  is honored and reported. Django ignores a setting no code reads, so the key
+  takes effect only on an image that carries the patch (see
+  [Container Images](../ci-cd/container-images.md#horizon)). The operator
+  upgrade that brings the setting renders a new ConfigMap, so the dashboard
+  rolls once.
 - **Keystone endpoint: a plain URL field.** `spec.keystoneEndpoint` keeps the
   operator decoupled from the keystone-operator. The c5c3 ControlPlane
   operator derives the value top-down from its Keystone child's naming
