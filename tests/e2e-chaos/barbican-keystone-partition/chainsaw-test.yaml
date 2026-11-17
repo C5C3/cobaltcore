@@ -1,0 +1,471 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test for a partition between the Barbican API and Keystone.
+#
+# The fault is a NetworkChaos partition between the API pods of this suite's
+# Keystone and the API pods of this suite's Barbican (03-networkchaos.yaml).
+# Unlike the pod-failure of ../barbican-keystone-outage/, nothing is refused:
+# packets are dropped, so every token validation waits until a timeout ends it.
+# The suite proves that the operator's rendered
+# [keystone_authtoken] http_connect_timeout = 10 is that timeout:
+#
+#   - baseline: the Keystone and the Barbican are Ready, and the workload
+#     streams are READY
+#   - under the partition: three requests in a row, each with a fresh token
+#     Barbican has never validated, end after 30 and within 55 seconds.
+#     keystonemiddleware sends each validation four times, 10 seconds per
+#     attempt with delays of 0.5, 1 and 2 seconds, so a request ends after 43.5
+#     seconds at most. Each attempt waits its full 10 seconds on dropped
+#     packets, so a request that ends within 30 seconds did not wait out the
+#     four attempts, and the probe fails it. The answer is not
+#     keystonemiddleware's 503: 12.0.0 lets the last ConnectTimeout escape,
+#     and Barbican's pipeline has no middleware that catches it, so uWSGI
+#     closes the connection without a response (a gateway in front answers
+#     503). The probe accepts a 5xx or a connection closed
+#     without a response. A 2xx would mean Barbican served a token nobody
+#     validated. Without the bound the request does not end in the probe's own
+#     90-second client timeout either: uWSGI's HTTP router gives up on a
+#     request after its default 60-second http-timeout and closes the
+#     connection, while the worker behind it keeps waiting. The probe's bound
+#     of 55 seconds sits between the 43.5 seconds the bound allows and that
+#     60-second cut
+#   - under the partition: the Barbican log carries keystoneauth's warning
+#     "timed out. Retrying in", and the Barbican CR stays Ready=True/AllReady:
+#     a bounded validation holds a uWSGI worker for 43.5 seconds, not 15
+#     minutes, and the other worker keeps answering the readiness probe
+#   - after the partition: a fresh token gets 200 from the same request
+#
+# The probe needs tokens Barbican has never seen. keystonemiddleware caches a
+# validated token for token_cache_time, 300 s by default, in the shared
+# Memcached, so a token presented before the partition skips the validation.
+# Every uWSGI worker loads its own middleware with its own service token, and
+# the workload's one cached token reaches a single worker. A worker that still
+# has to fetch its service token under the partition times out on that fetch,
+# which keystoneauth does not retry: the request ends sooner and logs no retry
+# warning. A warm-up pod therefore sends eight requests at once, each with a
+# fresh token, before the partition, so every worker validates once and holds
+# its service token, and every request that times out under the partition is
+# a validation, which keystoneauth retries and logs.
+#
+# Blast radius: the NetworkChaos selects the API pods of this suite's Keystone
+# (app.kubernetes.io/name: keystone, app.kubernetes.io/instance:
+# keystone-barbican-ks-part, app.kubernetes.io/component: api) and targets the
+# API pods of this suite's Barbican (app.kubernetes.io/name: barbican,
+# app.kubernetes.io/instance: barbican-ks-part, app.kubernetes.io/component:
+# api). The probes and the workload reach both from pods outside the partition.
+#
+# Workload, on the network leg: the token and secret streams of
+# ../lib/workload.sh against keystone-barbican-ks-part and barbican-ks-part.
+# The token stream talks to Keystone from outside the partition and keeps
+# working; the secret stream keeps working while its token stays cached and
+# fails once Barbican has to validate it again. The budget is an estimate of
+# that window: no run has measured it yet.
+# Chaos matrix: barbican keystone partition
+# Chaos random: barbican-keystone-partition
+# Chaos budget: failures=400 recovery=150s
+# Chaos budget measured: 2026-11-17, estimate, failures 200, recovery 120 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: barbican-keystone-partition
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the Keystone CR the partition cuts off ──────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-barbican-ks-part
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: ../diagnostics.sh baseline keystone-barbican-ks-part
+  # ── Step 2: Apply Barbican and its store, then start the workload ─────────
+  - try:
+    - apply:
+        file: 01-barbican-cr.yaml
+    - apply:
+        file: 02-barbican-secretstore.yaml
+    - assert:
+        resource:
+          apiVersion: barbican.openstack.c5c3.io/v1alpha1
+          kind: Barbican
+          metadata:
+            name: barbican-ks-part
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretStoresReady']):
+            - status: "True"
+              reason: AllStoresProjected
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: barbican.openstack.c5c3.io/v1alpha1
+          kind: BarbicanSecretStore
+          metadata:
+            name: barbican-ks-part-store
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        timeout: 6m
+        content: >-
+          ../lib/workload.sh start barbican-keystone-partition --
+          --streams token,secret
+          --keystone http://keystone-barbican-ks-part.openstack.svc:5000/v3
+          --barbican http://barbican-ks-part.openstack.svc:9311
+    catch: &barbican-ks-part-dump
+    - script:
+        timeout: 3m
+        content: ../diagnostics.sh chaos barbican-ks-part --cr-kind=barbican --dep-label=app.kubernetes.io/instance=keystone-barbican-ks-part --dep-ns=openstack
+    - get:
+        apiVersion: keystone.openstack.c5c3.io/v1alpha1
+        kind: Keystone
+        name: keystone-barbican-ks-part
+        namespace: openstack
+    - podLogs:
+        selector: app.kubernetes.io/instance=barbican-ks-part
+        tail: 100
+    - podLogs:
+        namespace: barbican-system
+        selector: app.kubernetes.io/name=barbican-operator
+        tail: 100
+    - script:
+        timeout: 1m
+        content: kubectl get networkchaos -n openstack -o yaml 2>&1 || true
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh dump barbican-keystone-partition
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop barbican-keystone-partition
+  # ── Step 3: Partition Keystone and prove the validation bound ─────────────
+  # The warm-up pod ends before the script marks the fault window, applies the
+  # partition and waits for AllInjected, and the probe starts after that, so
+  # every request of the probe meets the partition. The probe reads its
+  # verdict from the pod log after the pod has ended, the way
+  # ../barbican-keystone-outage/ reads its probes. The log read and the assert
+  # after it run under the partition too.
+  - try:
+    - script:
+        shell: bash
+        timeout: 8m
+        content: |
+          set -eu
+          WARM=barbican-ks-part-warmup-probe
+          POD=barbican-ks-part-bounded-probe
+          cleanup() { kubectl delete pod "$WARM" "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          # The bootstrap admin password travels as a pod env var, the way
+          # the sibling suites hand it to their probes. The tokens never
+          # leave the pods.
+          PW="$(kubectl get secret keystone-admin -n "$NAMESPACE" -o jsonpath='{.data.password}' | base64 -d)"
+
+          # Eight requests at once, each with a fresh token, reach both uWSGI
+          # workers, and each worker fetches its service token to validate.
+          kubectl run "$WARM" -n "$NAMESPACE" \
+            --image=ghcr.io/c5c3/tempest:2026.1 --restart=Never \
+            --env "OS_PASSWORD=${PW}" \
+            --command -- python3 -u -c '
+          import json, os, sys, threading, urllib.error, urllib.request
+
+          KEYSTONE = "http://keystone-barbican-ks-part.openstack.svc.cluster.local:5000/v3"
+          TARGET = "http://barbican-ks-part.openstack.svc.cluster.local:9311/v1/secrets"
+          PARALLEL = 8
+
+          body = json.dumps({"auth": {
+              "identity": {"methods": ["password"], "password": {"user": {
+                  "name": "admin", "domain": {"id": "default"},
+                  "password": os.environ["OS_PASSWORD"]}}},
+              "scope": {"project": {"name": "admin", "domain": {"id": "default"}}}}}).encode()
+
+          def token():
+              req = urllib.request.Request(KEYSTONE + "/auth/tokens", data=body, method="POST",
+                                           headers={"Content-Type": "application/json"})
+              with urllib.request.urlopen(req, timeout=30) as resp:
+                  return resp.headers["X-Subject-Token"]
+
+          tokens = [token() for _ in range(PARALLEL)]
+          barrier = threading.Barrier(PARALLEL)
+          answers = []
+
+          def get(tok):
+              barrier.wait()
+              req = urllib.request.Request(TARGET, headers={"X-Auth-Token": tok})
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as resp:
+                      answers.append(resp.status)
+              except urllib.error.HTTPError as e:
+                  answers.append(e.code)
+              except OSError as e:
+                  answers.append(repr(e))
+
+          threads = [threading.Thread(target=get, args=(t,)) for t in tokens]
+          for t in threads:
+              t.start()
+          for t in threads:
+              t.join()
+          print("answers: %r" % (answers,))
+          if answers != [200] * PARALLEL:
+              print("FAIL: the warm-up got %r, expected %d x 200" % (answers, PARALLEL))
+              sys.exit(1)
+          print("WARM-OK")
+          '
+          phase=""
+          for _ in $(seq 1 90); do
+            phase="$(kubectl get pod "$WARM" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          OUT="$(kubectl logs -n "$NAMESPACE" "$WARM" 2>&1 || true)"
+          echo "${OUT}"
+          echo "warm-up pod phase: ${phase:-<none>}"
+          grep -qx 'WARM-OK' <<<"$OUT"
+
+          ../lib/workload.sh mark barbican-keystone-partition fault-start
+          kubectl apply -f 03-networkchaos.yaml
+          kubectl wait networkchaos/partition-keystone-barbican -n "$NAMESPACE" \
+            --for=condition=AllInjected --timeout=120s
+
+          kubectl run "$POD" -n "$NAMESPACE" \
+            --image=ghcr.io/c5c3/tempest:2026.1 --restart=Never \
+            --env "OS_PASSWORD=${PW}" \
+            --command -- python3 -u -c '
+          import http.client, json, os, socket, sys, time, urllib.error, urllib.request
+
+          KEYSTONE = "http://keystone-barbican-ks-part.openstack.svc.cluster.local:5000/v3"
+          TARGET = "http://barbican-ks-part.openstack.svc.cluster.local:9311/v1/secrets"
+          ROUNDS = 3
+          MIN = 30
+          BOUND = 55
+          CLIENT_TIMEOUT = 90
+          NOANSWER = (OSError, http.client.HTTPException)
+
+          def fail(msg):
+              print("FAIL: " + msg)
+              sys.exit(1)
+
+          def call(method, url, data=None, headers=None, timeout=15):
+              req = urllib.request.Request(url, data=data, method=method, headers=dict(headers or {}))
+              return urllib.request.urlopen(req, timeout=timeout)
+
+          body = json.dumps({"auth": {
+              "identity": {"methods": ["password"], "password": {"user": {
+                  "name": "admin", "domain": {"id": "default"},
+                  "password": os.environ["OS_PASSWORD"]}}},
+              "scope": {"project": {"name": "admin", "domain": {"id": "default"}}}}}).encode()
+
+          def fresh_token():
+              # The partition cuts Barbican off, not this pod, so Keystone
+              # answers; a slow first answer is retried.
+              for i in range(24):
+                  try:
+                      with call("POST", KEYSTONE + "/auth/tokens", data=body,
+                                headers={"Content-Type": "application/json"}) as resp:
+                          return resp.headers["X-Subject-Token"]
+                  except urllib.error.HTTPError as e:
+                      fail("POST /auth/tokens -> HTTP %d: %s" % (e.code, e.read(300).decode("utf-8", "replace")))
+                  except NOANSWER as e:
+                      print("retry %d for the token: %r" % (i, e))
+                      time.sleep(5)
+              fail("no token from Keystone within 120s")
+
+          for n in range(1, ROUNDS + 1):
+              token = fresh_token()
+              start = time.monotonic()
+              try:
+                  with call("GET", TARGET, headers={"X-Auth-Token": token}, timeout=CLIENT_TIMEOUT) as resp:
+                      code, detail = resp.status, "HTTP %d" % resp.status
+              except urllib.error.HTTPError as e:
+                  code, detail = e.code, "HTTP %d: %s" % (e.code, e.read(300).decode("utf-8", "replace"))
+              except (http.client.RemoteDisconnected, ConnectionResetError) as e:
+                  code, detail = None, "closed without a response: %r" % (e,)
+              except (socket.timeout, TimeoutError) as e:
+                  fail("request %d: no answer within the %d s client timeout: %r" % (n, CLIENT_TIMEOUT, e))
+              except NOANSWER as e:
+                  fail("request %d: %r after %.1f s" % (n, e, time.monotonic() - start))
+              took = time.monotonic() - start
+              print("request %d: %s after %.1f s" % (n, detail, took))
+              if code is not None and code < 500:
+                  fail("request %d answered %s under the partition" % (n, detail))
+              if took >= BOUND:
+                  fail("request %d took %.1f s, expected under %d s" % (n, took, BOUND))
+              if took < MIN:
+                  fail("request %d ended after %.1f s, before four timed-out validation attempts could have ended" % (n, took))
+          print("BOUNDED-OK")
+          '
+          # Poll for a terminal phase rather than Succeeded alone: a probe
+          # that fails ends in Failed, and its log says why.
+          phase=""
+          for _ in $(seq 1 200); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          OUT="$(kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true)"
+          echo "${OUT}"
+          echo "pod phase: ${phase:-<none>}"
+          grep -qx 'BOUNDED-OK' <<<"$OUT"
+          echo "OK: every request under the partition ended after 30 and within 55 s"
+
+          # keystoneauth's warning is what an operator sees in the Barbican
+          # log for each timed-out validation attempt.
+          LOGS="$(kubectl logs -n "$NAMESPACE" \
+            -l app.kubernetes.io/instance=barbican-ks-part,app.kubernetes.io/component=api \
+            --all-containers --tail=-1 2>&1 || true)"
+          if ! grep -F 'timed out. Retrying in' <<<"$LOGS"; then
+            echo "FAIL: the Barbican log carries no 'timed out. Retrying in'"
+            exit 1
+          fi
+          echo "OK: keystoneauth logged the bounded validation attempts"
+    - assert:
+        resource:
+          apiVersion: barbican.openstack.c5c3.io/v1alpha1
+          kind: Barbican
+          metadata:
+            name: barbican-ks-part
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *barbican-ks-part-dump
+    cleanup:
+    - script:
+        timeout: 2m
+        content: |
+          set -eu
+          kubectl delete -f 03-networkchaos.yaml --ignore-not-found
+          echo "OK: the Keystone partition is lifted"
+  # ── Step 4: Lift the partition ────────────────────────────────────────────
+  - try:
+    - delete:
+        ref:
+          apiVersion: chaos-mesh.org/v1alpha1
+          kind: NetworkChaos
+          name: partition-keystone-barbican
+          namespace: openstack
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh mark barbican-keystone-partition fault-end
+    catch: *barbican-ks-part-dump
+  # ── Step 5: Assert recovery with a fresh token ────────────────────────────
+  # Chaos Mesh removes the drop rules, and the next validation reaches
+  # Keystone again. The probe issues a fresh token and repeats the request of
+  # step 3 until it answers 200.
+  - try:
+    - script:
+        shell: bash
+        timeout: 7m
+        content: |
+          set -eu
+          POD=barbican-ks-part-recovery-probe
+          cleanup() { kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          PW="$(kubectl get secret keystone-admin -n "$NAMESPACE" -o jsonpath='{.data.password}' | base64 -d)"
+          kubectl run "$POD" -n "$NAMESPACE" \
+            --image=ghcr.io/c5c3/tempest:2026.1 --restart=Never \
+            --env "OS_PASSWORD=${PW}" \
+            --command -- python3 -u -c '
+          import http.client, json, os, sys, time, urllib.error, urllib.request
+
+          KEYSTONE = "http://keystone-barbican-ks-part.openstack.svc.cluster.local:5000/v3"
+          TARGET = "http://barbican-ks-part.openstack.svc.cluster.local:9311/v1/secrets"
+          NOANSWER = (OSError, http.client.HTTPException)
+
+          def fail(msg):
+              print("FAIL: " + msg)
+              sys.exit(1)
+
+          def call(method, url, data=None, headers=None, timeout=15):
+              req = urllib.request.Request(url, data=data, method=method, headers=dict(headers or {}))
+              return urllib.request.urlopen(req, timeout=timeout)
+
+          def answer(url, token):
+              # The status of one GET and how to print it; None when nothing answered.
+              try:
+                  with call("GET", url, headers={"X-Auth-Token": token}, timeout=90) as resp:
+                      return resp.status, "HTTP %d" % resp.status
+              except urllib.error.HTTPError as e:
+                  return e.code, "HTTP %d: %s" % (e.code, e.read(300).decode("utf-8", "replace"))
+              except NOANSWER as e:
+                  return None, repr(e)
+
+          body = json.dumps({"auth": {
+              "identity": {"methods": ["password"], "password": {"user": {
+                  "name": "admin", "domain": {"id": "default"},
+                  "password": os.environ["OS_PASSWORD"]}}},
+              "scope": {"project": {"name": "admin", "domain": {"id": "default"}}}}}).encode()
+          deadline = time.time() + 180
+          token = None
+          while token is None:
+              try:
+                  with call("POST", KEYSTONE + "/auth/tokens", data=body,
+                            headers={"Content-Type": "application/json"}) as resp:
+                      token = resp.headers["X-Subject-Token"]
+                  break
+              except urllib.error.HTTPError as e:
+                  detail = "HTTP %d: %s" % (e.code, e.read(300).decode("utf-8", "replace"))
+                  if e.code < 500:
+                      fail("POST /auth/tokens -> " + detail)
+              except NOANSWER as e:
+                  detail = repr(e)
+              if time.time() >= deadline:
+                  fail("no token from Keystone within 180s: " + detail)
+              print("retry for the token: %s" % detail)
+              time.sleep(5)
+
+          # A validation that was still waiting when the partition lifted may
+          # end in a 5xx or a closed connection once more, and a 401 can follow
+          # while keystonemiddleware renews its own token; every other status
+          # fails at once.
+          deadline = time.time() + 180
+          while True:
+              code, detail = answer(TARGET, token)
+              if code == 200:
+                  print("GET %s answered 200 with a fresh token" % TARGET)
+                  print("RECOVERY-OK")
+                  sys.exit(0)
+              if code is not None and code != 401 and code < 500:
+                  fail("GET %s answered %s after the partition" % (TARGET, detail))
+              if time.time() >= deadline:
+                  fail("last answer " + detail)
+              print("retry: %s" % detail)
+              time.sleep(5)
+          '
+          phase=""
+          for _ in $(seq 1 200); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          OUT="$(kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true)"
+          echo "${OUT}"
+          echo "pod phase: ${phase:-<none>}"
+          grep -qx 'RECOVERY-OK' <<<"$OUT"
+          echo "OK: Barbican accepts a fresh token again"
+    catch: *barbican-ks-part-dump
+  # ── Step 6: Judge the workload against the budget ─────────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify barbican-keystone-partition
+    catch: *barbican-ks-part-dump

@@ -2232,6 +2232,7 @@ jobs:
               tests/e2e-chaos/glance-mariadb-outage
               tests/e2e-chaos/placement-mariadb-outage
               tests/e2e-chaos/barbican-mariadb-outage
+              tests/e2e-chaos/barbican-keystone-partition
               tests/e2e-chaos/cinder-mariadb-outage
               tests/e2e-chaos/neutron-operator-pod-kill
               tests/e2e-chaos/ovn-operator-pod-kill
@@ -2649,9 +2650,10 @@ jobs:
           OPERATOR: placement
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/placement-operator
           NAMESPACE: placement-system
-      # The four barbican chaos suites need the barbican-operator:
+      # The five barbican chaos suites need the barbican-operator:
       # barbican-operator-pod-kill and barbican-keystone-outage on pod,
-      # barbican-openbao-outage and barbican-mariadb-outage on network. Like
+      # barbican-openbao-outage, barbican-mariadb-outage and
+      # barbican-keystone-partition on network. Like
       # horizon and glance it must land in its own barbican-system namespace,
       # not the script's keystone-system default: that is where the
       # Flux/deploy-infra path installs it and where the pod-kill suite's
@@ -2663,7 +2665,7 @@ jobs:
           OPERATOR: barbican
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/barbican-operator
           NAMESPACE: barbican-system
-          # All four suites create their managed BarbicanSecretStore in the openstack
+          # All five suites create their managed BarbicanSecretStore in the openstack
           # Namespace, and the operator only mints their OpenBaoCluster
           # provisioner token where the chart granted it a TokenRequest Role,
           # restricted to the provisioner account of the proving instance.

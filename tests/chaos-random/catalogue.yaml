@@ -197,6 +197,32 @@
         app.kubernetes.io/name: keystone
         app.kubernetes.io/instance: "@CP@-keystone"
         app.kubernetes.io/component: api
+# The rule sits on the Keystone pods and targets the Barbican API pods: a rule
+# on the client side never matches Service-routed traffic. Every validation
+# Barbican sends ends after [keystone_authtoken] http_connect_timeout.
+- name: barbican-keystone-partition
+  kind: NetworkChaos
+  environments: [ci, lab]
+  duration: 120s
+  recovery: 150s
+  spec:
+    action: partition
+    mode: all
+    selector:
+      namespaces: ["@NS@"]
+      labelSelectors:
+        app.kubernetes.io/name: keystone
+        app.kubernetes.io/instance: "@CP@-keystone"
+        app.kubernetes.io/component: api
+    direction: both
+    target:
+      mode: all
+      selector:
+        namespaces: ["@NS@"]
+        labelSelectors:
+          app.kubernetes.io/name: barbican
+          app.kubernetes.io/instance: "@CP@-barbican"
+          app.kubernetes.io/component: api
 
 # --- MariaDB ---------------------------------------------------------------
 - name: mariadb-pod-kill
