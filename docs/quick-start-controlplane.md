@@ -41,6 +41,7 @@ Same toolchain as the [Quick Start](./quick-start.md), plus:
 - The OpenStack CLI ([`python-openstackclient`](https://docs.openstack.org/python-openstackclient/latest/)) on `PATH` for the auth check in Step 7, plus two plugins for the other checks in that step: [`osc-placement`](https://docs.openstack.org/osc-placement/latest/) for the placement call and [`python-barbicanclient`](https://docs.openstack.org/python-barbicanclient/latest/) for the `openstack secret` subcommands.
 - A host with 4 CPU cores, 16 GB of memory for the container runtime, and 10 GB of free disk. On the `Minimal` sizing profile the full stack requests at most 4 CPU and 16 GiB. The [node budget gate](./reference/testing/controlplane-e2e-tests.md#node-budget-link-6z) of the e2e-controlplane CI job enforces that budget on the CI stack. Step 7's optional compute path (fake compute, OVN chassis, and metadata agent) runs alongside the rest of the stack.
 - [`yq`](https://github.com/mikefarah/yq) v4.40.1 or newer on `PATH` for the `KIND_HOST_PORT=8443` override path in Step 2
+
 Docker Desktop and Podman are both valid kind providers. When using Podman,
 ensure its machine is already running and select it explicitly before running
 Step 2:
@@ -55,17 +56,17 @@ export KIND_EXPERIMENTAL_PROVIDER=podman
   per service component.
 - The `Standard` profile gives `3` of each and a `100Gi` volume: the
   production baseline, which OOM-kills a laptop-sized kind.
-- On a bigger box, set `CONTROLPLANE_DB_REPLICAS=3` and/or
-  `CONTROLPLANE_CACHE_REPLICAS=N` for Step 2 to pin those fields over the
-  profile. `2` is rejected for the database: Galera needs a quorum.
-- A database count above `1` also sets
-  `spec.sizing.database.antiAffinity: Preferred`. The kind cluster has fewer
-  schedulable nodes than Galera members, and the default `Required` would leave
-  a member `Pending`.
-- To mirror the production volume, set `CONTROLPLANE_DB_STORAGE=100Gi` for
-  Step 2. Any Kubernetes quantity in `Mi`/`Gi`/`Ti` is accepted.
+- Step 2's `CONTROLPLANE_DB_REPLICAS`, `CONTROLPLANE_CACHE_REPLICAS`, and
+  `CONTROLPLANE_DB_STORAGE` overrides apply only when it also applies the
+  bundled CR (`WITH_CONTROLPLANE_CR=true`). This guide applies the CR manually
+  in Step 4; set `spec.infrastructure.database.replicas`,
+  `spec.infrastructure.database.storageSize`, and/or
+  `spec.infrastructure.cache.replicas` in `controlplane.yaml` before applying
+  it. Database replicas must be `1` or at least `3`; `2` is rejected because
+  Galera needs a quorum.
 - `database.replicas` and `database.storageSize` are immutable after the CR is
-  created, so change them on a fresh environment (`make teardown-infra` first).
+  created, so choose them before applying the CR. `cache.replicas` can be
+  changed later.
 
 ```bash
 make install-test-deps
@@ -183,11 +184,12 @@ admin-credential references with their well-known names:
 - `k-orc-clouds-yaml` with the `admin` cloud entry
 
 The c5c3-operator seeds the K-ORC bootstrap `clouds.yaml` per CR and derives
-the in-cluster Keystone auth URL from the CR name. To use a different name, pass
-`CONTROLPLANE_NAME=foo` to Step 2; it renames the bundled CR and seeds the
-matching admin password. The defaulting only fills the names and references;
-the operator still reads the pre-seeded Secret content and creates the
-bootstrap `clouds.yaml` itself.
+the in-cluster Keystone auth URL from the CR name. To use a different name, set
+`CONTROLPLANE_NAME=foo` in Step 2 and change `metadata.name` to `foo` in the
+Step 4 manifest. If you set `WITH_CONTROLPLANE_CR=true`, deploy-infra renames
+the bundled CR automatically. The defaulting only fills the names and
+references; the operator still reads the pre-seeded Secret content and creates
+the bootstrap `clouds.yaml` itself.
 
 ```yaml
 # controlplane.yaml
@@ -695,9 +697,9 @@ The conditions in call order, with what each waits for on this devstack:
 | `RegistrationTenantStoresReady` | Nothing. Reads `True/NoRegistrationNamespaces` here: no other namespace registers a service against this ControlPlane |
 | `NamespaceAssignmentsReady` | Nothing. Reads `True/NoNamespaceAssignments` here: no namespace is assigned to a service owner |
 
-Each of the six services registers through a `KeystoneService`, and a
-registration waits for `AdminCredentialReady`, so the six service conditions
-turn `True` only after it.
+Each projected service has a `KeystoneService` registration, and its service
+condition waits for that registration's `AccountReady`. Nova's
+`neutron-nova` account is an additional registration.
 
 ```bash
 kubectl get controlplane controlplane -n openstack \
@@ -750,7 +752,8 @@ machine's resolver does this, `nip.io` never resolves. Confirm the cause by
 comparing your router against a public resolver:
 
 ```bash
-dig +short keystone.127-0-0-1.nip.io @<your-router-ip>   # empty: blocked
+ROUTER_IP=192.168.1.1 # replace with your router's LAN address
+dig +short keystone.127-0-0-1.nip.io @"$ROUTER_IP"       # empty: blocked
 dig +short keystone.127-0-0-1.nip.io @1.1.1.1            # 127.0.0.1: as expected
 ```
 
@@ -821,30 +824,25 @@ interface by default, so the upload runs directly from the host through the
 shared Gateway, with no in-cluster pod involved. `--insecure` accepts the listener's
 self-signed certificate, as with the Keystone calls above.
 
-Create a throwaway 1 KiB image, upload it through the gateway, wait for it to
-reach `active`, and delete it again:
+Create a throwaway 1 KiB image and upload it through the gateway:
 
 ```bash
 dd if=/dev/urandom of=/tmp/first.img bs=1024 count=1
 openstack --insecure image create --disk-format raw --container-format bare \
   --file /tmp/first.img first-image
-for _ in $(seq 30); do
-  [ "$(openstack --insecure image show first-image -f value -c status)" = active ] && break
-  sleep 2
-done
-test "$(openstack --insecure image show first-image -f value -c status)" = active \
-  && echo "OK: image uploaded through the gateway and reached active"
+openstack --insecure image show first-image -f value -c status
+```
+
+Repeat the status command until it prints `active`. The store write can take a
+few seconds, during which the image may remain in `saving`. Once it is active,
+delete it:
+
+```bash
 openstack --insecure image delete first-image
 ```
 
-The poll loop matters because `image create` returns as soon as Glance accepts
-the upload, while the store write completes asynchronously: a cold S3
-connection or a contended Garage backend can leave the image in `saving` for a
-few seconds.
-
-A run aborted before the final `delete` leaves `first-image` behind; delete it
-(`openstack --insecure image delete first-image`) before retrying, or the next
-`image create` fails on a name collision.
+A run aborted before the final `delete` leaves `first-image` behind. Delete it
+before retrying to avoid duplicate image names.
 
 OS_REGION_NAME is optional. Every catalog row the ControlPlane registers sits in its `spec.region`
 (`RegionOne` here), beside the identity rows Keystone's bootstrap inserted, so
@@ -870,11 +868,12 @@ openstack --insecure resource class list
 ```
 
 The call is read-only and Placement answers it only for an authenticated
-request, so a listing of the standard classes (`VCPU`, `MEMORY_MB` and `DISK_GB`
-among them) covers the catalog row, the gateway listener, and the service user's
-token validation in one command. It needs the `osc-placement` plugin from the
-prerequisites; without it the `openstack` CLI rejects `resource class list` as
-an unknown command.
+request. A listing of the standard classes (`VCPU`, `MEMORY_MB` and `DISK_GB`
+among them) confirms that the endpoint and Gateway reach the API and that
+Placement accepts the admin token. It exercises request authentication but
+does not issue a token as the Placement service user. The command needs the
+`osc-placement` plugin from the prerequisites; without it the `openstack` CLI
+rejects `resource class list` as an unknown command.
 
 ### Store and retrieve a first secret
 
@@ -895,8 +894,12 @@ and delete it again:
 PAYLOAD='cobaltcore-quick-start-payload'
 HREF=$(openstack --insecure secret store --name first-secret \
   --payload "$PAYLOAD" -f value -c 'Secret href')
-test "$(openstack --insecure secret get -p "$HREF" -f value -c Payload)" = "$PAYLOAD" \
-  && echo "OK: payload came back unchanged from the key manager"
+openstack --insecure secret get -p "$HREF" -f value -c Payload
+```
+
+Confirm the output is `cobaltcore-quick-start-payload`, then delete the secret:
+
+```bash
 openstack --insecure secret delete "$HREF"
 ```
 
@@ -942,12 +945,10 @@ openstack --insecure subnet create --network demo-net --subnet-range 192.0.2.0/2
 openstack --insecure network show demo-net -c status -f value
 ```
 
-The last command prints `ACTIVE`. That one word covers the whole network chain:
-the catalog row resolved the endpoint, the gateway listener routed the request
-to the Neutron API, Neutron validated the admin token against Keystone, and the
-ML2/OVN mechanism driver wrote the logical switch into the Northbound database
-of `controlplane-ovn`. The subnet range is the RFC 5737 documentation block, so
-it collides with nothing on your host. These are core `python-openstackclient`
+The last command should print `ACTIVE`. The requests verify that the catalog
+resolved the endpoint, the gateway routed them to the Neutron API, and Neutron
+accepted the admin token. The subnet range is the RFC 5737 documentation block,
+so it collides with nothing on your host. These are core `python-openstackclient`
 commands, so no plugin is needed here.
 
 Remove the two objects again, the subnet first:
@@ -978,13 +979,14 @@ openstack --insecure volume create --size 1 demo-vol
 openstack --insecure volume show demo-vol -c status -f value
 ```
 
-The last command prints `available`. That one word covers the whole
-block-storage chain: the catalog row resolved the endpoint, the gateway listener
-routed the request to the Cinder API, the API cast the request to the scheduler
-over the message bus, the scheduler picked the `nfs1` backend, and the volume
-service wrote a `volume-<id>` file into the export. That file sits at the md5
-mount point `/var/lib/cinder/mnt/<md5>`, owned `42424:42424` with mode `660`.
-These are core `python-openstackclient` commands, so no plugin is needed here.
+Repeat the status command until it prints `available`. That confirms the
+block-storage chain: the catalog row resolved the endpoint,
+the gateway listener routed the request to the Cinder API, the API cast the
+request to the scheduler over the message bus, the scheduler picked the `nfs1`
+backend, and the volume service wrote a `volume-<id>` file into the export. That
+file sits at the md5 mount point `/var/lib/cinder/mnt/<md5>`, owned `42424:42424`
+with mode `660`. These are core `python-openstackclient` commands, so no plugin
+is needed here.
 
 If you are done with the volume check, delete the volume:
 
@@ -1035,17 +1037,15 @@ kubectl rollout status deploy/controlplane-fake-compute -n openstack --timeout=5
 ```
 
 The compute registers under the name of the kind node,
-`cobaltcore-control-plane`. Wait until its service row reads `up`, which takes
-about a minute:
+`cobaltcore-control-plane`. Check its service row:
 
 ```bash
-for _ in $(seq 24); do
-  [ "$(openstack --insecure compute service list --service nova-compute \
-    --host cobaltcore-control-plane -f value -c State)" = up ] && break
-  sleep 5
-done
-openstack --insecure compute service list --service nova-compute
+openstack --insecure compute service list --service nova-compute \
+  --host cobaltcore-control-plane
 ```
+
+Repeat the command until the state reads `up`, which can take up to two minutes.
+The service status must also be `enabled` before it can accept a server.
 
 The scheduler places a server only on a host that is mapped into the cell, and
 its discovery periodic maps a new host within 300 seconds. Map it now by running
@@ -1057,27 +1057,30 @@ kubectl exec -n openstack deploy/controlplane-nova-conductor -c conductor -- \
 ```
 
 `openstack --insecure hypervisor list` now shows `cobaltcore-control-plane`.
-Create a flavor the fake driver can satisfy and a 1 MiB image it never reads,
-then boot a server without a network:
+Create a flavor the fake driver can satisfy and a 1 MiB image it never reads:
 
 ```bash
 openstack --insecure flavor create --vcpus 1 --ram 128 --disk 1 m1.nano
 truncate -s 1M /tmp/boot-image.raw
 openstack --insecure image create --disk-format raw --container-format bare \
   --file /tmp/boot-image.raw boot-image
-for _ in $(seq 30); do
-  [ "$(openstack --insecure image show boot-image -f value -c status)" = active ] && break
-  sleep 2
-done
+openstack --insecure image show boot-image -f value -c status
+```
+
+Repeat the status command until it prints `active`, then boot a server without
+a network:
+
+```bash
 openstack --insecure server create --image boot-image --flavor m1.nano \
   --nic none --wait demo-server
 openstack --insecure server show demo-server -c status -f value
 ```
 
-The last command prints `ACTIVE`. That one word covers the compute chain: the
-API validated the admin token against Keystone, the conductor asked the
-scheduler for a host over the message bus, the scheduler claimed the flavor's
-resources in Placement, and the fake compute took the instance.
+The last command should print `ACTIVE`. That confirms the compute chain: the
+API validated the admin token against Keystone,
+the conductor asked the scheduler for a host over the message bus, the
+scheduler claimed the flavor's resources in Placement, and the fake compute
+took the instance.
 
 `--nic none` is what lets the boot finish here. This devstack runs no
 `OVNChassis`, so a port on a network could never bind, and a server with one
