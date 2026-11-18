@@ -56,7 +56,6 @@ The label guide's manifest carries no `spec.bridgeMappings`, so a merge patch
 writes the whole list:
 
 ```bash
-set -euo pipefail
 kubectl patch ovnchassis controlplane-chassis -n openstack --type merge \
   -p '{"spec":{"bridgeMappings":[{"physicalNetwork":"physnet1","bridge":"br-ex"}]}}'
 ```
@@ -107,7 +106,6 @@ below verify OVN port binding only.
 ### 2. Create the network and its subnet
 
 ```bash
-set -euo pipefail
 openstack --insecure network create \
   --provider-network-type flat --provider-physical-network physnet1 provider
 openstack --insecure subnet create --network provider \
@@ -208,7 +206,6 @@ Remove the interface before the port, so `ovn-controller` never holds a claim on
 a logical port that is gone:
 
 ```bash
-set -euo pipefail
 kubectl exec ds/controlplane-chassis-ovs -n openstack -c ovsdb-server -- \
   ovs-vsctl --if-exists del-port br-int smoke0
 openstack --insecure port delete smoke0
