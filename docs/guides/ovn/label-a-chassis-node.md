@@ -60,7 +60,6 @@ The ControlPlane bring-up also deploys the `ovn-operator` in namespace
 The devstack cluster has one node, so read its name once and keep it:
 
 ```bash
-set -eu
 NODE="$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')"
 test -n "$NODE"
 kubectl label node "$NODE" openstack.c5c3.io/chassis=true --overwrite
@@ -139,7 +138,6 @@ gateway configuration. After the operator creates the apply Job, check its
 name and wait for it to complete:
 
 ```bash
-set -eu
 kubectl get jobs -n openstack
 kubectl wait 'job/controlplane-chassis-apply-<8-hex-suffix>' -n openstack \
   --for=condition=Complete --timeout=5m
