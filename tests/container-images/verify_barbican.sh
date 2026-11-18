@@ -388,6 +388,107 @@ check("delete_metadatum", "delete", {"b": "2"},
   assert_eq "secret metadata writes are retried after a conflict" "0" "$exit_code"
 }
 
+# --- Test 12: the five 204 answers carry no body ---
+test_no_body_on_204_patch_applied() {
+  echo "Test: the five 204 handlers answer without a body"
+  # Proves the image build applied
+  # patches/barbican/<release>/000N-do-not-send-a-json-body-with-204-responses.patch
+  # (#1811). Upstream exposes the handlers of DELETE
+  # /secrets/{id}/metadata/{key}, PUT and DELETE /project-quotas/{project},
+  # and POST and DELETE /secret-stores/{id}/preferred with template='json',
+  # so pecan sends the body null with their 204, and Envoy answers the client
+  # 502. Each request is sent with Accept: application/json to the WSGI
+  # application over an in-memory database, as in Test 11. policy_enforcer =
+  # None skips RBAC the way upstream's BarbicanAPIBaseTestCase._build_context
+  # does, and is_multiple_backends_enabled is mocked, because the bare image
+  # has no secret-store configuration. Three error answers follow: the quota
+  # PUT without a body expects 400, the quota and preferred-store DELETEs with
+  # nothing left to delete expect 404, and each must carry a JSON object,
+  # which python-barbicanclient and Tempest read the error from. An unpatched
+  # image exits 1 with one line per 204 request, and stderr is echoed on
+  # failure.
+  local exit_code=0 err=""
+  err=$(docker run --rm "$IMAGE" \
+    /var/lib/openstack/bin/python -c \
+    'import json
+import sys
+from unittest import mock
+
+import webob
+
+from barbican.api import app
+from barbican.common import config
+from barbican import context
+from barbican.model import models
+from barbican.model import repositories as repo
+
+CONF = config.CONF
+CONF.set_override("connection", "sqlite://", "database")
+CONF.set_override("db_auto_create", True)
+repo.setup_database_engine_and_factory()
+
+session = repo.get_session()
+project = models.Project()
+project.external_id = "verify"
+project.save(session=session)
+secret = models.Secret()
+secret.project_id = project.id
+secret.save(session=session)
+store = models.SecretStores(name="verify", store_plugin="store_crypto")
+store.save(session=session)
+secret_id, store_id = secret.id, store.id
+repo.get_secret_user_meta_repository().create_replace_user_metadatum(
+    secret_id, "extra", "1")
+repo.commit()
+repo.clear()
+
+wsgi_app = app.build_wsgi_app(transactional=True)
+bad = []
+
+
+def call(method, path, body=None, want_status=204):
+    request = webob.Request.blank(path, method=method)
+    request.accept = "application/json"
+    if body is not None:
+        request.content_type = "application/json"
+        request.body = body
+    ctx = context.RequestContext(project_id="verify", is_admin=True)
+    ctx.policy_enforcer = None
+    request.environ["barbican.context"] = ctx
+    response = request.get_response(wsgi_app)
+    if want_status == 204:
+        got = (response.status_int, response.body)
+        want = (204, b"")
+        ok = got == want
+    else:
+        got = (response.status_int, response.content_type, response.body)
+        want = (want_status, "application/json", "a JSON object")
+        ok = (got[:2] == want[:2]
+              and isinstance(json.loads(response.body), dict))
+    if not ok:
+        bad.append("%s %s answers %r, want %r" % (method, path, got, want))
+
+
+with mock.patch("barbican.common.utils.is_multiple_backends_enabled",
+                return_value=True):
+    call("DELETE", "/secrets/%s/metadata/extra" % secret_id)
+    call("PUT", "/project-quotas/verify",
+         json.dumps({"project_quotas": {}}).encode())
+    call("DELETE", "/project-quotas/verify")
+    call("POST", "/secret-stores/%s/preferred" % store_id)
+    call("DELETE", "/secret-stores/%s/preferred" % store_id)
+    call("PUT", "/project-quotas/verify", b"", want_status=400)
+    call("DELETE", "/project-quotas/verify", want_status=404)
+    call("DELETE", "/secret-stores/%s/preferred" % store_id, want_status=404)
+
+if bad:
+    sys.exit("\n".join(bad))' \
+    2>&1 > /dev/null) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "    $err"
+
+  assert_eq "the five 204 handlers send no body and JSON errors" "0" "$exit_code"
+}
+
 # --- Run all tests ---
 echo "=== barbican container verification tests ==="
 echo "Image: $IMAGE"
@@ -413,6 +514,8 @@ echo ""
 test_vault_index_patch_applied
 echo ""
 test_secret_metadata_retry_patch_applied
+echo ""
+test_no_body_on_204_patch_applied
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 
