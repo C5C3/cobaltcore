@@ -71,8 +71,8 @@ to a chart version, so it is not repeated here.
 ## Per-Operator Applicability
 
 Every chart exposes the same core value keys — `image`, `replicas`,
-`resources`, `nodeSelector`, `tolerations`, `priorityClassName`, `rbac`,
-`leaderElection`, `controller`, `webhook`, `metrics`,
+`podDisruptionBudget`, `resources`, `nodeSelector`, `tolerations`,
+`priorityClassName`, `rbac`, `leaderElection`, `controller`, `webhook`, `metrics`,
 `logging`, `monitoring`, `serviceAccount`, `extraArgs`, `extraEnv`,
 `extraVolumes`, `extraVolumeMounts`, `nameOverride`, `fullnameOverride`. A few keys are conditional on what a chart
 ships, so they are present only where they apply:
@@ -107,6 +107,41 @@ ships, so they are present only where they apply:
 | Field | Type | Constraint | Default |
 | --- | --- | --- | --- |
 | `replicas` | `integer` | minimum: `1` | `2` |
+
+### podDisruptionBudget
+
+| Field | Type | Constraint | Default |
+| --- | --- | --- | --- |
+| `podDisruptionBudget.enabled` | `boolean` | — | `true` |
+| `podDisruptionBudget.minAvailable` | `intOrPercent` | integer >= 0 or `"0%"` to `"100%"`; not together with `maxUnavailable` | unset |
+| `podDisruptionBudget.maxUnavailable` | `intOrPercent` | integer >= 0 or `"0%"` to `"100%"`; not together with `minAvailable` | unset |
+
+The chart renders a `PodDisruptionBudget` for the operator pods when `enabled` is
+`true` and `replicas` is above 1. With a single replica, a budget of
+`minAvailable: 1` would block every voluntary disruption, so `replicas: 1`
+renders none whatever the three keys say. `enabled: false` renders none at any
+replica count.
+
+The budget takes `maxUnavailable` when it is set, else `minAvailable`, and falls
+back to `minAvailable: 1` when neither is set. The fallback keeps one replica, and
+with it the in-process admission webhook (`failurePolicy: Fail`), available during
+a node drain. The schema rejects the two counts together
+(`not: {required: [minAvailable, maxUnavailable]}`), and a render with
+`--skip-schema-validation` takes `maxUnavailable` and ignores `minAvailable`. Both
+counts stay unset in `values.yaml`, so a deployment can set `maxUnavailable`
+alone. A `minAvailable` default there would merge with it.
+
+A count is a number of pods. A percentage is a string such as `"50%"`, and
+Kubernetes rounds it up to a pod count. The chart does not check either count
+against `replicas`, and two values block every node drain: `minAvailable` equal to
+`replicas` (or `"100%"`) and `maxUnavailable: 0` (or `"0%"`). Both render as
+given, so a deployment can set `maxUnavailable: 0` to stop every eviction.
+
+The keys need operator-library 0.13.0, which the chart versions keystone-operator
+0.16.0, c5c3-operator 0.21.0, horizon-operator 0.9.0, cinder-, nova- and
+ovn-operator 0.7.0, and barbican-, glance-, neutron- and placement-operator 0.8.0
+carry. The root-level `additionalProperties: false` of an older chart's schema
+rejects the key.
 
 ### resources
 
@@ -435,6 +470,7 @@ ships an enforced schema and covers the keys its extras file adds.
 | Logging constraints | `logging.development: "yes"`, `logging.encoder: "xml"`, `logging.level: "verbose"` |
 | Placement constraints | `nodeSelector: {role: 1}`, a toleration with `operator: Sometimes`, `effect: NoSchedul`, `tolerationSeconds: "300"` or the unknown key `taint`, `priorityClassName: 5`, a `priorityClassName` of 254 characters |
 | Extra volumes | an `extraVolumeMounts` entry without `mountPath`, an `extraVolumes` entry without `name` |
+| Disruption budget | `podDisruptionBudget` with both `minAvailable: 1` and `maxUnavailable: 1`, `minAvailable: -1`, `maxUnavailable: 1.5`, `maxUnavailable: "101%"`, `minAvailable: "two"`, `enabled: "yes"`, the unknown key `unknown` |
 
 ### Positive Tests (acceptance)
 
@@ -450,6 +486,7 @@ ships an enforced schema and covers the keys its extras file adds.
 | Logging overrides | `development: true`, `level: debug`, `encoder: console` |
 | Operator image pull policy | `controller.defaultImagePullPolicy: Never` |
 | Placement keys | `priorityClassName`, a `nodeSelector` label and two tolerations, one with `tolerationSeconds`; a toleration with `effect: ""`, which matches every effect |
+| Disruption budget | `podDisruptionBudget.maxUnavailable: "100%"`, `podDisruptionBudget.minAvailable: "0%"`, `podDisruptionBudget.enabled: false` |
 
 ## Values by Operator
 
@@ -468,6 +505,9 @@ description, and by carrying no `federation` key (see the
 | `image.tag` | `""` (falls back to `.Chart.AppVersion`) | `""` (falls back to `.Chart.AppVersion`) |
 | `image.pullPolicy` | `IfNotPresent` | `IfNotPresent` |
 | `replicas` | `2` | `2` |
+| `podDisruptionBudget.enabled` | `true` | `true` |
+| `podDisruptionBudget.minAvailable` | unset (renders `1`) | unset (renders `1`) |
+| `podDisruptionBudget.maxUnavailable` | unset | unset |
 | `resources.requests` | `cpu: 10m`, `memory: 64Mi` | `cpu: 10m`, `memory: 64Mi` |
 | `resources.limits` | `cpu: 500m`, `memory: 128Mi` | `cpu: 500m`, `memory: 128Mi` |
 | `nodeSelector` | `{}` | `{}` |
@@ -566,6 +606,17 @@ monitoring:
 See the [Multi-Tenant Deployment guide](../../guides/multi-tenant-deployment.md#when-cluster-wide-rbac-is-still-required)
 for the charts that refuse the mode and the other capabilities that still need
 cluster scope.
+
+**Any operator chart: one operator pod down at a time.** Run three replicas and
+let a node drain evict one of them at a time. The fallback `minAvailable: 1`
+would let it evict two:
+
+```yaml
+# pdb-overrides.yaml
+replicas: 3
+podDisruptionBudget:
+  maxUnavailable: 1
+```
 
 **Any operator chart: dedicated nodes and a priority class.** Run the operator
 pods on nodes labelled and tainted for the platform, and rank them above tenant
