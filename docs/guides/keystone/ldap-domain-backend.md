@@ -30,17 +30,16 @@ Follow that tutorial through to its final **Verify** step, so a Keystone CR name
 examples below is one that devstack produces.
 :::
 
-The LDAP server must be reachable from the cluster, with a bind DN allowed to
-search the user/group trees. Step 1 deploys a seeded fixture directory on the
-kind devstack; for an existing LDAP server, use your own directory settings.
+The LDAP server must be reachable from the cluster, and the bind DN must be
+allowed to search the user tree and, if configured, the group tree. Step 1
+deploys a seeded fixture directory on the kind devstack; for an existing LDAP
+server, use your own directory settings.
 
 ## Step 1: Set up the LDAP directory and bind credentials
 
-::: info Service users stay SQL-backed
-OpenStack service accounts and the bootstrap admin must remain in the SQL-backed
-`Default` domain. The CRD rejects attaching a backend to `Default`. Use LDAP
-domains for human users; the backend is read-only by default.
-:::
+Keep OpenStack service accounts and the bootstrap admin in the SQL-backed
+`Default` domain; the CRD rejects attaching a backend to `Default`. Use LDAP
+domains for human users. The backend is read-only by default.
 
 On the kind devstack, deploy the same OpenLDAP directory the e2e suite uses.
 It is a plain namespace-pinned manifest, so `kubectl apply` runs it verbatim:
@@ -65,20 +64,30 @@ No separate Secret creation is needed for the kind devstack.
 
 To connect to an existing LDAP server instead, skip the fixture deployment and
 create `corp-ldap-bind` in the same namespace as the backend CR. Replace the
-example credentials below with your server's bind DN and password. The operator
-reads the fixed data keys `username` and `password`:
+example bind DN below with your own. The Secret must use the fixed data keys
+`username` and `password`; the Keystone reconciler reads both.
 
 ```bash
-kubectl create secret generic corp-ldap-bind -n openstack \
-  --from-literal=username='cn=admin,dc=planetexpress,dc=com' \
-  --from-literal=password='GoodNewsEveryone'
+printf 'LDAP bind password: '
+IFS= read -r -s LDAP_BIND_PASSWORD
+printf '\n'
+printf '%s' "$LDAP_BIND_PASSWORD" |
+  kubectl create secret generic corp-ldap-bind -n openstack \
+    --from-literal=username='cn=admin,dc=planetexpress,dc=com' \
+    --from-file=password=/dev/stdin
+unset LDAP_BIND_PASSWORD
 ```
+
+The prompt keeps the password out of shell history and the `kubectl` command
+line. For the `username` value, replace the example DN with the bind DN for
+your directory.
 
 In Step 2, change `bindCredentialsSecretRef.name` to `corp-ldap-bind` and replace
 the LDAP URL, suffix, and user mappings with your directory's settings.
 
-The operator watches the referenced bind Secret. Rotating its credentials
-re-renders the per-domain config automatically.
+The Keystone reconciler watches the bind Secret and, when configured, the CA
+Secret. Updating either re-renders the per-domain config and rolls Keystone
+pods as needed.
 
 ## Step 2: Apply the backend CR
 
@@ -116,7 +125,16 @@ the domain by name and never mutates it. Adopted domains are always retained
 when the backend CR is deleted.
 :::
 
-For `ldaps://` endpoints, add certificate verification:
+For an `ldaps://` endpoint that uses a custom CA, create a CA bundle Secret in
+the same namespace before applying the backend:
+
+```bash
+kubectl create secret generic corp-ldap-ca -n openstack \
+  --from-file=ca.crt=/path/to/corp-ldap-ca.pem
+```
+
+Reference it in the backend CR so the operator projects the CA bundle and
+configures Keystone to verify the LDAP server certificate:
 
 ```yaml
     tls:
@@ -176,10 +194,10 @@ openstack role add --user professor --user-domain planetexpress \
 )
 ```
 
-Without the openstack CLI, use the `urllib`/`curl` requests in
-[Step 4 in the e2e test](https://github.com/C5C3/cobaltcore/blob/main/tests/e2e/keystone/ldap-domain-backend/chainsaw-test.yaml#L161)
-for an in-cluster variant. The test obtains an admin token, lists LDAP users,
-grants the domain role, and requests an LDAP user's token.
+Without the OpenStack CLI, adapt the Python `urllib` requests in
+[Step 4 of the e2e test](https://github.com/C5C3/cobaltcore/blob/main/tests/e2e/keystone/ldap-domain-backend/chainsaw-test.yaml#L161)
+to run from a Keystone pod. The test obtains an admin token, lists LDAP users,
+grants the domain role, and requests a domain-scoped token for an LDAP user.
 
 ## Deleting a backend
 
@@ -205,7 +223,7 @@ applies `spec.domain.deletionPolicy`:
 | `IdentityBackendsReady=False/WaitingForBackends` with `IdentityBackendSkipped` Warning events | The bind Secret is missing or lacks the `username`/`password` keys; healthy sibling backends keep working. |
 | LDAP users not listed | Check the tree and attribute mapping against your directory (`user_tree_dn`, `user_objectclass`, `user_id_attribute`). Unset fields use Keystone defaults, which may not match your schema. |
 | `GET /v3/users` returns HTTP 400 `'enabled' is a required property` | A `user_enabled_*` key in `extraOptions` may suppress the projected fallback. If the configured attribute does not exist in the directory, Keystone omits `enabled` and its response validation rejects the reply. Align the options with the directory schema or remove them to restore the fallback. |
-| Admission rejects the CR | The message names the exact rule: Default-domain protection, domain-name uniqueness per Keystone, the `extraOptions` denylist, or the fixed Secret data-key contract. |
+| Admission rejects the CR | Read the validation message for the failing field. Common causes include Default-domain protection, domain-name uniqueness per Keystone, the `extraOptions` denylist, or a non-empty `bindCredentialsSecretRef.key` / `tls.caBundleSecretRef.key`. |
 
 ## Tested by
 
