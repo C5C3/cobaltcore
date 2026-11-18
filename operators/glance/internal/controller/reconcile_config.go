@@ -11,9 +11,11 @@ import (
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -126,7 +128,61 @@ func (r *GlanceReconciler) reconcileConfig(ctx context.Context, children client.
 		return ctrl.Result{}, configArtifacts{}, err
 	}
 
-	defaults := operatorDefaults(glance, projection, cache.ResolveServers(&glance.Spec.Cache, managed))
+	policyYAML, err := policy.BuildPolicyYAML(ctx, children, glance.Namespace, glance.Spec.PolicyOverrides)
+	if err != nil {
+		markConfigFailed(glance, err)
+		return ctrl.Result{}, configArtifacts{}, fmt.Errorf("building policy: %w", err)
+	}
+	data, err := renderGlanceConfig(glance, projection, cache.ResolveServers(&glance.Spec.Cache, managed), policyYAML)
+	if err != nil {
+		markConfigFailed(glance, err)
+		return ctrl.Result{}, configArtifacts{}, err
+	}
+	configMapName, err := config.CreateImmutableConfigMap(ctx, children, r.Scheme, glance,
+		glance.Name+"-config", glance.Namespace, data)
+	if err != nil {
+		markConfigFailed(glance, err)
+		return ctrl.Result{}, configArtifacts{}, fmt.Errorf("creating config ConfigMap: %w", err)
+	}
+
+	return ctrl.Result{}, configArtifacts{configMapName: configMapName, backendsSecretName: projection.secretName}, nil
+}
+
+// pruneConfigHistory runs only after Deployment and CronJob convergence.
+// Migration Jobs have no app labels, so inspect Job volume references in the
+// namespace. The pruner still selects candidates by owner and config base.
+func (r *GlanceReconciler) pruneConfigHistory(ctx context.Context, children client.Client, glance *glancev1alpha1.Glance, art configArtifacts) error {
+	pinnedConfigMaps := func(ctx context.Context) (sets.Set[string], error) {
+		var jobs batchv1.JobList
+		if err := children.List(ctx, &jobs, client.InNamespace(glance.Namespace)); err != nil {
+			return nil, fmt.Errorf("checking Job config mounts: %w", err)
+		}
+		pinned := sets.New[string]()
+		for _, job := range jobs.Items {
+			for _, v := range job.Spec.Template.Spec.Volumes {
+				if v.ConfigMap != nil {
+					pinned.Insert(v.ConfigMap.Name)
+				}
+			}
+		}
+		return pinned, nil
+	}
+	if err := config.PruneImmutableConfigMaps(ctx, children, r.Scheme, glance, config.PruneOptions{
+		BaseName: glance.Name + "-config", Namespace: glance.Namespace, CurrentName: art.configMapName,
+		Retain: defaultConfigMapRetainCount, InUse: pinnedConfigMaps,
+	}); err != nil {
+		return fmt.Errorf("pruning config ConfigMaps: %w", err)
+	}
+	return config.PruneImmutableSecrets(ctx, children, r.Scheme, glance, config.PruneOptions{
+		BaseName: glance.Name + "-backends", Namespace: glance.Namespace, CurrentName: art.backendsSecretName,
+		Retain: defaultConfigMapRetainCount,
+	})
+}
+
+// renderGlanceConfig renders the immutable ConfigMap payload using only the
+// CR and resolved inputs. A failed observation never feeds a partial render.
+func renderGlanceConfig(glance *glancev1alpha1.Glance, projection backendsProjection, cacheServers, policyYAML string) (map[string]string, error) {
+	defaults := operatorDefaults(glance, projection, cacheServers)
 
 	// logging is re-derived here (operatorDefaults keeps its own copy) for the
 	// later logging.conf data-key decision below.
@@ -139,8 +195,7 @@ func (r *GlanceReconciler) reconcileConfig(ctx context.Context, children client.
 	if len(glance.Spec.Plugins) > 0 {
 		pluginConfig, err := plugins.RenderPluginConfig(glance.Spec.Plugins)
 		if err != nil {
-			markConfigFailed(glance, err)
-			return ctrl.Result{}, configArtifacts{}, fmt.Errorf("rendering plugin config: %w", err)
+			return nil, fmt.Errorf("rendering plugin config: %w", err)
 		}
 		merged = config.MergeDefaults(defaults, pluginConfig)
 	}
@@ -150,24 +205,13 @@ func (r *GlanceReconciler) reconcileConfig(ctx context.Context, children client.
 		merged = config.MergeDefaults(glance.Spec.ExtraConfig, merged)
 	}
 
-	// Handle PolicyOverrides: render policy.yaml and wire oslo_policy.policy_file.
-	var policyYAML string
-	if glance.Spec.PolicyOverrides != nil {
-		yaml, err := policy.BuildPolicyYAML(ctx, children, glance.Namespace, glance.Spec.PolicyOverrides)
-		if err != nil {
-			markConfigFailed(glance, err)
-			return ctrl.Result{}, configArtifacts{}, fmt.Errorf("building policy: %w", err)
-		}
-		policyYAML = yaml
-		if policyYAML != "" {
-			merged = config.InjectOsloPolicyConfig(merged, policyFilePath)
-		}
+	if policyYAML != "" {
+		merged = config.InjectOsloPolicyConfig(merged, policyFilePath)
 	}
 
 	pasteINI, err := renderPasteINI(glance)
 	if err != nil {
-		markConfigFailed(glance, err)
-		return ctrl.Result{}, configArtifacts{}, fmt.Errorf("rendering glance-api-paste.ini: %w", err)
+		return nil, fmt.Errorf("rendering glance-api-paste.ini: %w", err)
 	}
 
 	data := map[string]string{
@@ -181,23 +225,7 @@ func (r *GlanceReconciler) reconcileConfig(ctx context.Context, children client.
 		data["logging.conf"] = config.RenderLoggingConf(logging.Level)
 	}
 
-	configMapName, err := config.CreateImmutableConfigMap(ctx, children, r.Scheme, glance,
-		glance.Name+"-config", glance.Namespace, data)
-	if err != nil {
-		markConfigFailed(glance, err)
-		return ctrl.Result{}, configArtifacts{}, fmt.Errorf("creating config ConfigMap: %w", err)
-	}
-	if err := config.PruneImmutableConfigMaps(ctx, children, r.Scheme, glance, config.PruneOptions{
-		BaseName:    glance.Name + "-config",
-		Namespace:   glance.Namespace,
-		CurrentName: configMapName,
-		Retain:      defaultConfigMapRetainCount,
-	}); err != nil {
-		markConfigFailed(glance, err)
-		return ctrl.Result{}, configArtifacts{}, fmt.Errorf("pruning config ConfigMaps: %w", err)
-	}
-
-	return ctrl.Result{}, configArtifacts{configMapName: configMapName, backendsSecretName: projection.secretName}, nil
+	return data, nil
 }
 
 // operatorDefaults builds the operator-owned glance-api.conf sections from the

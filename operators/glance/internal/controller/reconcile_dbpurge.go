@@ -126,10 +126,6 @@ func effectiveDBPurge(spec *glancev1alpha1.DBPurgeSpec) glancev1alpha1.DBPurgeSp
 func (r *GlanceReconciler) reconcileDBPurge(ctx context.Context, children client.Client, glance *glancev1alpha1.Glance, configMapName string) (ctrl.Result, error) {
 	purge := effectiveDBPurge(glance.Spec.DBPurge)
 
-	// A failed ensure returns the wrapped error and sets no condition, matching
-	// the sibling steps (keystone's trust flush, the shared NetworkPolicy flow):
-	// DBPurgeReady then stays absent or stale, which already keeps the aggregate
-	// Ready False, and the pipeline attributes the error to this step.
 	cronJob := dbPurgeCronJob(glance, configMapName)
 	if err := job.EnsureCronJob(ctx, children, r.Scheme, glance, cronJob); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring db purge CronJob: %w", err)
