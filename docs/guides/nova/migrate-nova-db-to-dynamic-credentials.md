@@ -83,6 +83,9 @@ examples below is one that devstack produces.
 On that devstack Nova already runs on dynamic credentials, because the
 tutorial's Step 5 onboarded both engine roles. To walk the migration there,
 stage the static mode first with step 3 below, then cut over with step 4.
+The examples use the ControlPlane name `controlplane` and Nova service
+namespace `openstack`; replace them with your ControlPlane name and the
+namespace where Nova runs if yours differ.
 
 ::: warning Set the credential mode on the ControlPlane, never on the projected child
 The `controlplane-nova` Nova CR is **projected** by the c5c3-operator, so a
@@ -99,8 +102,8 @@ project it down; the commands below only read the child.
   `setup-secret-engines.sh` bootstrap step). A greenfield cluster already has
   it; on a brownfield cluster, re-apply the bootstrap scripts (step 1).
 - cert-manager and its `openbao-ca-issuer` ClusterIssuer are installed. They
-  issue the two per-ControlPlane mTLS client certificates the generators present
-  to the OpenBao listener.
+  issue the two per-ControlPlane mutual TLS (mTLS) client certificates the
+  generators present to the OpenBao listener.
 - The External Secrets Operator can request ServiceAccount tokens
   (`serviceaccounts/token` `create`), so each generator can authenticate to
   OpenBao as its own ServiceAccount.
@@ -120,6 +123,7 @@ That procedure reads the root token from `openbao-init-keys` and exports it for
 the bootstrap scripts.
 
 ```bash
+set -euo pipefail
 # From the repo root, with BAO_TOKEN exported (the OpenBao root token).
 bash deploy/bases/shared-openbao/bootstrap/setup-secret-engines.sh
 bash deploy/bases/shared-openbao/bootstrap/setup-auth.sh
@@ -175,6 +179,7 @@ out of your shell history and off the command line (`password=-` reads it from
 stdin):
 
 ```bash
+set -euo pipefail
 # Inside the OpenBao pod, or with a bao client configured for it.
 printf 'nova_api DB password: '
 IFS= read -r -s PW
@@ -202,10 +207,11 @@ kubectl patch controlplane controlplane -n openstack --type merge \
 
 The switch reaches the child at once, possibly before ESO has re-synced the two
 Secrets from the KV paths, and the nova operator creates each `User` with the
-password its Secret holds at that moment. mariadb-operator does not watch that
-Secret, so it keeps that password until something makes it reconcile the `User`
-again. Wait until both Secrets carry the static usernames, then touch both
-`User` CRs so mariadb-operator applies the password the Secrets hold now:
+password its Secret holds at that moment. These Secrets are not labeled with
+MariaDB Operator's `k8s.mariadb.com/watch` label, so a Secret update does not
+trigger a `User` reconcile. Wait until both Secrets carry the static usernames,
+then touch both `User` CRs so MariaDB Operator applies the password the Secrets
+hold now:
 
 ```bash
 ok=1
@@ -227,7 +233,7 @@ done
     --overwrite "password-resync=$(date +%s)"
 ```
 
-Every change to a `User` makes mariadb-operator reconcile it, and every
+Every change to a `User` makes MariaDB Operator reconcile it, and every
 reconcile sets the SQL user's password from the Secret again, so the annotation
 changes nothing where the password was already right.
 
@@ -238,16 +244,19 @@ usually a KV path that does not match your ControlPlane's name or a store policy
 that denies the read, then run the block again.
 
 The shared `spec.infrastructure.database.credentialsMode: Static` opts out
-ControlPlane-wide instead; the per-service override scopes the opt-out to Nova.
-Remove the override (or set it to `Dynamic`) to cut over.
+ControlPlane-wide instead. Set Nova's per-service override to `Dynamic` to cut
+over regardless of the shared mode. If the shared mode is already `Dynamic` and
+you staged only Nova with a `Static` override, setting the override to `null`
+also inherits `Dynamic`.
 
 ### 4. Cut over and observe
 
-Remove the override:
+Set Nova's per-service mode to `Dynamic`. This also works when the shared
+ControlPlane mode is `Static`:
 
 ```bash
 kubectl patch controlplane controlplane -n openstack --type merge \
-  -p '{"spec":{"services":{"nova":{"databaseCredentialsMode":null}}}}'
+  -p '{"spec":{"services":{"nova":{"databaseCredentialsMode":"Dynamic"}}}}'
 ```
 
 On the next reconcile the c5c3 operator projects both generators, their
@@ -270,7 +279,7 @@ so `NovaReady` reads `False` under `WaitingForNovaAPIDBCredential` and then unde
 
 ```bash
 kubectl get controlplane controlplane -n openstack \
-  -o jsonpath='{.status.conditions[?(@.type=="NovaReady")].reason}{"\n"}'
+  -o jsonpath='{.status.conditions[?(@.type=="NovaReady")].reason}{"\n"}{.status.conditions[?(@.type=="NovaReady")].message}{"\n"}'
 ```
 
 The message names the creds path the chain waits on, or the stale static
@@ -306,13 +315,14 @@ with, so the cutover needs no `nova-manage cell_v2 update_cell`. Confirm it with
 the plain `list_cells` (never `--verbose`, which prints the passwords):
 
 ```bash
+set -euo pipefail
 kubectl exec -n openstack deploy/controlplane-nova-conductor -c conductor -- \
   nova-manage --config-dir /etc/nova/nova.conf.d cell_v2 list_cells
 kubectl get nova controlplane-nova -n openstack -o jsonpath='{.status.cells}{"\n"}'
 ```
 
-The two UUIDs in the table are the ones `status.cells` reported before the
-cutover.
+The UUIDs in the `list_cells` output should match `.status.cells`; the cutover
+does not rewrite them.
 
 ### 5. Retire the static credentials
 
@@ -324,6 +334,7 @@ Once the ControlPlane reports `NovaReady=True` on the dynamic path:
    the schemas.
 
    ```bash
+   set -euo pipefail
    kubectl delete user controlplane-nova-api controlplane-nova \
      -n openstack --ignore-not-found
    kubectl delete grant controlplane-nova-api controlplane-nova \
@@ -333,6 +344,7 @@ Once the ControlPlane reports `NovaReady=True` on the dynamic path:
 2. Remove the retired static KV secrets, if step 3 ever seeded them:
 
    ```bash
+   set -euo pipefail
    # Inside the OpenBao pod, or with a bao client configured for it.
    bao kv metadata delete kv-v2/openstack/nova/openstack/controlplane/api-db
    bao kv metadata delete kv-v2/openstack/nova/openstack/controlplane/db
@@ -380,9 +392,12 @@ their Certificates are torn down with the switch.
   connections. Already-open sessions of a dropped user may persist until they
   disconnect.
 - **ESO or OpenBao outage longer than the lease:** the leased credentials
-  expire before a refresh completes. Running pods keep pooled connections, but new
-  connections fail until ESO recovers. This surfaces through the child's own
-  `DatabaseReady` and, ControlPlane-side, as `NovaReady=False`.
+  expire before ESO can issue a fresh credential. Existing database sessions
+  may remain open, but new connections fail. Do not rely on `NovaReady` or
+  `DatabaseReady` alone to prove the lease is valid: `DatabaseReady` tracks
+  provisioning and schema work, while Nova's readiness checks do not test a
+  live database connection. Monitor ESO/OpenBao and Nova database errors, and
+  restore credential issuance before the lease expires.
 
 ## See also
 
@@ -397,15 +412,14 @@ their Certificates are torn down with the switch.
 
 ## Tested by
 
-The dynamic, engine-issued credentials this guide migrates to are asserted on
-the live CI e2e kind cluster by the chainsaw suite below. Its compute link waits
-for `NovaReady`, reads both database blocks of the projected child back as
-`Dynamic`, and checks for each chain that the ExternalSecret draws from a
-`VaultDynamicSecret` generator and carries no static `spec.data` refs, that the
-generator reads `database/mariadb/creds/nova-api-<namespace>` or
+The live CI kind test below checks the Nova portion of the full ControlPlane
+suite. It waits for `NovaReady`, reads both database blocks of the projected
+child back as `Dynamic`, and checks for each chain that the ExternalSecret draws
+from a `VaultDynamicSecret` generator and carries no static `spec.data` refs,
+that the generator reads `database/mariadb/creds/nova-api-<namespace>` or
 `database/mariadb/creds/nova-cell-<namespace>`, that the `nova-api-db-creds` or
 `nova-cell-db-creds` ServiceAccount exists, and that the credential Secret has
-neither empty nor the schema name.
+neither an empty username nor the schema name.
 
 ```bash
 chainsaw test --test-dir tests/e2e/c5c3/full-controlplane-keystone
