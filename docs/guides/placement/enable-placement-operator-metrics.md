@@ -151,7 +151,6 @@ the port if needed. Keep the port-forward running in one terminal. In another,
 query the targets:
 
 ```bash
-set -euo pipefail
 curl --fail --silent --show-error \
   'http://localhost:9090/api/v1/targets?state=active' \
   | jq -e '
@@ -172,7 +171,6 @@ metrics port and that the NetworkPolicy allows its source. Then confirm the
 reconcile series exists:
 
 ```bash
-set -euo pipefail
 curl --fail --silent --show-error \
   'http://localhost:9090/api/v1/query?query=placement_operator_reconcile_duration_seconds_count' \
   | jq -r '
