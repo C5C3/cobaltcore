@@ -123,7 +123,6 @@ That procedure reads the root token from `openbao-init-keys` and exports it for
 the bootstrap scripts.
 
 ```bash
-set -euo pipefail
 # From the repo root, with BAO_TOKEN exported (the OpenBao root token).
 bash deploy/bases/shared-openbao/bootstrap/setup-secret-engines.sh
 bash deploy/bases/shared-openbao/bootstrap/setup-auth.sh
@@ -179,7 +178,6 @@ out of your shell history and off the command line (`password=-` reads it from
 stdin):
 
 ```bash
-set -euo pipefail
 # Inside the OpenBao pod, or with a bao client configured for it.
 printf 'nova_api DB password: '
 IFS= read -r -s PW
@@ -315,7 +313,6 @@ with, so the cutover needs no `nova-manage cell_v2 update_cell`. Confirm it with
 the plain `list_cells` (never `--verbose`, which prints the passwords):
 
 ```bash
-set -euo pipefail
 kubectl exec -n openstack deploy/controlplane-nova-conductor -c conductor -- \
   nova-manage --config-dir /etc/nova/nova.conf.d cell_v2 list_cells
 kubectl get nova controlplane-nova -n openstack -o jsonpath='{.status.cells}{"\n"}'
@@ -334,7 +331,6 @@ Once the ControlPlane reports `NovaReady=True` on the dynamic path:
    the schemas.
 
    ```bash
-   set -euo pipefail
    kubectl delete user controlplane-nova-api controlplane-nova \
      -n openstack --ignore-not-found
    kubectl delete grant controlplane-nova-api controlplane-nova \
@@ -344,7 +340,6 @@ Once the ControlPlane reports `NovaReady=True` on the dynamic path:
 2. Remove the retired static KV secrets, if step 3 ever seeded them:
 
    ```bash
-   set -euo pipefail
    # Inside the OpenBao pod, or with a bao client configured for it.
    bao kv metadata delete kv-v2/openstack/nova/openstack/controlplane/api-db
    bao kv metadata delete kv-v2/openstack/nova/openstack/controlplane/db
