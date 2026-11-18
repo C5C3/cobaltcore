@@ -677,14 +677,13 @@ func (w *NovaWebhook) validate(ctx context.Context, n *Nova, extra field.ErrorLi
 	allErrs = append(allErrs, validateGateway(specPath.Child("gateway"), n.Spec.Gateway)...)
 	allErrs = append(allErrs, validateGateway(specPath.Child("metadata", "gateway"), n.Spec.Metadata.Gateway)...)
 	allErrs = append(allErrs, validateGateway(specPath.Child("consoleProxy", "gateway"), n.Spec.ConsoleProxy.Gateway)...)
-	// The console route carries no path prefix. The console URL the API hands a
-	// browser names the page at the root of the console hostname, and the noVNC
-	// client opens its WebSocket on the root as well, so a prefix match would
-	// route neither while the route itself reports Accepted.
+	// The console route only supports a root prefix. A non-root prefix such as
+	// /console would match neither the noVNC page (/vnc_lite.html) nor its
+	// WebSocket endpoint (/websockify), while the route itself reports Accepted.
 	if g := n.Spec.ConsoleProxy.Gateway; g != nil && g.Path != "" && g.Path != "/" {
 		allErrs = append(allErrs, field.Invalid(
 			specPath.Child("consoleProxy", "gateway", "path"), g.Path,
-			"path must be empty or \"/\": the console page and its WebSocket are served from the root of the console hostname",
+			"path must be empty or \"/\": the root prefix matches /vnc_lite.html and /websockify",
 		))
 	}
 
