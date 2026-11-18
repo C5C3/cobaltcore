@@ -143,7 +143,6 @@ left `m1.nano` or `boot-image` behind without the server, delete those resources
 before running this block, or reuse them by skipping their create commands.
 
 ```bash
-set -euo pipefail
 openstack --insecure flavor create --vcpus 1 --ram 128 --disk 1 m1.nano
 truncate -s 1M /tmp/boot-image.raw
 openstack --insecure image create --disk-format raw --container-format bare \
