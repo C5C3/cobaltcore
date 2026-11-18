@@ -90,14 +90,20 @@ func glanceSecretNameExtractor(obj client.Object) []string {
 	return names
 }
 
-// registerGlanceIndexes registers the Glance field indexer under
-// GlanceSecretNameIndexKey with the given FieldIndexer.
-// GlanceReconciler.SetupWithManager calls this once against
-// mgr.GetFieldIndexer() (next commit) so secretToGlanceMapper can resolve a
-// Secret event to the referencing Glance CRs via an O(1) reverse lookup instead
-// of an unfiltered namespace-scoped List.
+const policyConfigMapIndexKey = "spec.policyOverrides.configMapRef.name"
+
 func registerGlanceIndexes(ctx context.Context, indexer client.FieldIndexer) error {
-	return watch.RegisterSecretNameIndex(ctx, indexer, &glancev1alpha1.Glance{}, GlanceSecretNameIndexKey, glanceSecretNameExtractor)
+	obj := &glancev1alpha1.Glance{}
+	if err := watch.RegisterSecretNameIndex(ctx, indexer, obj, GlanceSecretNameIndexKey, glanceSecretNameExtractor); err != nil {
+		return err
+	}
+	return watch.RegisterParentRefIndex(ctx, indexer, obj, policyConfigMapIndexKey, func(o client.Object) string {
+		g := o.(*glancev1alpha1.Glance)
+		if policy := g.Spec.PolicyOverrides; policy != nil && policy.ConfigMapRef != nil {
+			return policy.ConfigMapRef.Name
+		}
+		return ""
+	})
 }
 
 // GlanceBackendGlanceRefIndexKey is the field-indexer key under which
@@ -739,6 +745,14 @@ func (r *GlanceReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	// EnqueueRequestForOwner would never match them.
 	b, err = commonmulticluster.AddInputWatch(b, local.GetScheme(), targets, &corev1.Secret{},
 		secretToGlanceWithBackendsMapper(local.GetClient()))
+	if err != nil {
+		return err
+	}
+
+	// A referenced policy ConfigMap is owned by the user and does not match Owns.
+	b, err = commonmulticluster.AddInputWatch(b, local.GetScheme(), targets, &corev1.ConfigMap{},
+		watch.ParentToSatellitesMapper(local.GetClient(), func() client.ObjectList { return &glancev1alpha1.GlanceList{} },
+			policyConfigMapIndexKey, "listing Glances referencing policy ConfigMap"))
 	if err != nil {
 		return err
 	}

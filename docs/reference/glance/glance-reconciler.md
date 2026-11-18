@@ -356,6 +356,8 @@ watches:
   `spec.serviceUser.secretRef.name` / `spec.database.secretRef.name` field
   index) or through an attached backend's S3 credentials Secret (via the backend
   secret-name index).
+- **Policy ConfigMaps**, mapped to Glances that name them in
+  `spec.policyOverrides.configMapRef`. Editing a referenced policy triggers a pass.
 - **GlanceBackends**, mapped to their parent Glance with no generation predicate
   — a backend's `CredentialsReady` flip is exactly what wakes the aggregation.
 - **MariaDB** clusters referenced by `spec.database.clusterRef`, so an upstream
