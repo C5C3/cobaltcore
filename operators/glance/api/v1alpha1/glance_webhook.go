@@ -28,7 +28,6 @@ import (
 
 	"github.com/c5c3/cobaltcore/internal/common/config"
 	"github.com/c5c3/cobaltcore/internal/common/naming"
-	"github.com/c5c3/cobaltcore/internal/common/release"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	"github.com/c5c3/cobaltcore/internal/common/validation"
 	commonwebhook "github.com/c5c3/cobaltcore/internal/common/webhook"
@@ -298,25 +297,7 @@ func (w *GlanceWebhook) Default(_ context.Context, obj *Glance) error {
 	}
 	obj.Spec.Logging.Default()
 
-	// ServiceUser identity defaults: fill each only when empty so an explicit
-	// value is never clobbered. A minimal CR need only supply the password
-	// Secret reference.
-	su := &obj.Spec.ServiceUser
-	if su.Username == "" {
-		su.Username = "glance"
-	}
-	if su.ProjectName == "" {
-		su.ProjectName = "service"
-	}
-	if su.UserDomainName == "" {
-		su.UserDomainName = "Default"
-	}
-	if su.ProjectDomainName == "" {
-		su.ProjectDomainName = "Default"
-	}
-	if su.SecretRef.Key == "" {
-		su.SecretRef.Key = "password"
-	}
+	obj.Spec.ServiceUser = obj.Spec.EffectiveServiceUser()
 
 	// Default zero-valued sub-fields of spec.apiServer.uwsgi when the block is
 	// non-nil. The leaf defaults are applied by the commonv1.UWSGISpec Default
@@ -1487,45 +1468,11 @@ func warnDeprecatedWorkers(g *Glance) admission.Warnings {
 	}
 }
 
-// validateExtraConfigOptions validates the option names in spec.extraConfig
-// against the option catalog embedded for the release named by
-// spec.openStackRelease.
-//
-// It fails open: when spec.openStackRelease cannot be resolved to an embedded
-// catalog it returns exactly one warning and no errors, so a value that does not
-// name a release or a build that ships no catalog for the release never blocks
-// admission. Sections a loaded plugin declares (spec.plugins[].configSection)
-// and the reserved glance_store sections in CatalogExemptSections are skipped
-// whole, and the operator-owned keys in OwnedConfigKeys are exempt individually,
-// so neither a plugin's dynamically named options, a file-store option under a
-// reserved store, nor an operator-owned override is mistaken for an unknown
-// option. Every remaining unknown option or unknown section becomes a field
-// error; every deprecated-but-accepted option becomes a warning naming its
-// replacement.
+// validateExtraConfigOptions supplies Glance's plugin, store and owned-key exemptions.
 func validateExtraConfigOptions(specPath *field.Path, g *Glance) (admission.Warnings, field.ErrorList) {
 	if len(g.Spec.ExtraConfig) == 0 {
 		return nil, nil
 	}
-
-	catalog, ok := OptionCatalogForRelease(g.Spec.OpenStackRelease)
-	if !ok {
-		// Fail open with exactly one warning. Distinguish a value that does not
-		// name a release at all from a parseable release the operator ships no
-		// catalog for.
-		rel, err := release.ParseRelease(g.Spec.OpenStackRelease)
-		if err != nil {
-			return admission.Warnings{
-				"spec.extraConfig was not validated against an option catalog: " +
-					"spec.openStackRelease does not name an OpenStack release",
-			}, nil
-		}
-		return admission.Warnings{
-			fmt.Sprintf("spec.extraConfig was not validated against an option catalog: "+
-				"no catalog for release %q is embedded in this operator build",
-				fmt.Sprintf("%d.%d", rel.Year, rel.Minor)),
-		}, nil
-	}
-
 	// Exempt the sections a loaded plugin owns and the reserved glance_store
 	// sections the catalog cannot enumerate (their option set is not derivable
 	// from the release catalog), plus the operator-owned keys, so none is flagged
@@ -1542,38 +1489,9 @@ func validateExtraConfigOptions(specPath *field.Path, g *Glance) (admission.Warn
 		Keys:     config.KeyExemptionsFromRegistry(OwnedConfigKeys),
 	}
 
-	base := catalog.Release
-	unknown, deprecated := catalog.FindUnknownOptions(g.Spec.ExtraConfig, ex)
-
-	extraConfigPath := specPath.Child("extraConfig")
-	var errs field.ErrorList
-	for _, u := range unknown {
-		fldPath := extraConfigPath.Key(u.Section).Key(u.Key)
-		if u.SectionUnknown {
-			errs = append(errs, field.Invalid(fldPath, u.Key,
-				fmt.Sprintf("no such section in the glance %s option catalog "+
-					"(sections registered by a loaded plugin must be declared via spec.plugins)", base)))
-			continue
-		}
-		errs = append(errs, field.Invalid(fldPath, u.Key,
-			fmt.Sprintf("no such option in the glance %s option catalog", base)))
-	}
-
-	var warnings admission.Warnings
-	for _, d := range deprecated {
-		if d.Replacement == "" {
-			warnings = append(warnings, fmt.Sprintf(
-				"spec.extraConfig [%s] %s: deprecated option in glance %s with no replacement",
-				d.Section, d.Key, base,
-			))
-			continue
-		}
-		warnings = append(warnings, fmt.Sprintf(
-			"spec.extraConfig [%s] %s: deprecated option in glance %s, replaced by %s",
-			d.Section, d.Key, base, d.Replacement,
-		))
-	}
-	return warnings, errs
+	catalog, _ := OptionCatalogForRelease(g.Spec.OpenStackRelease)
+	return catalog.ValidateOverrides(specPath.Child("extraConfig"), g.Spec.ExtraConfig, g.Spec.OpenStackRelease, ex,
+		" (sections registered by a loaded plugin must be declared via spec.plugins)")
 }
 
 // extraConfigCatalogInputsChanged reports whether anything the extraConfig

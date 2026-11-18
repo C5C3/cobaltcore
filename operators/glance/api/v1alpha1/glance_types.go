@@ -328,36 +328,12 @@ type (
 	GatewayParentRefSpec       = commonv1.GatewayParentRefSpec
 )
 
-// ServiceUserSpec identifies the Keystone service account Glance uses to validate
-// tokens and call other services, and references the Secret holding its password.
-// The name and domain fields are optional; the defaulting webhook materializes
-// them (username glance, projectName service, userDomainName and
-// projectDomainName Default) in a later commit, so a minimal CR need only supply
-// the password Secret reference.
-type ServiceUserSpec struct {
-	// Username is the Keystone username Glance authenticates as
-	// ([keystone_authtoken] username). Webhook-defaulted to "glance".
-	// +optional
-	Username string `json:"username,omitempty"`
+// ServiceUserSpec identifies the Glance service account. Its username defaults to glance.
+type ServiceUserSpec = commonv1.ServiceUserSpec
 
-	// ProjectName is the Keystone project the service user scopes to
-	// ([keystone_authtoken] project_name). Webhook-defaulted to "service".
-	// +optional
-	ProjectName string `json:"projectName,omitempty"`
-
-	// UserDomainName is the domain the service user lives in
-	// ([keystone_authtoken] user_domain_name). Webhook-defaulted to "Default".
-	// +optional
-	UserDomainName string `json:"userDomainName,omitempty"`
-
-	// ProjectDomainName is the domain the service project lives in
-	// ([keystone_authtoken] project_domain_name). Webhook-defaulted to "Default".
-	// +optional
-	ProjectDomainName string `json:"projectDomainName,omitempty"`
-
-	// SecretRef references the Secret holding the service user's password. The
-	// key is webhook-defaulted to "password" in a later commit.
-	SecretRef commonv1.SecretRefSpec `json:"secretRef"`
+// EffectiveServiceUser resolves the same identity during admission and reconciliation.
+func (s *GlanceSpec) EffectiveServiceUser() ServiceUserSpec {
+	return s.ServiceUser.WithDefaults("glance")
 }
 
 // APIServerSpec tunes the Glance API server process, which runs under uWSGI.

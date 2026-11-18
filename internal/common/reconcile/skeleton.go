@@ -32,6 +32,8 @@ type Skeleton[T interface {
 	// SubConditionTypes are the sub-condition types SetReady aggregates into the
 	// Ready condition, in the operator's vocabulary.
 	SubConditionTypes []string
+	// RequireCurrentGeneration gates Ready on current observations and a successful pass.
+	RequireCurrentGeneration bool
 	// Conditions resolves a CR (the primary or a DeepCopy) to its status
 	// conditions slice pointer.
 	Conditions func(T) *[]metav1.Condition
@@ -40,7 +42,7 @@ type Skeleton[T interface {
 // SetReady aggregates the CR's sub-conditions into its Ready condition at the
 // CR's current generation.
 func (s Skeleton[T, S]) SetReady(obj T) {
-	SetAggregateReady(s.Conditions(obj), obj.GetGeneration(), s.SubConditionTypes)
+	setAggregateReady(s.Conditions(obj), obj.GetGeneration(), s.SubConditionTypes, s.RequireCurrentGeneration, nil)
 }
 
 // UpdateStatus aggregates the Ready condition, runs extraMutate (typically
@@ -50,7 +52,7 @@ func (s Skeleton[T, S]) SetReady(obj T) {
 // the shared UpdateStatus: a converged steady-state pass produces no write.
 func (s Skeleton[T, S]) UpdateStatus(ctx context.Context, c client.Client, obj T, before, current *S, extraMutate func(), result ctrl.Result, reconcileErr error) (ctrl.Result, error) {
 	return UpdateStatus(ctx, c, obj, before, current, func() {
-		s.SetReady(obj)
+		setAggregateReady(s.Conditions(obj), obj.GetGeneration(), s.SubConditionTypes, s.RequireCurrentGeneration, reconcileErr)
 		if extraMutate != nil {
 			extraMutate()
 		}

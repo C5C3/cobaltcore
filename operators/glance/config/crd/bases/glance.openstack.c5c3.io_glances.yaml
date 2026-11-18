@@ -4120,19 +4120,15 @@ spec:
                   the password Secret reference is required.
                 properties:
                   projectDomainName:
-                    description: |-
-                      ProjectDomainName is the domain the service project lives in
-                      ([keystone_authtoken] project_domain_name). Webhook-defaulted to "Default".
+                    description: ProjectDomainName is the project's domain. Defaults
+                      to Default.
                     type: string
                   projectName:
-                    description: |-
-                      ProjectName is the Keystone project the service user scopes to
-                      ([keystone_authtoken] project_name). Webhook-defaulted to "service".
+                    description: ProjectName is the service project. Defaults to service.
                     type: string
                   secretRef:
-                    description: |-
-                      SecretRef references the Secret holding the service user's password. The
-                      key is webhook-defaulted to "password" in a later commit.
+                    description: SecretRef selects the password. Its key defaults
+                      to password.
                     properties:
                       key:
                         type: string
@@ -4150,14 +4146,11 @@ spec:
                     - name
                     type: object
                   userDomainName:
-                    description: |-
-                      UserDomainName is the domain the service user lives in
-                      ([keystone_authtoken] user_domain_name). Webhook-defaulted to "Default".
+                    description: UserDomainName is the user's domain. Defaults to
+                      Default.
                     type: string
                   username:
-                    description: |-
-                      Username is the Keystone username Glance authenticates as
-                      ([keystone_authtoken] username). Webhook-defaulted to "glance".
+                    description: Username is the Keystone service username.
                     type: string
                 required:
                 - secretRef
