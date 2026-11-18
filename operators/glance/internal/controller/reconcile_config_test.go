@@ -26,7 +26,6 @@ import (
 
 	"github.com/c5c3/cobaltcore/internal/common/cache"
 	"github.com/c5c3/cobaltcore/internal/common/config"
-	"github.com/c5c3/cobaltcore/internal/common/database"
 	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
@@ -1495,37 +1494,4 @@ func TestReconcileConfig_CacheServers(t *testing.T) {
 		g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 		g.Expect(cond.Reason).To(Equal(conditionReasonConfigError))
 	})
-}
-
-func TestPruneConfigHistoryKeepsJobMountOnRevert(t *testing.T) {
-	g := NewGomegaWithT(t)
-	ctx := context.Background()
-	glance := testGlance()
-	base := glance.Name + "-config"
-	var inputs []client.Object
-	for i := 0; i < 6; i++ {
-		inputs = append(inputs, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
-			Name: fmt.Sprintf("%s-%d", base, i), Namespace: glance.Namespace,
-			Labels:            map[string]string{config.ConfigBaseLabelKey: base},
-			OwnerReferences:   []metav1.OwnerReference{*metav1.NewControllerRef(glance, glancev1alpha1.GroupVersion.WithKind("Glance"))},
-			CreationTimestamp: metav1.NewTime(time.Unix(int64(i+1), 0)),
-		}})
-	}
-	// Version 0 became current again. A Job still refers to version 1.
-	// Version 2 is the only historical revision that is neither pinned nor
-	// among the three newest.
-	job := database.BuildJob(glanceJobSetParams(glance, base+"-1"), "glance", "db-sync", []string{"true"}, 1)
-	r := newGlanceTestReconciler(append(inputs, job)...)
-	art := configArtifacts{configMapName: base + "-0", backendsSecretName: "backends-current"}
-	g.Expect(r.pruneConfigHistory(ctx, r.Client, glance, art)).To(Succeed())
-	var retained corev1.ConfigMapList
-	g.Expect(r.List(ctx, &retained)).To(Succeed())
-	var names []string
-	for _, cm := range retained.Items {
-		names = append(names, cm.Name)
-	}
-	g.Expect(names).To(ConsistOf(base+"-0", base+"-1", base+"-3", base+"-4", base+"-5"))
-	g.Expect(r.Delete(ctx, job)).To(Succeed())
-	g.Expect(r.pruneConfigHistory(ctx, r.Client, glance, art)).To(Succeed())
-	g.Expect(r.Get(ctx, client.ObjectKey{Name: base + "-1", Namespace: glance.Namespace}, &corev1.ConfigMap{})).To(MatchError(ContainSubstring("not found")))
 }

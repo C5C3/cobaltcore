@@ -15,6 +15,7 @@ import (
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/v26/api/v1alpha1"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -100,6 +101,7 @@ func SetupGlanceEnvTestNoWebhook(
 //     rather than a second binary).
 func SetupGlanceEnvTestWithController(
 	t testing.TB,
+	skipNameValidation bool,
 	addToScheme func(*k8sruntime.Scheme) error,
 	registerWebhooks func(ctrl.Manager) error,
 	registerController func(ctrl.Manager) error,
@@ -119,6 +121,10 @@ func SetupGlanceEnvTestWithController(
 		WebhookDir:         webhookDir,
 		RegisterWebhooks:   registerWebhooks,
 		RegisterController: registerController,
+		BuildManager: func(cfg *rest.Config, opts ctrl.Options) (ctrl.Manager, error) {
+			opts.Controller.SkipNameValidation = &skipNameValidation
+			return ctrl.NewManager(cfg, opts)
+		},
 	})
 }
 

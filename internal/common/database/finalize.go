@@ -11,12 +11,8 @@ import (
 	"github.com/go-logr/logr"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/v26/api/v1alpha1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-
-	"github.com/c5c3/cobaltcore/internal/common/multicluster"
 )
 
 // resourceCtors is the single source of truth for the set of MariaDB CR kinds
@@ -78,49 +74,6 @@ func FinalizeResources(ctx context.Context, c client.Client, key client.ObjectKe
 	}
 
 	return nil
-}
-
-// FinalizeOwnedResources requests deletion of the managed Database, User and
-// Grant named after owner. It reports whether a new deletion was requested.
-// Already-terminating children finish under their own controller once the
-// service releases its connections. Callers skip this hook in brownfield mode.
-func FinalizeOwnedResources(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object) (bool, error) {
-	key := client.ObjectKeyFromObject(owner)
-	requested := false
-	for _, ctor := range resourceCtors {
-		obj := ctor()
-		if err := c.Get(ctx, key, obj); err != nil {
-			if apierrors.IsNotFound(err) {
-				continue
-			}
-			return requested, fmt.Errorf("checking %T %s: %w", obj, key, err)
-		}
-		if !obj.GetDeletionTimestamp().IsZero() {
-			continue
-		}
-		owned := metav1.IsControlledBy(obj, owner)
-		if multicluster.IsRemote(c) {
-			var err error
-			owned, err = multicluster.Controls(scheme, owner, obj)
-			if err != nil {
-				return requested, err
-			}
-		}
-		if !owned {
-			continue
-		}
-		// Revalidate the exact observation: a replacement or a change of
-		// controller between the read and the delete must survive.
-		uid, rv := obj.GetUID(), obj.GetResourceVersion()
-		if err := c.Delete(ctx, obj, client.Preconditions{UID: &uid, ResourceVersion: &rv}); err != nil {
-			if apierrors.IsNotFound(err) {
-				continue
-			}
-			return requested, fmt.Errorf("deleting owned %T %s: %w", obj, key, err)
-		}
-		requested = true
-	}
-	return requested, nil
 }
 
 // HasLiveResources reports whether any of the three MariaDB CRs (Database, User,

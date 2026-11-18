@@ -163,7 +163,7 @@ func registerGlanceBackendIndexes(ctx context.Context, indexer client.FieldIndex
 
 // subConditionTypes lists the condition types set by the individual Glance
 // sub-reconcilers. The aggregate Ready condition is True only when all of these
-// are True for the current generation. Every parallel-group member (HTTPRoute, HealthCheck, HPA,
+// are True. Every parallel-group member (HTTPRoute, HealthCheck, HPA,
 // NetworkPolicy, DBPurge) always sets its condition — configured-ready,
 // NotRequired, or waiting — so a gateway-less or autoscaling-less cluster still
 // resolves the aggregate (the NotRequired paths report True), exactly as
@@ -282,10 +282,9 @@ var httpRouteGVK = schema.GroupVersionKind{
 	Kind:    "HTTPRoute",
 }
 
-// The service pipeline uses Skeleton to mark config failures and merge
-// conditions from parallel steps. The lifecycle driver owns Ready and status.
 var glanceSkeleton = commonreconcile.Skeleton[*glancev1alpha1.Glance, glancev1alpha1.GlanceStatus]{
-	Conditions: func(g *glancev1alpha1.Glance) *[]metav1.Condition { return &g.Status.Conditions },
+	SubConditionTypes: subConditionTypes,
+	Conditions:        func(g *glancev1alpha1.Glance) *[]metav1.Condition { return &g.Status.Conditions },
 }
 
 // conditionReasonConfigError is the SecretsReady=False reason set when
@@ -340,9 +339,9 @@ var GlanceRemoteChildKinds = []schema.GroupVersionKind{
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;patch;delete
 // Unexercised by the e2e suites; used by operators/glance/internal/controller/reconcile_deployment.go:210 (reconcileDeployment) to delete services.
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;patch;delete
-// Unexercised by the e2e suites; used by operators/glance/internal/controller/reconcile_config.go:170 (pruneConfigHistory) to delete configmaps.
+// Unexercised by the e2e suites; used by operators/glance/internal/controller/reconcile_config.go:181 (reconcileConfig) to delete configmaps.
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;delete
-// Unexercised by the e2e suites; used by operators/glance/internal/controller/reconcile_config.go:176 (pruneConfigHistory) to delete secrets.
+// Unexercised by the e2e suites; used by operators/glance/internal/controller/reconcile_backends.go:192 (reconcileBackends) to delete secrets.
 // Unexercised by the e2e suites; used by operators/glance/internal/controller/reconcile_dbconnection_secret.go:49 (reconcileDBConnectionSecret) to update secrets.
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;delete
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
@@ -387,21 +386,21 @@ var GlanceRemoteChildKinds = []schema.GroupVersionKind{
 // Unexercised by the e2e suites; used by internal/common/validation/validation.go:312 (PriorityClassExists) to get priorityclasses.
 // +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get
 
-// Reconcile supplies Glance's fields and service hooks to the lifecycle driver.
+// Reconcile runs the shared service lifecycle around the Glance pipeline.
 func (r *GlanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	driver := lifecycle.Driver[*glancev1alpha1.Glance, glancev1alpha1.GlanceStatus]{
-		Client:                     r.Client,
-		Resolver:                   r.Resolver,
-		Recorder:                   r.Recorder,
-		Finalizer:                  glanceFinalizer,
-		ReadyConditions:            subConditionTypes,
-		TargetUnavailableCondition: "SecretsReady",
+	driver := lifecycle.Service[*glancev1alpha1.Glance, glancev1alpha1.GlanceStatus]{
+		Client:          r.Client,
+		Resolver:        r.Resolver,
+		Recorder:        r.Recorder,
+		Skeleton:        glanceSkeleton,
+		Finalizer:       glanceFinalizer,
+		TargetCondition: "SecretsReady",
 		Fields: func(g *glancev1alpha1.Glance) lifecycle.Fields[glancev1alpha1.GlanceStatus] {
 			return lifecycle.Fields[glancev1alpha1.GlanceStatus]{
 				Target:             g.Spec.TargetClusterRef,
 				Suspended:          g.Spec.Suspend,
 				Status:             &g.Status,
-				Conditions:         &g.Status.Conditions,
+				CopyStatus:         g.Status.DeepCopy,
 				ObservedGeneration: &g.Status.ObservedGeneration,
 			}
 		},
@@ -413,9 +412,6 @@ func (r *GlanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 }
 
 func (r *GlanceReconciler) reconcileService(ctx context.Context, children client.Client, glance *glancev1alpha1.Glance) (ctrl.Result, error) {
-	// Pipeline locals threaded through the step closures. Each step runs in
-	// dependency order; the first to return a non-zero result or an error
-	// short-circuits the chain and returns to the lifecycle status writer.
 	var (
 		// authTokenDigest is the SHA-256 of the service-user password produced by
 		// reconcileSecrets; stamped into a pod-template annotation so a rotated
@@ -434,11 +430,7 @@ func (r *GlanceReconciler) reconcileService(ctx context.Context, children client
 		art configArtifacts
 	)
 	pipeline := []commonreconcile.Step{
-		{Name: "Secrets", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			var (
-				res ctrl.Result
-				err error
-			)
+		{Name: "Secrets", Fn: func(ctx context.Context) (res ctrl.Result, err error) {
 			res, authTokenDigest, err = r.reconcileSecrets(ctx, children, glance)
 			return res, err
 		}},
@@ -446,11 +438,7 @@ func (r *GlanceReconciler) reconcileService(ctx context.Context, children client
 		// <glance.Name>-db-connection Secret. It runs after Secrets (upstream
 		// credentials must be synced) and before Config; failures set
 		// SecretsReady=False, the same condition reconcileSecrets uses.
-		{Name: "DBConnectionSecret", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			var (
-				res ctrl.Result
-				err error
-			)
+		{Name: "DBConnectionSecret", Fn: func(ctx context.Context) (res ctrl.Result, err error) {
 			res, dsnDigest, err = r.reconcileDBConnectionSecret(ctx, children, glance)
 			return res, err
 		}},
@@ -459,11 +447,7 @@ func (r *GlanceReconciler) reconcileService(ctx context.Context, children client
 		// short-circuit the pipeline — the step returns a zero result so
 		// first-install can proceed, and backend status flips re-enqueue this
 		// Glance via the backend watch.
-		{Name: "Backends", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			var (
-				res ctrl.Result
-				err error
-			)
+		{Name: "Backends", Fn: func(ctx context.Context) (res ctrl.Result, err error) {
 			res, projection, err = r.reconcileBackends(ctx, children, glance)
 			return res, err
 		}},
@@ -471,11 +455,7 @@ func (r *GlanceReconciler) reconcileService(ctx context.Context, children client
 		// an invalid projection it returns the live Deployment's last-good artefact
 		// names instead of re-rendering. It self-marks SecretsReady=False on
 		// failure via markConfigFailed, so the wrapper only threads the result.
-		{Name: "Config", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			var (
-				res ctrl.Result
-				err error
-			)
+		{Name: "Config", Fn: func(ctx context.Context) (res ctrl.Result, err error) {
 			res, art, err = r.reconcileConfig(ctx, children, glance, projection)
 			return res, err
 		}},
@@ -497,7 +477,7 @@ func (r *GlanceReconciler) reconcileService(ctx context.Context, children client
 		// self-instruments its members, so this step carries no sub_reconciler
 		// name.
 		{Fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcileParallelGroup(ctx, glance, []commonreconcile.ParallelStep[*glancev1alpha1.Glance]{
+			return glanceSkeleton.RunParallelGroup(ctx, glance, instrumenter.Instrument, []commonreconcile.ParallelStep[*glancev1alpha1.Glance]{
 				{
 					Name:          "HTTPRoute",
 					ConditionType: conditionTypeHTTPRouteReady,
@@ -508,9 +488,7 @@ func (r *GlanceReconciler) reconcileService(ctx context.Context, children client
 				{
 					Name:          "HealthCheck",
 					ConditionType: conditionTypeGlanceAPIReady,
-					Fn: func(ctx context.Context, g *glancev1alpha1.Glance) (ctrl.Result, error) {
-						return r.reconcileHealthCheck(ctx, g)
-					},
+					Fn:            r.reconcileHealthCheck,
 				},
 				{
 					Name:          "HPA",
@@ -547,19 +525,7 @@ func (r *GlanceReconciler) reconcileService(ctx context.Context, children client
 		}},
 	}
 
-	result, err := commonreconcile.RunPipeline(ctx, func(ctx context.Context, name string, fn func(context.Context) (ctrl.Result, error)) (ctrl.Result, error) {
-		result, err := instrumenter.Instrument(ctx, name, fn)
-		lifecycle.StepFailed(&glance.Status.Conditions, glance.Generation, name, subReconcilerConditionTypes[name], err)
-		return result, err
-	}, pipeline)
-	// Each API replica and the purge CronJob now reference the new artifacts.
-	// A requeue from any step leaves the old history available for recovery.
-	if err == nil && result.IsZero() && projection.valid {
-		err = r.pruneConfigHistory(ctx, children, glance, art)
-		if err != nil {
-			markConfigFailed(glance, err)
-		}
-	}
+	result, err := commonreconcile.RunPipeline(ctx, instrumenter.Instrument, pipeline)
 	result = healthcheck.ScheduleReprobe(result, err, &r.healthProbeCache,
 		client.ObjectKeyFromObject(glance))
 	return result, err
@@ -582,22 +548,33 @@ func (r *GlanceReconciler) reconcileDelete(ctx context.Context, children client.
 		return ctrl.Result{}, nil
 	}
 
+	key := client.ObjectKey{Name: glance.Name, Namespace: glance.Namespace}
+
 	if children == nil {
 		r.Recorder.Event(glance, corev1.EventTypeWarning, "RemoteChildrenAbandoned",
-			"Target cluster is no longer registered; releasing the Glance finalizer")
-	} else if glance.Spec.Database.ClusterRef != nil {
-		requested, err := database.FinalizeOwnedResources(ctx, children, r.Scheme, glance)
+			"Target cluster is no longer registered; releasing the finalizer without deleting the MariaDB Database, User, and Grant on it")
+	} else {
+		// Observe whether any MariaDB CR is still live BEFORE issuing the Delete: a
+		// Delete flips DeletionTimestamp, so a post-Delete check would always report
+		// none-live and release immediately. Gating on the pre-Delete observation
+		// keeps the CR alive one extra pass so the teardown is actually triggered.
+		hasLive, err := database.HasLiveResources(ctx, children, key)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
-		if requested {
+
+		if err := database.FinalizeResources(ctx, children, key); err != nil {
+			return ctrl.Result{}, err
+		}
+
+		if hasLive {
 			r.Recorder.Event(glance, corev1.EventTypeNormal, "FinalizingDatabase",
 				"Cleaning up MariaDB Database, User, and Grant before removing Glance")
 			return ctrl.Result{RequeueAfter: RequeueDatabaseWait}, nil
 		}
 
 		r.Recorder.Event(glance, corev1.EventTypeNormal, "DatabaseFinalized",
-			"Owned MariaDB resources are absent or terminating; releasing finalizer")
+			"MariaDB Database, User, and Grant marked for deletion; releasing finalizer")
 	}
 
 	outcome, err := commonreconcile.RemoveFinalizer(ctx, r.Client, glance, glanceFinalizer)
@@ -624,28 +601,6 @@ func (r *GlanceReconciler) reconcileDelete(ctx context.Context, children client.
 func (r *GlanceReconciler) reconcileDeleteRemoteChildren(ctx context.Context, children client.Client, glance *glancev1alpha1.Glance) (ctrl.Result, error) {
 	return commonreconcile.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
 		glance, glance.Spec.TargetClusterRef, children, GlanceRemoteChildKinds)
-}
-
-// reconcileParallelGroup runs the given sub-reconcilers concurrently, delegating
-// to the shared skeleton: each member operates on its own DeepCopy of the Glance
-// CR, conditions from every member — including those that succeeded before a
-// peer failed — are merged back into the primary glance, and on success the
-// shortest non-zero RequeueAfter is returned. Members instrument individually
-// via instrumenter.Instrument.
-func (r *GlanceReconciler) reconcileParallelGroup(
-	ctx context.Context,
-	glance *glancev1alpha1.Glance,
-	subs []commonreconcile.ParallelStep[*glancev1alpha1.Glance],
-) (ctrl.Result, error) {
-	for i := range subs {
-		step := subs[i]
-		subs[i].Fn = func(ctx context.Context, g *glancev1alpha1.Glance) (ctrl.Result, error) {
-			result, err := step.Fn(ctx, g)
-			lifecycle.StepFailed(&g.Status.Conditions, g.Generation, step.Name, step.ConditionType, err)
-			return result, err
-		}
-	}
-	return glanceSkeleton.RunParallelGroup(ctx, glance, instrumenter.Instrument, subs)
 }
 
 // SetupWithManager registers the GlanceReconciler with the controller manager.
@@ -737,11 +692,14 @@ func (r *GlanceReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 			return glance.Spec.TargetClusterRef
 		})
 
+	options := bootstrap.TypedControllerOptions[mcreconcile.Request](r.MaxConcurrentReconciles)
+	// multicluster-runtime does not inherit name validation from the host manager.
+	options.SkipNameValidation = local.GetControllerOptions().SkipNameValidation
 	b := mcbuilder.ControllerManagedBy(mgr).
 		// Shared controller options: MaxConcurrentReconciles lets independent CRs
 		// reconcile in parallel, and the tuned RateLimiter caps per-item failure
 		// backoff at 30s (see bootstrap.TypedControllerOptions).
-		WithOptions(bootstrap.TypedControllerOptions[mcreconcile.Request](r.MaxConcurrentReconciles)).
+		WithOptions(options).
 		// Filter the CR's own status-only updates so Status().Update does not
 		// re-wake the controller (see watch.CRUpdatePredicate).
 		For(&glancev1alpha1.Glance{}, mcbuilder.WithPredicates(watch.CRUpdatePredicate()), engageLocal, engageNoProviders).
