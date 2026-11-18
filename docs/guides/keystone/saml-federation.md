@@ -67,8 +67,7 @@ Pick exactly one of the three sources for `spec.saml.idpMetadata`:
   curl --fail --silent --show-error https://idp.example.com/realms/cobaltcore/protocol/saml/descriptor \
     -o idp-metadata.xml
   kubectl create secret generic corp-saml-idp-metadata -n openstack \
-    --from-file=idp-metadata.xml=idp-metadata.xml \
-    --dry-run=client -o yaml | kubectl apply -f -
+    --from-file=idp-metadata.xml=idp-metadata.xml
   ```
 
 - **`inline`**: paste the raw EntityDescriptor XML into the CR (the
@@ -117,8 +116,7 @@ url = "http://keycloak-saml.openstack:8080/realms/cobaltcore-saml/protocol/saml/
 print(urllib.request.urlopen(url, timeout=30).read().decode())
 ' > idp-metadata.xml
 kubectl create secret generic corp-saml-idp-metadata -n openstack \
-  --from-file=idp-metadata.xml=idp-metadata.xml \
-  --dry-run=client -o yaml | kubectl apply -f -
+  --from-file=idp-metadata.xml=idp-metadata.xml
 ```
 
 In the Step 4 CR, replace both occurrences of
