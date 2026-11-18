@@ -78,7 +78,6 @@ Flux's helm-controller reverts any out-of-band
 Helm revision on its next reconcile:
 
 ```bash
-set -euo pipefail
 kubectl patch helmrelease ovn-operator -n ovn-system --type=merge \
   -p '{"spec":{"values":{"monitoring":{"serviceMonitor":{"enabled":true}}}}}'
 
@@ -102,13 +101,8 @@ If you installed the operator directly with Helm (not through Flux), set the
 value with a rolling `helm upgrade` instead:
 
 ```bash
-set -euo pipefail
 CHART_VERSION="$(helm list -n ovn-system --filter '^ovn-operator$' -o json \
   | jq -r '.[0].chart // "" | sub("^ovn-operator-"; "")')"
-if [ -z "$CHART_VERSION" ]; then
-  echo "ERROR: could not find the ovn-operator Helm release in ovn-system." >&2
-  exit 1
-fi
 helm upgrade ovn-operator oci://ghcr.io/c5c3/charts/ovn-operator \
   --namespace ovn-system --version "$CHART_VERSION" --reuse-values \
   --set monitoring.serviceMonitor.enabled=true
@@ -148,7 +142,6 @@ For an existing Prometheus, replace `monitoring` with its namespace and
 In another terminal, query the targets:
 
 ```bash
-set -euo pipefail
 curl --fail --silent --show-error \
   'http://localhost:9090/api/v1/targets' \
   | jq -e '.data.activeTargets[] | select(.labels.namespace == "ovn-system") | .health'
@@ -157,7 +150,6 @@ curl --fail --silent --show-error \
 Expect `"up"`. Then confirm the series exist:
 
 ```bash
-set -euo pipefail
 curl --fail --silent --show-error \
   'http://localhost:9090/api/v1/query?query=ovn_operator_reconcile_duration_seconds_count' \
   | jq -e '.data.result | length'
