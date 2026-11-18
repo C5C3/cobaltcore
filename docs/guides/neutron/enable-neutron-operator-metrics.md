@@ -83,7 +83,6 @@ Flux's helm-controller reverts any out-of-band
 Helm revision on its next reconcile:
 
 ```bash
-set -euo pipefail
 kubectl patch helmrelease neutron-operator -n neutron-system --type=merge \
   -p '{"spec":{"values":{"monitoring":{"serviceMonitor":{"enabled":true}}}}}'
 
@@ -111,13 +110,8 @@ If you installed the operator directly with Helm (not through Flux), set the
 value with a rolling `helm upgrade` instead:
 
 ```bash
-set -euo pipefail
 CHART_VERSION=$(helm list -n neutron-system --filter '^neutron-operator$' -o json \
   | jq -r '.[0].chart | sub("^neutron-operator-"; "")')
-if [ -z "$CHART_VERSION" ]; then
-  echo "Could not determine the installed neutron-operator chart version." >&2
-  exit 1
-fi
 helm upgrade neutron-operator oci://ghcr.io/c5c3/charts/neutron-operator \
   --namespace neutron-system --version "$CHART_VERSION" --reuse-values \
   --set monitoring.serviceMonitor.enabled=true
