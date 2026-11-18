@@ -64,7 +64,6 @@ devstack uses kindnet, which evaluates this rule after DNAT, so the Service VIP
 the behavior of your CNI before applying this assumption to another cluster:
 
 ```bash
-set -euo pipefail
 kubectl get endpointslices -n default \
   -l kubernetes.io/service-name=kubernetes -o json \
   | jq -er '
@@ -99,7 +98,6 @@ Substitute the CIDRs and ports from above; the single-CIDR list below stands in
 for the kind case of one control-plane node:
 
 ```bash
-set -euo pipefail
 kubectl patch helmrelease neutron-operator -n neutron-system --type=merge \
   -p '{"spec":{"values":{"networkPolicy":{"enabled":true,"kubeApiServer":{"cidrs":["172.18.0.2/32"],"ports":[6443]}}}}}'
 
@@ -116,13 +114,9 @@ For a release managed directly by Helm, enable the same values with a rolling
 `helm upgrade`. Pin the upgrade to the installed chart version:
 
 ```bash
-set -euo pipefail
 CHART_VERSION=$(helm list -n neutron-system --filter '^neutron-operator$' -o json \
   | jq -r '.[0].chart | sub("^neutron-operator-"; "")')
-if [ -z "$CHART_VERSION" ]; then
-  echo "Could not determine the installed neutron-operator chart version." >&2
-  exit 1
-fi
+
 helm upgrade neutron-operator oci://ghcr.io/c5c3/charts/neutron-operator \
   --namespace neutron-system --version "$CHART_VERSION" --reuse-values \
   --set networkPolicy.enabled=true \
