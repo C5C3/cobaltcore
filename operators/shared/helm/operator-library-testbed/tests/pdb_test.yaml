@@ -1,13 +1,16 @@
-# PodDisruptionBudget unit tests. The PDB keeps one replica — and with it the
-# in-process admission webhook — available during voluntary disruptions; it is
-# rendered only when replicas > 1 so a single-replica deployment never wedges
-# node drains.
+# PodDisruptionBudget unit tests. The PDB is rendered when replicas > 1 and
+# podDisruptionBudget.enabled is not false, so a single-replica deployment
+# never wedges node drains. podDisruptionBudget.maxUnavailable wins over
+# podDisruptionBudget.minAvailable; with neither set the PDB keeps one replica,
+# and with it the in-process admission webhook, available (minAvailable: 1).
 suite: PodDisruptionBudget
 templates:
   - templates/pdb.yaml
 tests:
   - it: should render a PodDisruptionBudget with minAvailable 1 by default
     asserts:
+      - hasDocuments:
+          count: 1
       - isKind:
           of: PodDisruptionBudget
       - isAPIVersion:
@@ -21,6 +24,8 @@ tests:
       - equal:
           path: spec.minAvailable
           value: 1
+      - notExists:
+          path: spec.maxUnavailable
       - equal:
           path: spec.selector.matchLabels["app.kubernetes.io/name"]
           value: operator-library-testbed
@@ -35,10 +40,131 @@ tests:
       - hasDocuments:
           count: 0
 
+  - it: should not render a PodDisruptionBudget when replicas is 1, even with maxUnavailable set
+    set:
+      replicas: 1
+      podDisruptionBudget:
+        maxUnavailable: 1
+    asserts:
+      - hasDocuments:
+          count: 0
+
   - it: should keep minAvailable 1 when replicas is raised
     set:
       replicas: 3
     asserts:
+      - equal:
+          path: spec.minAvailable
+          value: 1
+      - notExists:
+          path: spec.maxUnavailable
+
+  - it: should render maxUnavailable instead of minAvailable when maxUnavailable is set
+    set:
+      replicas: 3
+      podDisruptionBudget:
+        maxUnavailable: 1
+    asserts:
+      - equal:
+          path: spec.maxUnavailable
+          value: 1
+      - notExists:
+          path: spec.minAvailable
+
+  - it: should render the given minAvailable
+    set:
+      replicas: 3
+      podDisruptionBudget:
+        minAvailable: 2
+    asserts:
+      - equal:
+          path: spec.minAvailable
+          value: 2
+      - notExists:
+          path: spec.maxUnavailable
+
+  - it: should render a percentage maxUnavailable as a string
+    set:
+      podDisruptionBudget:
+        maxUnavailable: "50%"
+    asserts:
+      - equal:
+          path: spec.maxUnavailable
+          value: "50%"
+      - notExists:
+          path: spec.minAvailable
+
+  - it: should render a percentage minAvailable as a string
+    set:
+      podDisruptionBudget:
+        minAvailable: "50%"
+    asserts:
+      - equal:
+          path: spec.minAvailable
+          value: "50%"
+      - notExists:
+          path: spec.maxUnavailable
+
+  - it: should render maxUnavailable 0 rather than fall back to minAvailable
+    set:
+      podDisruptionBudget:
+        maxUnavailable: 0
+    asserts:
+      - equal:
+          path: spec.maxUnavailable
+          value: 0
+      - notExists:
+          path: spec.minAvailable
+
+  - it: should render minAvailable 0 rather than the default 1
+    set:
+      podDisruptionBudget:
+        minAvailable: 0
+    asserts:
+      - equal:
+          path: spec.minAvailable
+          value: 0
+      - notExists:
+          path: spec.maxUnavailable
+
+  - it: should not render a PodDisruptionBudget when enabled is false
+    set:
+      replicas: 3
+      podDisruptionBudget:
+        enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: should not render a PodDisruptionBudget when enabled is false, even with maxUnavailable set
+    set:
+      replicas: 3
+      podDisruptionBudget:
+        enabled: false
+        maxUnavailable: 1
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: should fall back to minAvailable 1 when the podDisruptionBudget block is absent
+    set:
+      podDisruptionBudget: null
+    asserts:
+      - isKind:
+          of: PodDisruptionBudget
+      - equal:
+          path: spec.minAvailable
+          value: 1
+      - notExists:
+          path: spec.maxUnavailable
+
+  - it: should render the budget when the enabled key is absent
+    set:
+      podDisruptionBudget:
+        enabled: null
+    asserts:
+      - isKind:
+          of: PodDisruptionBudget
       - equal:
           path: spec.minAvailable
           value: 1

@@ -711,3 +711,95 @@ tests:
     asserts:
       - isKind:
           of: Deployment
+
+  # ---------------------------------------------------------------------------
+  # podDisruptionBudget schema constraints
+  # ---------------------------------------------------------------------------
+  - it: should reject minAvailable together with maxUnavailable
+    set:
+      podDisruptionBudget:
+        minAvailable: 1
+        maxUnavailable: 1
+    asserts:
+      - failedTemplate:
+          errorPattern: "/podDisruptionBudget.*'not' failed"
+
+  - it: should reject a negative podDisruptionBudget.minAvailable
+    set:
+      podDisruptionBudget:
+        minAvailable: -1
+    asserts:
+      - failedTemplate:
+          errorPattern: "/podDisruptionBudget/minAvailable.*minimum: got -1, want 0"
+
+  - it: should reject a fractional podDisruptionBudget.maxUnavailable
+    set:
+      podDisruptionBudget:
+        maxUnavailable: 1.5
+    asserts:
+      - failedTemplate:
+          errorPattern: "/podDisruptionBudget/maxUnavailable.*got number, want integer"
+
+  - it: should reject a podDisruptionBudget.maxUnavailable percentage above 100%
+    set:
+      podDisruptionBudget:
+        maxUnavailable: "101%"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/podDisruptionBudget/maxUnavailable.*does not match pattern"
+
+  - it: should reject a podDisruptionBudget.minAvailable that is neither a count nor a percentage
+    set:
+      podDisruptionBudget:
+        minAvailable: "two"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/podDisruptionBudget/minAvailable.*does not match pattern"
+
+  - it: should reject a podDisruptionBudget.maxUnavailable count given as a string
+    set:
+      podDisruptionBudget:
+        maxUnavailable: "1"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/podDisruptionBudget/maxUnavailable.*does not match pattern"
+
+  - it: should reject non-boolean podDisruptionBudget.enabled
+    set:
+      podDisruptionBudget:
+        enabled: "yes"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/podDisruptionBudget/enabled.*got string, want boolean"
+
+  - it: should reject an unknown key in podDisruptionBudget
+    set:
+      podDisruptionBudget:
+        unknown: 1
+    asserts:
+      - failedTemplate:
+          errorPattern: "/podDisruptionBudget.*additional properties 'unknown' not allowed"
+
+  - it: should accept a podDisruptionBudget.maxUnavailable of 100%
+    set:
+      podDisruptionBudget:
+        maxUnavailable: "100%"
+    asserts:
+      - isKind:
+          of: Deployment
+
+  - it: should accept a podDisruptionBudget.minAvailable of 0%
+    set:
+      podDisruptionBudget:
+        minAvailable: "0%"
+    asserts:
+      - isKind:
+          of: Deployment
+
+  - it: should accept podDisruptionBudget.enabled false
+    set:
+      podDisruptionBudget:
+        enabled: false
+    asserts:
+      - isKind:
+          of: Deployment

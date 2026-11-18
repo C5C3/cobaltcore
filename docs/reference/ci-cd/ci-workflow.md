@@ -837,7 +837,7 @@ Validates Helm chart structure, template rendering, and unit tests for every
 operator chart and the operator-library testbed without requiring a cluster.
 Verifies the generated `values.schema.json` and `_rbac-rules.tpl` files are in
 sync with their sources, vendors the shared `operator-library` subchart, then
-runs `helm lint`, `helm template` with seven value override scenarios, and
+runs `helm lint`, `helm template` with eight value override scenarios, and
 `helm unittest` for each chart to catch regressions at PR time. It then renders
 every operator chart with the `values.yaml` of its released chart, the highest
 tag under `oci://ghcr.io/c5c3/charts` pulled without a login, and fails when
@@ -860,7 +860,7 @@ validated without editing the job.
 | 5 | `make verify-helm-rbac` | Fails if any chart's `templates/_rbac-rules.tpl` or `templates/_webhook-rbac-rules.tpl` has drifted from its committed `config/rbac/role.yaml`, or if a webhook rule grants a read the manager rules do not |
 | 6 | `make helm-deps` | Vendors the `operator-library` subchart into each consumer chart's `charts/` |
 | 7 | `helm lint` | Validates chart structure and syntax for every chart |
-| 8 | `helm template` (7 scenarios) | Renders each chart with value overrides to catch broken conditionals and invalid YAML |
+| 8 | `helm template` (8 scenarios) | Renders each chart with value overrides to catch broken conditionals and invalid YAML |
 | 9 | `helm unittest` | Runs the unit test suites under each chart's `tests/` directory |
 | 10 | `make verify-helm-released-values` | Renders every operator chart with the `values.yaml` of its released chart from `oci://ghcr.io/c5c3/charts` and fails when the chart rejects them; `hack/helm-removed-values.yaml` waives an intended removal |
 | 11 | Validate target-cluster-access chart | Runs `helm lint`, `helm template` (3 scenarios) and `helm unittest` on `deploy/bases/target-cluster-access` |
@@ -876,6 +876,7 @@ validated without editing the job.
 | 5 — namespace-scoped RBAC | `rbac.namespaceScoped=true`, `webhook.enabled=false` | Validates Role/RoleBinding rendering instead of ClusterRole/ClusterRoleBinding. A chart that refuses the mode by design (ovn-operator, neutron-operator, c5c3-operator) fails the render with the documented `is not supported by <chart>` message, which the job accepts; any other failure fails the job |
 | 6 — node placement | `priorityClassName=cobaltcore-platform`, `nodeSelector.role=platform`, one `tolerations` entry | Validates that the generated schema admits the placement keys and that they render |
 | 7 — standalone webhook | `webhook.standalone=true` | Validates the standalone webhook release: the ClusterRole names no `secrets`, and the Deployment args carry `--enable-controllers=false` and no `--leader-elect` |
+| 8 — disruption budget | `podDisruptionBudget.maxUnavailable=1`; `podDisruptionBudget.minAvailable=1`; `podDisruptionBudget.minAvailable=1` and `podDisruptionBudget.maxUnavailable=2` with `--skip-schema-validation`; `podDisruptionBudget.enabled=false` | Validates that the chart's `values.yaml` leaves both counts unset, so each count alone passes the schema and renders without the other; that `maxUnavailable` wins over `minAvailable` when the schema is skipped; and that `enabled=false` renders no PodDisruptionBudget |
 
 **Unit test suites (step 9):** the shared templates are tested once, in the
 operator-library testbed (`operators/shared/helm/operator-library-testbed/tests/`);

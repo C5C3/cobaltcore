@@ -7,13 +7,16 @@ context, so .Chart/.Release/.Values resolve against the operator chart.
 {{/*
   PodDisruptionBudget for the operator Deployment.
 
-  Keeps at least one replica — and with it the in-process admission webhook
-  (failurePolicy=Fail) — available during voluntary disruptions such as node
-  drains and cluster upgrades. Rendered only when replicas > 1: with a single
-  replica, minAvailable: 1 would block every voluntary disruption and wedge
-  node drains.
+  Rendered when replicas > 1 and podDisruptionBudget.enabled is not false.
+  With a single replica, a budget of minAvailable: 1 would block every
+  voluntary disruption and wedge node drains. maxUnavailable wins over
+  minAvailable; the values schema rejects setting both. With neither set the
+  budget keeps one replica, and with it the in-process admission webhook
+  (failurePolicy=Fail), available. hasKey, not truthiness, decides: 0 is a
+  value. A missing block or a missing enabled key means enabled.
 */}}
-{{- if gt (int .Values.replicas) 1 }}
+{{- $pdb := .Values.podDisruptionBudget | default dict }}
+{{- if and (gt (int .Values.replicas) 1) (ne (toString (get $pdb "enabled")) "false") }}
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
@@ -22,7 +25,13 @@ metadata:
   labels:
     {{- include "operator-library.labels" . | nindent 4 }}
 spec:
+  {{- if hasKey $pdb "maxUnavailable" }}
+  maxUnavailable: {{ toJson $pdb.maxUnavailable }}
+  {{- else if hasKey $pdb "minAvailable" }}
+  minAvailable: {{ toJson $pdb.minAvailable }}
+  {{- else }}
   minAvailable: 1
+  {{- end }}
   selector:
     matchLabels:
       {{- include "operator-library.selectorLabels" . | nindent 6 }}

@@ -6,12 +6,12 @@
 """Generate values.schema.json for the operator Helm charts from one source.
 
 The operator charts share the bulk of their Helm values schema: the
-resourceQuantity/cidr/stringMap definitions, the image / replicas / resources /
-nodeSelector / tolerations / priorityClassName / rbac / leaderElection /
-controller / webhook / metrics / logging / monitoring / serviceAccount /
-extraArgs / extraEnv / name-override properties, the
-operator-library subchart-values property, the rbac->webhook constraint, the
-webhook.standalone constraint (webhook.enabled=true and
+resourceQuantity/cidr/stringMap/intOrPercent definitions, the image / replicas /
+podDisruptionBudget / resources / nodeSelector / tolerations /
+priorityClassName / rbac / leaderElection / controller / webhook / metrics /
+logging / monitoring / serviceAccount / extraArgs / extraEnv / name-override
+properties, the operator-library subchart-values property, the rbac->webhook
+constraint, the webhook.standalone constraint (webhook.enabled=true and
 rbac.namespaceScoped=false), and —
 for every chart that ships templates/networkpolicy.yaml — the NetworkPolicy
 property with its fail-closed constraint. This script holds that shared schema
@@ -66,6 +66,14 @@ RESOURCE_QUANTITY = {
     ],
 }
 
+INT_OR_PERCENT = {
+    "description": "Absolute pod count (0 or more) or a percentage of the replicas ('0%' to '100%')",
+    "anyOf": [
+        {"type": "integer", "minimum": 0},
+        {"type": "string", "pattern": r"^(100|[1-9]?[0-9])%$"},
+    ],
+}
+
 def image_property(repository_default):
     return {
         "type": "object",
@@ -107,6 +115,28 @@ REPLICAS = {
     "description": "Number of operator pod replicas",
     "default": 2,
     "minimum": 1,
+}
+
+POD_DISRUPTION_BUDGET = {
+    "type": "object",
+    "description": "PodDisruptionBudget of the operator pods, rendered when enabled is true and replicas is above 1. Set minAvailable or maxUnavailable, not both; with neither set the budget renders minAvailable: 1",
+    "additionalProperties": False,
+    "properties": {
+        "enabled": {
+            "type": "boolean",
+            "description": "Render the PodDisruptionBudget; false renders none at any replica count",
+            "default": True,
+        },
+        "minAvailable": {
+            "description": "Pods that must stay available during a voluntary disruption. Not checked against replicas: a value equal to replicas blocks every node drain",
+            "allOf": [{"$ref": "#/definitions/intOrPercent"}],
+        },
+        "maxUnavailable": {
+            "description": "Pods that may be unavailable during a voluntary disruption. Not checked against replicas: 0 blocks every node drain",
+            "allOf": [{"$ref": "#/definitions/intOrPercent"}],
+        },
+    },
+    "not": {"required": ["minAvailable", "maxUnavailable"]},
 }
 
 
@@ -646,11 +676,17 @@ def deep_merge(base, extra):
 
 def build_schema(chart):
     """Assemble one chart's full values schema from the shared blocks and its extras."""
-    definitions = {"resourceQuantity": RESOURCE_QUANTITY, "cidr": CIDR, "stringMap": STRING_MAP}
+    definitions = {
+        "resourceQuantity": RESOURCE_QUANTITY,
+        "cidr": CIDR,
+        "stringMap": STRING_MAP,
+        "intOrPercent": INT_OR_PERCENT,
+    }
 
     properties = {
         "image": image_property(chart["image_repository_default"]),
         "replicas": REPLICAS,
+        "podDisruptionBudget": POD_DISRUPTION_BUDGET,
         "resources": RESOURCES,
         "nodeSelector": NODE_SELECTOR,
         "tolerations": TOLERATIONS,
