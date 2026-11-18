@@ -93,7 +93,6 @@ path. Delete it after the restore is complete.
 :::
 
 ```bash
-set -euo pipefail
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM"
 JOB="controlplane-ovn-backup-manual-$RUN_ID"
 kubectl create job "$JOB" \
@@ -129,7 +128,6 @@ Nothing mounts the volume between runs, so list it from a short-lived pod that
 borrows the OVN image from the running Northbound StatefulSet:
 
 ```bash
-set -euo pipefail
 IMG="$(kubectl get sts controlplane-ovn-nb -n openstack \
   -o jsonpath='{.spec.template.spec.containers[0].image}')"
 test -n "$IMG"
@@ -180,7 +178,6 @@ the file you picked in Step 2; the value below is an example, and replaying a
 different file means editing that one line:
 
 ```bash
-set -euo pipefail
 IMG="$(kubectl get sts controlplane-ovn-nb -n openstack \
   -o jsonpath='{.spec.template.spec.containers[0].image}')"
 NB="$(kubectl get ovncentral controlplane-ovn -n openstack \
