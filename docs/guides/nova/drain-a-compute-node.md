@@ -117,7 +117,6 @@ Create the flavor and the image of the quick start's fake-compute check, and
 boot a server without a network:
 
 ```bash
-set -euo pipefail
 openstack --insecure flavor create --vcpus 1 --ram 128 --disk 1 m1.nano
 truncate -s 1M /tmp/boot-image.raw
 openstack --insecure image create --disk-format raw --container-format bare \
@@ -183,7 +182,6 @@ emptied by migration instead, as [On a compute cluster](#on-a-compute-cluster)
 describes.
 
 ```bash
-set -euo pipefail
 openstack --insecure server delete --wait drain-server
 for _ in $(seq 36); do
   nodes="$(kubectl get novacompute controlplane-pool-a -n openstack -o jsonpath='{.status.nodes}')"

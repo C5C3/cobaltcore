@@ -54,7 +54,6 @@ Set the console gateway on the ControlPlane, which projects it into the child's
 `spec.consoleProxy.gateway`:
 
 ```bash
-set -euo pipefail
 kubectl patch controlplane controlplane -n openstack --type merge \
   -p '{"spec":{"services":{"nova":{"consoleProxy":{"gateway":{"parentRef":{"name":"openstack-gw"},"hostname":"nova-console.127-0-0-1.nip.io"}}}}}}'
 ```
@@ -78,7 +77,6 @@ the compute contract to contain the new URL before restarting the fake compute;
 if the check finds no matching line, let Nova reconcile and rerun it:
 
 ```bash
-set -euo pipefail
 kubectl get secret controlplane-nova-compute-config -n openstack \
   -o jsonpath='{.data.nova-compute\.conf}' | base64 -d \
   | grep -F 'novncproxy_base_url = https://nova-console.127-0-0-1.nip.io/vnc_lite.html'
@@ -95,7 +93,6 @@ The URL contains a short-lived console token. Do not share it in tickets or
 shared terminal logs.
 
 ```bash
-set -euo pipefail
 URL=$(openstack --insecure console url show --novnc demo-server -f value -c url)
 if [ -z "$URL" ]; then
   echo "ERROR: the API returned no console URL for demo-server" >&2
@@ -113,7 +110,6 @@ after the hostname before you open the URL or reuse it. Keep this shell open;
 the next block derives `TOKEN` from `URL`:
 
 ```bash
-set -euo pipefail
 URL_WITH_PORT="${URL/nip.io\//nip.io:8443/}"
 echo "$URL_WITH_PORT"
 TOKEN=$(sed -n 's/.*token%3D\([0-9a-f-]*\).*/\1/p' <<<"$URL")

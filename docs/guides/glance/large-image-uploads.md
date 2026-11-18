@@ -68,7 +68,6 @@ volume `staging`.
 The bound is a ControlPlane setting projected onto the Glance child:
 
 ```bash
-set -euo pipefail
 kubectl patch controlplane controlplane -n openstack --type merge \
   -p '{"spec":{"services":{"glance":{"staging":{"sizeLimit":"40Gi"}}}}}'
 projected=

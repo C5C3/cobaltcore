@@ -68,7 +68,6 @@ creates each named bridge with `ovs-vsctl --may-exist add-br`. The per-node
 apply can take a short time, so wait for both the mapping and bridge:
 
 ```bash
-set -euo pipefail
 DS=ds/controlplane-chassis-ovs
 RAW=""
 MAPPINGS=""
@@ -122,7 +121,6 @@ still allocates each port a fixed address out of the subnet.
 ### 3. Create a port and bind it to the node
 
 ```bash
-set -euo pipefail
 NODE="$(kubectl get nodes -l openstack.c5c3.io/chassis=true \
   -o jsonpath='{.items[0].metadata.name}')"
 if [ -z "$NODE" ]; then
@@ -149,7 +147,6 @@ put an internal interface on `br-int` and tag it with the port's id, which is
 the part of the plug that OVN reacts to:
 
 ```bash
-set -euo pipefail
 PORT_ID=$(openstack --insecure port show smoke0 -f value -c id)
 if [ -z "$PORT_ID" ]; then
   echo "Neutron returned no ID for port smoke0." >&2
@@ -182,7 +179,6 @@ Southbound `Port_Binding` row, and Neutron reports the port `ACTIVE` as soon as
 that row names a chassis:
 
 ```bash
-set -euo pipefail
 STATUS=""
 for _ in $(seq 30); do
   STATUS="$(openstack --insecure port show smoke0 -c status -f value)"
