@@ -552,7 +552,6 @@ the exported key and bundle in a private temporary directory; do not leave them 
 repository:
 
 ```bash
-set -euo pipefail
 umask 077
 OPENBAO_CERT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/openbao-client.XXXXXX")
 # Generate a one-use passphrase for the temporary bundle.
