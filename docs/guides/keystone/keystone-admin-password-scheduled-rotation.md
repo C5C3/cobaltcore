@@ -105,7 +105,6 @@ and CA from the cluster. The listener requires mutual TLS, so the CLI needs
 these files as well as the root token and local API address:
 
 ```bash
-set -euo pipefail
 BAO_CERT_DIR=$(mktemp -d)
 chmod 700 "$BAO_CERT_DIR"
 kubectl get secret openbao-client-tls -n shared-services \

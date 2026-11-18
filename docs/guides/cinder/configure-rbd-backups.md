@@ -259,7 +259,6 @@ backup service rolls onto it. The patch raises the generation it reads by one,
 so it rotates the key also where an earlier run raised it before:
 
 ```bash
-set -euo pipefail
 backup_secret() {
   kubectl -n openstack get deploy controlplane-cinder-backup \
     -o jsonpath='{.spec.template.spec.volumes[?(@.name=="backup")].secret.secretName}'
@@ -307,7 +306,6 @@ which Step 6 puts back, reads the same Secret, so it starts on the rotated key.
 A backup taken now reaches `available` with the rotated key:
 
 ```bash
-set -euo pipefail
 timeout 300 bash -c 'until openstack volume service list --service cinder-backup -f value -c State | grep -qx up; do sleep 5; done'
 openstack volume backup create --incremental --name rbdbk-rotated rbdbk-vol
 timeout 300 bash -c 'until [ "$(openstack volume backup show rbdbk-rotated -c status -f value)" = available ]; do sleep 2; done'
@@ -324,7 +322,6 @@ delete a backup an incremental one still depends on; `nfs-on-rbd` exists only
 when Step 4 ran. Then delete the RBD volume and the target:
 
 ```bash
-set -euo pipefail
 backups=$(openstack volume backup list -f value -c Name)
 for bk in rbdbk-rotated rbdbk-incr rbdbk-full nfs-on-rbd; do
   if printf '%s\n' "$backups" | grep -Fxq "$bk"; then
