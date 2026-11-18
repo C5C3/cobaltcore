@@ -62,7 +62,6 @@ of the SHA-256 of the node name. A node name is a DNS subdomain of up to 253 cha
 wait` calls below can address a Job by name:
 
 ```bash
-set -euo pipefail
 kubectl get nodes -l openstack.c5c3.io/chassis=true
 NODE="cobaltcore-control-plane" # replace with the node to drain
 if command -v sha256sum >/dev/null 2>&1; then
