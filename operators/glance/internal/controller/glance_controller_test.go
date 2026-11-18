@@ -483,12 +483,12 @@ func TestGlanceBackendGlanceRefExtractor(t *testing.T) {
 	g.Expect(glanceBackendGlanceRefExtractor(&corev1.Secret{})).To(BeNil())
 }
 
-func TestRegisterGlanceIndexes_RegistersSecretNameKey(t *testing.T) {
+func TestRegisterGlanceIndexes_RegistersInputKeys(t *testing.T) {
 	g := NewGomegaWithT(t)
 
 	idx := &recordingFieldIndexer{}
 	g.Expect(registerGlanceIndexes(context.Background(), idx)).To(Succeed())
-	g.Expect(idx.keys).To(ConsistOf(GlanceSecretNameIndexKey))
+	g.Expect(idx.keys).To(ConsistOf(GlanceSecretNameIndexKey, policyConfigMapIndexKey))
 }
 
 func TestRegisterGlanceBackendIndexes_RegistersBothKeys(t *testing.T) {
