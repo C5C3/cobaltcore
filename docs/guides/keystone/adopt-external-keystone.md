@@ -240,7 +240,6 @@ OpenStack client, then removes the file when the subshell exits:
 
 ```bash
 (
-  set -euo pipefail
   CLOUDS_FILE=$(mktemp)
   trap 'rm -f "$CLOUDS_FILE"' EXIT
   kubectl -n brownfield get secret k-orc-clouds-yaml \
@@ -314,7 +313,6 @@ temporary file to test the cloud configuration:
 
 ```bash
 (
-  set -euo pipefail
   CLOUDS_FILE=$(mktemp)
   trap 'rm -f "$CLOUDS_FILE"' EXIT
   kubectl -n brownfield get secret nova-credentials \

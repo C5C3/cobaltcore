@@ -116,7 +116,6 @@ For a release managed directly by Helm, enable the same values with a rolling
 ```bash
 CHART_VERSION=$(helm list -n neutron-system --filter '^neutron-operator$' -o json \
   | jq -r '.[0].chart | sub("^neutron-operator-"; "")')
-
 helm upgrade neutron-operator oci://ghcr.io/c5c3/charts/neutron-operator \
   --namespace neutron-system --version "$CHART_VERSION" --reuse-values \
   --set networkPolicy.enabled=true \
@@ -222,7 +221,6 @@ ControlPlane leaves it at the default, scales the API one replica above the size
 it runs at, and puts the count back:
 
 ```bash
-set -euo pipefail
 if CUR=$(kubectl get controlplane controlplane -n openstack \
      -o jsonpath='{.spec.sizing.neutron.api.replicas}') &&
    RUN=$(kubectl get deploy/controlplane-neutron -n openstack \
@@ -303,7 +301,6 @@ waits up to three minutes for the check to end, then prints the state of the
 check container and its log:
 
 ```bash
-set -euo pipefail
 CHECK='
 import socket, sys
 for ep in sys.argv[1:]:
