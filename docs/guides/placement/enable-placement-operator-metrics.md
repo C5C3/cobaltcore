@@ -151,7 +151,6 @@ the port if needed. Keep the port-forward running in one terminal. In another,
 query the targets:
 
 ```bash
-set -euo pipefail
 curl --fail --silent --show-error \
   'http://localhost:9090/api/v1/targets?state=active' \
   | jq '[.data.activeTargets[] |
@@ -167,9 +166,14 @@ confirm Prometheus can reach the metrics port, and check that the NetworkPolicy
 allows its source. Then confirm the reconcile series exists:
 
 ```bash
-curl --fail --silent --show-error --get 'http://localhost:9090/api/v1/query' \
-  --data-urlencode 'query=placement_operator_reconcile_duration_seconds_count{namespace="placement-system",job="placement-operator"}' \
-  | jq '{status, error, series: (.data.result | length)}'
+curl --fail --silent --show-error \
+  'http://localhost:9090/api/v1/query?query=placement_operator_reconcile_duration_seconds_count' \
+  | jq -r '
+      if .status != "success" then
+        error("Prometheus query failed: " + (.error // "unknown error"))
+      elif (.data.result | length) == 0 then
+        error("no sub-reconciler observations have been recorded yet")
+      else (.data.result | length) end'
 ```
 
 Replace the namespace and job name if needed. Expect `status: "success"` and
