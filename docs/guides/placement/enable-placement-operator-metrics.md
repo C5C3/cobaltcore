@@ -80,7 +80,6 @@ Flux's helm-controller reverts any out-of-band
 Helm revision on its next reconcile:
 
 ```bash
-set -euo pipefail
 kubectl patch helmrelease placement-operator -n placement-system --type=merge \
   -p '{"spec":{"values":{"monitoring":{"serviceMonitor":{"enabled":true}}}}}'
 
@@ -114,13 +113,8 @@ If you installed the operator directly with Helm (not through Flux), set the
 value with a rolling `helm upgrade` instead:
 
 ```bash
-set -euo pipefail
 CHART_VERSION="$(helm list -n placement-system --filter '^placement-operator$' -o json \
   | jq -r '.[0].chart // "" | sub("^placement-operator-"; "")')"
-if [ -z "$CHART_VERSION" ]; then
-  echo "ERROR: could not determine the installed placement-operator chart version." >&2
-  exit 1
-fi
 helm upgrade placement-operator oci://ghcr.io/c5c3/charts/placement-operator \
   --namespace placement-system --version "$CHART_VERSION" --reuse-values \
   --set monitoring.serviceMonitor.enabled=true
