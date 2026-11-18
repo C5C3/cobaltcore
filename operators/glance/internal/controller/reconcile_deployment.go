@@ -216,28 +216,35 @@ func (r *GlanceReconciler) reconcileDeployment(ctx context.Context, children cli
 		return ctrl.Result{}, fmt.Errorf("ensuring PodDisruptionBudget: %w", err)
 	}
 
-	// A Deployment can retain Available=True while an attempted rollout
-	// exceeds its deadline. Surface that observation even if old pods serve.
-	if deploy.Status.ObservedGeneration == deploy.Generation {
-		for _, c := range deploy.Status.Conditions {
-			if c.Type == appsv1.DeploymentProgressing && c.Status == corev1.ConditionFalse && c.Reason == "ProgressDeadlineExceeded" {
-				conditions.SetCondition(&glance.Status.Conditions, metav1.Condition{
-					Type: "DeploymentReady", Status: metav1.ConditionFalse, ObservedGeneration: glance.Generation,
-					Reason: c.Reason, Message: c.Message,
-				})
-				return ctrl.Result{RequeueAfter: commonreconcile.RequeueDeploymentPolling}, nil
-			}
-		}
-	}
-
-	if !ready || !glanceDeploymentRolledOut(deploy) {
+	if !ready {
 		log.FromContext(ctx).Info("Glance API deployment not ready, requeuing")
 		conditions.SetCondition(&glance.Status.Conditions, metav1.Condition{
 			Type:               "DeploymentReady",
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: glance.Generation,
 			Reason:             conditionReasonWaitingForDeployment,
-			Message:            "Waiting for all Glance API replicas to finish rolling out and become available",
+			Message:            "Glance API deployment is not yet available",
+		})
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueDeploymentPolling}, nil
+	}
+
+	// Hold the RollingUpdate → Contracting flip until the Deployment has FULLY
+	// converged onto the target-release image. The `ready` signal above comes from
+	// deployment.IsDeploymentReady, which is surge-tolerant: under the default
+	// MaxSurge=1/MaxUnavailable=0 strategy a new pod is added before an old one is
+	// removed, so it turns true as soon as the first new-image pod is Ready while
+	// old-image pods still serve. The contract phase then drops the now-unused
+	// columns those old pods still read — so gate the flip on every replica being
+	// updated, ready, and counted (glanceDeploymentRolledOut), and requeue to wait
+	// otherwise. Only the RollingUpdate upgrade phase is stricter here; steady-state
+	// rollouts keep the surge-tolerant readiness above.
+	if glance.Status.UpgradePhase == commonv1.UpgradePhaseRollingUpdate && !glanceDeploymentRolledOut(deploy) {
+		conditions.SetCondition(&glance.Status.Conditions, metav1.Condition{
+			Type:               "DeploymentReady",
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: glance.Generation,
+			Reason:             conditionReasonWaitingForDeployment,
+			Message:            "Waiting for the upgraded image to finish rolling out before contracting the database schema",
 		})
 		return ctrl.Result{RequeueAfter: commonreconcile.RequeueDeploymentPolling}, nil
 	}
@@ -272,8 +279,14 @@ func (r *GlanceReconciler) reconcileDeployment(ctx context.Context, children cli
 	return ctrl.Result{}, nil
 }
 
-// glanceDeploymentRolledOut requires the Deployment controller to have seen
-// this template and every desired replica to be updated, ready and available.
+// glanceDeploymentRolledOut reports whether the Glance API Deployment has fully
+// converged onto its current pod template: the deployment controller has observed
+// the latest generation and every replica is updated, ready, and counted, with no
+// surge or old-template pod still present. It is stricter than the surge-tolerant
+// readiness deployment.EnsureDeployment reports (which turns true as soon as the
+// first new-image pod is Ready while old-image pods still serve), so the shared
+// upgrade flow's RollingUpdate → Contracting flip waits for the old image to drain
+// before the schema is contracted.
 func glanceDeploymentRolledOut(deploy *appsv1.Deployment) bool {
 	if deploy.Status.ObservedGeneration < deploy.Generation {
 		return false
@@ -284,7 +297,6 @@ func glanceDeploymentRolledOut(deploy *appsv1.Deployment) bool {
 	}
 	return deploy.Status.UpdatedReplicas == desired &&
 		deploy.Status.ReadyReplicas == desired &&
-		deploy.Status.AvailableReplicas == desired &&
 		deploy.Status.Replicas == desired
 }
 

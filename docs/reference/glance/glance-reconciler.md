@@ -24,10 +24,6 @@ collectors cover the recurring purge (`glance_operator_db_purge_total`,
 
 ![The sub-reconciler pipeline of the Glance operator. A pass runs its entries one after another and ends at the first that returns a requeue or an error: Secrets, DBConnectionSecret, Backends, Config, Database, Deployment, then a parallel group of HTTPRoute, HealthCheck, HPA, VPA, NetworkPolicy and DBPurge. Every member of the group starts, and the group returns the shortest requeue. Each step sets one condition; DBConnectionSecret and Config report through SecretsReady. Secrets hands on the digest of the service-user password, DBConnectionSecret the digest of the DSN, Backends the backend projection, which Config reads, and Config the name of the ConfigMap, which Database reads. Deployment reads the two digests and sets status.endpoint. Backends never ends the pass. The early exit and the full pass both end in updateStatus, which aggregates Ready from the sub-conditions and writes the status only when it changed.](../../diagrams/service-glance-pipeline.svg)
 
-The parent controller uses the lifecycle driver in `internal/common/lifecycle`
-to fetch the CR, process deletion or suspension, resolve its target, install
-finalizers and persist status. Glance supplies the pipeline and cleanup hooks.
-
 The figure draws the pattern the Keystone operator set: a lane of steps that
 ends the pass at the first requeue or error, and a group whose members all run.
 [Reconciliation Flow](../keystone/keystone-reconciler.md#reconciliation-flow)
@@ -57,22 +53,18 @@ minimal.
 ## Conditions
 
 The aggregate `Ready` condition is `True` (reason `AllReady`) exactly when all
-ten sub-conditions are `True` at the current Glance generation and the pass
-succeeded. A missing, stale or failed gate produces `False` (`NotAllReady`).
-A step that returns an error without a current failure condition reports
-`ReconcileError` on its own gate. During a rollout, `DeploymentReady` waits
-until every desired replica is updated, ready and available.
+ten sub-conditions are `True`; otherwise `False` (`NotAllReady`).
 
 | Type | True reasons | False reasons |
 | --- | --- | --- |
 | `SecretsReady` | `SecretsAvailable` | `TargetClusterUnavailable`, `SecretStoreNotReady`, `ClusterSecretStoreUnsupported`, `WaitingForDBCredentials`, `WaitingForServiceUserCredentials`, `ConfigError` |
 | `BackendsReady` | `AllBackendsProjected` | `WaitingForBackends`, `NoDefaultBackend` |
 | `DatabaseReady` | `DatabaseSynced` | `ClusterNotReady`, `WaitingForDatabase`, `DBSyncFailed`, `DBSyncInProgress`, `WaitingForBackends`, `ImageReleaseMismatch`, `VersionParseError`, `DowngradeNotSupported`, `UpgradePathInvalid`, `UpgradeTargetChanged`, `ExpandInProgress`, `MigrateInProgress`, `UpgradeRollingUpdate`, `ContractInProgress`, `ExpandFailed`, `MigrateFailed`, `ContractFailed` |
-| `DeploymentReady` | `DeploymentReady` | `WaitingForDeployment`, `ProgressDeadlineExceeded`, `WaitingForBackends` |
+| `DeploymentReady` | `DeploymentReady` | `WaitingForDeployment`, `WaitingForBackends` |
 | `GlanceAPIReady` | `APIHealthy` | `APIUnhealthy`, `EndpointNotReady`, `HealthCheckTimeout`, `ConnectionFailed`, `HealthCheckFailed` |
-| `HPAReady` | `HPAReady`, `HPANotRequired` | `ReconcileError` |
+| `HPAReady` | `HPAReady`, `HPANotRequired` | — (errors propagate) |
 | `VPAReady` | `VPAReady`, `VPANotRequired` | `VPANotInstalled`, `CapabilityProbeFailed`, `VPAError` |
-| `NetworkPolicyReady` | `NetworkPolicyReady`, `NetworkPolicyNotRequired` | `ReconcileError` |
+| `NetworkPolicyReady` | `NetworkPolicyReady`, `NetworkPolicyNotRequired` | — (errors propagate) |
 | `HTTPRouteReady` | `HTTPRouteAccepted`, `HTTPRouteNotRequired` | `HTTPRouteNotAccepted`, `GatewayAPINotInstalled`, `CapabilityProbeFailed` |
 | `DBPurgeReady` | `DBPurgeScheduled`, `DBPurgeSuspended` | `DBPurgeJobFailed` |
 
@@ -147,7 +139,7 @@ The Backends step lists the attached `GlanceBackend`s (via the
 `spec.glanceRef.name` field index), sorts them by name for deterministic output,
 and renders one `[<name>]` store section per **credential-ready** backend into a
 content-hashed backends Secret (rolled on any content change, 3 historical
-retained). It gates each backend on `CredentialsReady==True` at the backend’s current generation — never the
+retained). It gates each backend on `CredentialsReady==True` — never the
 aggregate `Ready`, which also requires `ConfigProjected` and would deadlock,
 since `ConfigProjected` only turns True after this step projects the backend.
 
@@ -157,14 +149,7 @@ since `ConfigProjected` only turns True after this step projects the backend.
 - **Per-backend fault isolation.** A backend whose credentials Secret is
   missing/unreadable, or whose rendered values carry a control character, is
   skipped with a `GlanceBackendSkipped` Warning event on the Glance CR while the
-  healthy siblings keep projecting. If the skipped store is the default, the
-  API keeps both artifacts mounted by the live Deployment. First install
-  waits for a usable default.
-
-After all pipeline steps converge, Glance prunes its immutable history. It
-keeps the active pair, the three newest historical versions of each, and any older ConfigMap
-still mounted by a Job. A database wait or an in-flight rollout defers pruning
-until a later pass.
+  healthy siblings keep projecting.
 
 ## Database
 
@@ -292,14 +277,16 @@ across a planned upgrade to avoid the noise.
   digest annotation, and the operator omits it while
   `spec.extraConfig.database.connection_parameters` is set; see
   [Database socket timeouts](../../guides/advanced-configuration.md#database-socket-timeouts).
-- **Deletion** of a managed database requests deletion of the Glance-owned
-  MariaDB `Database`, `User` and `Grant`. Brownfield mode skips this stage.
-  The next pass releases the finalizer once those objects are absent or
-  terminating. MariaDB completes its own teardown as garbage collection stops
-  the local workloads and releases their connections. For a target cluster,
-  the remote sweep requests deletion of the remaining owned children.
-  A target that stays unreachable through the abandonment window produces a
-  `RemoteChildrenAbandoned` warning. See [Target Clusters](../target-clusters.md).
+- **Deletion** runs the `glance.openstack.c5c3.io/finalizer`: it issues Delete
+  on the MariaDB `Database`/`User`/`Grant` CRs before the owner-ref chain
+  disappears, emitting `FinalizingDatabase` while cleanup remains and
+  `DatabaseFinalized` when the finalizer is released. Every other owned resource
+  is namespace-scoped with a controller owner reference, so Kubernetes garbage
+  collection reclaims it. A CR whose target cluster was deregistered in the meantime cannot
+  reach any of it: the finalizer is released against no cleanup at all, a
+  `RemoteChildrenAbandoned` Warning names what stays behind, and the CR
+  leaves etcd instead of hanging in Terminating. See
+  [Target Clusters](../target-clusters.md).
   The `GlanceBackend` controller has no finalizer: the
   operator provisions no S3 resources, so there is nothing to clean up remotely.
   Deletion still **de-registers the store** — the bucket and its objects are

@@ -58,7 +58,6 @@ func readyGlanceDeployment(glance *glancev1alpha1.Glance, art configArtifacts) *
 	deploy.Spec.Replicas = &replicas
 	deploy.Generation = 1
 	deploy.Status.ObservedGeneration = 1
-	deploy.Status.AvailableReplicas = replicas
 	deploy.Status.ReadyReplicas = replicas
 	// A ready Deployment in these tests is also fully rolled out — every replica
 	// updated and counted, no surge pod left — so the RollingUpdate → Contracting
@@ -1075,7 +1074,6 @@ func TestReconcileDeployment_RollingUpdateSurgeReadyHoldsContract(t *testing.T) 
 	deploy.Spec.Replicas = &replicas
 	deploy.Generation = 1
 	deploy.Status.ObservedGeneration = 1
-	deploy.Status.AvailableReplicas = replicas
 	deploy.Status.ReadyReplicas = replicas
 	deploy.Status.UpdatedReplicas = replicas - 1
 	deploy.Status.Replicas = replicas + 1
@@ -1265,37 +1263,6 @@ func TestGlanceWorkloads_ImagePullPolicy(t *testing.T) {
 				}
 			}
 			g.Expect(specs["api"].Containers).To(HaveLen(2), "glance-api and the cache maintenance sidecar")
-		})
-	}
-}
-
-func TestDeploymentReadyRejectsStaleRollout(t *testing.T) {
-	for _, deadline := range []bool{false, true} {
-		name := "old replica still serving"
-		if deadline {
-			name = "progress deadline exceeded"
-		}
-		t.Run(name, func(t *testing.T) {
-			g := NewGomegaWithT(t)
-			glance := deployGlance("2026.1")
-			art := testArtifacts()
-			deploy := readyGlanceDeployment(glance, art)
-			wantReason := conditionReasonWaitingForDeployment
-			if deadline {
-				wantReason = "ProgressDeadlineExceeded"
-				deploy.Status.Conditions = append(deploy.Status.Conditions, appsv1.DeploymentCondition{
-					Type: appsv1.DeploymentProgressing, Status: corev1.ConditionFalse, Reason: wantReason, Message: "New ReplicaSet did not progress",
-				})
-			} else {
-				deploy.Status.UpdatedReplicas--
-			}
-			r := newGlanceTestReconciler(glance, deploy)
-			result, err := r.reconcileDeployment(context.Background(), r.Client, glance, art, "", "")
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueDeploymentPolling))
-			cond := meta.FindStatusCondition(glance.Status.Conditions, "DeploymentReady")
-			g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-			g.Expect(cond.Reason).To(Equal(wantReason))
 		})
 	}
 }
