@@ -17,6 +17,7 @@ import (
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	"github.com/c5c3/cobaltcore/internal/common/config"
+	"github.com/c5c3/cobaltcore/internal/common/lifecycle"
 	"github.com/c5c3/cobaltcore/internal/common/satellite"
 	"github.com/c5c3/cobaltcore/internal/common/secrets"
 	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
@@ -81,8 +82,7 @@ type backendsProjection struct {
 // CONTRACT: this step never returns a requeue and never returns an error for
 // waiting states (a missing default, pending backends, missing credential
 // Secrets, control-char values) — the GlanceBackend watch wakes the parent when
-// a backend's status flips. Only genuine infrastructure failures (List/create/
-// prune errors) surface as errors.
+// a backend's status flips. Only genuine infrastructure failures (List/read/create errors) surface as errors.
 func (r *GlanceReconciler) reconcileBackends(ctx context.Context, children client.Client, glance *glancev1alpha1.Glance) (ctrl.Result, backendsProjection, error) {
 	logger := log.FromContext(ctx)
 
@@ -176,6 +176,17 @@ func (r *GlanceReconciler) reconcileBackends(ctx context.Context, children clien
 		renderedNames = append(renderedNames, backend.Name)
 	}
 
+	// The backend controller's condition can still be True when the Secret
+	// disappears. Rendering the healthy subset is safe only if it includes
+	// the default. Otherwise Config must keep the running pair of artifacts.
+	if _, ok := sections[defaultBackend]; !ok {
+		conditions.SetCondition(&glance.Status.Conditions, metav1.Condition{
+			Type: conditionTypeBackendsReady, Status: metav1.ConditionFalse, ObservedGeneration: glance.Generation,
+			Reason: conditionReasonWaitingForBackends, Message: "Waiting for backends: " + strings.Join(pending, "; "),
+		})
+		return ctrl.Result{}, backendsProjection{hosts: hosts}, nil
+	}
+
 	// enabled_backends lists the rendered stores as "<name>:s3" in sorted order
 	// (renderedNames follows the sorted backend list).
 	enabled := make([]string, 0, len(renderedNames))
@@ -189,15 +200,6 @@ func (r *GlanceReconciler) reconcileBackends(ctx context.Context, children clien
 	if err != nil {
 		return ctrl.Result{}, backendsProjection{}, fmt.Errorf("creating backends Secret: %w", err)
 	}
-	if err := config.PruneImmutableSecrets(ctx, children, r.Scheme, glance, config.PruneOptions{
-		BaseName:    glance.Name + "-backends",
-		Namespace:   glance.Namespace,
-		CurrentName: secretName,
-		Retain:      defaultConfigMapRetainCount,
-	}); err != nil {
-		return ctrl.Result{}, backendsProjection{}, fmt.Errorf("pruning backends Secrets: %w", err)
-	}
-
 	projection := backendsProjection{
 		valid:           true,
 		enabledBackends: strings.Join(enabled, ","),
@@ -232,8 +234,7 @@ func (r *GlanceReconciler) reconcileBackends(ctx context.Context, children clien
 // consult the aggregate Ready (which also requires ConfigProjected, only True
 // after this step projects the backend), so gating here never deadlocks.
 func credentialsReady(backend *glancev1alpha1.GlanceBackend) bool {
-	cond := conditions.GetCondition(backend.Status.Conditions, conditionTypeCredentialsReady)
-	return cond != nil && cond.Status == metav1.ConditionTrue
+	return lifecycle.CurrentTrue(backend.Status.Conditions, conditionTypeCredentialsReady, backend.Generation)
 }
 
 // renderStoreSection renders one credential-ready backend's [<name>] store

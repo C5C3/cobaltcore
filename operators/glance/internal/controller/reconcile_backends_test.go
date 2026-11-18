@@ -291,3 +291,39 @@ func TestReconcileBackends_DeterministicSectionOrder(t *testing.T) {
 	conf := renderedBackendsConf(t, r, proj.secretName)
 	g.Expect(strings.Index(conf, "[aaa]")).To(BeNumerically("<", strings.Index(conf, "[bbb]")))
 }
+
+func TestDefaultBackendFailureRetainsMountedArtifacts(t *testing.T) {
+	for _, stale := range []bool{false, true} {
+		name := "missing secret"
+		if stale {
+			name = "stale CredentialsReady"
+		}
+		t.Run(name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ctx := context.Background()
+			glance := testGlance()
+			original := testArtifacts()
+			store := credentialReadyBackend("store", glance.Name, true)
+			objects := []client.Object{glance, store, readyGlanceDeployment(glance, original),
+				credentialReadyBackend("secondary", glance.Name, false), testS3CredentialsSecret("secondary")}
+			if stale {
+				store.Generation++
+				objects = append(objects, testS3CredentialsSecret("store"))
+			}
+			r := newGlanceTestReconciler(objects...)
+			_, projection, err := r.reconcileBackends(ctx, r.Client, glance)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(projection.valid).To(BeFalse())
+			g.Expect(projection.secretName).To(BeEmpty())
+			g.Expect(projection.hosts).To(HaveLen(2))
+			_, art, err := r.reconcileConfig(ctx, r.Client, glance, projection)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(art).To(Equal(original))
+			var secrets corev1.SecretList
+			g.Expect(r.List(ctx, &secrets)).To(Succeed())
+			for _, secret := range secrets.Items {
+				g.Expect(secret.Name).NotTo(HavePrefix(glance.Name + "-backends-"))
+			}
+		})
+	}
+}
