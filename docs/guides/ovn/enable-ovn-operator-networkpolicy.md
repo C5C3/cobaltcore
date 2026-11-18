@@ -73,7 +73,6 @@ and verify your CNI's behavior before applying the same assumption elsewhere
 ([Kubernetes NetworkPolicy behavior](https://kubernetes.io/docs/concepts/services-networking/network-policies/#behavior-of-to-and-from-selectors)):
 
 ```bash
-set -euo pipefail
 kubectl get endpointslices -n default \
   -l kubernetes.io/service-name=kubernetes -o json \
   | jq -er '
@@ -166,10 +165,6 @@ For a release managed directly by Helm, enable the same values with a rolling
 ```bash
 CHART_VERSION="$(helm list -n ovn-system --filter '^ovn-operator$' -o json \
   | jq -r '.[0].chart // "" | sub("^ovn-operator-"; "")')"
-if [ -z "$CHART_VERSION" ]; then
-  echo "ERROR: could not find the ovn-operator Helm release in ovn-system." >&2
-  exit 1
-fi
 helm upgrade ovn-operator oci://ghcr.io/c5c3/charts/ovn-operator \
   --namespace ovn-system --version "$CHART_VERSION" --reuse-values \
   --set networkPolicy.enabled=true \
