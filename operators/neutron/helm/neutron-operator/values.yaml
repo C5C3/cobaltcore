@@ -14,6 +14,18 @@ image:
 
 replicas: 2
 
+# PodDisruptionBudget of the operator pods. Rendered when enabled is true and
+# replicas is above 1. Set minAvailable or maxUnavailable, never both: each
+# takes a pod count or a percentage of the replicas ("50%"). With neither set
+# the budget renders minAvailable: 1. Keep both counts unset here: a default
+# merges with a deployment's other count and the schema rejects the pair.
+# The chart does not check the value against replicas: minAvailable equal to
+# replicas, or maxUnavailable: 0, blocks every node drain.
+podDisruptionBudget:
+  enabled: true
+  # minAvailable: 1
+  # maxUnavailable: 1
+
 resources:
   limits:
     cpu: 500m

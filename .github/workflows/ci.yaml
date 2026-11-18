@@ -1262,6 +1262,35 @@ jobs:
               echo "::error::$chart grants secrets to the standalone webhook or renders its arguments wrong (secrets: $grants_secrets, args: $standalone_args)"
               exit 1
             fi
+            # Renders the disruption budget keys. Each count alone must reach
+            # the PodDisruptionBudget without the other: the other count left
+            # set in the chart's values.yaml would merge with it, and the
+            # schema rejects the pair. A render that skips the schema must take
+            # maxUnavailable over minAvailable, and enabled=false must render
+            # no budget. Each helm call stays alone on its line for the cinder
+            # and nova matrix tests.
+            echo "--- Scenario 8: disruption budget ---"
+            budget='select(.kind == "PodDisruptionBudget") | .spec | del(.selector)'
+            out=$(
+              helm template test "$chart" --set podDisruptionBudget.maxUnavailable=1
+            )
+            alone=$(yq -o json -I0 "$budget" <<<"$out")
+            out=$(
+              helm template test "$chart" --set podDisruptionBudget.minAvailable=1
+            )
+            min_alone=$(yq -o json -I0 "$budget" <<<"$out")
+            out=$(
+              helm template test "$chart" --skip-schema-validation --set podDisruptionBudget.minAvailable=1 --set podDisruptionBudget.maxUnavailable=2
+            )
+            both=$(yq -o json -I0 "$budget" <<<"$out")
+            out=$(
+              helm template test "$chart" --set podDisruptionBudget.enabled=false
+            )
+            disabled=$(yq -o json -I0 "$budget" <<<"$out")
+            if [ "$alone" != '{"maxUnavailable":1}' ] || [ "$min_alone" != '{"minAvailable":1}' ] || [ "$both" != '{"maxUnavailable":2}' ] || [ -n "$disabled" ]; then
+              echo "::error::$chart renders the disruption budget keys wrong (maxUnavailable alone: $alone, minAvailable alone: $min_alone, both counts without the schema: $both, enabled=false: ${disabled:-no budget})"
+              exit 1
+            fi
           done
       - name: Helm unittest
         run: |
