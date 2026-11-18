@@ -11,18 +11,19 @@ SPDX-License-Identifier: Apache-2.0
 # How-to: Migrate Cinder DB to Dynamic Credentials
 
 This guide takes a managed-mode ControlPlane from a long-lived **static** Cinder
-database credential to **dynamic**, engine-issued credentials, without database
-downtime. It is the operator-facing side of the OpenBao MariaDB database secrets
-engine wired for the Cinder service DB user.
+database credential to **dynamic**, engine-issued credentials, without taking
+the database offline. It is the operator-facing side of the OpenBao MariaDB
+database secrets engine wired for the Cinder service DB user.
 
-The credential this migration moves is the one Cinder's volume, snapshot and
-backup metadata is reached with. The volume files on the attached NFS exports
-are a separate concern and stay untouched.
+The credential this migration moves lets Cinder access the database that stores
+volume, snapshot, and backup metadata. Volume data on attached backends is a
+separate concern and stays untouched.
 
 ## What changes
 
 - **Before:** the Cinder DB password is a long-lived value copied from an
-  OpenBao KV path (`openstack/cinder/{namespace}/{name}/db`) into the
+  OpenBao KV path (`openstack/cinder/{namespace}/{name}/db`, where `namespace`
+  is the Cinder service namespace and `name` is the ControlPlane name) into the
   `{name}-cinder-db-credentials` Secret. Nothing seeds that path, so on the
   static branch an operator writes it and rotates it by hand.
 - **After:** the c5c3 operator projects a per-ControlPlane
@@ -61,18 +62,15 @@ child is `Ready` in `openstack` with `nfs1` and `nfsbk` attached. Every resource
 name in the examples below is one that devstack produces.
 :::
 
-::: warning Set storage on the ControlPlane, never on the projected children
-The `controlplane-cinder` Cinder CR, the `CinderBackend` `nfs1` and the
-`CinderBackupBackend` `nfsbk` are **projected** by the c5c3-operator. A child you
-edit, or delete, by hand is reverted (or recreated) on the next reconcile.
-Change `services.cinder` on the `ControlPlane` CR and let the operator project
-it down; that block is the single source of truth for the projected storage.
-:::
+The ControlPlane must declare `spec.services.cinder` with at least one backend
+entry; admission rejects an empty `services.cinder.backends` list. Without the
+service block, the operator projects no Cinder child or DB credential. The c5c3
+operator also projects the Cinder child and its backend resources. Direct edits
+to those children are reverted on reconcile, so make changes under
+`services.cinder` on the ControlPlane. The devstack verification below uses NFS
+storage. See
+[Attach an NFS Backend to Cinder](./attach-an-nfs-backend.md).
 
-- The ControlPlane declares `spec.services.cinder` with at least one backend
-  entry. Without it the operator projects no Cinder child and no DB credential
-  of either kind. See
-  [Attach an NFS Backend to Cinder](./attach-an-nfs-backend.md).
 - The OpenBao `database` secrets engine is mounted at `database/mariadb` (the
   `setup-secret-engines.sh` bootstrap step). A greenfield cluster already has
   it; on a brownfield cluster, re-apply the bootstrap scripts (see below).
@@ -119,8 +117,9 @@ The engine role for a tenant only exists once its MariaDB is Ready and
 `setup-database-tenant.sh` has configured the connection and role against it:
 
 ```bash
-# BAO_TOKEN must be exported; <namespace>/<controlplane> identify the tenant.
-bash deploy/openbao/bootstrap/setup-database-tenant.sh <namespace> <controlplane>
+# BAO_TOKEN must be exported; these identify the ControlPlane.
+bash deploy/openbao/bootstrap/setup-database-tenant.sh \
+  <controlplane-namespace> <controlplane>
 ```
 
 When the ControlPlane declares `spec.services.cinder` on the shared managed
@@ -165,8 +164,8 @@ spec:
 The shared `spec.infrastructure.database.credentialsMode: Static` opts out
 ControlPlane-wide instead; the per-service override scopes the opt-out to Cinder
 alone. Nothing seeds the static KV path, so while staging you must write
-`kv-v2/openstack/cinder/<namespace>/<controlplane>/db` (`username`, `password`)
-by hand, with `username` set to the Cinder child's name
+`kv-v2/openstack/cinder/<cinder-namespace>/<controlplane>/db` (`username`,
+`password`) by hand, with `username` set to the Cinder child's name
 (`<controlplane>-cinder`), which is the login the operator's MariaDB
 `User`/`Grant` provisions. Remove the override (or set it to `Dynamic`) to cut
 over.
@@ -182,11 +181,14 @@ On a cluster that ran the static path, delete the credential Secret once to
 remove the old value before ESO syncs the engine-issued credential:
 
 ```bash
-kubectl delete secret <controlplane>-cinder-db-credentials -n <namespace>
+# Use the Cinder service namespace; it may differ from the
+# ControlPlane namespace.
+kubectl delete secret <controlplane>-cinder-db-credentials \
+  -n <cinder-namespace>
 ```
 
 The ExternalSecret is updated in place (same name, same target Secret), so until
-Until ESO completes its first generator-backed sync, the Secret still holds
+ESO completes its first generator-backed sync, the Secret still holds
 whatever the previous static sync wrote. Deleting it forces ESO to sync from the
 generator immediately instead of at the next refresh.
 
@@ -216,10 +218,11 @@ Watch for:
   `{name}-db-connection` Secret, which only takes effect on a Pod restart.
 
 The engine's `GRANT` overlaps the pre-existing operator-provisioned `User` and
-`Grant` from the static deployment, so Cinder keeps serving through the roll.
-The API Deployment scales horizontally and carries a PodDisruptionBudget, so it
-stays answerable; the single-pod services are covered under
-[Operational considerations](#operational-considerations).
+`Grant` from the static deployment, so the old login can remain until workloads
+have picked up the engine-issued credential. Rotation restarts the API, scheduler,
+volume, and backup workloads; see
+[Operational considerations](#operational-considerations) for their availability
+impact.
 
 ### 5. Retire the static credential
 
@@ -229,14 +232,17 @@ Once the ControlPlane reports `CinderReady=True` on the dynamic path:
    long-lived `<controlplane>-cinder` login the engine no longer uses):
 
    ```bash
-   kubectl delete user,grant <cinder-cr-name> -n <namespace> --ignore-not-found
+   # Use the Cinder service namespace.
+   kubectl delete user,grant <cinder-cr-name> \
+     -n <cinder-namespace> --ignore-not-found
    ```
 
 2. Remove the retired static KV secret, if step 3 ever seeded it:
 
    ```bash
    # Inside the OpenBao pod, or with a bao client configured for it.
-   bao kv metadata delete kv-v2/openstack/cinder/<namespace>/<controlplane>/db
+   bao kv metadata delete \
+     kv-v2/openstack/cinder/<cinder-namespace>/<controlplane>/db
    ```
 
 ## Rollback
@@ -245,24 +251,29 @@ To revert to the static credential, set the mode back to `Static` (the
 per-service `spec.services.cinder.databaseCredentialsMode` override, or the
 shared `spec.infrastructure.database.credentialsMode`), re-seed the KV path
 (step 3), and let the next Static-mode reconcile re-create the `User`/`Grant`.
-Roll back the operators if you also need to remove the generator objects.
+The c5c3 operator switches the ExternalSecret back to the KV path and removes
+the dynamic credential objects during that reconcile. Wait for the static
+credential to sync and the child to return to Static mode before rolling back
+operator versions.
 
 ## Operational considerations
 
-- **The volume and backup services restart on every rotation.** The DSN is
-  consumed via an environment variable, so a rotated engine credential only
-  takes effect on a Pod restart, and Cinder rolls each time the ExternalSecret
-  re-issues the credential. Every refresh is a new credential; there is no
-  stable value to renew in place. Each `cinder-volume` Deployment is pinned to
-  one replica with `strategy.type: Recreate`, because two processes under one
-  host identity would have the same volume state open twice, and the backup
-  Deployment carries the same pin. A rotation therefore takes each of them down
-  for the length of one pod restart. The defaults keep that churn bounded: the
-  24h refresh interval holds the cadence to at most once a day, while the 48h
-  `default_ttl` leaves a 24h gap (`default_ttl` minus refresh) in which to roll
-  the pods before the previous, still-in-use lease is revoked. Raise
-  `DB_CREDS_DEFAULT_TTL` / `DB_CREDS_MAX_TTL` (and the operator's refresh
-  interval) to trade churn against lease headroom.
+- **Credential rotation restarts Cinder workloads.** The DSN is consumed via an
+  environment variable, so a rotated engine credential only takes effect after
+  a Pod restart. Each ExternalSecret refresh issues a new credential and changes
+  the DSN hash on the API, scheduler, every `cinder-volume`, and backup
+  Deployment. The scheduler has one replica by default. Each volume and backup
+  Deployment is pinned to one replica with `strategy.type: Recreate`, so those
+  services are unavailable while their Pod restarts. The API's
+  PodDisruptionBudget limits voluntary evictions; it does not guarantee
+  availability during a credential-triggered rollout. Keep enough API replicas
+  and cluster capacity if uninterrupted API service matters. The defaults keep
+  rotation churn bounded: ESO refreshes every 24h, while the 48h `default_ttl`
+  leaves a 24h gap (`default_ttl` minus refresh) for workloads to pick up the new
+  credential before the previous lease is revoked. Changing either
+  `DB_CREDS_DEFAULT_TTL` or `DB_CREDS_MAX_TTL` requires coordinating the
+  operator's refresh interval; changing that interval requires an operator
+  change.
 - **Auth-token TTL bounds the lease:** OpenBao revokes a dynamic-secret lease
   together with the auth token that minted it, so the effective credential
   lifetime is `min(lease TTL, minting token TTL)`. The `cinder-db` auth role
@@ -285,10 +296,13 @@ Roll back the operators if you also need to remove the generator objects.
 - **Revocation semantics:** revoking a lease runs `DROP USER`, which rejects new
   connections. Already-open sessions of a dropped user may persist until they
   disconnect.
-- **ESO or OpenBao outage longer than the lease:** the leased credential
-  expires before a refresh completes. Running Pods keep pooled connections, but new
-  connections fail until ESO recovers. This surfaces through the Cinder child's
-  own `DatabaseReady` and, ControlPlane-side, as `CinderReady=False`.
+- **ESO or OpenBao outage longer than the lease:** the issued credential expires
+  before ESO can renew it. Existing database sessions may remain open, but new
+  connections fail until ESO can issue a fresh credential. Do not rely on
+  `CinderReady` alone to prove the lease is valid: `DatabaseReady` tracks
+  database provisioning and schema work, and the API `/healthcheck` does not
+  test database connectivity. Monitor ESO/OpenBao and Cinder database errors,
+  and restore credential issuance before the lease expires.
 
 ## See also
 
@@ -304,15 +318,10 @@ Roll back the operators if you also need to remove the generator objects.
 
 ## Tested by
 
-The dynamic, engine-issued per-ControlPlane database credential this guide
-migrates to is asserted on the live CI e2e kind cluster by the chainsaw suite
-below. Its block-storage link waits for `CinderReady`, then reads the projected
-child's `spec.database.credentialsMode` back as `Dynamic`, checks that the
-`controlplane-cinder-db-credentials` ExternalSecret draws from a
-`VaultDynamicSecret` generator and carries no static `spec.data` refs, reads the
-generator's path back as `database/mariadb/creds/cinder-<namespace>`, confirms
-the `cinder-db-creds` ServiceAccount exists, and fails the run if the username in
-the credential Secret is empty or still has the placeholder username `cinder`.
+The live CI suite below exercises Cinder through the projected API by creating
+volumes and backups, testing an encrypted volume, and checking the image-volume
+cache. It does not assert the database credential generator, the
+generator-backed ExternalSecret, or the migration readiness gate.
 
 ```bash
 chainsaw test --test-dir tests/e2e/c5c3/full-controlplane-keystone
