@@ -69,7 +69,6 @@ the same assumption to another cluster; see the
 [Kubernetes NetworkPolicy behavior](https://kubernetes.io/docs/concepts/services-networking/network-policies/#behavior-of-to-and-from-selectors).
 
 ```bash
-set -euo pipefail
 kubectl get endpointslices -n default \
   -l kubernetes.io/service-name=kubernetes -o json \
   | jq -er '
@@ -138,7 +137,6 @@ below stands in for the kind case (one control-plane node), so replace
 an HA control plane prints:
 
 ```bash
-set -euo pipefail
 kubectl patch helmrelease placement-operator -n placement-system --type=merge \
   -p '{"spec":{"values":{"networkPolicy":{"enabled":true,"kubeApiServer":{"cidrs":["172.18.0.2/32"],"ports":[6443]}}}}}'
 
@@ -184,13 +182,8 @@ values with a rolling `helm upgrade`. The fail-closed guard still requires
 `kubeApiServer.cidrs` and `ports`:
 
 ```bash
-set -euo pipefail
 CHART_VERSION="$(helm list -n placement-system --filter '^placement-operator$' -o json \
   | jq -r '.[0].chart // "" | sub("^placement-operator-"; "")')"
-if [ -z "${CHART_VERSION}" ]; then
-  echo "ERROR: could not determine the installed placement-operator chart version." >&2
-  exit 1
-fi
 
 helm upgrade placement-operator oci://ghcr.io/c5c3/charts/placement-operator \
   --namespace placement-system --reuse-values --version "${CHART_VERSION}" \
@@ -252,7 +245,6 @@ replica above the size it runs at, and puts the count back:
 
 ```bash
 (
-set -euo pipefail
 if CUR=$(kubectl get controlplane controlplane -n openstack \
      -o jsonpath='{.spec.sizing.placement.api.replicas}') &&
    RUN=$(kubectl get deploy/controlplane-placement -n openstack \
@@ -327,7 +319,6 @@ three minutes for the check to end, then prints the state of the check
 container and its log:
 
 ```bash
-set -euo pipefail
 CHECK='
 import socket, sys
 for ep in sys.argv[1:]:
