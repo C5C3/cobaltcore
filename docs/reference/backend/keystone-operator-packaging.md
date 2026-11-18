@@ -36,7 +36,7 @@ operators/keystone/
 │           ├── rolebinding.yaml        Namespace-scoped RoleBinding (rbac.namespaceScoped)
 │           ├── deployment.yaml         Operator Deployment
 │           ├── service.yaml            ClusterIP Service (webhook + metrics)
-│           ├── pdb.yaml                PodDisruptionBudget (replicas > 1)
+│           ├── pdb.yaml                PodDisruptionBudget (replicas > 1, podDisruptionBudget.enabled)
 │           ├── certificate.yaml        Self-signed Issuer + webhook Certificate (conditional)
 │           ├── networkpolicy.yaml      Operator pod NetworkPolicy (opt-in)
 │           ├── servicemonitor.yaml     Prometheus ServiceMonitor (opt-in)
@@ -199,6 +199,19 @@ All configurable parameters with their types, defaults, and descriptions:
 | --- | --- | --- | --- |
 | `replicas` | `integer` | `2` | Number of operator pod replicas. Use 2+ for high availability with leader election |
 
+#### Pod Disruption Budget
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `podDisruptionBudget.enabled` | `boolean` | `true` | Render the `PodDisruptionBudget` when `replicas > 1`. `false` renders none at any replica count |
+| `podDisruptionBudget.minAvailable` | `integer` or percentage `string` | unset | Pods that must stay available during a voluntary disruption. With neither count set the budget renders `minAvailable: 1` |
+| `podDisruptionBudget.maxUnavailable` | `integer` or percentage `string` | unset | Pods that may be unavailable during a voluntary disruption. Wins over `minAvailable`; the schema rejects setting both |
+
+The chart does not check either count against `replicas`. `minAvailable` equal
+to `replicas` and `maxUnavailable: 0` render as given and block every node
+drain. The [values schema reference](./helm-values-schema.md#poddisruptionbudget)
+gives the constraints and the chart versions that carry the keys.
+
 #### Resources
 
 | Parameter | Type | Default | Description |
@@ -324,7 +337,7 @@ The chart renders the following Kubernetes resources with default values:
 | RoleBinding | `rbac.authorization.k8s.io/v1/RoleBinding` | `{fullname}` | `rbac.namespaceScoped=true` |
 | Deployment | `apps/v1/Deployment` | `{fullname}` | Always |
 | Service | `v1/Service` | `{fullname}` | Always |
-| PodDisruptionBudget | `policy/v1/PodDisruptionBudget` | `{fullname}` | `replicas > 1` |
+| PodDisruptionBudget | `policy/v1/PodDisruptionBudget` | `{fullname}` | `replicas > 1` and `podDisruptionBudget.enabled` |
 | Issuer | `cert-manager.io/v1/Issuer` | `{fullname}-selfsigned` | `webhook.enabled` |
 | Certificate | `cert-manager.io/v1/Certificate` | `{fullname}-webhook` | `webhook.enabled` |
 | NetworkPolicy | `networking.k8s.io/v1/NetworkPolicy` | `{fullname}` | `networkPolicy.enabled` |
@@ -409,11 +422,12 @@ configurable via Helm values.
 The pod template carries a best-effort topology spread constraint (`maxSkew: 1`,
 `topologyKey: kubernetes.io/hostname`, `whenUnsatisfiable: ScheduleAnyway`) so
 replicas are scheduled on different nodes where possible while single-node clusters
-(kind) stay schedulable. Together with the `PodDisruptionBudget`
-(`minAvailable: 1`, rendered only when `replicas > 1`), a voluntary disruption
-such as a node drain can never evict every replica, and with it the in-process
-admission webhook, at once. `nodeSelector`, `tolerations` and
-`priorityClassName` render on the pod spec only when set (see
+(kind) stay schedulable. With the default values, the `PodDisruptionBudget`
+(`minAvailable: 1`, rendered when `replicas > 1` and `podDisruptionBudget.enabled`)
+means a voluntary disruption such as a node drain can never evict every replica,
+and with it the in-process admission webhook, at once. Other budget values are
+listed under [Pod Disruption Budget](#pod-disruption-budget). `nodeSelector`,
+`tolerations` and `priorityClassName` render on the pod spec only when set (see
 [Scheduling](#scheduling)).
 
 ### Service Configuration
