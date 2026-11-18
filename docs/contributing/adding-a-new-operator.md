@@ -25,6 +25,7 @@ The keystone operator is the reference consumer for most packages listed (for
 | --- | --- |
 | `internal/common/types` | Shared CRD spec types (`DatabaseSpec`, `CacheSpec`, `GatewaySpec`, `ImageSpec`, `DeploymentSpec`, `AutoscalingSpec`, `NetworkPolicySpec`, `LoggingSpec`, ...) with their CEL rules and `Default()` methods |
 | `internal/common/naming` | Label keys and `CommonLabels`/`SelectorLabels`, the workload naming convention (and the cross-service endpoint contract, see below); the sub-resource name is the bare CR name, so each operator keeps its own one-line helper |
+| `internal/common/lifecycle` | Glance pilots `Service` for target resolution, suspension, ordered finalizers and status persistence. The service supplies its pipeline and cleanup hooks. |
 | `internal/common/reconcile` | Table-driven pipeline (`Step`/`RunPipeline`), parallel groups (`ParallelStep`/`RunParallelGroup`), non-short-circuiting sequential groups (`RunSequentialGroup`), `ShortestRequeue`, `SetAggregateReady`, the no-op-skipping `UpdateStatus`, `EnsureFinalizer` and `RemoveFinalizer` (which ends the pass on a 404 and requeues after `RequeueNextPass` on a 409), `SweepRemoteChildren` (the remote-children teardown of a CR on a target cluster), the shared requeue constants (`RequeueDeploymentPolling`/`RequeueSecretPolling`/`RequeueNextPass`), the `Skeleton[T,S]` controller-skeleton glue (Ready aggregation, status write, `MarkFailed`, parallel-group), and `ProjectChild`/`DeleteOrphanedChild` for orchestrating operators that project child CRs |
 | `internal/common/conditions` | `SetCondition` (a `LastTransitionTime`-preserving upsert), `GetCondition`, `IsReady`, `AllTrue` |
 | `internal/common/watch` | `CRUpdatePredicate` for the `For(...)` watch, `SecretToOwnersMapper` + `RegisterSecretNameIndex`, `StoreRefFanOut` (enqueues only the CRs whose effective `spec.secretStoreRef` matches a changed cluster-scoped `ClusterSecretStore` or namespaced `SecretStore`), `ClusterRefMapper` (database-cluster reference to owning CRs), `ParentRefIndexer`/`RegisterParentRefIndex` (the satellite parent-reference index), `SatelliteToParentMapper`/`ParentToSatellitesMapper`/`SecretToParentsViaSatellitesMapper` (the three satellite event mappers) |
@@ -67,6 +68,18 @@ connection env vars in `JobSetParams.Env` (the two-entry env in
 `neutronJobSetParams`, `operators/neutron/internal/controller/reconcile_database.go`). The
 block's OpenBao engine role is one row of `SERVICE_TENANTS` in
 `deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh`.
+
+Glance is the first lifecycle consumer. Barbican, Cinder, Horizon, Keystone,
+Neutron, Nova and Placement also have service-level reconciliation, with their
+own workload, dependency and teardown steps. OVN manages central and chassis
+workloads separately. The C5C3 ControlPlane coordinates service orders, and
+satellites such as GlanceBackend observe their parent's resources.
+
+Glance uses the shared service-user defaults at admission and render time.
+For an oslo-based service, supply its catalog and exemptions to
+`OptionCatalog.ValidateOverrides`, resolve referenced inputs, then use
+`config.RenderServiceINI` for precedence. Keep the last serving revision on
+dependency failure and prune history after the workloads converge.
 
 ## Residual touch list
 

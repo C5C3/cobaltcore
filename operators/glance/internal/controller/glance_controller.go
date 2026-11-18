@@ -283,8 +283,9 @@ var httpRouteGVK = schema.GroupVersionKind{
 }
 
 var glanceSkeleton = commonreconcile.Skeleton[*glancev1alpha1.Glance, glancev1alpha1.GlanceStatus]{
-	SubConditionTypes: subConditionTypes,
-	Conditions:        func(g *glancev1alpha1.Glance) *[]metav1.Condition { return &g.Status.Conditions },
+	RequireCurrentGeneration: true,
+	SubConditionTypes:        subConditionTypes,
+	Conditions:               func(g *glancev1alpha1.Glance) *[]metav1.Condition { return &g.Status.Conditions },
 }
 
 // conditionReasonConfigError is the SecretsReady=False reason set when
@@ -339,9 +340,9 @@ var GlanceRemoteChildKinds = []schema.GroupVersionKind{
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;patch;delete
 // Unexercised by the e2e suites; used by operators/glance/internal/controller/reconcile_deployment.go:210 (reconcileDeployment) to delete services.
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;patch;delete
-// Unexercised by the e2e suites; used by operators/glance/internal/controller/reconcile_config.go:181 (reconcileConfig) to delete configmaps.
+// Unexercised by the e2e suites; used by operators/glance/internal/controller/reconcile_config.go:170 (pruneConfigHistory) to delete configmaps.
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;delete
-// Unexercised by the e2e suites; used by operators/glance/internal/controller/reconcile_backends.go:192 (reconcileBackends) to delete secrets.
+// Unexercised by the e2e suites; used by operators/glance/internal/controller/reconcile_config.go:176 (pruneConfigHistory) to delete secrets.
 // Unexercised by the e2e suites; used by operators/glance/internal/controller/reconcile_dbconnection_secret.go:49 (reconcileDBConnectionSecret) to update secrets.
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;delete
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
@@ -526,6 +527,12 @@ func (r *GlanceReconciler) reconcileService(ctx context.Context, children client
 	}
 
 	result, err := commonreconcile.RunPipeline(ctx, instrumenter.Instrument, pipeline)
+	// Prune only after the Deployment and purge CronJob use the new revisions.
+	if err == nil && result.IsZero() && projection.valid {
+		if err = r.pruneConfigHistory(ctx, children, glance, art); err != nil {
+			markConfigFailed(glance, err)
+		}
+	}
 	result = healthcheck.ScheduleReprobe(result, err, &r.healthProbeCache,
 		client.ObjectKeyFromObject(glance))
 	return result, err
@@ -548,33 +555,22 @@ func (r *GlanceReconciler) reconcileDelete(ctx context.Context, children client.
 		return ctrl.Result{}, nil
 	}
 
-	key := client.ObjectKey{Name: glance.Name, Namespace: glance.Namespace}
-
 	if children == nil {
 		r.Recorder.Event(glance, corev1.EventTypeWarning, "RemoteChildrenAbandoned",
-			"Target cluster is no longer registered; releasing the finalizer without deleting the MariaDB Database, User, and Grant on it")
-	} else {
-		// Observe whether any MariaDB CR is still live BEFORE issuing the Delete: a
-		// Delete flips DeletionTimestamp, so a post-Delete check would always report
-		// none-live and release immediately. Gating on the pre-Delete observation
-		// keeps the CR alive one extra pass so the teardown is actually triggered.
-		hasLive, err := database.HasLiveResources(ctx, children, key)
+			"Target cluster is no longer registered; releasing the Glance finalizer")
+	} else if glance.Spec.Database.ClusterRef != nil {
+		requested, err := database.FinalizeOwnedResources(ctx, children, r.Scheme, glance)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
-
-		if err := database.FinalizeResources(ctx, children, key); err != nil {
-			return ctrl.Result{}, err
-		}
-
-		if hasLive {
+		if requested {
 			r.Recorder.Event(glance, corev1.EventTypeNormal, "FinalizingDatabase",
 				"Cleaning up MariaDB Database, User, and Grant before removing Glance")
 			return ctrl.Result{RequeueAfter: RequeueDatabaseWait}, nil
 		}
 
 		r.Recorder.Event(glance, corev1.EventTypeNormal, "DatabaseFinalized",
-			"MariaDB Database, User, and Grant marked for deletion; releasing finalizer")
+			"Owned MariaDB resources are absent or terminating; releasing finalizer")
 	}
 
 	outcome, err := commonreconcile.RemoveFinalizer(ctx, r.Client, glance, glanceFinalizer)

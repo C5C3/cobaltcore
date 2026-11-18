@@ -5,6 +5,8 @@
 package types
 
 import (
+	"cmp"
+
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -352,6 +354,34 @@ type MessagingTLSSpec struct {
 	// consumer trusts when verifying the broker endpoint. The defaulting webhooks
 	// materialize an empty Key to "ca.crt".
 	CABundleSecretRef SecretRefSpec `json:"caBundleSecretRef"`
+}
+
+// ServiceUserSpec identifies a Keystone service account and its password Secret.
+type ServiceUserSpec struct {
+	// Username is the Keystone service username.
+	// +optional
+	Username string `json:"username,omitempty"`
+	// ProjectName is the service project. Defaults to service.
+	// +optional
+	ProjectName string `json:"projectName,omitempty"`
+	// UserDomainName is the user's domain. Defaults to Default.
+	// +optional
+	UserDomainName string `json:"userDomainName,omitempty"`
+	// ProjectDomainName is the project's domain. Defaults to Default.
+	// +optional
+	ProjectDomainName string `json:"projectDomainName,omitempty"`
+	// SecretRef selects the password. Its key defaults to password.
+	SecretRef SecretRefSpec `json:"secretRef"`
+}
+
+// WithDefaults fills absent fields without changing the source spec.
+func (s ServiceUserSpec) WithDefaults(username string) ServiceUserSpec {
+	s.Username = cmp.Or(s.Username, username)
+	s.ProjectName = cmp.Or(s.ProjectName, "service")
+	s.UserDomainName = cmp.Or(s.UserDomainName, "Default")
+	s.ProjectDomainName = cmp.Or(s.ProjectDomainName, "Default")
+	s.SecretRef.Key = cmp.Or(s.SecretRef.Key, "password")
+	return s
 }
 
 // SecretRefSpec references a Kubernetes Secret.

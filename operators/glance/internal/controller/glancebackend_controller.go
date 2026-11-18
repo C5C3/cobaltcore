@@ -72,8 +72,9 @@ var glanceBackendSubConditionTypes = []string{
 // status-conditions accessor, so the shared controller-skeleton glue (Ready
 // aggregation, the write-only-on-change status persist) runs from one place.
 var glanceBackendSkeleton = commonreconcile.Skeleton[*glancev1alpha1.GlanceBackend, glancev1alpha1.GlanceBackendStatus]{
-	SubConditionTypes: glanceBackendSubConditionTypes,
-	Conditions:        func(b *glancev1alpha1.GlanceBackend) *[]metav1.Condition { return &b.Status.Conditions },
+	RequireCurrentGeneration: true,
+	SubConditionTypes:        glanceBackendSubConditionTypes,
+	Conditions:               func(b *glancev1alpha1.GlanceBackend) *[]metav1.Condition { return &b.Status.Conditions },
 }
 
 // GlanceBackendReconciler owns the GlanceBackend CR lifecycle: S3 credential
