@@ -856,6 +856,52 @@ the first INSERT or DELETE of each method raise `DBDeadlock` in the built
 image and expects the metadata to be stored. Upstream status: not yet
 proposed.
 
+**Source patch:**
+`patches/barbican/2026.1/0005-do-not-send-a-json-body-with-204-responses.patch`
+and its 2026.2 twin
+`patches/barbican/2026.2/0004-do-not-send-a-json-body-with-204-responses.patch`
+make five requests answer 204 without a body. The twins differ in their
+`Applies to` line only. The requests are
+`DELETE /v1/secrets/{id}/metadata/{key}`, `PUT` and
+`DELETE /v1/project-quotas/{project}`, and `POST` and
+`DELETE /v1/secret-stores/{id}/preferred`. Upstream exposes their handlers
+with `template='json'`, and each handler returns nothing. pecan renders the
+`None` as `null`, clears the content type for the 204 and keeps the 4-byte
+body. uWSGI sends it, and Envoy resets the upstream stream with
+`protocol_error` and answers the client 502, although Barbican has committed
+the write. In the playground cluster all 6 metadatum DELETEs from 2026-11-17
+14:17 to 2026-11-18 07:55 UTC were answered 502, and
+`SecretMetadataTest.test_secret_metadata` was the only failing Tempest test
+(issue #1811). The Tempest jobs of this repository reach Barbican without a
+proxy and do not see the fault.
+
+The patch is a backport of the open upstream review 1010872 (patch set 1,
+commit `b7c268371b`), which no tag contains. It drops the template from the
+five handlers and puts `@utils.allow_all_content_types` on the four that
+lacked it, the form `SecretController.on_delete` has. The template cannot go
+alone: the accepted content types come from it, and without one pecan answers
+406 to `Accept: application/json`, which Tempest and python-barbicanclient
+send. With only the template removed from the metadatum DELETE, the 2026.1
+image answered 406 to `application/json` and to `text/plain`. On the four
+handlers that lacked the decorator, a request that accepts only a non-JSON
+type, such as `text/plain`, got 406 before the patch and now gets the
+handler's answer. Error answers stay JSON, because `pecan.abort` builds them
+from the `Accept` header. The patch needs no operator configuration. The
+upstream test hunks travel inside the patch: `test_can_delete_secret_metadatum`,
+`test_should_put_project_quotas`, `test_should_delete_specific_project_quotas`,
+the helper `create_a_project_quotas`,
+`test_set_a_preferred_secret_store_when_no_error` and
+`test_unset_a_preferred_secret_store_when_no_error` assert an empty body, and
+8 of the 52 tests of the three modules fail without the code change. The
+upstream release note travels with them; the image does not install it.
+`verify_barbican.sh` Test 12 sends the five requests with
+`Accept: application/json` to the WSGI application of the built image and
+expects 204 with an empty body. It then sends the quota PUT without a body,
+the quota DELETE and the preferred-store DELETE with nothing left to delete,
+and expects 400, 404 and 404, each with a JSON object as the body. Upstream
+status: proposed as
+[openstack/barbican change 1010872](https://review.opendev.org/c/openstack/barbican/+/1010872).
+
 **Final image properties:**
 
 - Runs as `openstack` user (UID 42424, GID 42424)
@@ -878,7 +924,9 @@ the `None` sentinel, that uwsgi runs and imports `barbican`, that a database
 clean-up batch whose commit raises `DBDeadlock` is rolled back, retried and
 committed, that the storage index of an OpenBao write is recorded and sent
 back with the next read, that a secret metadata write whose statement raises
-`DBDeadlock` is rolled back and run again, non-root execution, and the absence of build tools. Both plugin halves are loaded through their entry-point metadata
+`DBDeadlock` is rolled back and run again, that the five requests whose
+handlers upstream exposes with `template='json'` answer 204 with an empty
+body and their 400 and 404 answers carry JSON, non-root execution, and the absence of build tools. Both plugin halves are loaded through their entry-point metadata
 rather than imported by module path, because that is how barbican and
 castellan resolve them at runtime — an import would go green off the `.py`
 file on disk while the runtime lookup raises stevedore `NoMatches`. The WSGI

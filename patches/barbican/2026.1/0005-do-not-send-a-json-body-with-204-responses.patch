@@ -1,0 +1,269 @@
+SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+SPDX-License-Identifier: Apache-2.0
+
+Do not send a JSON body with 204 responses
+
+Backport of upstream change 1010872, patch set 1, commit
+b7c268371b7c2dff15a043e8d7e70343b2d403af (master, 2026-10-16,
+Change-Id I27e64ed08ea9dd230b8ec4a9f62f2be53210dc5a, Closes-Bug
+#2171078). The change is not merged, and neither barbican 22.0.0,
+23.0.0 nor master (cd590f1b) contains it. The cherry-pick applies
+without a conflict on top of the barbican patches numbered before
+this one.
+
+Five handlers answer 204 and are exposed with `template='json'`:
+
+- DELETE /v1/secrets/{id}/metadata/{key}
+  (`SecretMetadatumController.on_delete`,
+  barbican/api/controllers/secretmeta.py),
+- PUT and DELETE /v1/project-quotas/{project}
+  (`ProjectQuotasController.on_put` and `on_delete`,
+  barbican/api/controllers/quotas.py),
+- POST and DELETE /v1/secret-stores/{id}/preferred
+  (`PreferredSecretStoreController.on_post` and `on_delete`,
+  barbican/api/controllers/secretstores.py).
+
+Each returns nothing. pecan (1.7.0 in the 2026.1 image, 1.8.0 in the
+2026.2 image) renders the `None` through the json template as `null`,
+and for a 204 it clears the content type and keeps the body, so the
+answer carries `Content-Length: 4`. A 204 must not carry content (RFC
+9110, section 15.3.5). uWSGI sends the 4 bytes, Envoy resets the
+upstream stream with
+`upstream_reset_before_response_started{protocol_error}` and answers
+the client 502, and Barbican has committed the write all the same. In
+the C5C3/playground cluster (Barbican 2026.1 behind Envoy Gateway
+v1.10.0) all 6 metadatum DELETEs from 2026-11-17 14:17 to 2026-11-18
+07:55 UTC were answered 502, and
+barbican_tempest_plugin's `SecretMetadataTest.test_secret_metadata`
+was the only failing test of every Tempest run there
+(C5C3/cobaltcore#1811). The Tempest jobs of CobaltCore OpenStack reach
+Barbican without a proxy, and no upstream test asserted the body.
+
+The change replaces `@index.when(method=..., template='json')` with
+`@index.when(method=...)` and puts `@utils.allow_all_content_types`
+below it, the form `SecretController.on_delete` has
+(barbican/api/controllers/secrets.py).
+`ProjectQuotasController.on_delete` already carried the decorator and
+only loses the template. The
+template alone cannot go: the content types a handler accepts come
+from its template, and without one pecan answers 406 to
+`Accept: application/json`, which Tempest and python-barbicanclient
+send. Measured on 2026-11-18 on the 2026.1 image with only the
+template removed from `SecretMetadatumController.on_delete`: 406 for
+`Accept: application/json` and for `Accept: text/plain`, 204 for no
+`Accept` header and for `*/*`.
+
+With the patch each of the five requests answers 204 with an empty
+body for no `Accept` header, `application/json`, `*/*`, `text/plain`
+and `application/json, text/plain, */*`, on both images. On the four
+handlers that lacked the decorator, a request that accepts only a
+non-JSON type got 406; it now reaches the handler and gets its
+answer. The error answers do not change, because `pecan.abort` builds
+them from the `Accept` header: 400 for a quota PUT without a body, 404
+for a quota DELETE of a project without quotas and for a
+preferred-store DELETE when none is set, each with a JSON body. The
+patch needs no operator configuration.
+
+The release note of the upstream change
+(releasenotes/notes/no-body-on-204-responses-5b2e0c7d9a1f3e64.yaml)
+travels with the patch, so that the patch touches the same paths as
+the upstream change. The image installs the barbican package only, so
+the note changes nothing in it.
+
+Tests: the upstream test hunks travel inside the patch unchanged.
+test_can_delete_secret_metadatum
+(barbican/tests/api/controllers/test_secretmeta.py),
+test_should_put_project_quotas,
+test_should_delete_specific_project_quotas and the helper
+create_a_project_quotas (test_quotas.py),
+test_set_a_preferred_secret_store_when_no_error and
+test_unset_a_preferred_secret_store_when_no_error
+(test_secretstores.py) send `Accept: application/json` where the
+upstream change adds it and assert `b''` for the body; the helper
+sends no `Accept` header. With only the test hunks applied, 8 of the
+52 tests of the three modules fail with `b'' != b'null'` on 22.0.0
+and on 23.0.0; through the helper,
+test_should_get_specific_project_quotas, test_pagination_attributes
+and test_should_get_project_quotas_list fail as well. With the patch
+all 52 pass.
+
+Proof: tests/container-images/verify_barbican.sh (Test 12) sends the
+five requests with `Accept: application/json` to the WSGI application
+of the built image and asserts 204 with an empty body; the published
+images without this patch answer each of them with `null`. Test 12
+then sends the quota PUT without a body, the quota DELETE and the
+preferred-store DELETE with nothing left to delete, and asserts 400,
+404 and 404, each with a JSON object as the body.
+
+The twins under patches/barbican/2026.1/ and patches/barbican/2026.2/
+carry the same diff and differ in their Applies-to line only.
+
+Applies to barbican 22.0.0 (2026.1).
+
+Upstream status: proposed as
+https://review.opendev.org/c/openstack/barbican/+/1010872.
+
+diff --git a/barbican/api/controllers/quotas.py b/barbican/api/controllers/quotas.py
+index cdf70a4f..e0d1935b 100644
+--- a/barbican/api/controllers/quotas.py
++++ b/barbican/api/controllers/quotas.py
+@@ -80,7 +80,8 @@ class ProjectQuotasController(controllers.ACLMixin):
+         else:
+             _project_quotas_not_found()
+ 
+-    @index.when(method='PUT', template='json')
++    @index.when(method='PUT')
++    @utils.allow_all_content_types
+     @controllers.handle_exceptions(u._('Project Quotas'))
+     @controllers.enforce_rbac('project_quotas:put')
+     @controllers.enforce_content_types(['application/json'])
+@@ -95,7 +96,7 @@ class ProjectQuotasController(controllers.ACLMixin):
+         LOG.info('Put Project Quotas')
+         pecan.response.status = 204
+ 
+-    @index.when(method='DELETE', template='json')
++    @index.when(method='DELETE')
+     @utils.allow_all_content_types
+     @controllers.handle_exceptions(u._('Project Quotas'))
+     @controllers.enforce_rbac('project_quotas:delete')
+diff --git a/barbican/api/controllers/secretmeta.py b/barbican/api/controllers/secretmeta.py
+index 8f31a822..43e4b461 100644
+--- a/barbican/api/controllers/secretmeta.py
++++ b/barbican/api/controllers/secretmeta.py
+@@ -166,7 +166,8 @@ class SecretMetadatumController(controllers.ACLMixin):
+             pair = {'key': key, 'value': value}
+             return collections.OrderedDict(sorted(pair.items()))
+ 
+-    @index.when(method='DELETE', template='json')
++    @index.when(method='DELETE')
++    @utils.allow_all_content_types
+     @controllers.handle_exceptions(u._('Secret metadatum removal'))
+     @controllers.enforce_rbac('secret_meta:delete')
+     def on_delete(self, external_project_id, remainder, **kwargs):
+diff --git a/barbican/api/controllers/secretstores.py b/barbican/api/controllers/secretstores.py
+index fb79651b..aa22ca39 100644
+--- a/barbican/api/controllers/secretstores.py
++++ b/barbican/api/controllers/secretstores.py
+@@ -65,7 +65,8 @@ class PreferredSecretStoreController(controllers.ACLMixin):
+     def index(self, **kwargs):
+         pecan.abort(405)  # HTTP 405 Method Not Allowed as default
+ 
+-    @index.when(method='DELETE', template='json')
++    @index.when(method='DELETE')
++    @utils.allow_all_content_types
+     @controllers.handle_exceptions(u._('Removing preferred secret store'))
+     @controllers.enforce_rbac('secretstore_preferred:delete')
+     def on_delete(self, external_project_id, **kw):
+@@ -84,7 +85,8 @@ class PreferredSecretStoreController(controllers.ACLMixin):
+             external_project_id=external_project_id)
+         pecan.response.status = 204
+ 
+-    @index.when(method='POST', template='json')
++    @index.when(method='POST')
++    @utils.allow_all_content_types
+     @controllers.handle_exceptions(u._('Setting preferred secret store'))
+     @controllers.enforce_rbac('secretstore_preferred:post')
+     def on_post(self, external_project_id, **kwargs):
+diff --git a/barbican/tests/api/controllers/test_quotas.py b/barbican/tests/api/controllers/test_quotas.py
+index 3afe67b6..a4b79b98 100644
+--- a/barbican/tests/api/controllers/test_quotas.py
++++ b/barbican/tests/api/controllers/test_quotas.py
+@@ -87,8 +87,10 @@ class WhenTestingQuotas(utils.BarbicanAPIBaseTestCase):
+         resp = self.app.put_json(
+             '/project-quotas/{0}'.format(self.project_id),
+             request,
+-            headers={'Content-Type': 'application/json'})
++            headers={'Content-Type': 'application/json',
++                     'Accept': 'application/json'})
+         self.assertEqual(204, resp.status_int)
++        self.assertEqual(b'', resp.body)
+ 
+     def test_should_return_bad_value_put_project_quotas(self):
+         request = '{"project_quotas": {"secrets": "foo"}}'
+@@ -133,8 +135,9 @@ class WhenTestingQuotas(utils.BarbicanAPIBaseTestCase):
+         self.create_a_project_quotas()
+         resp = self.app.delete(
+             '/project-quotas/{0}'.format(self.get_test_project_id()),
+-            params)
++            params, headers={'Accept': 'application/json'})
+         self.assertEqual(204, resp.status_int)
++        self.assertEqual(b'', resp.body)
+ 
+     def test_should_return_not_found_delete_specific_project_quotas(self):
+         params = {}
+@@ -185,6 +188,7 @@ class WhenTestingQuotas(utils.BarbicanAPIBaseTestCase):
+         resp = self.app.put_json(
+             '/project-quotas/{0}'.format(project_id), request)
+         self.assertEqual(204, resp.status_int)
++        self.assertEqual(b'', resp.body)
+ 
+     def create_project_quotas(self):
+         for index in [1, 2, 3]:
+diff --git a/barbican/tests/api/controllers/test_secretmeta.py b/barbican/tests/api/controllers/test_secretmeta.py
+index 8dc84f24..5218204d 100644
+--- a/barbican/tests/api/controllers/test_secretmeta.py
++++ b/barbican/tests/api/controllers/test_secretmeta.py
+@@ -167,9 +167,11 @@ class WhenTestingSecretMetadatumResource(utils.BarbicanAPIBaseTestCase):
+         self.assertEqual(201, meta_resp.status_int)
+ 
+         delete_resp = self.app.delete('/secrets/%s/metadata/access-limit' %
+-                                      secret_id)
++                                      secret_id,
++                                      headers={'Accept': 'application/json'})
+ 
+         self.assertEqual(204, delete_resp.status_int)
++        self.assertEqual(b'', delete_resp.body)
+ 
+     @mock.patch('barbican.model.repositories.SecretUserMetadatumRepo.'
+                 'get_metadata_for_secret')
+diff --git a/barbican/tests/api/controllers/test_secretstores.py b/barbican/tests/api/controllers/test_secretstores.py
+index f9f37e60..4a98f4fd 100644
+--- a/barbican/tests/api/controllers/test_secretstores.py
++++ b/barbican/tests/api/controllers/test_secretstores.py
+@@ -264,8 +264,10 @@ class WhenTestingProjectSecretStore(utils.BarbicanAPIBaseTestCase,
+                 'barbican.context': self._build_context(proj_external_id)
+             }
+             resp = self.app.post('/secret-stores/{0}/preferred'.
+-                                 format(store_id), expect_errors=False)
++                                 format(store_id), expect_errors=False,
++                                 headers={'Accept': 'application/json'})
+             self.assertEqual(204, resp.status_int)
++            self.assertEqual(b'', resp.body)
+ 
+             # Now make sure preferred store is set to store id via get call
+             resp = self.app.get('/secret-stores/preferred')
+@@ -285,13 +287,17 @@ class WhenTestingProjectSecretStore(utils.BarbicanAPIBaseTestCase,
+                 'barbican.context': self._build_context(proj_external_id)
+             }
+             resp = self.app.post('/secret-stores/{0}/preferred'.
+-                                 format(store_id), expect_errors=False)
++                                 format(store_id), expect_errors=False,
++                                 headers={'Accept': 'application/json'})
+             self.assertEqual(204, resp.status_int)
++            self.assertEqual(b'', resp.body)
+ 
+             # unset preferred store here
+             resp = self.app.delete('/secret-stores/{0}/preferred'.
+-                                   format(store_id), expect_errors=False)
++                                   format(store_id), expect_errors=False,
++                                   headers={'Accept': 'application/json'})
+             self.assertEqual(204, resp.status_int)
++            self.assertEqual(b'', resp.body)
+ 
+             # Now make sure that there is no longer a preferred store set
+             resp = self.app.get('/secret-stores/preferred',
+diff --git a/releasenotes/notes/no-body-on-204-responses-5b2e0c7d9a1f3e64.yaml b/releasenotes/notes/no-body-on-204-responses-5b2e0c7d9a1f3e64.yaml
+new file mode 100644
+index 00000000..99288336
+--- /dev/null
++++ b/releasenotes/notes/no-body-on-204-responses-5b2e0c7d9a1f3e64.yaml
+@@ -0,0 +1,9 @@
++---
++fixes:
++  - |
++    Secret metadatum deletion, project quota update and deletion, and
++    setting or removing the preferred secret store no longer send a
++    ``null`` JSON body with their ``204 No Content`` response. Proxies
++    which enforce HTTP/1.1 framing, such as Envoy, rejected these responses
++    and returned ``502 Bad Gateway`` to the client although the request had
++    been processed.
