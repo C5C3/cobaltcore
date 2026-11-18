@@ -242,8 +242,10 @@ func TestReconcileConfig_PolicyOverridesRenderOsloPolicy(t *testing.T) {
 	glance.Spec.PolicyOverrides = &commonv1.PolicySpec{
 		Rules: map[string]string{"get_image": "role:reader"},
 	}
-	policy := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "rules", Namespace: glance.Namespace},
-		Data: map[string]string{"policy.yaml": "add_image: role:admin"}}
+	policy := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "rules", Namespace: glance.Namespace},
+		Data:       map[string]string{"policy.yaml": "add_image: role:admin"},
+	}
 	glance.Spec.PolicyOverrides.ConfigMapRef = &corev1.LocalObjectReference{Name: policy.Name}
 	r := newGlanceTestReconciler(glance, policy)
 
@@ -273,7 +275,6 @@ func TestReconcileConfig_PolicyOverridesRenderOsloPolicy(t *testing.T) {
 	_, _, err = r.reconcileConfig(ctx, r.Client, glance, validProjection())
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(r.Get(ctx, client.ObjectKey{Namespace: glance.Namespace, Name: changed.configMapName}, &cm)).To(Succeed())
-
 }
 
 func TestReconcileConfig_InvalidProjectionWithDeploymentKeepsLastGood(t *testing.T) {

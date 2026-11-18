@@ -30,8 +30,10 @@ func SetAggregateReady(conds *[]metav1.Condition, observedGeneration int64, subC
 }
 
 func setAggregateReady(conds *[]metav1.Condition, generation int64, required []string, requireCurrent bool, passErr error) {
-	ready := metav1.Condition{Type: "Ready", ObservedGeneration: generation, Status: metav1.ConditionTrue,
-		Reason: "AllReady", Message: "All sub-conditions are ready"}
+	ready := metav1.Condition{
+		Type: "Ready", ObservedGeneration: generation, Status: metav1.ConditionTrue,
+		Reason: "AllReady", Message: "All sub-conditions are ready",
+	}
 	for _, name := range required {
 		c := conditions.GetCondition(*conds, name)
 		switch {

@@ -304,8 +304,10 @@ func TestDefaultBackendFailureRetainsMountedArtifacts(t *testing.T) {
 			glance := testGlance()
 			original := testArtifacts()
 			store := credentialReadyBackend("store", glance.Name, true)
-			objects := []client.Object{glance, store, readyGlanceDeployment(glance, original),
-				credentialReadyBackend("secondary", glance.Name, false), testS3CredentialsSecret("secondary")}
+			objects := []client.Object{
+				glance, store, readyGlanceDeployment(glance, original),
+				credentialReadyBackend("secondary", glance.Name, false), testS3CredentialsSecret("secondary"),
+			}
 			if stale {
 				store.Generation++
 				objects = append(objects, testS3CredentialsSecret("store"))
