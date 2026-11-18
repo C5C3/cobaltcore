@@ -109,13 +109,8 @@ If you installed the operator directly with Helm (not through Flux), set the
 value with a rolling `helm upgrade` instead:
 
 ```bash
-set -euo pipefail
 CHART_VERSION="$(helm list -n nova-system --filter '^nova-operator$' -o json \
   | jq -r '.[0].chart // "" | sub("^nova-operator-"; "")')"
-if [ -z "$CHART_VERSION" ]; then
-  echo "ERROR: could not find the nova-operator Helm release in nova-system." >&2
-  exit 1
-fi
 helm upgrade nova-operator oci://ghcr.io/c5c3/charts/nova-operator \
   --namespace nova-system --version "$CHART_VERSION" --reuse-values \
   --set monitoring.serviceMonitor.enabled=true
