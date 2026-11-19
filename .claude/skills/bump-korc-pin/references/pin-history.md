@@ -39,6 +39,40 @@ fields, including system-scoped role assignments. Existing project/domain
 assignments remain valid. The deployed c5c3 operator reaches Ready with
 these CRDs. Go API updates remain a separate maintenance concern.
 
+## Dead `branch-main` digest, repaired from the commit tag (2026-11-19)
+
+quay drops a `branch-main` digest in the second the tag moves: in the tag
+history every old entry's `end_ts` equals the next entry's `start_ts`, and
+the manifest answers 404 at once. Upstream main builds several times on a
+busy day, so the pin dies with each of them:
+
+| `branch-main` digest | Pushed (UTC) | Dropped (UTC) | Lived |
+| --- | --- | --- | --- |
+| `sha256:9874744f` | 2026-11-12 11:09:39 | 2026-11-18 20:00:44 | 6 days |
+| `sha256:cce03595` | 2026-11-18 20:00:44 | 2026-11-19 11:43:13 | 16 hours |
+
+The Renovate update to `bce09a05` and `sha256:cce03595` opened at 10:24 UTC
+on 2026-11-19, passed its checks by 10:57 and merged at 12:08, 25 minutes
+after quay had dropped the digest. Every leg that runs
+`hack/ci-deploy-korc.sh` then failed on `main` and on the open pull
+requests with "Could not read provenance for the pinned K-ORC image".
+
+The repair keeps the source commit and replaces the digest alone with the
+index of `commit-bce09a0`,
+`sha256:bf8553c502998e6051d3d6b7e3b23e7b69ad7d68d0355e40d50c446087bded07`.
+That tag expires on 2026-12-16 20:00:51 UTC. Upstream's
+`container_image.yaml` workflow builds and pushes the image twice, once
+per tag. Both indexes list the same four platform image manifests and
+differ in their four attestation manifests, which is why the digests
+differ. All four platforms' provenance of the commit-tag index records
+`bce09a05`, and `hack/ci-deploy-korc.sh` brought the controller to
+Available from it in a throw-away kind cluster.
+
+Renovate's rules are unchanged, so its next grouped update writes a
+`branch-main` digest again, and that digest dies with the upstream build
+after it. One upstream build pushed under both tags would give the
+`branch-main` digest the commit tag's 28 days.
+
 ## Historical commit-pin CI symptoms
 
 **Expired or pruned tag.** The four legs that call `hack/ci-deploy-korc.sh`
@@ -87,7 +121,7 @@ it offline. Answer the PR with the lockstep bump, not a tag-only edit.
 `kustomize-controller` and `containers[name="manager"].image` in "Deploy
 K-ORC" means the Flux `k-orc` Kustomization reconciled before the CI install.
 The kind base overlay applies it suspended since #1007
-(`tests/unit/deploy/overlays/kind_base_korc_suspend_test.sh`); check that patch, not
+(`tests/unit/deploy/kind_base_korc_suspend_test.sh`); check that patch, not
 the pin.
 
 ## Local tooling
