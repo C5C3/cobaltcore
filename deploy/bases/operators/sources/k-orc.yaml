@@ -4,13 +4,13 @@
 
 # K-ORC supplies the Keystone resource CRDs consumed by c5c3. Track upstream
 # main through Renovate while retaining an immutable source commit. Its grouped
-# update also refreshes the digest of the branch-main image. CI verifies the
+# update also refreshes the image digest in releases/k-orc.yaml. CI verifies the
 # image's build provenance against this commit.
 #
-# Upstream expires commit-* image tags after 28 days. branch-main is the rolling
-# discovery tag; deployments still pull the digest in releases/k-orc.yaml.
-# Renovate updates must merge before an old image is garbage-collected. A fixed
-# digest is reproducible while retained, but does not extend registry retention.
+# Upstream expires commit-* image tags after 28 days, and the pinned digest is
+# the index of such a tag (see releases/k-orc.yaml). Renovate updates must merge
+# before an old image is garbage-collected. A fixed digest is reproducible while
+# retained, but does not extend registry retention.
 #
 # SPARSE CHECKOUT, not only spec.ignore. For a ref.commit the source-controller
 # clones the tip of upstream main and then hard-resets the worktree to the pinned
@@ -34,10 +34,10 @@
 # drift from the go.mod k-orc module version the operator compiles against.
 # hack/ci-deploy-korc.sh parses this same commit so the CI installer and the Flux
 # source stay in lockstep. The container image in releases/k-orc.yaml (pinned by
-# digest, with newTag: commit-<short sha> as its drift anchor) is NOT independently
-# Renovate-tracked; the ci-deploy-korc.sh drift guard (run offline on every pull
-# request by tests/unit/deploy/korc_pin_lockstep_test.sh) plus e2e keep it honest, so a
-# Renovate commit-bump PR fails CI until the image is re-pinned in lockstep.
+# digest, newTag: branch-main) has a customManager of its own in the same k-orc
+# group. The provenance check of ci-deploy-korc.sh keeps the pair honest: an
+# update that moves the commit before upstream has published its image fails CI
+# until the image digest follows.
 ---
 apiVersion: source.toolkit.fluxcd.io/v1
 kind: GitRepository

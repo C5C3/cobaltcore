@@ -7,9 +7,11 @@
 # kind cluster from a pinned upstream commit.
 #
 # The Flux source pins an upstream main commit and builds ./config/default.
-# Renovate updates that commit and the digest discovered through branch-main
-# in one group. This script verifies the image's
-# build provenance against the source commit before applying any resources.
+# Renovate updates that commit and the image digest in one group. The digest
+# is the index of the commit-<short sha> tag upstream pushes with each
+# branch-main build, because quay drops a branch-main digest when the tag
+# moves. This script verifies the image's build provenance against the source
+# commit before applying any resources.
 #
 # This script mirrors that exactly: it parses the pinned commit from the Flux
 # GitRepository manifest and the container image tag from the Flux Kustomization

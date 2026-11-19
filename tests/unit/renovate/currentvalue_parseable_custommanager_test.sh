@@ -292,7 +292,7 @@ test_every_current_value_parses() {
   # without a FAIL is the digest-only classifier, so a misfiring probe
   # would otherwise move entries from replayed to skipped in bulk while a
   # single survivor kept the sweep green. The four digest-only entries are
-  # the K-ORC GitRepository commit, its branch-main image digest, and the "rev" pins of
+  # the K-ORC GitRepository commit, its image digest, and the "rev" pins of
   # images/openstack-hypervisor-operator/source.json and
   # images/kvm-node-agent/source.json, each a commit of an upstream main
   # branch.

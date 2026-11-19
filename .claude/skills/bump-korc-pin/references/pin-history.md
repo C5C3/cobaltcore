@@ -68,10 +68,17 @@ differ. All four platforms' provenance of the commit-tag index records
 `bce09a05`, and `hack/ci-deploy-korc.sh` brought the controller to
 Available from it in a throw-away kind cluster.
 
-Renovate's rules are unchanged, so its next grouped update writes a
-`branch-main` digest again, and that digest dies with the upstream build
-after it. One upstream build pushed under both tags would give the
-`branch-main` digest the commit tag's 28 days.
+The same change moves Renovate's image rule off the `docker` datasource,
+which resolved `branch-main` to the digest that dies. The `korc-commit-image`
+custom datasource reads quay's tag list and offers the index digest of the
+`commit-*` tag pushed with the current `branch-main` build. A dry run of
+Renovate 44.253.2 (`--platform=local`) on the repaired tree returned one
+`renovate/k-orc` branch with two digest updates: the source to `7ba765e3`
+and the image to `sha256:2b7a6f53`, the index of `commit-7ba765e`.
+
+One upstream build pushed under both tags would give the `branch-main`
+digest the commit tag's 28 days. The datasource keeps working in that case,
+because the pair then shares one digest.
 
 ## Historical commit-pin CI symptoms
 

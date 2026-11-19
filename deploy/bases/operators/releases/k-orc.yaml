@@ -7,14 +7,18 @@
 # orc-system, so spec.targetNamespace is deliberately unset.
 #
 # Upstream publishes branch-main on every main push; there is no latest tag.
-# Renovate discovers new digests through that tag and groups them with the
-# source commit. The digest, not the tag, resolves the
-# deployed image. A tag-only edit must never turn this into a floating pull.
+# The digest, not the tag, resolves the deployed image. A tag-only edit must
+# never turn this into a floating pull.
 #
-# Unlike commit-* tags, branch-main has no configured expiry, but moves with
-# each build. Old digests can still be collected after it moves, so keep the
-# Renovate updates merging. CI compares each platform's build provenance with
-# the source pin before deploying. A source-only update cannot pass that gate.
+# The digest is NOT the one branch-main resolves to. quay drops a branch-main
+# digest in the second the tag moves to the next build. Upstream pushes the
+# same build a second time as commit-<short sha>, with the same platform
+# images in an index of its own, and that tag expires 28 days after its push.
+# Renovate's korc-commit-image datasource (renovate.json) pins the index of
+# the commit tag pushed with the current branch-main build and groups it with
+# the source commit. A pin lasts 28 days at most, so keep the Renovate updates
+# merging. CI compares each platform's build provenance with the source pin
+# before deploying. A source-only update cannot pass that gate.
 #
 # Credentials: the previous HelmRelease set globalCloudConfig.secretName, the chart
 # value for K-ORC's GLOBAL default clouds.yaml mount. The upstream installer has no
@@ -45,7 +49,8 @@ spec:
   images:
     - name: controller
       newName: quay.io/orc/openstack-resource-controller
-      # Documentation + drift anchor; the digest below is what resolves the pull.
+      # Names the build line and anchors Renovate's rule; the digest below, the
+      # index of the build's commit-<short sha> tag, is what resolves the pull.
       newTag: branch-main
       digest: sha256:bf8553c502998e6051d3d6b7e3b23e7b69ad7d68d0355e40d50c446087bded07
   prune: true
