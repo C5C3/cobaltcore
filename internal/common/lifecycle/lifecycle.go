@@ -28,7 +28,7 @@ type Fields[S any] struct {
 }
 
 // Service runs the shared reconciliation stages around a controller’s workload
-// and cleanup hooks. Finalize may requeue before Sweep removes remote children.
+// and cleanup hooks.
 type Service[T interface {
 	client.Object
 	DeepCopy() T
@@ -45,8 +45,13 @@ type Service[T interface {
 	Sweep           func(context.Context, client.Client, T) error
 }
 
-// Reconcile handles deletion even while suspended, resolves the target before
-// adding finalizers, and observes each finalizer before allowing child writes.
+// Reconcile resolves the target and observes each required finalizer on a fresh
+// read before Sync can create children. After Sync it aggregates Ready and
+// writes changed status, even when Sync returns an error.
+//
+// Deletion takes precedence over suspension. A requeue or error from Finalize
+// defers Sweep so service cleanup can finish first. Both cleanup hooks receive
+// a nil child client if the target stays unresolved through the abandonment window.
 func (s Service[T, S]) Reconcile(ctx context.Context, req ctrl.Request, obj T) (ctrl.Result, error) {
 	if err := s.Client.Get(ctx, req.NamespacedName, obj); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)

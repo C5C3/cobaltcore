@@ -394,6 +394,8 @@ var GlanceRemoteChildKinds = []schema.GroupVersionKind{
 // +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get
 
 // Reconcile runs the shared service lifecycle around the Glance pipeline.
+// r.Client reads Glance and GlanceBackend objects on the management cluster.
+// The hooks receive the target cluster's client for workloads, or r.Client for local workloads.
 func (r *GlanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	driver := lifecycle.Service[*glancev1alpha1.Glance, glancev1alpha1.GlanceStatus]{
 		Client:          r.Client,
