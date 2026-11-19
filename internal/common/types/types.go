@@ -358,7 +358,7 @@ type MessagingTLSSpec struct {
 
 // ServiceUserSpec identifies a Keystone service account and its password Secret.
 type ServiceUserSpec struct {
-	// Username is the Keystone service username.
+	// Username is the Keystone service username. Glance defaults to "glance".
 	// +optional
 	Username string `json:"username,omitempty"`
 	// ProjectName is the service project. Defaults to service.

@@ -123,10 +123,9 @@ type GlanceSpec struct {
 	// +kubebuilder:validation:Pattern=`^https?://`
 	KeystonePublicEndpoint string `json:"keystonePublicEndpoint,omitempty"`
 
-	// ServiceUser identifies the Keystone service account Glance authenticates as
-	// and the Secret holding its password. The username/domain fields are
-	// webhook-defaulted (glance / service / Default / Default) in a later commit;
-	// the password Secret reference is required.
+	// ServiceUser identifies the Keystone service account and its required password Secret.
+	// The username defaults to "glance", the project to "service", both domains to
+	// "Default", and the Secret key to "password".
 	ServiceUser ServiceUserSpec `json:"serviceUser"`
 
 	// Region is the Keystone region Glance authenticates against
