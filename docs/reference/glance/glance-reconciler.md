@@ -24,10 +24,6 @@ collectors cover the recurring purge (`glance_operator_db_purge_total`,
 
 ![The sub-reconciler pipeline of the Glance operator. A pass runs its entries one after another and ends at the first that returns a requeue or an error: Secrets, DBConnectionSecret, Backends, Config, Database, Deployment, then a parallel group of HTTPRoute, HealthCheck, HPA, VPA, NetworkPolicy and DBPurge. Every member of the group starts, and the group returns the shortest requeue. Each step sets one condition; DBConnectionSecret and Config report through SecretsReady. Secrets hands on the digest of the service-user password, DBConnectionSecret the digest of the DSN, Backends the backend projection, which Config reads, and Config the name of the ConfigMap, which Database reads. Deployment reads the two digests and sets status.endpoint. Backends never ends the pass. The early exit and the full pass both end in updateStatus, which aggregates Ready from the sub-conditions and writes the status only when it changed.](../../diagrams/service-glance-pipeline.svg)
 
-The parent controller uses the lifecycle driver in `internal/common/lifecycle`
-to fetch the CR, process deletion or suspension, resolve its target, install
-finalizers and persist status. Glance supplies the pipeline and cleanup hooks.
-
 The figure draws the pattern the Keystone operator set: a lane of steps that
 ends the pass at the first requeue or error, and a group whose members all run.
 [Reconciliation Flow](../keystone/keystone-reconciler.md#reconciliation-flow)
@@ -57,11 +53,10 @@ minimal.
 ## Conditions
 
 The aggregate `Ready` condition is `True` (reason `AllReady`) exactly when all
-ten sub-conditions are `True` at the current Glance generation and the pass
-succeeded. A missing, stale or failed gate produces `False` (`NotAllReady`).
-If a pass fails while every gate still reports True, aggregate
-`Ready` becomes False with reason `ReconcileError`. During a rollout, `DeploymentReady` waits
-until every desired replica is updated, ready and available.
+ten sub-conditions are `True` for the current generation and the pass succeeds.
+A missing, stale or unready condition gives `NotAllReady`. A failed pass with
+all ten conditions current and true gives `ReconcileError`. During rollout,
+`DeploymentReady` waits for all desired replicas to be updated, ready and available.
 
 | Type | True reasons | False reasons |
 | --- | --- | --- |
@@ -141,32 +136,15 @@ and has no effect: Glance runs under uWSGI on every supported release and the
 operator renders no [DEFAULT] workers; size the API with spec.apiServer.uwsgi
 instead.`
 
-## Configuration changes
-
-Admission and rendering use the same service-user defaults. Admission checks
-`extraConfig` against the release catalog, exempting declared plugin sections,
-reserved stores and operator-owned keys. The Config step resolves cache servers
-and policy inputs before rendering. Service defaults override plugin options.
-User overrides take precedence over both. When policy is supplied, the operator
-sets `oslo_policy.policy_file` to its generated file.
-
-A change to the rendered INI, Paste pipeline, logging or policy file produces
-a new immutable ConfigMap and rolls the API Deployment. Reapplying equivalent
-inputs reuses the same revision. Backend credential changes select a new
-immutable Secret. Service-password and database-connection changes use separate
-pod-template digests. These changes take effect on pod rollout. Operator
-process flags take effect on manager restart. A missing policy reference holds
-the pipeline before it changes the serving Deployment.
-
 ## Backends aggregation
 
 The Backends step lists the attached `GlanceBackend`s (via the
 `spec.glanceRef.name` field index), sorts them by name for deterministic output,
 and renders one `[<name>]` store section per **credential-ready** backend into a
 content-hashed backends Secret (rolled on any content change, 3 historical
-retained). It gates each backend on `CredentialsReady==True` at the backend’s current generation — never the
-aggregate `Ready`, which also requires `ConfigProjected` and would deadlock,
-since `ConfigProjected` only turns True after this step projects the backend.
+retained). Each backend must report `CredentialsReady==True` for its current
+generation. Waiting for its aggregate `Ready` would deadlock because
+`ConfigProjected` only turns true after this step projects the backend.
 
 - **Exactly-one-Ready-default rule.** Zero or more than one credential-ready
   default is an invalid projection (`BackendsReady=False / NoDefaultBackend`):
@@ -174,14 +152,10 @@ since `ConfigProjected` only turns True after this step projects the backend.
 - **Per-backend fault isolation.** A backend whose credentials Secret is
   missing/unreadable, or whose rendered values carry a control character, is
   skipped with a `GlanceBackendSkipped` Warning event on the Glance CR while the
-  healthy siblings keep projecting. If the skipped store is the default, the
-  API keeps both artifacts mounted by the live Deployment. First install
-  waits for a usable default.
+  healthy siblings keep projecting. If the default store is skipped, the API
+  keeps its mounted configuration and a first install waits.
 
-After all pipeline steps converge, Glance prunes its immutable history. It
-keeps the active pair, the three newest historical versions of each, and any older ConfigMap
-still mounted by a Job. A database wait or an in-flight rollout defers pruning
-until a later pass.
+Pruning waits for rollout and preserves older ConfigMaps still mounted by Jobs.
 
 ## Database
 
@@ -309,14 +283,14 @@ across a planned upgrade to avoid the noise.
   digest annotation, and the operator omits it while
   `spec.extraConfig.database.connection_parameters` is set; see
   [Database socket timeouts](../../guides/advanced-configuration.md#database-socket-timeouts).
-- **Deletion** of a managed database requests deletion of the Glance-owned
-  MariaDB `Database`, `User` and `Grant`. Brownfield mode skips this stage.
-  The next pass releases the finalizer once those objects are absent or
-  terminating. MariaDB completes its own teardown as garbage collection stops
-  the local workloads and releases their connections. For a target cluster,
-  the remote sweep requests deletion of the remaining owned children.
-  A target that stays unreachable through the abandonment window produces a
-  `RemoteChildrenAbandoned` warning. See [Target Clusters](../target-clusters.md).
+- **Deletion** runs the `glance.openstack.c5c3.io/finalizer`. In managed mode,
+  it requests deletion of Glance-owned MariaDB `Database`, `User` and `Grant`
+  CRs (`FinalizingDatabase`). Absent or terminating CRs allow finalization
+  (`DatabaseFinalized`). Brownfield databases skip this step.
+  Kubernetes garbage collection handles local children. If a target stays
+  unreachable through the abandonment window, Glance releases its finalizer
+  and emits a `RemoteChildrenAbandoned` warning. See
+  [Target Clusters](../target-clusters.md).
   The `GlanceBackend` controller has no finalizer: the
   operator provisions no S3 resources, so there is nothing to clean up remotely.
   Deletion still **de-registers the store** — the bucket and its objects are
@@ -346,8 +320,7 @@ watches:
   `spec.serviceUser.secretRef.name` / `spec.database.secretRef.name` field
   index) or through an attached backend's S3 credentials Secret (via the backend
   secret-name index).
-- **Policy ConfigMaps**, mapped to Glances that name them in
-  `spec.policyOverrides.configMapRef`. Editing a referenced policy triggers a pass.
+- **Policy ConfigMaps** referenced by `spec.policyOverrides.configMapRef`.
 - **GlanceBackends**, mapped to their parent Glance with no generation predicate
   — a backend's `CredentialsReady` flip is exactly what wakes the aggregation.
 - **MariaDB** clusters referenced by `spec.database.clusterRef`, so an upstream
