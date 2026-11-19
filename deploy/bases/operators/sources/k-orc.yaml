@@ -48,7 +48,7 @@ spec:
   interval: 1h
   url: https://github.com/k-orc/openstack-resource-controller
   ref:
-    commit: c48889697d73221e39497dac0ae89e2000d6a0c7
+    commit: bce09a051df31e12c415c1afd031e1fb3bb32208
   sparseCheckout:
     - config
   ignore: |
