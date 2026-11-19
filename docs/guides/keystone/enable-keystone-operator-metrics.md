@@ -30,8 +30,10 @@ and a Keystone CR are running.
 :::
 
 For a non-kind installation, use your own Prometheus and Grafana instances.
-The production overlays (`deploy/bases/operators/`) omit kube-prometheus-stack.
-Step 1 describes the CRD and selector requirements for that setup.
+Have `kubectl`, `curl`, and `jq` available on your workstation; the direct
+Helm instructions also require `helm`. The production overlays
+(`deploy/bases/operators`) omit kube-prometheus-stack. Step 1 describes the CRD
+and selector requirements for that setup.
 
 ---
 
@@ -45,8 +47,9 @@ Grafana, and the bundled `Keystone Operator` dashboard, and sets
 HelmRelease. Once that release reconciles, the ServiceMonitor is already
 enabled; skip the enable commands and confirm the object below.
 If the HelmRelease is suspended, the value is stored but no ServiceMonitor
-is rendered until the release is resumed or the chart is installed separately
-with that value.
+is rendered until the release resumes. Do not run the wait command below
+while it is suspended; wait for its Flux owner to resume and reconcile it
+before confirming the ServiceMonitor.
 
 ::: details Connecting an existing Prometheus (non-kind)
 The operator chart does not install the prometheus-operator CRDs.
@@ -92,12 +95,15 @@ The scrape interval defaults to `30s`. To change it, set
 
 ::: details Helm-managed installations (non-Flux)
 If you installed the operator directly with Helm, enable monitoring while
-preserving the release's other values:
+preserving the release's other values and pinning the upgrade to its
+currently installed chart version:
 
 ```bash
+CHART_VERSION=$(helm list -n keystone-system --filter '^keystone-operator$' -o json \
+  | jq -r '.[0].chart | sub("^keystone-operator-"; "")')
 helm upgrade keystone-operator \
   oci://ghcr.io/c5c3/charts/keystone-operator \
-  --namespace keystone-system --reuse-values \
+  --namespace keystone-system --version "$CHART_VERSION" --reuse-values \
   --set monitoring.serviceMonitor.enabled=true
 ```
 
@@ -157,10 +163,10 @@ On the devstack, select **Dashboards → Keystone Operator**: the dashboard is
 already provisioned. If you use your own Grafana, import it as follows.
 
 The repository ships a reference dashboard in
-[`operators/keystone/dashboards/keystone-operator.json`](https://github.com/c5c3/cobaltcore/blob/main/operators/keystone/dashboards/keystone-operator.json)
-covering the four core SLIs: reconcile p95 per sub-reconciler, error
-rate per condition type, rotation age per key, and `db_sync` duration
-p95 with failure count.
+[`operators/keystone/dashboards/keystone-operator.json`](https://github.com/c5c3/cobaltcore/blob/main/operators/keystone/dashboards/keystone-operator.json).
+Its panels show sub-reconciler duration percentiles, error rate by condition
+type, key-rotation age by Keystone and key type, `db_sync` duration p95 and
+failure rate, and end-to-end controller-runtime reconcile duration.
 
 1. In Grafana: **Dashboards → New → Import**.
 2. Upload `keystone-operator.json` or paste its contents.
@@ -234,7 +240,7 @@ Keep the port-forward running and scrape from another terminal:
 
 ```bash
 curl -s http://localhost:8080/metrics \
-  | grep -E '^# (TYPE|HELP) keystone_operator_'
+  | grep -E '^# (TYPE|HELP) (keystone_operator_|controller_runtime_reconcile_time_seconds)'
 ```
 
 Expected: `# TYPE` and `# HELP` lines for every metric in the
@@ -276,11 +282,10 @@ Operators with stricter cluster policies must take extra steps:
   [Enable the Keystone Operator NetworkPolicy](./enable-keystone-operator-networkpolicy.md).
   Without it the ServiceMonitor renders successfully but every scrape
   times out and the target reports `Down`.
-- **mTLS service mesh enforcement.** When a service mesh (Istio,
-  Linkerd, Cilium service mesh) requires mTLS for in-cluster traffic,
-  inject a sidecar that terminates mTLS in front of the operator's
-  `:8080` endpoint, OR exempt the operator Pod from strict-mTLS
-  enforcement for the metrics port.
+- **mTLS service mesh enforcement.** When a service mesh requires mTLS
+  for in-cluster traffic, configure its supported scrape path for this
+  HTTP endpoint. Depending on the mesh, that may mean terminating mTLS
+  at a proxy or exempting metrics traffic from strict-mTLS enforcement.
 - **Required TLS / authn at the controller-runtime level.** Changing the
   port is a chart value (`metrics.port`), but changing the scheme is not:
   if the threat model demands the operator itself serve metrics over HTTPS or
@@ -291,13 +296,11 @@ Operators with stricter cluster policies must take extra steps:
   does not ship this configuration. Implement it by changing the shared
   controller-runtime bootstrap; no per-operator chart override exists.
 
-The metrics endpoint exposes **no credentials, secrets,
-or per-tenant payloads**. It serves Prometheus collector samples described
-in the
-[reference catalogue](../../reference/keystone-operator-metrics.md), so
-the default plain-HTTP exposure is appropriate for cluster-internal
-scraping. The hardening guidance above applies only when external
-policy demands a stricter posture.
+The metrics endpoint exposes no credential values, Secret contents, or
+OpenStack API payloads. Its per-CR metrics do expose Keystone names,
+namespaces, key-rotation ages, and `db_sync` outcomes and durations. Treat
+those labels and operational details as cluster metadata, and apply the
+network and mesh controls that your trust boundary requires.
 
 ---
 
@@ -317,9 +320,12 @@ kubectl wait helmrelease/keystone-operator -n keystone-system \
 For a directly Helm-managed installation instead:
 
 ```bash
+CHART_VERSION=$(helm list -n keystone-system --filter '^keystone-operator$' -o json \
+  | jq -r '.[0].chart | sub("^keystone-operator-"; "")')
 helm upgrade keystone-operator \
   oci://ghcr.io/c5c3/charts/keystone-operator \
   --namespace keystone-system \
+  --version "$CHART_VERSION" \
   --reuse-values \
   --set monitoring.serviceMonitor.enabled=false
 ```

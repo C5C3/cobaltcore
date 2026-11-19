@@ -649,8 +649,8 @@ func TestNovaValidateCreate_RejectionTable(t *testing.T) {
 			wantSub:  "parentRef.name must be set when spec.consoleProxy.gateway is configured",
 		},
 		{
-			// The page and the WebSocket are served from the root of the console
-			// hostname, so a prefix route would match neither.
+			// A non-root prefix would match neither the page nor the WebSocket
+			// endpoint, which the root prefix covers.
 			name: "console gateway path prefix rejected",
 			mutate: func(o *Nova) {
 				o.Spec.ConsoleProxy.Gateway = &GatewaySpec{
@@ -660,7 +660,7 @@ func TestNovaValidateCreate_RejectionTable(t *testing.T) {
 				}
 			},
 			wantPath: "spec.consoleProxy.gateway.path",
-			wantSub:  "the console page and its WebSocket are served from the root",
+			wantSub:  "the root prefix matches /vnc_lite.html and /websockify",
 		},
 		{
 			name:     "networkPolicy without an ingress source rejected",

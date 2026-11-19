@@ -17,10 +17,11 @@ a NeutronMetadataAgent lives beside its OVNChassis in a privileged namespace the
 
 {{/*
 API health-check egress for the shared NetworkPolicy (operator-library chart
-hook). The operator GETs the Neutron API over its Service, and an enforcing
-CNI judges that connection after the Service DNAT, at the API pod and its
-port. The rule therefore selects the API pods in any namespace by the two
-labels the operator sets on them (naming.CommonLabels in internal/common).
+hook). The operator GETs the Neutron API over its Service. The kindnet
+network-policy e2e verifies that this setup evaluates the connection after
+Service DNAT, at the API pod and its port. The rule therefore selects the API
+pods in any namespace by the two labels the operator sets on them
+(naming.CommonLabels in internal/common).
 */}}
 {{- define "operator-library.chart.networkPolicyEgress" -}}
 - to:

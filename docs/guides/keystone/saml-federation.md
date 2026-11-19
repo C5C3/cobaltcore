@@ -73,11 +73,15 @@ Pick exactly one of the three sources for `spec.saml.idpMetadata`:
 - **`inline`**: paste the raw EntityDescriptor XML into the CR (the
   operator validates its `entityID` against `spec.saml.idpEntityID` at
   admission).
-- **`url`**: the operator fetches the document through the same hardened,
-  SSRF-guarded client the OIDC path uses. By default that client refuses to dial
-  any non-public address; to fetch metadata from a trusted in-cluster SAML IdP,
-  allowlist its CIDR through the same operator-level `federation.metadataAllowCidrs`
-  chart value (`--federation-metadata-allow-cidrs` flag) described under
+- **`url`**: it must use `https://` because the metadata carries the
+  assertion-signing certificate the proxy trusts. The operator fetches it
+  through the same SSRF-guarded client the OIDC path uses. By default, the
+  client blocks loopback, link-local, private, carrier-grade NAT, NAT64,
+  unspecified, and multicast addresses. Its allowlist can lift only private,
+  carrier-grade NAT, and NAT64 blocks. To fetch metadata from a trusted
+  in-cluster SAML IdP, add its CIDR to the operator chart's
+  `federation.metadataAllowCidrs` value (the
+  `--federation-metadata-allow-cidrs` flag). See
   [OIDC discovery against an in-cluster IdP](./oidc-federation.md#discovery-against-an-in-cluster-identity-provider).
 
 ### Test with the e2e IdP fixture
@@ -91,11 +95,13 @@ kubectl apply -f tests/e2e/keystone/saml-federation/00-keycloak-saml.yaml
 kubectl rollout status deployment/keycloak-saml -n openstack --timeout=6m
 ```
 
-The fixture imports the `cobaltcore-saml` realm, a SAML client, and a test user.
-It runs Keycloak in development mode with HTTP, fixed test credentials,
-and a 1 GiB memory limit. Do not use it in production or run it alongside the
-Chainsaw suite, which manages the same resources. If the rollout times out,
-inspect `kubectl logs -n openstack deployment/keycloak-saml` before continuing.
+The fixture imports the `cobaltcore-saml` realm with its SAML client and test
+user. It also imports a separate `cobaltcore-saml-oidc` realm for the suite's
+OIDC coexistence check. Keycloak runs in development mode with HTTP, fixed
+test credentials, and a 1 GiB memory limit. Do not use it in production or run
+it alongside the Chainsaw suite, which manages the same resources. If the
+rollout times out, inspect `kubectl logs -n openstack deployment/keycloak-saml`
+before continuing.
 
 Fetch the descriptor from the running Keystone container, as the e2e suite
 does, to reach the cluster-local Service without changing the operator's
@@ -260,7 +266,7 @@ stable-named Secret (also surfaced on the backend status as
 kubectl get keystoneidentitybackend corp-saml -n openstack \
   -o jsonpath='{.status.samlSPMetadataSecretName}'
 kubectl get secret keystone-saml-sp-metadata -n openstack \
-  -o jsonpath='{.data.sp-metadata\.xml}' | base64 -d
+  -o jsonpath='{.data.sp-metadata\.xml}' | openssl base64 -d -A
 ```
 
 Register that SP metadata with your IdP out of band (in Keycloak: create a

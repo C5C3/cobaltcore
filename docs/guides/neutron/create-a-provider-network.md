@@ -39,15 +39,14 @@ Step 7, so the `ControlPlane` `controlplane` serves the network API and the
 `OVNCentral` `controlplane-ovn` is Ready in the `openstack` namespace.
 :::
 
-1. A chassis on the node, as
-   [Label a Node as a Compute or Network Node](../ovn/label-a-chassis-node.md)
-   leaves it: the node carries `openstack.c5c3.io/chassis=true` and the
-   `OVNChassis` `controlplane-chassis` reports `Ready` with one entry in
-   `status.nodes`.
+1. The [label guide](../ovn/label-a-chassis-node.md) must have left the
+   node with `openstack.c5c3.io/chassis=true` and the `OVNChassis`
+   `controlplane-chassis` `Ready` with one entry in `status.nodes`.
 2. The `OS_*` variables the quick start exports in its Step 7, still in the
-   shell you run the `openstack` commands from. Every call below carries
-   `--insecure`, because the gateway listener presents a self-signed
-   certificate.
+   shell you run the `openstack` commands from. Every `openstack` command below
+   uses `--insecure` because the gateway listener presents a self-signed
+   certificate. The flag disables certificate verification; use it only with
+   this devstack and omit it where you trust the gateway certificate.
 
 ## Steps
 
@@ -64,21 +63,41 @@ kubectl patch ovnchassis controlplane-chassis -n openstack --type merge \
 Nothing projects an `OVNChassis`. The ControlPlane references an `OVNCentral`
 and stops there, so this CR is yours and the mapping stands until you change it.
 
-The operator renders the list into the node's own Open vSwitch database and
-creates each named bridge with `ovs-vsctl --may-exist add-br`. Read both back:
+The operator applies the mapping to the node's Open vSwitch database and
+creates each named bridge with `ovs-vsctl --may-exist add-br`. The per-node
+apply can take a short time, so wait for both the mapping and bridge:
 
 ```bash
-kubectl exec ds/controlplane-chassis-ovs -n openstack -c ovsdb-server -- \
-  ovs-vsctl get open . external_ids:ovn-bridge-mappings
-kubectl exec ds/controlplane-chassis-ovs -n openstack -c ovsdb-server -- \
-  ovs-vsctl br-exists br-ex
+DS=ds/controlplane-chassis-ovs
+RAW=""
+MAPPINGS=""
+FOUND=""
+for _ in $(seq 1 24); do
+  RAW="$(kubectl exec "$DS" -n openstack -c ovsdb-server -- \
+    ovs-vsctl --timeout=15 get open . external_ids:ovn-bridge-mappings 2>&1 || true)"
+  MAPPINGS="$(tr -d '[:space:]"' <<< "$RAW")"
+  if [ "$MAPPINGS" = "physnet1:br-ex" ] &&
+     kubectl exec "$DS" -n openstack -c ovsdb-server -- \
+       ovs-vsctl --timeout=15 br-exists br-ex >/dev/null 2>&1; then
+    FOUND=yes
+    break
+  fi
+  sleep 5
+done
+if [ "$FOUND" != yes ]; then
+  echo "Timed out waiting for physnet1:br-ex and bridge br-ex; last mapping: $RAW" >&2
+  kubectl exec "$DS" -n openstack -c ovsdb-server -- \
+    ovs-vsctl --timeout=15 list-br >&2 || true
+  exit 1
+fi
+printf 'Mapping: %s\n' "$MAPPINGS"
+echo "Bridge br-ex exists."
 ```
 
-The first prints `"physnet1:br-ex"`, quotes included. The second prints nothing
-and exits 0. Check the bridge as well as the mapping: `ovn-controller` attaches
-patch ports to a bridge but never creates one, so a mapping pointing at a
-missing bridge drops every packet on that physical network while the CR and the
-mapping still read correctly.
+The mapping is `"physnet1:br-ex"` in the OVS database; the check strips its
+quotes. `ovn-controller` attaches patch ports to a bridge but never creates
+one, so a mapping that points at a missing bridge drops every packet on that
+physical network while the CR and mapping still read correctly.
 
 On a kind node `br-ex` has no uplink, so traffic stays on the host. The checks
 below verify OVN port binding only.
@@ -102,9 +121,19 @@ still allocates each port a fixed address out of the subnet.
 ### 3. Create a port and bind it to the node
 
 ```bash
-NODE="$(kubectl get nodes -l openstack.c5c3.io/chassis=true -o jsonpath='{.items[0].metadata.name}')"
+NODE="$(kubectl get nodes -l openstack.c5c3.io/chassis=true \
+  -o jsonpath='{.items[0].metadata.name}')"
+if [ -z "$NODE" ]; then
+  echo "No node has the openstack.c5c3.io/chassis=true label." >&2
+  exit 1
+fi
 openstack --insecure port create --network provider --host "$NODE" smoke0
-openstack --insecure port show smoke0 -c binding_vif_type -f value
+VIF_TYPE="$(openstack --insecure port show smoke0 -c binding_vif_type -f value)"
+if [ "$VIF_TYPE" != ovs ]; then
+  echo "Expected binding_vif_type=ovs, got ${VIF_TYPE:-empty}." >&2
+  exit 1
+fi
+printf '%s\n' "$VIF_TYPE"
 ```
 
 Expect `ovs`. `--host` sets `binding:host_id`, and the ML2/OVN mechanism driver
@@ -119,9 +148,29 @@ the part of the plug that OVN reacts to:
 
 ```bash
 PORT_ID=$(openstack --insecure port show smoke0 -f value -c id)
-kubectl exec ds/controlplane-chassis-ovs -n openstack -c ovsdb-server -- \
+if [ -z "$PORT_ID" ]; then
+  echo "Neutron returned no ID for port smoke0." >&2
+  exit 1
+fi
+DS=ds/controlplane-chassis-ovs
+FOUND=""
+for _ in $(seq 1 24); do
+  if kubectl exec "$DS" -n openstack -c ovsdb-server -- \
+    ovs-vsctl --timeout=15 br-exists br-int >/dev/null 2>&1; then
+    FOUND=yes
+    break
+  fi
+  sleep 5
+done
+if [ "$FOUND" != yes ]; then
+  echo "Timed out waiting for ovn-controller to create br-int." >&2
+  kubectl exec "$DS" -n openstack -c ovsdb-server -- \
+    ovs-vsctl --timeout=15 list-br >&2 || true
+  exit 1
+fi
+kubectl exec "$DS" -n openstack -c ovsdb-server -- \
   ovs-vsctl --may-exist add-port br-int smoke0 \
-  -- set Interface smoke0 type=internal external_ids:iface-id=$PORT_ID
+  -- set Interface smoke0 type=internal external_ids:iface-id="$PORT_ID"
 ```
 
 `ovn-controller` looks a logical port up by the `iface-id` it finds on an
@@ -130,11 +179,18 @@ Southbound `Port_Binding` row, and Neutron reports the port `ACTIVE` as soon as
 that row names a chassis:
 
 ```bash
+STATUS=""
 for _ in $(seq 30); do
-  [ "$(openstack --insecure port show smoke0 -c status -f value)" = ACTIVE ] && break
+  STATUS="$(openstack --insecure port show smoke0 -c status -f value)"
+  [ "$STATUS" = ACTIVE ] && break
   sleep 2
 done
-openstack --insecure port show smoke0 -c status -f value
+if [ "$STATUS" != ACTIVE ]; then
+  printf 'Timed out waiting for smoke0 to become ACTIVE (last status: %s).\n' \
+    "${STATUS:-unknown}" >&2
+  exit 1
+fi
+printf '%s\n' "$STATUS"
 ```
 
 The interface is `type=internal` because no traffic needs to pass through it;

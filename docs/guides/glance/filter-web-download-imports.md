@@ -21,7 +21,7 @@ cannot see.
 The figure shows where the filter acts: on path B, before the pod fetches the
 URI onto its staging volume.
 
-![Three paths of image bytes through one glance-api pod, and the three volumes on the disk of its node. Path A, a client upload with PUT /v2/images/{id}/file: the request body streams through the pod straight into the S3 store and touches no volume. Path B, a web-download import with POST /v2/images/{id}/import: the request returns at once, the pod fetches the whole image from a web server that the import filter admits onto the volume staging, an import plugin may convert it there into a second file, and after the last byte the image moves to the store. Path C, a download with GET /v2/images/{id}/file: the pod reads the image from the store, and with the image cache enabled it also writes it to the volume image-cache and serves later downloads of that image from there. The cache belongs to one replica, and a sidecar prunes it down to 80 percent of its size limit. The volumes staging, tasks-work and image-cache are emptyDirs. Each size limit is an eviction threshold: once a volume grows past it, the kubelet evicts the pod. No import writes image bytes to tasks-work.](../../diagrams/service-glance-image-paths.svg)
+![Three paths of image bytes through one glance-api pod, and the three volumes on the disk of its node. Path A, a client upload with PUT /v2/images/{id}/file: the request body streams through the pod straight into the S3 store and touches no volume. Path B, a web-download import with POST /v2/images/{id}/import: the request returns at once, the pod fetches the whole image from a web server that the import filter admits onto the volume staging, an import plugin may convert it there into a second file, and after the last byte the image moves to the store. Path C, a download with GET /v2/images/{id}/file: the pod reads the image from the store, and with the image cache enabled it also writes it to the volume image-cache and serves later downloads of that image from there. The cache belongs to one replica, and a sidecar prunes it down to 80 percent of its size limit. The volumes staging, tasks-work and image-cache are emptyDirs. A sizeLimit is an eviction threshold, not a quota; periodic kubelet checks mean usage can exceed it before a pod is evicted. No import writes image bytes to tasks-work.](../../diagrams/service-glance-image-paths.svg)
 
 ## Prerequisites
 
@@ -39,12 +39,11 @@ Follow that tutorial through to its final **Verify** step, so the projected
 devstack produces.
 :::
 
-- The `OS_*` environment variables from the tutorial's token-issue step, so the
-  `openstack` client reaches the ControlPlane's Keystone.
-- Outbound connectivity from the cluster to whichever mirror the verification
-  step imports from. The devstack sets no per-CR `spec.networkPolicy`, so pod
-  egress is unrestricted; on a deployment that sets one, see
-  [Containing what a widened filter can reach](#containing-what-a-widened-filter-can-reach).
+Export the `OS_*` variables from the tutorial's token-issue step so the
+`openstack` client reaches the ControlPlane's Keystone, and ensure the cluster
+can reach the mirror used for verification. The devstack sets no per-CR
+`spec.networkPolicy`, so pod egress is unrestricted; on a deployment that sets
+one, see [Containing what a widened filter can reach](#containing-what-a-widened-filter-can-reach).
 
 ## What the default filter allows
 
@@ -147,15 +146,19 @@ kubectl get controlplane controlplane -n openstack \
 
 ## Allow a mirror that serves plaintext HTTP
 
-A mirror on `http://` or off port 443 needs both halves widened, since scheme
-and port are filtered independently:
+Widen each list only as needed. Add `http` to `allowedSchemes` to permit
+plaintext. Glance checks `allowedPorts` only when the URI spells out a port:
+`http://mirror.example.com:80/...` also needs `80` in the list, while a URI
+without `:80` skips the port check. Add the actual explicit port, such as
+`3900` for the devstack's Garage endpoint, when using a nonstandard port.
 
 ```bash
 kubectl patch controlplane controlplane -n openstack --type merge \
   -p '{"spec":{"services":{"glance":{"importFiltering":{"allowedSchemes":["http","https"],"allowedPorts":[80,443]}}}}}'
 ```
 
-Admission accepts that and warns on it, once per widened list:
+Admission accepts those values and warns once for each widened list. For
+example, widening the scheme list produces:
 
 ```
 Warning: spec.services.glance.importFiltering.allowedSchemes is set to [http https], widening
@@ -167,11 +170,13 @@ endpoints with spec.networkPolicy.additionalEgress, or pin allowedHosts to the m
 are supposed to use.
 ```
 
-The warning explains why the controls are separate. Widening the scheme and
-port leaves `disallowedHosts` in place: an unset field resolves to the operator
-baseline, and added entries are unioned with that baseline. Host matching is
-literal, so pair a widened
-allow-list with `allowedHosts`, an egress restriction, or both.
+Widening the port list emits the same warning with `allowedPorts` and its
+values.
+
+Widening the scheme or port leaves `disallowedHosts` in place. An unset field
+resolves to the operator baseline, and added entries are unioned with that
+baseline. Host matching is literal, so pair a widened allow-list with
+`allowedHosts`, an egress restriction, or both.
 
 ## Making a deny-list authoritative
 
@@ -245,7 +250,13 @@ openstack --insecure image show filter-demo -f value -c status -c size
 The status reaches `active`. Redirects along the way are re-checked against the
 same six lists, so a mirror that redirects into a denied host fails the import
 asynchronously. The record does not reach `active`; the failure appears on the
-import task instead of as the synchronous `400` above.
+import task instead of as the synchronous `400` above. Use an administrator
+token to find and inspect the failed task:
+
+```bash
+openstack image task list --type import --status failure
+openstack image task show <task-id>
+```
 
 Clean up:
 
@@ -255,12 +266,12 @@ openstack --insecure image delete filter-demo
 
 ## Containing what a widened filter can reach
 
-Host matching uses literal string membership. Glance supports no CIDR ranges, no
-wildcards, and no resolution-based blocking, so the denylist covers the
-spellings it lists and nothing else: a raw ClusterIP, a trailing-dot FQDN, an
-IPv4-mapped IPv6 form, or an in-cluster HTTPS service whose name is absent all
-reach their endpoints under names no list can enumerate. Two controls apply
-where the denylist does not:
+Host matching uses literal string membership. Glance supports no CIDR ranges,
+no wildcards, and no blocking based on resolved IP addresses, so the denylist
+covers the spellings it lists and nothing else: a raw ClusterIP, a trailing-dot
+FQDN, an IPv4-mapped IPv6 form, or an in-cluster HTTPS service whose name is
+absent all reach their endpoints under names no list can enumerate. Two
+controls apply where the denylist does not:
 
 - **`allowedHosts`** permits only named hosts, including when a URI uses an
   unexpected spelling of a blocked address.
