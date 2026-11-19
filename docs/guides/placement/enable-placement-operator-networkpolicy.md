@@ -22,8 +22,8 @@ to the minimum required for correct reconciliation.
 > [Placement CRD API Reference](../../reference/placement/placement-crd.md).
 > That per-CR policy restricts ingress to TCP 8778 from the sources you list
 > (at least one is required, so an empty list is refused) and derives its
-> egress from the CR: DNS, the database, the Keystone endpoint's port, and the
-> cache, with `additionalEgress` appended after it.
+> egress for DNS, the database, and the Keystone endpoint's port. It adds
+> cache egress when a cache is configured, then appends `additionalEgress`.
 
 ---
 
@@ -45,36 +45,88 @@ is running (namespace `placement-system`) alongside the projected
 2. The ControlPlane declares `spec.services.placement`. Without it no
    `controlplane-placement` child exists and the Step 2 verification has
    nothing to roll.
+3. The cluster's CNI (container network interface) plugin enforces Kubernetes
+   NetworkPolicy. Otherwise the policy object does not restrict traffic.
+4. The commands require `kubectl` and `jq`; direct Helm installations also
+   require `helm`. You need permission to list EndpointSlices in `default`;
+   check with `kubectl auth can-i list endpointslices.discovery.k8s.io -n default`.
+5. You need permission to patch the HelmRelease and ControlPlane and restart
+   the operator Deployment. The fresh-connection check in Step 2 requires
+   `patch` on `pods/ephemeralcontainers`; run it as a cluster admin, as
+   described in that step.
 
 ## Step 1: Enable the policy
 
 The chart guards `networkPolicy.enabled=true` with a fail-closed check:
 `networkPolicy.kubeApiServer.cidrs` and `ports` must both be non-empty, or the
 template refuses to render. Gather the API server CIDRs and ports from the
-`kubernetes` **Endpoints**, which carry the real API server addresses. The
-`10.96.0.1` Service VIP that `kubectl get service kubernetes` reports is the
-wrong source. An enforcing CNI
-(Calico, Cilium, and kindnet on kind v0.32 and later) evaluates policy after the
-Service DNAT has rewritten a packet aimed at the VIP to one of those endpoint
-IPs, so a rule naming the VIP never matches:
+EndpointSlices for the `kubernetes` Service in `default`. Kubernetes leaves
+the order of Service DNAT (rewriting a Service IP to a pod IP) and
+NetworkPolicy evaluation to the CNI. The Placement e2e suite confirms that
+kindnet on kind v0.33 evaluates this rule after DNAT, so use the EndpointSlice
+addresses on the tutorial devstack. Verify your CNI's behavior before applying
+the same assumption to another cluster; see the
+[Kubernetes NetworkPolicy behavior](https://kubernetes.io/docs/concepts/services-networking/network-policies/#behavior-of-to-and-from-selectors).
 
 ```bash
-kubectl get endpoints kubernetes -n default -o json \
-  | jq -r '.subsets[] | (.addresses[].ip) as $ip | (.ports[].port) as $p | "\($ip)/32 port=\($p)"'
+kubectl get endpointslices -n default \
+  -l kubernetes.io/service-name=kubernetes -o json \
+  | jq -er '
+      [
+        .items[] as $slice
+        | $slice.endpoints[]?
+        | select(.conditions.ready != false)
+        | .addresses[]? as $ip
+        | $slice.ports[]?.port as $p
+        | select($p != null)
+        | "\($ip)\(if ($ip | contains(":")) then "/128" else "/32" end) port=\($p)"
+      ] | unique as $peers
+      | if ($peers | length) == 0 then
+          error("no Kubernetes API server EndpointSlice addresses or ports found")
+        else $peers[] end'
 ```
 
-Record **every** endpoint IP the command prints. A kind
-devstack reports the one control-plane node's address on the kind bridge
-(`172.18.0.x`), but an HA control plane reports one per API server replica:
+Record every unique CIDR and port pair. IPv4 addresses use `/32`; IPv6
+addresses use `/128`. A kind devstack reports the one control-plane node's
+address on the kind bridge (for example, `172.18.0.2/32 port=6443`). An HA
+control plane reports one address per API server replica, and a dual-stack
+cluster can report both address families:
 
 ```
 10.0.0.10/32 port=6443
 10.0.0.11/32 port=6443
 10.0.0.12/32 port=6443
+fd00::10/128 port=6443
 ```
 
-The rule must cover all of them, or the operator loses its leader-election
-lease whenever it happens to be talking to an excluded replica.
+The chart combines the CIDRs and ports in one rule, so each listed port is
+allowed to each listed address. The rule must cover all API server endpoints,
+or the operator can lose its leader-election lease when it talks to an
+excluded replica.
+
+On Cilium, CIDR selectors do not match cluster node addresses by default
+([Cilium CIDR matching](https://docs.cilium.io/en/stable/security/policy/layer3/#cidr-select-nodes)).
+If the API server runs on a node, the chart's API-server egress CIDR may not
+match even when it lists every EndpointSlice address. Before enabling the
+policy, either set `--policy-cidr-match-mode=nodes` (the Cilium Helm value is
+`policyCIDRMatchMode: nodes`) or add a CiliumNetworkPolicy that selects the
+operator pod and permits egress to the `kube-apiserver` entity on the API
+server ports
+([Cilium's kube-apiserver entity](https://docs.cilium.io/en/stable/security/policy/layer3/#access-to-from-kube-apiserver)).
+The chart's webhook ingress rule also uses an `ipBlock`; if webhook requests
+arrive from a node address, allow ingress through Cilium policy on TCP 9443.
+Cilium notes that the `kube-apiserver` entity may not work for ingress on some
+managed distributions, so verify the caller path there. The cluster-level
+option changes CIDR matching cluster-wide and causes Cilium to allocate node
+identities; review affected CIDR policies before enabling it.
+
+If Prometheus already scrapes the operator, add a metrics peer before enabling
+the default-deny policy. For Flux-managed releases, patch the HelmRelease first:
+
+```bash
+kubectl patch helmrelease placement-operator -n placement-system --type=merge \
+  -p '{"spec":{"values":{"networkPolicy":{"allowMetricsFrom":[{"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"monitoring"}}}]}}}}'
+```
 
 On the tutorial devstacks the `placement-operator` release is owned by Flux (a
 `HelmRelease`), so set the values by patching its `spec.values`. The Flux
@@ -88,36 +140,41 @@ an HA control plane prints:
 kubectl patch helmrelease placement-operator -n placement-system --type=merge \
   -p '{"spec":{"values":{"networkPolicy":{"enabled":true,"kubeApiServer":{"cidrs":["172.18.0.2/32"],"ports":[6443]}}}}}'
 
+SUSPENDED="$(kubectl get helmrelease placement-operator -n placement-system \
+  -o jsonpath='{.spec.suspend}')"
+if [ "$SUSPENDED" = "true" ]; then
+  echo "ERROR: HelmRelease is suspended; resume it through its deployment owner before waiting." >&2
+  exit 1
+fi
+
 kubectl wait helmrelease/placement-operator -n placement-system \
   --for=condition=Ready --timeout=5m
 ```
 
-The chart-level policy allows what the operator needs: egress to the
-kube-apiserver, to DNS and to the Placement API, ingress to the webhook and
-metrics ports. The Placement API rule admits TCP 8778 to every pod labelled
+The patch is stored when the HelmRelease is suspended, but the policy is not
+rendered until the release resumes. Resume it through its deployment owner,
+then rerun this step.
+
+The shared chart policy allows egress to the kube-apiserver and DNS. It omits
+ingress TCP 8081 for health probes: standard CNIs do not apply
+NetworkPolicy to kubelet probes from a node's host network
+([Kubernetes NetworkPolicy limits](https://kubernetes.io/docs/concepts/services-networking/network-policies/#what-you-cant-do-with-network-policies-at-least-not-yet)).
+The Placement chart adds egress to TCP 8778 for pods labelled
 `app.kubernetes.io/name: placement` and
-`app.kubernetes.io/managed-by: placement-operator`, in any namespace, and needs
-no value. The operator's health check GETs the API over the Placement Service,
-and the CNI judges that connection after the Service DNAT, at the API pod and
-its port, so the rule selects the API pods by the labels the operator sets on
-them. When the workload namespace itself runs a per-CR NetworkPolicy, the
-operator's namespace is admitted automatically by the sub-reconciler (an
-operator-namespace ingress peer is appended to every rendered policy).
+`app.kubernetes.io/managed-by: placement-operator`, in any namespace. The
+operator's health check calls the Placement Service; on the tested kindnet path,
+policy evaluation after Service DNAT matches the API pods by these labels.
+When the workload namespace has a per-CR NetworkPolicy, its sub-reconciler
+appends an ingress peer for the operator namespace to every rendered policy.
 
-Metrics ingress is opt-in and separate. `networkPolicy.allowMetricsFrom` is
-empty by default, and with the policy on, an empty list means no ingress rule
-for the metrics port at all, so a Prometheus that scraped the operator before
-stops reaching it. Name the scraping namespace when you enable both this policy
-and the ServiceMonitor from
-[Enable the Placement Operator Metrics Endpoint](./enable-placement-operator-metrics.md):
-
-```bash
-kubectl patch helmrelease placement-operator -n placement-system --type=merge \
-  -p '{"spec":{"values":{"networkPolicy":{"allowMetricsFrom":[{"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"monitoring"}}}]}}}}'
-```
-
-Each entry is rendered verbatim as a `NetworkPolicyPeer`, so a `podSelector`
-narrows it further to the Prometheus pods.
+Webhook ingress is rendered only when the webhook is enabled; its allowed CIDRs
+come from `networkPolicy.webhookClients.cidrs`, falling back to
+`networkPolicy.kubeApiServer.cidrs`. Metrics ingress is opt-in:
+`networkPolicy.allowMetricsFrom` is empty by default, so the policy blocks
+Prometheus from reaching the metrics port unless you add a peer. Each peer is
+rendered as a `NetworkPolicyPeer`; a `podSelector` can narrow access within the
+selected namespace. See [Enable the Placement Operator Metrics
+Endpoint](./enable-placement-operator-metrics.md) for the ServiceMonitor setup.
 
 ::: details Helm-managed installations (non-Flux)
 If you installed the operator directly with Helm (not through Flux), set the
@@ -125,12 +182,21 @@ values with a rolling `helm upgrade`. The fail-closed guard still requires
 `kubeApiServer.cidrs` and `ports`:
 
 ```bash
+CHART_VERSION="$(helm list -n placement-system --filter '^placement-operator$' -o json \
+  | jq -r '.[0].chart // "" | sub("^placement-operator-"; "")')"
+
 helm upgrade placement-operator oci://ghcr.io/c5c3/charts/placement-operator \
-  --namespace placement-system --reuse-values \
+  --namespace placement-system --reuse-values --version "${CHART_VERSION}" \
   --set networkPolicy.enabled=true \
   --set 'networkPolicy.kubeApiServer.cidrs[0]=172.18.0.2/32' \
   --set 'networkPolicy.kubeApiServer.ports[0]=6443'
 ```
+
+The command uses one IPv4 CIDR and port as an example. Add every API server
+address at another CIDR index, and add each distinct API server port to the
+ports list. If Prometheus already scrapes the operator, put the peer shown
+above under `networkPolicy.allowMetricsFrom` in a values file and pass it to
+this upgrade with `--values`.
 
 Do **not** run this on the tutorial devstacks: there the release is
 Flux-owned, and the helm-controller reverts out-of-band revisions on its next
@@ -152,18 +218,16 @@ kubectl -n placement-system rollout restart deploy/placement-operator
 kubectl -n placement-system rollout status deploy/placement-operator --timeout=5m
 ```
 
-What the restart shows depends on the CNI. A CNI that isolates a new pod before
-its containers start, as the
-[Kubernetes NetworkPolicy contract](https://kubernetes.io/docs/concepts/services-networking/network-policies/#pod-lifecycle)
-requires, judges the new pod's first API server connection: under a wrong
-`kubeApiServer` rule the rollout does not finish within the timeout and the new
-pod never turns `Ready`. kindnet adds a new pod to its policy set a moment after
-the pod starts. The operator opens its API server connection in that moment and
-keeps it, so on the kind devstack the rollout finishes and the pod turns `Ready`
-under a wrong rule too. On kind, only the fresh-connection check at the end of
-this step judges the rule.
-
-When the rollout times out, see
+`rollout status` waits for the pod's readiness probe. The `/readyz` endpoint
+checks process health and webhook startup, not API-server connectivity, so a
+successful rollout does not prove the egress rule works. CNI enforcement timing
+also varies. Once the network plugin has processed a policy, Kubernetes
+requires it to isolate new selected pods before their containers start
+([Pod lifecycle](https://kubernetes.io/docs/concepts/services-networking/network-policies/#pod-lifecycle)).
+kindnet can add a new pod to its policy set after startup; a connection opened
+before enforcement stays open. Use the fresh-connection check below to test the
+rule. If the rollout itself times out, inspect the pod events and operator logs.
+If the logs show API timeouts, see
 [Reconcile timeouts / leader-election churn](#reconcile-timeouts-leader-election-churn).
 
 Then check the policy:
@@ -180,31 +244,57 @@ empty while the ControlPlane leaves it at the default, scales the API one
 replica above the size it runs at, and puts the count back:
 
 ```bash
+(
 if CUR=$(kubectl get controlplane controlplane -n openstack \
      -o jsonpath='{.spec.sizing.placement.api.replicas}') &&
    RUN=$(kubectl get deploy/controlplane-placement -n openstack \
-     -o jsonpath='{.spec.replicas}'); then
+     -o jsonpath='{.spec.replicas}') &&
+   [[ "${RUN}" =~ ^[0-9]+$ ]]; then
   NEW=$((RUN + 1))
-
-  kubectl patch controlplane controlplane -n openstack --type merge \
-    -p "{\"spec\":{\"sizing\":{\"placement\":{\"api\":{\"replicas\":$NEW}}}}}"
-  kubectl wait deploy/controlplane-placement -n openstack --timeout=5m \
-    --for=jsonpath='{.spec.replicas}'="$NEW"
-  kubectl rollout status deploy/controlplane-placement -n openstack --timeout=5m
-
-  # revert to the recorded count; null drops the override again
-  kubectl patch controlplane controlplane -n openstack --type merge \
-    -p "{\"spec\":{\"sizing\":{\"placement\":{\"api\":{\"replicas\":${CUR:-null}}}}}}"
 else
   echo "could not read the replica counts; nothing was patched" >&2
+  exit 1
 fi
+
+restore_placement_replicas() {
+  local status=$?
+  trap - EXIT
+  if [ "${RESTORE_NEEDED}" = true ]; then
+    if ! kubectl patch controlplane controlplane -n openstack --type merge \
+      -p "{\"spec\":{\"sizing\":{\"placement\":{\"api\":{\"replicas\":${CUR:-null}}}}}}"; then
+      echo "ERROR: failed to restore the previous ControlPlane replica setting." >&2
+      exit 1
+    fi
+    if ! kubectl wait deploy/controlplane-placement -n openstack --timeout=5m \
+      --for=jsonpath='{.spec.replicas}'="${RUN}"; then
+      echo "ERROR: the Deployment did not return to ${RUN} replicas after restore." >&2
+      exit 1
+    fi
+    if ! kubectl rollout status deploy/controlplane-placement -n openstack --timeout=5m; then
+      echo "ERROR: the Deployment did not finish rolling back to its previous size." >&2
+      exit 1
+    fi
+  fi
+  exit "${status}"
+}
+
+RESTORE_NEEDED=true
+trap restore_placement_replicas EXIT
+kubectl patch controlplane controlplane -n openstack --type merge \
+  -p "{\"spec\":{\"sizing\":{\"placement\":{\"api\":{\"replicas\":${NEW}}}}}}"
+kubectl wait deploy/controlplane-placement -n openstack --timeout=5m \
+  --for=jsonpath='{.spec.replicas}'="${NEW}"
+kubectl rollout status deploy/controlplane-placement -n openstack --timeout=5m
+)
 ```
 
-The `if` stops the block before the first patch when either read fails. A
-failed read prints the same empty string as a ControlPlane without an override,
-so without the guard the revert would drop an override the ControlPlane
-carries, and a failed Deployment read would set `NEW` to 1 and shrink the API
-instead of growing it.
+The guard stops before the first patch if either read fails, and rejects an
+empty or non-numeric Deployment replica count. `CUR` can be empty when the
+ControlPlane has no replica override; `${CUR:-null}` then restores the default.
+The exit handler restores the prior setting and waits for the Deployment to
+return to its recorded count, even if the temporary scale or readiness check
+fails. Without the `RUN` check, an empty value could make `NEW` equal 1 and
+shrink the API instead of growing it.
 
 The `kubectl wait` is the check that proves the operator still reconciles: the
 patch travels from the ControlPlane to the `Placement` CR to the Deployment,
@@ -223,10 +313,10 @@ restarted pod has run for at least one minute. The block adds an ephemeral
 container to the operator pod. The container shares the pod's network, so the
 policy judges its connections as it judges the operator's. It runs the image
 of the Keystone API Deployment, which ships `python3` and which the devstack's
-single node already holds, and opens one new TCP connection to every address
-and port of the `kubernetes` Endpoints. The block waits up to three minutes
-for the check to end, then prints the state of the check container and its
-log:
+single node already holds, and opens one new TCP connection to every ready
+address and port in the `kubernetes` EndpointSlices. The block waits up to
+three minutes for the check to end, then prints the state of the check
+container and its log:
 
 ```bash
 CHECK='
@@ -248,8 +338,21 @@ if POD=$(kubectl -n placement-system get pods \
    KS=$(kubectl -n openstack get keystones -o jsonpath='{.items[0].metadata.name}') &&
    IMG=$(kubectl -n openstack get deploy "${KS}" \
      -o jsonpath='{.spec.template.spec.containers[?(@.name=="keystone")].image}') &&
-   EPS=$(kubectl get endpoints kubernetes -n default -o json \
-     | jq -r '.subsets[] | (.addresses[].ip) as $ip | (.ports[].port) as $p | "\($ip):\($p)"') &&
+   EPS=$(kubectl get endpointslices -n default \
+     -l kubernetes.io/service-name=kubernetes -o json \
+     | jq -er '
+         [
+           .items[] as $slice
+           | $slice.endpoints[]?
+           | select(.conditions.ready != false)
+           | .addresses[]? as $ip
+           | $slice.ports[]?.port as $port
+           | select($port != null)
+           | "\($ip):\($port)"
+         ] | unique as $endpoints
+         | if ($endpoints | length) == 0 then
+             error("no ready Kubernetes API server EndpointSlice addresses or ports found")
+           else $endpoints[] end') &&
    [ -n "${POD}" ] && [ -n "${IMG}" ] && [ -n "${EPS}" ]; then
   NAME="apiserver-check-$(date +%s)"
   kubectl -n placement-system debug "pod/${POD}" --image="${IMG}" --profile=restricted \
@@ -264,7 +367,8 @@ if POD=$(kubectl -n placement-system get pods \
     -o jsonpath="{.status.ephemeralContainerStatuses[?(@.name==\"${NAME}\")].state}{'\n'}" &&
   kubectl -n placement-system logs "pod/${POD}" -c "${NAME}"
 else
-  echo "could not read the operator pod, the Keystone image or the endpoints; nothing was added" >&2
+  echo "could not read the operator pod, the Keystone image or ready EndpointSlice addresses; nothing was added" >&2
+  exit 1
 fi
 ```
 
@@ -320,14 +424,10 @@ current endpoint IPs (an HA control plane may have added a replica, or a
 control-plane node may have been replaced with a different IP), or your CNI maps
 the API server behind a port that is not in `kubeApiServer.ports`.
 
-**Fix:** re-run the discovery command from Step 1 and update
-`networkPolicy.kubeApiServer.cidrs` to include **every** IP it returns, plus
-every port:
-
-```bash
-kubectl get endpoints kubernetes -n default -o json \
-  | jq -r '.subsets[] | (.addresses[].ip) as $ip | (.ports[].port) as $p | "\($ip)/32 port=\($p)"'
-```
+**Fix:** re-run the EndpointSlice discovery command in
+[Step 1](#step-1-enable-the-policy) and update
+`networkPolicy.kubeApiServer.cidrs` and `ports` with every ready address and
+port it returns.
 
 ### Every Placement write is rejected
 
@@ -339,8 +439,9 @@ through the same admission path, so its reconcile fails on the same error.
 **Diagnosis:** webhook ingress (9443) is blocked. Both placement webhooks
 register `failurePolicy=Fail` on create and update, so an unreachable operator
 turns into a cluster-wide rejection of every write to the kind. The usual cause
-is an API server that calls webhooks from an IP that is **not** in
-`endpoints/kubernetes`, for example because it sits behind a front-end proxy.
+is an API server that calls webhooks from an IP that is **not** in the
+`kubernetes` EndpointSlices, for example because it sits behind a front-end
+proxy.
 `networkPolicy.webhookClients.cidrs` falls back to `kubeApiServer.cidrs` when
 empty, which is wrong in that topology.
 
