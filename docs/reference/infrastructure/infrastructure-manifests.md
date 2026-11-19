@@ -775,12 +775,11 @@ c5c3-operator drives to project a `ControlPlane`'s desired state into Keystone.
 The `GitRepository` pins an immutable commit from upstream `main`, vendors
 `./config`, and builds `./config/default` with a digest-pinned image. Upstream
 publishes `branch-main` on each main push; there is no `latest` image tag.
-The tag is used for discovering updates, while the digest determines the
-image deployed. The base declares `orc-system` and namespaces its resources,
-so no `spec.targetNamespace` is set.
+The tag names the build line, while the digest determines the image deployed.
+The base declares `orc-system` and namespaces its resources, so no
+`spec.targetNamespace` is set.
 
-Renovate groups the source commit, the image digest discovered through
-`branch-main` in one `k-orc` update.
+Renovate groups the source commit and the image digest in one `k-orc` update.
 Digest updates are eligible for automerge after required CI passes, without
 waiting for a continuously moving branch to reach a minimum age.
 `hack/ci-deploy-korc.sh` requires full source/image pins, then checks every
@@ -789,10 +788,14 @@ resources. This blocks partial or mismatched updates. The Go API dependency
 is managed separately; routine controller updates do not change Go modules
 or require regenerating Nix vendor hashes.
 
-Upstream expires `commit-*` image tags after 28 days. `branch-main` has no
-configured expiry, but moves after each build, so old digests can still be
-collected. Renovate updates must keep merging; fixed digests provide
-reproducibility while retained, not permanent artifact storage.
+Upstream pushes each build twice, as `branch-main` and as
+`commit-<short sha>`, with the same platform images in two indexes. quay drops
+a `branch-main` digest when the tag moves to the next build, and a `commit-*`
+tag expires 28 days after its push. The pinned digest is therefore the index
+of the commit tag: Renovate's `korc-commit-image` datasource resolves it from
+quay's tag list. Renovate updates must keep merging within those 28 days;
+fixed digests provide reproducibility while retained, not permanent artifact
+storage.
 
 The short, stable name `k-orc` (not the upstream `openstack-resource-controller`) keeps
 diagnostics and cross-references terse.

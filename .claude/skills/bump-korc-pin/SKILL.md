@@ -1,15 +1,18 @@
 ---
 name: bump-korc-pin
 description: >-
-  Diagnose or update the grouped K-ORC main-line source commit and branch-main
-  image digest. Verify registry availability, image provenance, API compatibility,
+  Diagnose or update the grouped K-ORC main-line source commit and image
+  digest. Verify registry availability, image provenance, API compatibility,
   and Renovate automation without coupling routine image updates to Go/Nix locks.
+  Use when the K-ORC legs fail on the pinned image ("Could not read provenance",
+  ImagePullBackOff), when the grouped Renovate k-orc update is red or missing,
+  or when the pin needs a one-time repair.
 ---
 
 # K-ORC source and image updates
 
 The Flux source pins a full commit from upstream `main`. The controller is
-pinned by digest; `branch-main` is its Renovate discovery tag. Renovate owns
+pinned by digest; `newTag: branch-main` names the build line. Renovate owns
 both updates in one `k-orc` group, eligible for automerge after required CI.
 There is no age delay for a continuously moving main branch.
 
@@ -20,24 +23,32 @@ vendor-hash regeneration: that would require recurring manual work and block
 the image-update automation. Actual API incompatibility must fail CI and be
 addressed as a code/dependency change.
 
-Upstream expires `commit-*` image tags after 28 days. `branch-main` has no
-configured expiration, but moves with each build, and quay drops the digest
-it left in the same second. Renovate updates must keep merging. A digest
-provides reproducibility while retained, not permanent artifact storage.
+Upstream builds each main commit twice and pushes one index per tag:
+`branch-main` and `commit-<short sha>`. The two indexes carry the same
+platform images and differ only in their attestations, so their digests
+differ. `branch-main` has no configured expiration, but quay drops the digest
+it left in the second the tag moves. A `commit-*` tag expires 28 days after
+its push and keeps its index until then.
 
-Upstream builds each commit twice, once per tag. The two indexes carry the
-same platform images and differ only in their attestations, so their digests
-differ. When the pinned `branch-main` digest is gone and the source commit
-should stay, the index digest of `commit-<short sha>` is a drop-in
-replacement that lives for the tag's 28 days:
+Renovate therefore pins the commit tag's index. The `korc-commit-image`
+custom datasource in `renovate.json` reads quay's tag list, picks the
+`commit-*` tag pushed with the current `branch-main` build (within 300
+seconds, the one that shares its platform image manifests first) and offers
+its digest as the digest of `branch-main`. Without such a tag it offers no
+release: Renovate reports a failed lookup on the Dependency Dashboard and
+leaves the pin alone. A pin lasts 28 days at most, so Renovate updates must
+keep merging. A digest provides reproducibility while retained, not
+permanent artifact storage.
+
+Resolve the same digest by hand for a one-time repair:
 
 ```bash
 docker buildx imagetools inspect \
   quay.io/orc/openstack-resource-controller:commit-<short sha> | grep '^Digest'
 ```
 
-Keep `newTag: branch-main`: the installer reads provenance from the digest,
-and Renovate's next grouped update writes a `branch-main` digest again.
+Keep `newTag: branch-main`. Renovate's rule matches it, and the installer
+reads provenance from the digest.
 
 ## Diagnose a blocked update
 
@@ -54,7 +65,7 @@ and Renovate's next grouped update writes a `branch-main` digest again.
 
    ```bash
    gh api repos/k-orc/openstack-resource-controller/commits/main --jq .sha
-   docker buildx imagetools inspect quay.io/orc/openstack-resource-controller:branch-main
+   docker buildx imagetools inspect quay.io/orc/openstack-resource-controller:commit-<short sha>
    ```
 
    Main can advance before its image finishes publishing. The installer
@@ -66,7 +77,8 @@ and Renovate's next grouped update writes a `branch-main` digest again.
 
    - `deploy/bases/operators/sources/k-orc.yaml`: full `ref.commit`.
    - `deploy/bases/operators/releases/k-orc.yaml`: `newTag: branch-main` and
-     `digest: sha256:<64 hex>`.
+     `digest: sha256:<64 hex>`, the index of the commit's `commit-<short sha>`
+     tag.
 
    Read upstream changes under `api/` and `config/`, especially the Keystone
    kinds c5c3 consumes. Existing optional-field additions do not automatically

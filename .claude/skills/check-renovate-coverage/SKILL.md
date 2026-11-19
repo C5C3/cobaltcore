@@ -35,7 +35,7 @@ all of which Renovate has to understand:
 | Release test and constraint pins | `releases/<release>/test-refs.yaml`, `overrides/<release>/constraints.txt` | customManager each (pypi) |
 | Shell script constants | `hack/deploy-infra.sh` + `hack/deploy-mgmt-cluster.sh` (`FLUX_OPERATOR_VERSION="v…"`, deliberately duplicated, one customManager over both files; `GATEWAY_API_VERSION`, `ENVOY_GATEWAY_VERSION`, `REGISTRY_CACHE_IMAGE`), `hack/install-test-deps.sh` (chainsaw, flux, kind, kubectl), `hack/dizzy.sh` | customManager, one regex per constant |
 | kind manifests | `deploy/bases/devstack/base/flux-web.yaml`, `deploy/bases/devstack/infrastructure/openbao-instance.yaml`, `deploy/bases/nfs/nfs-server.yaml` | customManager, one regex per file shape |
-| Flux sources and images pinned by tag/commit/digest | `deploy/bases/operators/sources/{k-orc,openbao-operator,rabbitmq-cluster-operator}.yaml`, `deploy/bases/operators/releases/rabbitmq-cluster-operator.yaml` | customManager each. The K-ORC image in `deploy/bases/operators/releases/k-orc.yaml` tracks `branch-main` digests in the same group as the source (pattern 7) |
+| Flux sources and images pinned by tag/commit/digest | `deploy/bases/operators/sources/{k-orc,openbao-operator,rabbitmq-cluster-operator}.yaml`, `deploy/bases/operators/releases/rabbitmq-cluster-operator.yaml` | customManager each. The K-ORC image in `deploy/bases/operators/releases/k-orc.yaml` tracks the commit-tag index of the `branch-main` build through the `korc-commit-image` custom datasource, in the same group as the source (pattern 7) |
 | FluxCD HelmRelease chart versions | third-party charts under `deploy/bases/` and `deploy/overlays/kind/` (`spec.chart.spec.version: ">=0.10.0 <1.0.0"`) | native `flux` manager over `flux.managerFilePatterns`. `widen` stays silent inside the range and, on a release past the ceiling, raises the ceiling and keeps the floor; `bump` for `gateway-helm` and `headlamp` (minor/patch automerged); an exact pin for `csi-driver-nfs` (majors disabled). The `c5c3-charts` releases are switched off by design, and so is every file a customManager reads |
 | Pins in Go source | `operators/c5c3/internal/controller/reconcile_barbican_openbao.go` (`defaultOpenBaoVersion`), `operators/ovn/internal/controller/image.go` (`defaultOVNVersion`) | customManager each, paired with the matching manifest or image pin |
 | Go module deps | `operators/*/go.mod`, `internal/common/go.mod` | native `gomod` manager |
@@ -270,8 +270,14 @@ These recurring shapes are worth grepping for first:
    aligning, or better by single-sourcing one side from the other the
    way ci.yaml already `awk`-reads `ENVTEST_K8S_VERSION`.
 7. **Grouped main-line pins: K-ORC.** The source commit follows `main`
-   through `git-refs`; the controller digest follows `branch-main` through
-   `docker`. Keep both in the `k-orc` digest-update group. CI checks every
+   through `git-refs`; the controller digest follows the
+   `korc-commit-image` custom datasource, which returns the index digest of
+   the `commit-<short sha>` tag pushed with the current `branch-main` build.
+   Do not move the image back to `docker`: it resolves `branch-main` to a
+   digest quay drops when the tag moves. The manager needs
+   `versioningTemplate: exact`, or Renovate treats `branch-main` as
+   unversioned and never asks the datasource. Keep both in the `k-orc`
+   digest-update group. CI checks every
    image platform's build provenance before applying anything, blocking a
    source update that races the upstream image build. Go dependencies are
    managed separately so routine image updates need no manual vendor-hash

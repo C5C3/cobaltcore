@@ -31,6 +31,16 @@
       "/^deploy/overlays/metal-stack/ceph/(release|source)\\.yaml$/"
     ]
   },
+  "customDatasources": {
+    "korc-commit-image": {
+      "description": "Index digest of the commit-<short sha> tag K-ORC pushes with its current branch-main build, offered as the digest of branch-main. quay drops a branch-main digest when the tag moves; the commit tag keeps its index for 28 days. The pair is pushed within 300 seconds; the tag that shares platform image manifests with branch-main wins. No pair means no release, and Renovate reports a failed lookup.",
+      "defaultRegistryUrlTemplate": "https://quay.io/api/v1/repository/orc/openstack-resource-controller/tag/?onlyActiveTags=true&limit=100",
+      "format": "json",
+      "transformTemplates": [
+        "($m := tags[name = \"branch-main\"][0]; $k := $keys($m.child_manifests_presence); $c := tags[$substring(name, 0, 7) = \"commit-\" and $abs(start_ts - $m.start_ts) <= 300]^($count($keys(child_manifests_presence)[$ in $k]) > 0 ? 0 : 1, $abs(start_ts - $m.start_ts))[0]; {\"releases\": $c ? [{\"version\": \"branch-main\", \"digest\": $c.manifest_digest, \"releaseTimestamp\": $fromMillis($c.start_ts * 1000)}] : []})"
+      ]
+    }
+  },
   "customManagers": [
     {
       "customType": "regex",
@@ -220,7 +230,8 @@
       ],
       "currentValueTemplate": "branch-main",
       "depNameTemplate": "quay.io/orc/openstack-resource-controller",
-      "datasourceTemplate": "docker"
+      "datasourceTemplate": "custom.korc-commit-image",
+      "versioningTemplate": "exact"
     },
     {
       "customType": "regex",

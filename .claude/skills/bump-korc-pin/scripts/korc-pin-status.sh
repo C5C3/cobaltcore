@@ -14,7 +14,10 @@
 #       source link and image tag (legacy pins also mirror the commit)
 # Network checks (skipped with --offline, degrade to [INFO] when unreachable):
 #   Q1  quay image tag: present, not expired, expiry more than
-#       --warn-days away, and pointing at the pinned digest
+#       --warn-days away, and pointing at the pinned digest. For a
+#       branch-main pin the tag checked is commit-<short SHA> of ref.commit:
+#       Renovate pins that tag's index, because quay drops a branch-main
+#       digest when the tag moves
 #   Q2  the pinned digest still resolves (crane manifest, else quay API) and
 #       carries linux/amd64
 #   Q3  ref.commit is on upstream main; how far main has moved since
@@ -317,8 +320,13 @@ if [ "${NET}" -eq 0 ]; then
   hdr "Q1–Q4: network checks"
   info "skipped (--offline or missing jq/curl)"
 else
-  hdr "Q1: quay tag ${NEW_TAG}"
-  check_tag "${NEW_TAG}" "${DIGEST}"
+  if [ "${NEW_TAG}" = "branch-main" ]; then
+    hdr "Q1: quay tag commit-${SHORT7} (the commit tag of ref.commit)"
+    check_tag "commit-${SHORT7}" "${DIGEST}"
+  else
+    hdr "Q1: quay tag ${NEW_TAG}"
+    check_tag "${NEW_TAG}" "${DIGEST}"
+  fi
 
   hdr "Q2: pinned digest resolves"
   rc=0
@@ -461,9 +469,8 @@ if [ -n "${CANDIDATE}" ]; then
         info "withheld: the candidate failed a check above — pick another commit"
       else
         info "${SOURCE_YAML}: commit: ${CAND}"
-        info "${RELEASE_YAML}: newTag: commit-${C7}"
-        info "${RELEASE_YAML}: digest: ${cdigest:-<resolve: crane digest ${IMAGE_REPO}:commit-${C7}>}"
-        info "${DOCS}: commit \`${CAND}\` and \`${IMAGE_REPO}:commit-${C7}\`"
+        info "${RELEASE_YAML}: newTag: branch-main (unchanged)"
+        info "${RELEASE_YAML}: digest: ${cdigest:-<resolve: crane digest ${IMAGE_REPO}:commit-${C7}>} (index of commit-${C7})"
         info "${GOMOD}: (cd operators/c5c3 && go get ${MODULE}@${C12} && go mod tidy)"
       fi
     fi
