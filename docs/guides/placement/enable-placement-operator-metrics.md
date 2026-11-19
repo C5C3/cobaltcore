@@ -17,9 +17,8 @@ ServiceMonitor shipped with the `placement-operator` Helm chart, importing the
 reference Grafana dashboard, and verifying that scrape targets transition to
 `Up`.
 
-The placement-operator emits the shared sub-reconciler instrumentation under
-the `placement_operator` prefix, plus per-CR collectors covering the schema
-migration:
+The placement-operator emits shared sub-reconciler metrics under the
+`placement_operator` prefix, plus per-CR metrics for the database sync Job:
 
 | Metric | Type | Labels |
 | --- | --- | --- |
@@ -27,6 +26,10 @@ migration:
 | `placement_operator_reconcile_errors_total` | counter | `sub_reconciler`, `condition_type` |
 | `placement_operator_db_sync_total` | counter | `placement`, `namespace`, `result` |
 | `placement_operator_db_sync_duration_seconds` | histogram | `placement`, `namespace` |
+
+The `sub_reconciler` label values are `Secrets`, `DBConnectionSecret`,
+`Config`, `Database`, `Deployment`, `HTTPRoute`, `HealthCheck`, `HPA`, `VPA`
+and `NetworkPolicy`. The db-sync `result` is `succeeded` or `failed`.
 
 There is no purge pair here. Placement keeps no expiring rows of its own, so
 the operator runs no recurring maintenance job to instrument.
@@ -48,12 +51,17 @@ Follow that tutorial through to its final **Verify** step, so the placement-oper
 (namespace `placement-system`) is running with kube-prometheus-stack scraping it.
 :::
 
-For a non-kind installation, install the prometheus-operator CRDs and configure
-Prometheus's `serviceMonitorSelector` to match the ServiceMonitor labels and
-`serviceMonitorNamespaceSelector` to include `placement-system`. The db-sync
-series in Step 3 requires a reconciled `Placement` CR. On the devstack that is
-`controlplane-placement`, projected when the ControlPlane declares
-`spec.services.placement`.
+For a non-kind installation, install the prometheus-operator CRDs. Configure
+Prometheus's `serviceMonitorSelector` to match
+`app.kubernetes.io/name: placement-operator` and
+`app.kubernetes.io/instance: placement-operator` (or your Helm release name),
+and set `serviceMonitorNamespaceSelector` to include `placement-system`. If
+the operator NetworkPolicy is enabled, also allow the Prometheus source with
+`networkPolicy.allowMetricsFrom`; see
+[Enable the Placement Operator NetworkPolicy](./enable-placement-operator-networkpolicy.md).
+The db-sync series in Step 3 requires a reconciled `Placement` CR. On the
+devstack that is `controlplane-placement`, projected when the ControlPlane
+declares `spec.services.placement`.
 
 ## Step 1: Enable the ServiceMonitor
 
@@ -75,9 +83,19 @@ Helm revision on its next reconcile:
 kubectl patch helmrelease placement-operator -n placement-system --type=merge \
   -p '{"spec":{"values":{"monitoring":{"serviceMonitor":{"enabled":true}}}}}'
 
+SUSPENDED="$(kubectl get helmrelease placement-operator -n placement-system \
+  -o jsonpath='{.spec.suspend}')"
+if [ "$SUSPENDED" = "true" ]; then
+  echo "ERROR: HelmRelease is suspended; resume it through its deployment owner before waiting." >&2
+  exit 1
+fi
+
 kubectl wait helmrelease/placement-operator -n placement-system \
   --for=condition=Ready --timeout=5m
 ```
+
+The patch is stored even when the HelmRelease is suspended, but Flux does not
+render the ServiceMonitor until the release resumes.
 
 Confirm the `ServiceMonitor` was rendered:
 
@@ -87,15 +105,18 @@ kubectl -n placement-system get servicemonitor \
 ```
 
 The chart renders a `ServiceMonitor` scraping the operator's metrics Service
-on the `metrics` port over HTTP with the shared operator-library labels.
+on the `metrics` port at `/metrics`, every 30 seconds by default
+(`monitoring.serviceMonitor.interval`).
 
 ::: details Helm-managed installations (non-Flux)
 If you installed the operator directly with Helm (not through Flux), set the
 value with a rolling `helm upgrade` instead:
 
 ```bash
+CHART_VERSION="$(helm list -n placement-system --filter '^placement-operator$' -o json \
+  | jq -r '.[0].chart // "" | sub("^placement-operator-"; "")')"
 helm upgrade placement-operator oci://ghcr.io/c5c3/charts/placement-operator \
-  --namespace placement-system --reuse-values \
+  --namespace placement-system --version "$CHART_VERSION" --reuse-values \
   --set monitoring.serviceMonitor.enabled=true
 ```
 
@@ -114,10 +135,10 @@ credentials.
 
 The reference dashboard ships in-repo at
 `operators/placement/dashboards/placement-operator.json` (uid
-`placement-operator`): per-sub-reconciler duration quantiles, error rate per
-condition type, db-sync p95 and failure rate per Placement CR, and the
-controller-runtime end-to-end reconcile histogram. Import it via the Grafana UI
-or provision it from a ConfigMap.
+`placement-operator`). Its panels show per-sub-reconciler duration quantiles,
+error rate per condition type, db-sync p95 and failure rate per Placement CR,
+and the controller-runtime end-to-end reconcile histogram. Import it via the
+Grafana UI or provision it from a ConfigMap.
 
 ## Step 3: Verify the target {#step-3-—-verify-the-target}
 
@@ -127,25 +148,45 @@ Keep the port-forward running in a separate terminal:
 kubectl -n monitoring port-forward svc/prometheus-operated 9090:9090
 ```
 
-For an existing Prometheus, replace `monitoring` with its namespace.
-In another terminal, query the targets:
+For an existing Prometheus, replace the namespace and Service name, and adjust
+the port if needed. Keep the port-forward running in one terminal. In another,
+query the targets:
 
 ```bash
-curl -s 'http://localhost:9090/api/v1/targets' \
-  | jq '.data.activeTargets[] | select(.labels.namespace == "placement-system") | .health'
+curl --fail --silent --show-error \
+  'http://localhost:9090/api/v1/targets?state=active' \
+  | jq -e '
+      [.data.activeTargets[]? |
+        select(.labels.namespace == "placement-system") |
+        {health, lastScrape, lastError}] as $targets |
+      if ($targets | length) == 0 then
+        error("no Placement operator target; check Prometheus ServiceMonitor selectors")
+      elif any($targets[]; .health != "up") then
+        error("a Placement operator target is not up: " + ($targets | tojson))
+      else $targets end'
 ```
 
-Expect `"up"`. Then confirm the series exist:
+The query fails if Prometheus has not selected a target or if one is down;
+inspect `lastError` in the output. If no target appears, recheck both
+ServiceMonitor selectors. If a target is down, confirm Prometheus can reach the
+metrics port and that the NetworkPolicy allows its source. Then confirm the
+reconcile series exists:
 
 ```bash
-curl -s 'http://localhost:9090/api/v1/query?query=placement_operator_reconcile_duration_seconds_count' \
-  | jq '.data.result | length'
+curl --fail --silent --show-error \
+  'http://localhost:9090/api/v1/query?query=placement_operator_reconcile_duration_seconds_count' \
+  | jq -r '
+      if .status != "success" then
+        error("Prometheus query failed: " + (.error // "unknown error"))
+      elif (.data.result | length) == 0 then
+        error("no sub-reconciler observations have been recorded yet")
+      else (.data.result | length) end'
 ```
 
-A non-zero result count means the operator has reconciled at least one
-Placement CR since the scrape began. The db-sync pair stays empty until a
-db-sync Job terminates, so a fresh CR shows the reconcile series first and the
-migration series once the schema is in place.
+A non-zero result count means the operator has recorded at least one
+sub-reconciler observation. The db-sync pair stays empty until a db-sync Job
+terminates and the controller observes it. A new `Placement` CR therefore
+shows reconcile metrics first, then db-sync metrics after its Job completes.
 
 ## Tested by
 
