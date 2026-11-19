@@ -55,11 +55,13 @@ Follow that tutorial through to its final **Verify** step, Step 7, so a
 Every resource name below is one that devstack produces.
 :::
 
-Run the commands from the root of the clone, with `jq` on `PATH` and, for Part
-2, `helm`. The `openstack` calls run on the workstation and need the shell set
-up as below. A second kind cluster beside a full devstack fails at
-`Preparing nodes` while `fs.inotify.max_user_instances` is at its default of
-128, so raise it before Part 2 with `sudo sysctl fs.inotify.max_user_instances=512`.
+Run the commands from the root of the clone with `kubectl`, `jq`, and the
+[OpenStack CLI](https://docs.openstack.org/python-openstackclient/latest/) on
+`PATH`. Part 2 also needs `kind` and `helm`. The `openstack` calls run on the
+workstation and need the shell set up as below. On a Linux Docker host where
+`fs.inotify.max_user_instances` is 128, a second kind cluster beside a full
+devstack can fail at `Preparing nodes`; raise the limit before Part 2:
+`sudo sysctl fs.inotify.max_user_instances=512`.
 
 ### Point the shell at the devstack {#shell}
 
@@ -157,7 +159,8 @@ spec:
     namespace: openstack
 EOF
 kubectl wait --for=condition=Ready keystoneuser/workflow -n workflow --timeout=15m
-kubectl get secret workflow-credentials -n workflow -o jsonpath='{.data.clouds\.yaml}' | base64 -d
+kubectl get secret workflow-credentials -n workflow -o jsonpath='{.data.clouds\.yaml}' \
+  | base64 -d | grep -E 'auth_url|username|project_name'
 ```
 
 K-ORC creates the user in Keystone, and ESO backs the password up to OpenBao
@@ -496,10 +499,10 @@ The schema is `workflow_db`, and the Secret `workflow-db-credentials` carries
 The Job writes a row into the schema, reads it back, and fails if the login
 reaches the ControlPlane's `keystone` schema.
 
-The user OpenBao issues is a lease. The right half of the figure is the chain
-behind the Secret: ESO draws a new user every 24 hours, OpenBao drops each one
-48 hours after it issued it, and the operator rewrites the Secret on every
-refresh, so a consumer reads it at least once a day.
+OpenBao issues the SQL credential as a lease. The right half of the figure is
+the chain behind the Secret: ESO draws a new user every 24 hours, OpenBao drops
+each one 48 hours after it issued it, and the operator rewrites the Secret on
+every refresh, so a consumer reads it at least once a day.
 
 ![Database credentials in two modes. Static: a person writes username and password to an OpenBao KV path, an ExternalSecret copies them through the secret store into the Secret {cp}-{svc}-db-credentials, and MariaDB User and Grant resources create one long-lived SQL user from it. Dynamic: a VaultDynamicSecret generator logs in to OpenBao as the ServiceAccount {svc}-db-creds over a client certificate and draws a user from database/mariadb/creds/{svc}-{ns}, the database engine creates that user in MariaDB for one lease, and a changed credential rolls the Deployment through the db-connection-hash annotation. In both modes the service operator builds the DSN Secret that the pods read. A time strip shows the 24 hour refresh inside the 48 hour default TTL and the 72 hour maximum TTL.](./diagrams/secrets-db-credentials.svg)
 
@@ -540,14 +543,18 @@ its deletion, and a user or a project that an assignment names holds as well.
 
 ```bash
 kubectl delete job workflow-verify workflow-scoped-verify workflow-appcred-verify workflow-db-verify -n workflow
-kubectl delete keystoneapplicationcredential workflow-appcred -n workflow
-kubectl delete keystoneroleassignment workflow-member -n workflow
-kubectl delete keystonecatalogentry workflow-dns -n workflow
-kubectl delete keystoneproject workflow-project -n workflow
-kubectl delete keystoneuser workflow -n workflow
-kubectl delete mariadbdatabase workflow-db -n workflow
-kubectl delete rabbitmqvhost workflow-bus -n workflow
+kubectl delete --timeout=10m keystoneapplicationcredential workflow-appcred -n workflow
+kubectl delete --timeout=10m keystoneroleassignment workflow-member -n workflow
+kubectl delete --timeout=10m keystonecatalogentry workflow-dns -n workflow
+kubectl delete --timeout=10m keystoneproject workflow-project -n workflow
+kubectl delete --timeout=10m keystoneuser workflow -n workflow
+kubectl delete --timeout=10m mariadbdatabase workflow-db -n workflow
+kubectl delete --timeout=10m rabbitmqvhost workflow-bus -n workflow
 ```
+
+Each `kubectl delete` waits for the order and its finalizers. If one times out,
+leave the namespace assignment in place and resolve the reported cleanup before
+continuing.
 
 Under their default `deletionPolicy: Retain` the schema `workflow_db` and the
 vhost stay with their data; the users that reach them are gone. Then withdraw
@@ -1021,15 +1028,21 @@ kubectl --context kind-cobaltcore-target delete job -n workflow \
 for order in keystoneapplicationcredential/workflow-appcred keystoneroleassignment/workflow-member \
   keystonecatalogentry/workflow-dns keystoneproject/workflow-project keystoneuser/workflow \
   mariadbdatabase/workflow-db rabbitmqvhost/workflow-bus; do
-  kubectl --context kind-cobaltcore-target delete -n workflow "$order"
+  kubectl --context kind-cobaltcore-target delete --timeout=10m -n workflow "$order"
 done
+
 kubectl --context kind-cobaltcore-target get secret -n workflow
 kubectl get users.openstack.k-orc.cloud,pushsecrets -n openstack -l c5c3.io/keystoneuser-namespace=workflow
 ```
 
-Neither command lists anything the orders created. Then withdraw the entry,
-clear the published addresses, and remove the registration, the chart and the
-cluster:
+The target namespace has no delivered Secrets, and the management-cluster
+query confirms the KeystoneUser's K-ORC User and PushSecret are gone. The
+delete loop waits for each order and its finalizers. If a delete times out,
+keep the target registration in place and resolve the reported cleanup before
+continuing.
+
+Then withdraw the entry, clear the published addresses, and remove the
+registration, the chart and the cluster:
 
 ```bash
 i=$(kubectl get controlplane controlplane -n openstack -o json \
@@ -1044,7 +1057,11 @@ kubectl delete secret cobaltcore-target -n c5c3-clusters
 helm uninstall --kube-context kind-cobaltcore-target target-cluster-access -n c5c3-access
 kind delete cluster --name cobaltcore-target
 kind get clusters
+rm -r "$workdir"
 ```
+
+The final command removes the temporary directory, including the target
+service-account token and registration kubeconfig.
 
 The entry goes before the registration Secret: an entry whose cluster does not
 resolve turns the ControlPlane's `Ready` False. `kind get clusters` lists
