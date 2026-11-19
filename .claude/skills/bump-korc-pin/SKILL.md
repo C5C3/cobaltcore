@@ -21,9 +21,23 @@ the image-update automation. Actual API incompatibility must fail CI and be
 addressed as a code/dependency change.
 
 Upstream expires `commit-*` image tags after 28 days. `branch-main` has no
-configured expiration, but moves with each build, so old digests may still
-be collected. Renovate updates must keep merging. A digest provides
-reproducibility while retained, not permanent artifact storage.
+configured expiration, but moves with each build, and quay drops the digest
+it left in the same second. Renovate updates must keep merging. A digest
+provides reproducibility while retained, not permanent artifact storage.
+
+Upstream builds each commit twice, once per tag. The two indexes carry the
+same platform images and differ only in their attestations, so their digests
+differ. When the pinned `branch-main` digest is gone and the source commit
+should stay, the index digest of `commit-<short sha>` is a drop-in
+replacement that lives for the tag's 28 days:
+
+```bash
+docker buildx imagetools inspect \
+  quay.io/orc/openstack-resource-controller:commit-<short sha> | grep '^Digest'
+```
+
+Keep `newTag: branch-main`: the installer reads provenance from the digest,
+and Renovate's next grouped update writes a `branch-main` digest again.
 
 ## Diagnose a blocked update
 
@@ -67,7 +81,7 @@ reproducibility while retained, not permanent artifact storage.
    bash tests/unit/hack/ci_deploy_korc_main_image_test.sh
    bash tests/unit/deploy/korc_pin_lockstep_test.sh
    bash tests/unit/deploy/korc_flux_source_test.sh
-   bash tests/unit/deploy/overlays/kind_base_korc_suspend_test.sh
+   bash tests/unit/deploy/kind_base_korc_suspend_test.sh
    bash tests/unit/renovate/korc_source_custommanager_test.sh
    make test-operator OPERATOR=c5c3
    ```
