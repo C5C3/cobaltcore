@@ -21,6 +21,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
@@ -103,6 +104,10 @@ func TestReconcileInfrastructure_ManagedProjectsChildren(t *testing.T) {
 		Namespace: childNamespace(cp),
 	}, &mariadb)).To(Succeed(), "MariaDB CR must be created in the openstack namespace")
 	g.Expect(mariadb.Spec.Storage.Size).NotTo(BeNil(), "MariaDB must have a storage size (webhook requirement)")
+	g.Expect(mariadb.Spec.Galera).NotTo(BeNil())
+	g.Expect(mariadb.Spec.Galera.Enabled).To(BeTrue())
+	g.Expect(mariadb.Spec.Galera.ReplicaThreads).To(Equal(int(c5c3v1alpha1.StandardDatabaseApplierThreads)),
+		"a ControlPlane without spec.sizing resolves to Standard, and its Galera cluster runs Standard's applier threads")
 
 	// MariaDB owner reference points at the ControlPlane.
 	g.Expect(mariadb.OwnerReferences).To(HaveLen(1))
@@ -206,6 +211,9 @@ func TestReconcileInfrastructure_ManagedAdoptsExistingWithoutMutating(t *testing
 				Size:             &existingSize,
 				StorageClassName: "standard",
 			},
+			// The ControlPlane resolves to Standard, whose sizing names 4
+			// applier threads; a foreign MariaDB keeps its own count.
+			Galera: &mariadbv1alpha1.Galera{Enabled: true, GaleraSpec: mariadbv1alpha1.GaleraSpec{ReplicaThreads: 1}},
 		},
 	}
 	existingMemcached := &unstructured.Unstructured{}
@@ -230,6 +238,8 @@ func TestReconcileInfrastructure_ManagedAdoptsExistingWithoutMutating(t *testing
 		"existing storageClassName must be preserved (it is immutable)")
 	g.Expect(mariadb.Spec.Replicas).To(Equal(int32(1)),
 		"existing replica topology must be preserved, not reshaped to the projected default")
+	g.Expect(mariadb.Spec.Galera.ReplicaThreads).To(Equal(1),
+		"existing applier thread count must be preserved, not reshaped to Standard's")
 	g.Expect(mariadb.OwnerReferences).To(BeEmpty(),
 		"must not claim GC ownership of pre-existing infrastructure")
 
@@ -685,6 +695,49 @@ func TestReconcileInfrastructure_DedicatedProjectsChildren(t *testing.T) {
 		g.Expect(found).To(BeTrue())
 		g.Expect(replicas).To(Equal(tc.replicas), "Memcached %q replica count", tc.name)
 		g.Expect(u.GetOwnerReferences()).NotTo(BeEmpty(), "Memcached %q must be owned", tc.name)
+	}
+}
+
+// TestReconcileInfrastructure_SizingApplierThreadsReachEveryGaleraChild pins
+// the path from spec.sizing to the Galera children: a ControlPlane whose sizing
+// names 8 applier threads gets 8 on the shared cluster and on a dedicated
+// 3-replica database alike.
+func TestReconcileInfrastructure_SizingApplierThreadsReachEveryGaleraChild(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := infraTestScheme(t)
+	cp := managedInfraControlPlane()
+	cp.Spec.Sizing = &c5c3v1alpha1.ControlPlaneSizingSpec{SizingSpec: c5c3v1alpha1.SizingSpec{
+		Database: &c5c3v1alpha1.DatabaseSizingSpec{ApplierThreads: ptr.To[int32](8)},
+	}}
+	cp.Spec.Services = c5c3v1alpha1.ServicesSpec{
+		Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{},
+		Glance: &c5c3v1alpha1.ServiceGlanceSpec{
+			DedicatedBackingServices: &c5c3v1alpha1.GlanceDedicatedBackingServicesSpec{
+				Database: &commonv1.DatabaseSpec{
+					ClusterRef: &corev1.LocalObjectReference{Name: "cp-glance-db"},
+					Database:   "glance",
+					SecretRef:  commonv1.SecretRefSpec{Name: "glance-db"},
+					Replicas:   3,
+				},
+			},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileInfrastructure(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	for _, name := range []string{"openstack-db", "cp-glance-db"} {
+		var mariadb mariadbv1alpha1.MariaDB
+		g.Expect(c.Get(context.Background(), types.NamespacedName{
+			Name: name, Namespace: childNamespace(cp),
+		}, &mariadb)).To(Succeed(), "MariaDB %q must be provisioned", name)
+		g.Expect(mariadb.Spec.Galera).NotTo(BeNil(), "MariaDB %q", name)
+		g.Expect(mariadb.Spec.Galera.Enabled).To(BeTrue(), "MariaDB %q runs 3 replicas, so Galera", name)
+		g.Expect(mariadb.Spec.Galera.ReplicaThreads).To(Equal(8),
+			"MariaDB %q must run the applier threads of spec.sizing.database", name)
 	}
 }
 
@@ -2987,6 +3040,66 @@ func wantMariaDBContainerSecurityContext() *mariadbv1alpha1.SecurityContext {
 	}
 }
 
+// ownedGaleraMariaDB is a live 3-replica Galera MariaDB that carries the pod,
+// mariadb and agent contexts, a defaulted agent port, SST method and applier
+// thread count, and the given init image without an init context.
+func ownedGaleraMariaDB(initImage string) *mariadbv1alpha1.MariaDB {
+	size := resource.MustParse("512Mi")
+	m := &mariadbv1alpha1.MariaDB{
+		ObjectMeta: metav1.ObjectMeta{Name: "openstack-db"},
+		Spec: mariadbv1alpha1.MariaDBSpec{
+			Replicas: 3,
+			Storage:  mariadbv1alpha1.Storage{Size: &size},
+			Galera: &mariadbv1alpha1.Galera{
+				Enabled: true,
+				GaleraSpec: mariadbv1alpha1.GaleraSpec{
+					SST: mariadbv1alpha1.SSTMariaBackup,
+					Agent: mariadbv1alpha1.Agent{
+						ContainerTemplate: mariadbv1alpha1.ContainerTemplate{
+							SecurityContext: wantMariaDBContainerSecurityContext(),
+						},
+						Port: 5555,
+					},
+					InitContainer:  mariadbv1alpha1.InitContainer{Image: initImage},
+					ReplicaThreads: 1,
+				},
+			},
+		},
+	}
+	m.Spec.PodSecurityContext = wantMariaDBPodSecurityContext()
+	m.Spec.SecurityContext = wantMariaDBContainerSecurityContext()
+	return m
+}
+
+// newEnsureMariaDBPass builds a ControlPlane whose database declares replicas
+// and a fake client holding it and seed (if any) as an owned live MariaDB, with
+// every MariaDB Update failing with updateErr when it is non-nil. It returns the
+// reconciler, the client, the ControlPlane, the count of MariaDB Updates, and a
+// func that runs one ensureMariaDB pass with sizing.
+func newEnsureMariaDBPass(
+	t *testing.T, g Gomega, replicas int32, sizing *c5c3v1alpha1.DatabaseSizingSpec,
+	seed *mariadbv1alpha1.MariaDB, updateErr error,
+) (*ControlPlaneReconciler, client.Client, *c5c3v1alpha1.ControlPlane, *int, func() (bool, error)) {
+	t.Helper()
+	s := infraTestScheme(t)
+	cp := managedInfraControlPlane()
+	cp.Spec.Infrastructure.Database.Replicas = replicas
+	objs := []client.Object{cp}
+	if seed != nil {
+		seed.Namespace = cp.Namespace
+		g.Expect(controllerutil.SetControllerReference(cp, seed, s)).To(Succeed())
+		objs = append(objs, seed)
+	}
+	updates := 0
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(objs...).
+		WithInterceptorFuncs(mariadbUpdateInterceptor(&updates, updateErr)).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+	pass := func() (bool, error) {
+		return r.ensureMariaDB(context.Background(), c, cp, &cp.Spec.Infrastructure.Database, sizing, cp.Namespace)
+	}
+	return r, c, cp, &updates, pass
+}
+
 // TestEnsureMariaDB_RestrictedSecurity pins the restricted security contexts
 // on the MariaDB a ControlPlane owns: written on create, re-asserted on drift
 // with one Update, and never written beside a Galera init image the
@@ -3001,53 +3114,11 @@ func TestEnsureMariaDB_RestrictedSecurity(t *testing.T) {
 		t *testing.T, g Gomega, replicas int32, seed *mariadbv1alpha1.MariaDB,
 	) (*ControlPlaneReconciler, client.Client, *c5c3v1alpha1.ControlPlane, *int) {
 		t.Helper()
-		s := infraTestScheme(t)
-		cp := managedInfraControlPlane()
-		cp.Spec.Infrastructure.Database.Replicas = replicas
-		objs := []client.Object{cp}
-		if seed != nil {
-			seed.Namespace = cp.Namespace
-			g.Expect(controllerutil.SetControllerReference(cp, seed, s)).To(Succeed())
-			objs = append(objs, seed)
-		}
-		updates := 0
-		c := fake.NewClientBuilder().WithScheme(s).WithObjects(objs...).
-			WithInterceptorFuncs(mariadbUpdateInterceptor(&updates, nil)).Build()
-		r := &ControlPlaneReconciler{Client: c, Scheme: s}
-		_, err := r.ensureMariaDB(context.Background(), c, cp, &cp.Spec.Infrastructure.Database, nil, cp.Namespace)
+		r, c, cp, updates, pass := newEnsureMariaDBPass(t, g, replicas, nil, seed, nil)
+		_, err := pass()
 		g.Expect(err).NotTo(HaveOccurred())
-		return r, c, cp, &updates
+		return r, c, cp, updates
 	}
-	// ownedGalera is a live 3-replica Galera MariaDB that carries the pod,
-	// mariadb and agent contexts, a defaulted agent port and an SST method, and
-	// the given init image without an init context.
-	ownedGalera := func(initImage string) *mariadbv1alpha1.MariaDB {
-		size := resource.MustParse("512Mi")
-		m := &mariadbv1alpha1.MariaDB{
-			ObjectMeta: metav1.ObjectMeta{Name: "openstack-db"},
-			Spec: mariadbv1alpha1.MariaDBSpec{
-				Replicas: 3,
-				Storage:  mariadbv1alpha1.Storage{Size: &size},
-				Galera: &mariadbv1alpha1.Galera{
-					Enabled: true,
-					GaleraSpec: mariadbv1alpha1.GaleraSpec{
-						SST: mariadbv1alpha1.SSTMariaBackup,
-						Agent: mariadbv1alpha1.Agent{
-							ContainerTemplate: mariadbv1alpha1.ContainerTemplate{
-								SecurityContext: wantMariaDBContainerSecurityContext(),
-							},
-							Port: 5555,
-						},
-						InitContainer: mariadbv1alpha1.InitContainer{Image: initImage},
-					},
-				},
-			},
-		}
-		m.Spec.PodSecurityContext = wantMariaDBPodSecurityContext()
-		m.Spec.SecurityContext = wantMariaDBContainerSecurityContext()
-		return m
-	}
-
 	t.Run("a fresh single-instance MariaDB carries the pod and mariadb contexts only", func(t *testing.T) {
 		g := NewGomegaWithT(t)
 		_, c, cp, _ := ensure(t, g, 1, nil)
@@ -3073,7 +3144,7 @@ func TestEnsureMariaDB_RestrictedSecurity(t *testing.T) {
 
 	t.Run("a defaulted init image gets the init context and keeps every live Galera field, then no Update", func(t *testing.T) {
 		g := NewGomegaWithT(t)
-		r, c, cp, updates := ensure(t, g, 3, ownedGalera("img:1"))
+		r, c, cp, updates := ensure(t, g, 3, ownedGaleraMariaDB("img:1"))
 		g.Expect(*updates).To(Equal(1))
 		live := getMariaDB(g, c, cp.Namespace)
 		galera := live.Spec.Galera
@@ -3091,7 +3162,7 @@ func TestEnsureMariaDB_RestrictedSecurity(t *testing.T) {
 
 	t.Run("an owned Galera MariaDB with a drifted agent context gets it back with one Update", func(t *testing.T) {
 		g := NewGomegaWithT(t)
-		seed := ownedGalera("img:1")
+		seed := ownedGaleraMariaDB("img:1")
 		seed.Spec.Galera.InitContainer.SecurityContext = wantMariaDBContainerSecurityContext()
 		seed.Spec.Galera.Agent.SecurityContext = &mariadbv1alpha1.SecurityContext{AllowPrivilegeEscalation: ptr.To(true)}
 		_, c, cp, updates := ensure(t, g, 3, seed)
@@ -3139,7 +3210,7 @@ func TestEnsureMariaDB_RestrictedSecurity(t *testing.T) {
 
 	t.Run("an init image not yet defaulted is left alone and causes no Update", func(t *testing.T) {
 		g := NewGomegaWithT(t)
-		_, c, cp, updates := ensure(t, g, 3, ownedGalera(""))
+		_, c, cp, updates := ensure(t, g, 3, ownedGaleraMariaDB(""))
 		g.Expect(*updates).To(BeZero(), "an empty init image counts as matching")
 		g.Expect(getMariaDB(g, c, cp.Namespace).Spec.Galera.InitContainer).To(BeZero())
 	})
@@ -3183,6 +3254,167 @@ func TestEnsureMariaDB_RestrictedSecurity(t *testing.T) {
 			g.Expect(m.Spec.PodSecurityContext).To(Equal(wantMariaDBPodSecurityContext()))
 		})
 	}
+}
+
+// TestEnsureMariaDB_ApplierThreads pins the Galera applier thread count
+// (spec.galera.replicaThreads) of the MariaDB a ControlPlane owns: the
+// sizing's count on create and on every later pass, 1 when the sizing names
+// none, and nothing at all on a single instance, which runs no Galera.
+func TestEnsureMariaDB_ApplierThreads(t *testing.T) {
+	threads := func(n int32) *c5c3v1alpha1.DatabaseSizingSpec {
+		return &c5c3v1alpha1.DatabaseSizingSpec{ApplierThreads: ptr.To(n)}
+	}
+	// settledGalera is an owned Galera MariaDB that carries every security
+	// context, the init context included, and n applier threads, so the count
+	// is all a pass can find to change.
+	settledGalera := func(n int) *mariadbv1alpha1.MariaDB {
+		m := ownedGaleraMariaDB("img:1")
+		m.Spec.Galera.InitContainer.SecurityContext = wantMariaDBContainerSecurityContext()
+		m.Spec.Galera.ReplicaThreads = n
+		return m
+	}
+
+	createTests := []struct {
+		name        string
+		replicas    int32
+		sizing      *c5c3v1alpha1.DatabaseSizingSpec
+		wantGalera  bool
+		wantThreads int
+	}{
+		{name: "a Galera cluster takes the sizing's count", replicas: 3, sizing: threads(4), wantGalera: true, wantThreads: 4},
+		{name: "a nil sizing gives a Galera cluster one thread", replicas: 3, wantGalera: true, wantThreads: 1},
+		{
+			name: "a sizing without applierThreads gives a Galera cluster one thread", replicas: 3,
+			sizing: &c5c3v1alpha1.DatabaseSizingSpec{}, wantGalera: true, wantThreads: 1,
+		},
+		{
+			name: "a count of 0 that bypassed admission gives a Galera cluster one thread", replicas: 3,
+			sizing: threads(0), wantGalera: true, wantThreads: 1,
+		},
+		{name: "a single instance runs no Galera and gets no count", replicas: 1, sizing: threads(4), wantThreads: 0},
+	}
+	for _, tc := range createTests {
+		t.Run("on create, "+tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			_, c, cp, _, pass := newEnsureMariaDBPass(t, g, tc.replicas, tc.sizing, nil, nil)
+			_, err := pass()
+			g.Expect(err).NotTo(HaveOccurred())
+			galera := getMariaDB(g, c, cp.Namespace).Spec.Galera
+			g.Expect(galera.Enabled).To(Equal(tc.wantGalera))
+			g.Expect(galera.ReplicaThreads).To(Equal(tc.wantThreads))
+			g.Expect(galera.InitContainer).To(BeZero(),
+				"the mariadb-operator defaults the init image only while the init container is zero")
+		})
+	}
+
+	t.Run("an owned Galera cluster at 1 thread takes the sizing's 4 with one Update, then none", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		_, c, cp, updates, pass := newEnsureMariaDBPass(t, g, 3, threads(4), settledGalera(1), nil)
+		_, err := pass()
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(*updates).To(Equal(1))
+		live := getMariaDB(g, c, cp.Namespace)
+		galera := live.Spec.Galera
+		g.Expect(galera.ReplicaThreads).To(Equal(4))
+		g.Expect(galera.Agent.Port).To(Equal(int32(5555)), "spec.galera is updated in place")
+		g.Expect(galera.SST).To(Equal(mariadbv1alpha1.SSTMariaBackup), "spec.galera is updated in place")
+		g.Expect(galera.InitContainer.Image).To(Equal("img:1"), "spec.galera is updated in place")
+
+		_, err = pass()
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(*updates).To(Equal(1), "a cluster at the sizing's count finds nothing to change")
+		g.Expect(getMariaDB(g, c, cp.Namespace).ResourceVersion).To(Equal(live.ResourceVersion))
+	})
+
+	driftTests := []struct {
+		name   string
+		live   int
+		sizing *c5c3v1alpha1.DatabaseSizingSpec
+		want   int
+	}{
+		{name: "a hand-set 8 goes back to the sizing's 4", live: 8, sizing: threads(4), want: 4},
+		{name: "a sizing without applierThreads takes a live 4 back to 1", live: 4, sizing: &c5c3v1alpha1.DatabaseSizingSpec{}, want: 1},
+	}
+	for _, tc := range driftTests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			_, c, cp, updates, pass := newEnsureMariaDBPass(t, g, 3, tc.sizing, settledGalera(tc.live), nil)
+			_, err := pass()
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(*updates).To(Equal(1))
+			g.Expect(getMariaDB(g, c, cp.Namespace).Spec.Galera.ReplicaThreads).To(Equal(tc.want))
+		})
+	}
+
+	t.Run("an owned single instance is not written for the sizing's count", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		size := resource.MustParse("512Mi")
+		seed := &mariadbv1alpha1.MariaDB{
+			ObjectMeta: metav1.ObjectMeta{Name: "openstack-db"},
+			Spec: mariadbv1alpha1.MariaDBSpec{
+				Replicas: 1,
+				Galera:   &mariadbv1alpha1.Galera{Enabled: false},
+				Storage:  mariadbv1alpha1.Storage{Size: &size},
+			},
+		}
+		seed.Spec.PodSecurityContext = wantMariaDBPodSecurityContext()
+		seed.Spec.SecurityContext = wantMariaDBContainerSecurityContext()
+		_, c, cp, updates, pass := newEnsureMariaDBPass(t, g, 1, threads(4), seed, nil)
+		_, err := pass()
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(*updates).To(BeZero(), "a MariaDB without Galera has no appliers to size")
+		g.Expect(getMariaDB(g, c, cp.Namespace).Spec.Galera.ReplicaThreads).To(BeZero())
+	})
+
+	t.Run("a fresh Galera MariaDB with 4 threads settles under the mariadb-operator defaulting", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ctx := context.Background()
+		_, c, cp, updates, pass := newEnsureMariaDBPass(t, g, 3, threads(4), nil, nil)
+		_, err := pass()
+		g.Expect(err).NotTo(HaveOccurred())
+		env := &environment.OperatorEnv{
+			MariadbOperatorImage: "mariadb-operator:test",
+			RelatedMariadbImage:  "mariadb:test",
+			MariadbGaleraLibPath: "/usr/lib/galera/libgalera_smm.so",
+		}
+
+		// The mariadb-operator controller defaults the created MariaDB and
+		// leaves a set count alone.
+		m := getMariaDB(g, c, cp.Namespace)
+		g.Expect(m.SetDefaults(env)).To(Succeed())
+		g.Expect(m.Spec.Galera.ReplicaThreads).To(Equal(4), "the mariadb-operator defaults only a count of 0")
+		g.Expect(c.Update(ctx, m)).To(Succeed())
+		defaulted := *updates
+
+		// The next pass writes the init context only.
+		_, err = pass()
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(*updates).To(Equal(defaulted+1), "the pass writes the init context once")
+		live := getMariaDB(g, c, cp.Namespace)
+		g.Expect(live.Spec.Galera.ReplicaThreads).To(Equal(4))
+
+		// Neither side has anything left to write.
+		again := live.DeepCopy()
+		g.Expect(again.SetDefaults(env)).To(Succeed())
+		g.Expect(again.Spec).To(Equal(live.Spec), "the mariadb-operator finds nothing left to default")
+		_, err = pass()
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(*updates).To(Equal(defaulted+1), "a settled Galera cluster is not written again")
+	})
+
+	t.Run("a conflict on an Update of the count alone is returned wrapped", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		conflict := apierrors.NewConflict(schema.GroupResource{Group: "k8s.mariadb.com", Resource: "mariadbs"},
+			"openstack-db", errors.New("the object has been modified"))
+		_, c, cp, updates, pass := newEnsureMariaDBPass(t, g, 3, threads(4), settledGalera(1), conflict)
+		ready, err := pass()
+		g.Expect(ready).To(BeFalse())
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(HavePrefix(`updating owned MariaDB "openstack-db": `))
+		g.Expect(apierrors.IsConflict(err)).To(BeTrue(), "the conflict must stay visible to the caller")
+		g.Expect(*updates).To(Equal(1))
+		g.Expect(getMariaDB(g, c, cp.Namespace).Spec.Galera.ReplicaThreads).To(Equal(1), "a refused Update writes nothing")
+	})
 }
 
 // TestReconcileInfrastructure_OwnedMariaDBUpdateErrorSurfacesMariaDBError
