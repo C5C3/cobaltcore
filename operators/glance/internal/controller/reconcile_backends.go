@@ -149,9 +149,18 @@ func (r *GlanceReconciler) reconcileBackends(ctx context.Context, children clien
 	sections := map[string]map[string]string{}
 	var enabled []string
 	var pending []string
+	// stale is set when a backend's spec changed after its controller last
+	// reported CredentialsReady=True. The backend is healthy as far as anyone
+	// knows, and its controller is about to gate the new spec.
+	stale := false
 	for _, backend := range c.Attached {
 		if !credentialsReady(backend) {
-			pending = append(pending, fmt.Sprintf("%s (credentials not ready)", backend.Name))
+			reason := "credentials not ready"
+			if credentialsStale(backend) {
+				stale = true
+				reason = "spec changed since its credentials were checked"
+			}
+			pending = append(pending, fmt.Sprintf("%s (%s)", backend.Name, reason))
 			continue
 		}
 
@@ -181,7 +190,10 @@ func (r *GlanceReconciler) reconcileBackends(ctx context.Context, children clien
 			Reason: conditionReasonWaitingForBackends, Message: "Waiting for backends: " + strings.Join(pending, "; "),
 		})
 		// A ready default can lose its Secret between observation and render.
-		if _, ok := sections[defaultBackend]; !ok {
+		// A stale backend holds the projection too: rendering without it would
+		// roll its store out of the API and back in one status write later.
+		// The backend's next status write wakes this Glance through the watch.
+		if _, ok := sections[defaultBackend]; !ok || stale {
 			return ctrl.Result{}, backendsProjection{hosts: hosts}, nil
 		}
 	}
@@ -216,6 +228,14 @@ func (r *GlanceReconciler) reconcileBackends(ctx context.Context, children clien
 func credentialsReady(backend *glancev1alpha1.GlanceBackend) bool {
 	c := conditions.GetCondition(backend.Status.Conditions, conditionTypeCredentialsReady)
 	return c != nil && c.Status == metav1.ConditionTrue && c.ObservedGeneration == backend.Generation
+}
+
+// credentialsStale reports whether CredentialsReady is True for an older
+// generation: the backend's spec changed and its controller has not gated the
+// new one yet. A backend that never reported, or reports False, is not stale.
+func credentialsStale(backend *glancev1alpha1.GlanceBackend) bool {
+	c := conditions.GetCondition(backend.Status.Conditions, conditionTypeCredentialsReady)
+	return c != nil && c.Status == metav1.ConditionTrue && c.ObservedGeneration != backend.Generation
 }
 
 // renderStoreSection renders one credential-ready backend's [<name>] store
