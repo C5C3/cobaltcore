@@ -8,6 +8,7 @@
     "patches/barbican/2026.2/0002-carry-the-openbao-storage-index-from-a-write-to-its-reads.patch",
     "patches/barbican/2026.2/0003-retry-secret-metadata-writes-that-conflict-with-a-concurrent-write.patch",
     "patches/barbican/2026.2/0004-do-not-send-a-json-body-with-204-responses.patch",
-    "patches/barbican/2026.2/0005-commit-the-clean-up-in-small-batches-with-an-optional-pause.patch"
+    "patches/barbican/2026.2/0005-commit-the-clean-up-in-small-batches-with-an-optional-pause.patch",
+    "patches/barbican/2026.2/0006-clear-the-request-session-when-its-commit-fails.patch"
   ]
 }

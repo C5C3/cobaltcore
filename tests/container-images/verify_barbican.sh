@@ -562,6 +562,63 @@ if waits != [0.007] * 3 or left != 0:
     "ERROR: batch_size must be at least 1, got 0"
 }
 
+# --- Test 14: a commit that raises leaves no prepared session behind ---
+test_request_session_cleared_patch_applied() {
+  echo "Test: the request session is cleared after a failed commit"
+  # Proves both build paths applied
+  # patches/barbican/2026.1/0007-clear-the-request-session-when-its-commit-fails.patch
+  # and patches/barbican/2026.2/0006-clear-the-request-session-when-its-commit-fails.patch.
+  # The transaction hook is built with a commit that raises
+  # DBConnectionError, as a commit does on a socket read timeout, and runs
+  # after a transactional request on an in-memory database. The patched hook
+  # re-raises and clears the thread's session, so the next get_session()
+  # returns a new session that runs SELECT 1. An unpatched hook skips the
+  # clear and returns the old session, which SQLAlchemy leaves in prepared
+  # state after a real failed commit. stderr is echoed on failure.
+  local exit_code=0 err=""
+  err=$(docker run --rm "$IMAGE" \
+    /var/lib/openstack/bin/python -c \
+    'import sys
+from unittest import mock
+
+from oslo_db import exception as db_exc
+import sqlalchemy
+
+from barbican.api import hooks
+from barbican.common import config
+from barbican.model import repositories as repo
+
+CONF = config.CONF
+CONF.set_override("connection", "sqlite://", "database")
+CONF.set_override("db_auto_create", True)
+repo.setup_database_engine_and_factory()
+
+with mock.patch.object(repo, "commit",
+                       side_effect=db_exc.DBConnectionError()):
+    hook = hooks.BarbicanTransactionHook()
+state = mock.Mock(spec=["request", "controller"])
+state.controller = None
+state.request = mock.Mock(spec=["transactional", "error"])
+state.request.transactional = True
+state.request.error = False
+
+old = repo.get_session()
+try:
+    hook.after(state)
+    sys.exit("after() did not re-raise the failed commit")
+except db_exc.DBConnectionError:
+    pass
+new = repo.get_session()
+if new is old:
+    sys.exit("after() kept the session of the failed commit")
+if new.execute(sqlalchemy.text("SELECT 1")).scalar() != 1:
+    sys.exit("the new session does not run SELECT 1")' \
+    2>&1 > /dev/null) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "    $err"
+
+  assert_eq "a failed commit leaves a new, usable session" "0" "$exit_code"
+}
+
 # --- Run all tests ---
 echo "=== barbican container verification tests ==="
 echo "Image: $IMAGE"
@@ -591,6 +648,8 @@ echo ""
 test_no_body_on_204_patch_applied
 echo ""
 test_db_clean_batch_options_patch_applied
+echo ""
+test_request_session_cleared_patch_applied
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 
