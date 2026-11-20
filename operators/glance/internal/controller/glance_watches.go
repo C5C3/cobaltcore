@@ -89,6 +89,27 @@ func glanceDatabaseClusterRef(o client.Object) string {
 	return g.Spec.Database.ClusterRef.Name
 }
 
+// policyConfigMapToGlanceMapper returns a MapFunc that maps ConfigMap events to
+// reconcile requests for the Glance CRs whose spec.policyOverrides.configMapRef
+// names the ConfigMap in the same namespace. It resolves them through the
+// policyConfigMapIndexKey field index, so an event for any other ConfigMap
+// costs one indexed lookup and enqueues nothing.
+func policyConfigMapToGlanceMapper(c client.Reader) handler.MapFunc {
+	return watch.ParentToSatellitesMapper(c,
+		func() client.ObjectList { return &glancev1alpha1.GlanceList{} },
+		policyConfigMapIndexKey, "listing Glances referencing policy ConfigMap")
+}
+
+// glancePolicyConfigMapRef returns the name of the ConfigMap a Glance CR's
+// spec.policyOverrides.configMapRef names, or "" when it names none.
+func glancePolicyConfigMapRef(o client.Object) string {
+	g, ok := o.(*glancev1alpha1.Glance)
+	if !ok || g.Spec.PolicyOverrides == nil || g.Spec.PolicyOverrides.ConfigMapRef == nil {
+		return ""
+	}
+	return g.Spec.PolicyOverrides.ConfigMapRef.Name
+}
+
 // memcachedToGlanceMapper returns a MapFunc that maps Memcached events to
 // reconcile requests for Glance CRs whose spec.cache.clusterRef targets the
 // Memcached by name in the same namespace. It binds the shared

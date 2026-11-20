@@ -97,13 +97,7 @@ func registerGlanceIndexes(ctx context.Context, indexer client.FieldIndexer) err
 	if err := watch.RegisterSecretNameIndex(ctx, indexer, obj, GlanceSecretNameIndexKey, glanceSecretNameExtractor); err != nil {
 		return err
 	}
-	return watch.RegisterParentRefIndex(ctx, indexer, obj, policyConfigMapIndexKey, func(o client.Object) string {
-		g := o.(*glancev1alpha1.Glance)
-		if policy := g.Spec.PolicyOverrides; policy != nil && policy.ConfigMapRef != nil {
-			return policy.ConfigMapRef.Name
-		}
-		return ""
-	})
+	return watch.RegisterParentRefIndex(ctx, indexer, obj, policyConfigMapIndexKey, glancePolicyConfigMapRef)
 }
 
 // GlanceBackendGlanceRefIndexKey is the field-indexer key under which
@@ -380,7 +374,7 @@ var GlanceRemoteChildKinds = []schema.GroupVersionKind{
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;patch;delete
 // Unexercised by the e2e suites; used by internal/common/deployment/vpa_flow.go:190 (ReconcileVPAs) to create and patch verticalpodautoscalers.
 // Unexercised by the e2e suites; used by internal/common/deployment/vpa_flow.go:213 (ReconcileVPAs) to delete verticalpodautoscalers.
-// Unexercised by the e2e suites; used by operators/glance/internal/controller/glance_controller.go:722 (SetupWithManager) to list and watch verticalpodautoscalers.
+// Unexercised by the e2e suites; used by operators/glance/internal/controller/glance_controller.go:716 (SetupWithManager) to list and watch verticalpodautoscalers.
 // +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch;create;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;patch;delete
 // Required to create, patch and delete HTTPRoutes that expose the Glance API externally.
@@ -748,8 +742,7 @@ func (r *GlanceReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 
 	// A referenced policy ConfigMap is owned by the user and does not match Owns.
 	b, err = commonmulticluster.AddInputWatch(b, local.GetScheme(), targets, &corev1.ConfigMap{},
-		watch.ParentToSatellitesMapper(local.GetClient(), func() client.ObjectList { return &glancev1alpha1.GlanceList{} },
-			policyConfigMapIndexKey, "listing Glances referencing policy ConfigMap"))
+		policyConfigMapToGlanceMapper(local.GetClient()))
 	if err != nil {
 		return err
 	}
