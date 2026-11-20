@@ -5,12 +5,18 @@
 package types
 
 import (
+	"errors"
+	"fmt"
+	"math"
+	"regexp"
+
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 )
 
@@ -316,6 +322,86 @@ type VerticalAutoscalingSpec struct {
 	// +kubebuilder:validation:Type=object
 	// +kubebuilder:validation:MaxProperties=2
 	MaxAllowed corev1.ResourceList `json:"maxAllowed,omitempty"`
+}
+
+// PodDisruptionBudgetSpec sets the budget of the API PodDisruptionBudget.
+// +kubebuilder:validation:XValidation:rule="has(self.minAvailable) != has(self.maxUnavailable)",message="exactly one of minAvailable or maxUnavailable must be set"
+type PodDisruptionBudgetSpec struct {
+	// MinAvailable is the pod count or percentage that must stay available.
+	// +optional
+	MinAvailable *intstr.IntOrString `json:"minAvailable,omitempty"`
+	// MaxUnavailable is the pod count or percentage that may be unavailable.
+	// +optional
+	MaxUnavailable *intstr.IntOrString `json:"maxUnavailable,omitempty"`
+}
+
+// budgetPercent matches the percentages a PodDisruptionBudgetSpec field
+// accepts: 0% to 100%, without a sign or a leading zero.
+var budgetPercent = regexp.MustCompile(`^(100|[1-9]?[0-9])%$`)
+
+// ErrBudgetExactlyOne is the error of a PodDisruptionBudgetSpec that sets both
+// fields or neither, worded as the CEL rule on the type.
+var ErrBudgetExactlyOne = errors.New("exactly one of minAvailable or maxUnavailable must be set")
+
+// ResolveBudgetValue returns v scaled against pods. An integer of zero or more
+// is returned as it is, and a percentage from 0% to 100% is rounded up, as the
+// Kubernetes disruption controller rounds both fields of a
+// PodDisruptionBudget. Any other value returns an error.
+func ResolveBudgetValue(v intstr.IntOrString, pods int32) (int32, error) {
+	switch {
+	case v.Type == intstr.Int && v.IntVal >= 0:
+		return v.IntVal, nil
+	case v.Type == intstr.String && budgetPercent.MatchString(v.StrVal):
+		scaled, err := intstr.GetScaledValueFromIntOrPercent(&v, int(pods), true)
+		if err != nil {
+			return 0, fmt.Errorf("scaling %q: %w", v.StrVal, err)
+		}
+		if scaled < math.MinInt32 || scaled > math.MaxInt32 {
+			return 0, fmt.Errorf("scaling %q: %d does not fit an int32", v.StrVal, scaled)
+		}
+		return int32(scaled), nil
+	default:
+		return 0, errors.New("must be a non-negative integer or a percentage from 0% to 100%")
+	}
+}
+
+// DisruptionsAllowed returns how many of pods healthy pods the budget lets
+// voluntary evictions take, the count the disruption controller computes: at
+// most pods for maxUnavailable, and pods less minAvailable, never below zero.
+// A pod count below one counts as one. A nil receiver, a block that sets both
+// fields and a block that sets neither return an error, and so does a value
+// ResolveBudgetValue rejects, wrapped with the field name.
+func (b *PodDisruptionBudgetSpec) DisruptionsAllowed(pods int32) (int32, error) {
+	if b == nil || (b.MinAvailable == nil) == (b.MaxUnavailable == nil) {
+		return 0, ErrBudgetExactlyOne
+	}
+	pods = max(pods, 1)
+	if b.MaxUnavailable != nil {
+		maxUnavailable, err := ResolveBudgetValue(*b.MaxUnavailable, pods)
+		if err != nil {
+			return 0, fmt.Errorf("maxUnavailable: %w", err)
+		}
+		return min(maxUnavailable, pods), nil
+	}
+	minAvailable, err := ResolveBudgetValue(*b.MinAvailable, pods)
+	if err != nil {
+		return 0, fmt.Errorf("minAvailable: %w", err)
+	}
+	return max(pods-minAvailable, 0), nil
+}
+
+// LowerReplicaBound returns the lowest pod count an API Deployment runs at:
+// autoscaling.minReplicas while autoscaling sets one, taken as it is even when
+// it is zero or negative, and otherwise replicas, with zero normalized to
+// DefaultReplicas.
+func LowerReplicaBound(replicas int32, autoscaling *AutoscalingSpec) int32 {
+	if autoscaling != nil && autoscaling.MinReplicas != nil {
+		return *autoscaling.MinReplicas
+	}
+	if replicas == 0 {
+		return DefaultReplicas
+	}
+	return replicas
 }
 
 // NetworkPolicySpec defines network isolation for the service API pods.

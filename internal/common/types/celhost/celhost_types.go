@@ -46,6 +46,10 @@ type CELHostSpec struct {
 	// +optional
 	VerticalAutoscaling *commonv1.VerticalAutoscalingSpec `json:"verticalAutoscaling,omitempty"`
 
+	// PodDisruptionBudget carries the PodDisruptionBudgetSpec rule.
+	// +optional
+	PodDisruptionBudget *commonv1.PodDisruptionBudgetSpec `json:"podDisruptionBudget,omitempty"`
+
 	// NetworkPolicy carries the NetworkPolicySpec rule.
 	// +optional
 	NetworkPolicy *commonv1.NetworkPolicySpec `json:"networkPolicy,omitempty"`
