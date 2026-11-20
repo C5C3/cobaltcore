@@ -1189,6 +1189,7 @@ is rejected by the ovn-operator's TLS sub-reconciler.
 | Namespace | `openstack` |
 | Replicas | `3` |
 | Galera | Enabled (`spec.galera.enabled: true`) |
+| Galera applier threads | `4` (`spec.galera.replicaThreads`, rendered as `wsrep_slave_threads`) |
 | MaxScale | `MaxScale` CR `openstack-db-maxscale` with 2 replicas, `spec.mariaDbRef: openstack-db` and one service, `rw-router` (`readwritesplit`, `max_slave_connections: "0"`, listener port 3306); the MariaDB names it in `spec.maxScaleRef` |
 | Storage | `100Gi`, storage class `ceph-rbd` |
 
@@ -1209,6 +1210,14 @@ so the file states the `rw-router` service with `max_slave_connections: "0"` on 
 3306. Name, router and port are the values `MaxScale.SetDefaults` writes on a MaxScale
 without `spec.services`, so an existing install keeps its router, which the webhook
 keeps immutable. `tests/unit/deploy/maxscale_single_writer_test.sh` pins the service.
+
+Each Galera member applies replicated write sets with four threads, the value of
+`StandardDatabaseApplierThreads` in `operators/c5c3/api/v1alpha1/sizing_profiles.go`
+and of the ControlPlane's `Standard` sizing profile. A changed value changes the
+Galera pod template, so on a site that applies the base, mariadb-operator rolls the
+members one at a time at the next apply. The devstack patch runs one replica without
+Galera and drops the value. `tests/unit/deploy/mariadb_applier_threads_test.sh` keeps
+the base equal to the constant and checks the kind overlay's `spec.galera`.
 
 The OpenStack service operators and the MariaDBDatabase orders route through a MaxScale
 only when it has a `readwritesplit` service with `max_slave_connections: "0"` on the

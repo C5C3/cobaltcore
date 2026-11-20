@@ -1009,9 +1009,11 @@ passes it to `managedInfraInstances`; every managed instance of a class takes
 that class's block, with the top-level `spec.sizing` placement folded in for the
 database and the bus. `ensureMariaDB` takes an unset `replicas` / `storageSize`
 from `spec.sizing.database` (the webhook normally stored them at admission) and
-writes `spec.resources`, `spec.nodeSelector`, `spec.tolerations` and
-`spec.priorityClassName`; an owned MariaDB is re-asserted with one `Update` when
-any of them or one of its security contexts (see Pod Security below) differs
+writes `spec.resources`, `spec.nodeSelector`, `spec.tolerations`,
+`spec.priorityClassName` and, on a Galera cluster, `spec.galera.replicaThreads`
+(see Galera applier threads below); an owned MariaDB is re-asserted with one
+`Update` when any of them or one of its security contexts (see Pod Security
+below) differs
 (`updating owned MariaDB "<name>"` on failure), and an adopted one is never
 written. `ensureMemcached` takes an unset `replicas` from `spec.sizing.cache` on
 every pass, floors a zero count to 3, and writes or removes `spec.resources`; an
@@ -1062,6 +1064,72 @@ change triggers, and that drops the agent and init contexts. In a namespace that
 enforces `restricted`, the roll that write starts then has the first replaced
 Galera member refused for containers `agent` and `init`, so before rolling back,
 relax the enforce label or hold sizing changes.
+
+**Galera applier threads.** `ensureMariaDB` resolves
+`spec.sizing.database.applierThreads` on every pass (`mariaDBApplierThreads`: 1
+for an unset value, or for one below 1 that bypassed admission) and writes it
+into `spec.galera.replicaThreads` of a Galera MariaDB, on create and in the
+owned re-assert, which updates `spec.galera` in place. A single-replica MariaDB
+runs without Galera, and its `replicaThreads` is neither written nor compared.
+mariadb-operator hashes the rendered Galera configuration, `wsrep_slave_threads`
+included, into the pod annotation `k8s.mariadb.com/config-galera`. A changed
+value therefore changes the StatefulSet pod template, and the mariadb-operator
+controller replaces one replica at a time and the primary last
+(`ReplicasFirstPrimaryLast`). Upgrading the c5c3-operator has four consequences:
+
+- At the upgrade, every owned Galera MariaDB of a ControlPlane whose resolved
+  sizing carries 4 (`Standard`, or a `SizingProfile` with `base: Standard`) is
+  updated once and rolls, while a single-replica MariaDB keeps running as it is.
+- A value set by hand on an owned MariaDB is overwritten on the next pass. The
+  release before this field never compares it, so on that release a cluster can
+  take the count by hand ahead of the upgrade:
+  `kubectl patch mariadb <name> --type merge -p '{"spec":{"galera":{"replicaThreads":4}}}'`.
+- To keep one thread, set `spec.sizing.database.applierThreads: 1` on the
+  ControlPlane, or `database.applierThreads: 1` on the `SizingProfile` it
+  references. The field exists only in the new CRDs, so a ControlPlane the new
+  operator reconciles before the field is set rolls to 4 and then again to 1.
+  To keep one thread with no roll at all, apply the new release's CRDs while
+  the old operator still runs
+  (`kubectl apply --server-side --force-conflicts -f operators/c5c3/helm/c5c3-operator/crds/`,
+  see [The CRD window](../testing/operator-upgrade-e2e-tests.md#the-crd-window)),
+  set the field, and only then upgrade the operator. The old operator's
+  mutating webhooks keep a field their Go types do not know
+  (`TestDefault_KeepsASizingFieldItsTypeDoesNotKnow` and its `SizingProfile`
+  twin), so the value is in place when the new operator first reads it.
+  This holds only for a ControlPlane the old operator has no finalizer left
+  to add to. The old operator adds a missing finalizer with a full Update of
+  its own Go type, which drops the field. It adds `c5c3.io/orc-teardown` on
+  the first pass past the suspend gate and the duplicate guard (steps 3 and 4
+  of the [Reconciliation Flow](#reconciliation-flow)): a new ControlPlane, a
+  suspended one that resumes, a parked duplicate whose incumbent is deleted.
+  It adds
+  `openstack.c5c3.io/remote-children` on the first pass on which a target
+  cluster the spec names resolves, and that needs no spec change when a
+  registered cluster engages late. Before you set the value on a
+  ControlPlane, check that
+  `kubectl get controlplane <name> -o jsonpath='{.metadata.finalizers}'`
+  lists `c5c3.io/orc-teardown`, and `openstack.c5c3.io/remote-children` too
+  when the spec names a target cluster. Without
+  `openstack.c5c3.io/remote-children`, place no service on a target cluster
+  until the operator upgrade. If a finalizer is missing, set the value on the
+  `SizingProfile` that `spec.sizing.profileRef` names instead. The old
+  operator only reads a `SizingProfile`, so a value set there stays. A
+  ControlPlane on a built-in profile takes this route through a new
+  `SizingProfile` with that profile as its `base`: name it in
+  `spec.sizing.profileRef` and remove `spec.sizing.profile`, and the sizing
+  resolves as before (`ResolveSizing`). For a value set on the ControlPlane,
+  check right before the upgrade that
+  `kubectl get controlplane <name> -o jsonpath='{.spec.sizing.database.applierThreads}'`
+  still prints 1.
+- An operator rolled back to the release before this field does not compare
+  `replicaThreads` and updates `spec.galera` in place, so the 4 stays on the
+  MariaDB. Returning to 1 takes the `kubectl patch` above with the value 1, and
+  one more roll.
+
+A replaced pod that cannot be scheduled stops the roll with the cluster one
+member short, as
+[Sizing and placement overrides](../infrastructure/infrastructure-manifests.md#sizing-and-placement-overrides)
+describes for the sizing overlay.
 
 **The message bus stays home.** `addMessaging` is called once, at
 `childNamespace(cp)` with the declared-at path `spec.infrastructure.messaging`,
@@ -1205,7 +1273,9 @@ pointer.
 > baseline; the mariadb-operator webhook rejects a CR without a storage size.
 > Both values come from the **declared instance**, so a dedicated database can be
 > sized (and, with `replicas: 1`, taken off Galera) independently of the shared
-> cluster. The Memcached child's `spec.replicas` is likewise taken from the
+> cluster. A Galera child also carries `galera.replicaThreads`, which comes from
+> the sizing (4 under `Standard`) and is the same for every Galera instance of
+> the ControlPlane. The Memcached child's `spec.replicas` is likewise taken from the
 > declared instance's `cache.replicas` (widened to `int64` for unstructured
 > nested-field storage). MariaDB readiness is read via
 > `conditions.IsReady(mariadb.Status.Conditions)`; Memcached readiness is read
