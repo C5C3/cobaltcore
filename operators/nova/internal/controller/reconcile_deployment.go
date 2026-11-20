@@ -194,6 +194,7 @@ func (r *NovaReconciler) reconcileDeployment(ctx context.Context, children clien
 		return ctrl.Result{}, fmt.Errorf("ensuring Service: %w", err)
 	}
 
+	deployment.LogPDBBudgetFallback(ctx, &nova.Spec.API.Deployment, nova.Spec.Autoscaling, nova.Spec.PodDisruptionBudget)
 	pdb := buildPodDisruptionBudget(nova)
 	if err := deployment.EnsurePDB(ctx, children, r.Scheme, nova, pdb); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring PodDisruptionBudget: %w", err)
@@ -462,6 +463,10 @@ func buildAPIService(nova *novav1alpha1.Nova) *corev1.Service {
 // the HPA's minReplicas while spec.autoscaling is set, otherwise the effective
 // replica count of spec.api.deployment.
 //
+// A spec.podDisruptionBudget that deployment.PDBBudgetHonored accepts replaces
+// that rule: the PDB carries the one field the budget sets. An unset field, and
+// a budget the validating webhook would have rejected, keep the rule.
+//
 // The selector is the API component plus the absence of the Job name label
 // (naming.ExcludeJobPods): the migration and archive pods carry no readiness
 // probe, so they are Ready from their first moment, and a budget that counted
@@ -473,7 +478,7 @@ func buildAPIService(nova *novav1alpha1.Nova) *corev1.Service {
 // removes their last pod costs no request.
 func buildPodDisruptionBudget(nova *novav1alpha1.Nova) *policyv1.PodDisruptionBudget {
 	pdb := deployment.BuildPDB(nova.Namespace, nova.Name, commonLabels(nova),
-		apiSelectorLabels(nova), &nova.Spec.API.Deployment, nova.Spec.Autoscaling, nil)
+		apiSelectorLabels(nova), &nova.Spec.API.Deployment, nova.Spec.Autoscaling, nova.Spec.PodDisruptionBudget)
 	pdb.Spec.Selector.MatchExpressions = naming.ExcludeJobPods()
 	return pdb
 }

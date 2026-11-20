@@ -126,6 +126,7 @@ func (r *HorizonReconciler) reconcileDeployment(ctx context.Context, children cl
 		return ctrl.Result{}, fmt.Errorf("ensuring Service: %w", err)
 	}
 
+	deployment.LogPDBBudgetFallback(ctx, &horizon.Spec.Deployment, horizon.Spec.Autoscaling, horizon.Spec.PodDisruptionBudget)
 	pdb := buildPodDisruptionBudget(horizon)
 	if err := deployment.EnsurePDB(ctx, children, r.Scheme, horizon, pdb); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring PodDisruptionBudget: %w", err)
@@ -316,6 +317,10 @@ func uwsgiCommand() []string {
 // lower bound is the HPA's minReplicas while spec.autoscaling is set, otherwise
 // the effective replica count.
 //
+// A spec.podDisruptionBudget that deployment.PDBBudgetHonored accepts replaces
+// that rule: the PDB carries the one field the budget sets. An unset field, and
+// a budget the validating webhook would have rejected, keep the rule.
+//
 // The selector keeps the stable name and instance labels and excludes
 // Job-created pods (naming.ExcludeJobPods) rather than narrowing to the API
 // component. Horizon runs no maintenance Job today, so the requirement is a
@@ -325,7 +330,7 @@ func uwsgiCommand() []string {
 // Service's two-phase narrowing has no counterpart here that would bound that
 // gap.
 func buildPodDisruptionBudget(horizon *horizonv1alpha1.Horizon) *policyv1.PodDisruptionBudget {
-	pdb := deployment.BuildPDB(horizon.Namespace, subResourceName(horizon), commonLabels(horizon), selectorLabels(horizon), &horizon.Spec.Deployment, horizon.Spec.Autoscaling, nil)
+	pdb := deployment.BuildPDB(horizon.Namespace, subResourceName(horizon), commonLabels(horizon), selectorLabels(horizon), &horizon.Spec.Deployment, horizon.Spec.Autoscaling, horizon.Spec.PodDisruptionBudget)
 	pdb.Spec.Selector.MatchExpressions = naming.ExcludeJobPods()
 	return pdb
 }

@@ -151,6 +151,7 @@ func (r *KeystoneReconciler) reconcileDeployment(ctx context.Context, children c
 		return ctrl.Result{}, fmt.Errorf("ensuring Service: %w", err)
 	}
 
+	deployment.LogPDBBudgetFallback(ctx, &keystone.Spec.Deployment, keystone.Spec.Autoscaling, keystone.Spec.PodDisruptionBudget)
 	pdb := buildPodDisruptionBudget(keystone)
 	if err := deployment.EnsurePDB(ctx, children, r.Scheme, keystone, pdb); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring PodDisruptionBudget: %w", err)
@@ -596,6 +597,10 @@ func buildFederationVolumes(fed *federationProjection) []corev1.Volume {
 // deadlock (a PDB with minAvailable=1 on a single pod would block all
 // evictions).
 //
+// A spec.podDisruptionBudget that deployment.PDBBudgetHonored accepts replaces
+// that rule: the PDB carries the one field the budget sets. An unset field, and
+// a budget the validating webhook would have rejected, keep the rule.
+//
 // The selector keeps the stable name and instance labels and excludes the
 // maintenance pods by the absence of the Job name label (naming.ExcludeJobPods)
 // rather than by the API component. Both keep maintenance pods from inflating
@@ -607,7 +612,7 @@ func buildFederationVolumes(fed *federationProjection) []corev1.Volume {
 // all, and the Service's two-phase narrowing has no counterpart here that would
 // bound that gap.
 func buildPodDisruptionBudget(keystone *keystonev1alpha1.Keystone) *policyv1.PodDisruptionBudget {
-	pdb := deployment.BuildPDB(keystone.Namespace, subResourceName(keystone), commonLabels(keystone), selectorLabels(keystone), &keystone.Spec.Deployment, keystone.Spec.Autoscaling, nil)
+	pdb := deployment.BuildPDB(keystone.Namespace, subResourceName(keystone), commonLabels(keystone), selectorLabels(keystone), &keystone.Spec.Deployment, keystone.Spec.Autoscaling, keystone.Spec.PodDisruptionBudget)
 	pdb.Spec.Selector.MatchExpressions = naming.ExcludeJobPods()
 	return pdb
 }
