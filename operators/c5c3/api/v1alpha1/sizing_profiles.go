@@ -19,12 +19,22 @@ import (
 // e2e-controlplane job of CI run 36339033005, rounded up to 5m.
 const minimalServiceCPURequest = "15m"
 
+// StandardDatabaseApplierThreads is the Galera applier thread count per
+// member under the Standard profile. On the rig of #1830 (three members on
+// one host) a Barbican clean-up spent 156 s of a 475 s run under flow
+// control with one thread and 26 s of a 382 s run with four; no other value
+// was measured.
+// deploy/bases/infrastructure/mariadb.yaml follows it, and
+// tests/unit/deploy/mariadb_applier_threads_test.sh keeps the two equal.
+const StandardDatabaseApplierThreads int32 = 4
+
 // BuiltinSizing returns the sizing of the built-in profile name, as a fresh
 // value on every call so a caller can never change the next caller's result.
 // An empty or unknown name returns Standard's sizing.
 //
 // Standard reproduces the replica counts and the database volume size a
-// ControlPlane without sizing always projected, and sets nothing else: every
+// ControlPlane without sizing always projected, sets the Galera applier
+// threads to StandardDatabaseApplierThreads, and sets nothing else: every
 // other value stays with the child operators' render-time defaults and the
 // backing-service operators' defaults. Minimal sizes every component for a
 // single small node. Its figures come from the VPA recommendations of CI run
@@ -39,7 +49,7 @@ func BuiltinSizing(name SizingProfileName) SizingSpec {
 }
 
 // standardSizing is the Standard profile: today's replica counts and database
-// volume size, nothing else.
+// volume size, the Galera applier threads, nothing else.
 func standardSizing() SizingSpec {
 	api := func() *APISizingSpec {
 		return &APISizingSpec{DeploymentSizingSpec: deploymentReplicas(commonv1.DefaultReplicas)}
@@ -54,8 +64,9 @@ func standardSizing() SizingSpec {
 	cinderScheduler := deploymentReplicas(cinderv1alpha1.DefaultSchedulerReplicas)
 	return SizingSpec{
 		Database: &DatabaseSizingSpec{
-			Replicas:    ptr.To(commonv1.DefaultReplicas),
-			StorageSize: commonv1.DatabaseStorageSizeDefault,
+			Replicas:       ptr.To(commonv1.DefaultReplicas),
+			StorageSize:    commonv1.DatabaseStorageSizeDefault,
+			ApplierThreads: ptr.To(StandardDatabaseApplierThreads),
 		},
 		Cache:     &CacheSizingSpec{Replicas: ptr.To(commonv1.DefaultReplicas)},
 		Messaging: &ScaledSizingSpec{Replicas: ptr.To(commonv1.DefaultReplicas)},
