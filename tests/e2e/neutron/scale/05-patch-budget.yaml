@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch: set the Neutron API PodDisruptionBudget to maxUnavailable: 1.
+apiVersion: neutron.openstack.c5c3.io/v1alpha1
+kind: Neutron
+metadata:
+  name: neutron-scale
+  namespace: openstack
+spec:
+  podDisruptionBudget:
+    maxUnavailable: 1

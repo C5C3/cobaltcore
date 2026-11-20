@@ -43,7 +43,8 @@
 #        (Minimal profile plus the autoscaling blocks of 00-controlplane-cr.yaml)
 #        reaches Ready.
 #   4.   The behavior block reaches the Keystone child and its HPA, all seven
-#        HPAs target 150% CPU, the budgets follow the HPA minimum, and the
+#        HPAs target 150% CPU, the budgets follow the HPA minimum except
+#        Placement's, which its sizing sets to maxUnavailable: 1, and the
 #        Keystone cap is sized from maxReplicas: (3+1)×2×(1+1)+2 = 18.
 #   5.   The verticalAutoscaling blocks reach the children, every opted-in
 #        workload has its VPA and no HPA-scaled one has, the Raft VPAs carry
@@ -297,10 +298,15 @@ spec:
           for svc in "${PINNED[@]}"; do
             d="${PINNED_DEPLOY[${svc}]}"
             # The budget follows the HPA minimum of 2, not the one replica the
-            # Minimal profile projects.
-            assert_eq "${d} PDB minAvailable/maxUnavailable" "1/" \
+            # Minimal profile projects. Placement's sizing sets
+            # podDisruptionBudget.maxUnavailable: 1, which replaces that rule.
+            want="1/"
+            [ "${svc}" = placement ] && want="/1"
+            assert_eq "${d} PDB minAvailable/maxUnavailable" "${want}" \
               "$(kubectl get pdb "${d}" -n "${NS}" -o jsonpath='{.spec.minAvailable}/{.spec.maxUnavailable}')"
           done
+          assert_eq "Placement child spec.podDisruptionBudget.maxUnavailable" 1 \
+            "$(kubectl get placement cp-autoscaling-placement -n "${NS}" -o jsonpath='{.spec.podDisruptionBudget.maxUnavailable}')"
 
           # keystoneMaxUserConnections: (pods+1) × processes × (threads+1) + 2
           # with pods = maxReplicas 3, two processes and one thread. Sized from

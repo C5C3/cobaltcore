@@ -6,6 +6,8 @@
 # Verifies that patching spec.deployment.replicas propagates to the
 # Deployment and PDB:
 #   - Initial deployment with replicas: 3 (PDB: minAvailable=1)
+#   - Set spec.podDisruptionBudget to maxUnavailable: 1 (PDB: maxUnavailable=1)
+#   - Unset it again (PDB: minAvailable=1)
 #   - Scale up to 5 replicas — updatedReplicas proves new pods started
 #   - Scale down to 1 replica (PDB: maxUnavailable=1)
 #
@@ -71,7 +73,40 @@ spec:
           done
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
-  # ── Step 3: Scale up to 5 and assert rollout completed ─────────────────
+  # ── Step 3: Set spec.podDisruptionBudget to maxUnavailable: 1 ──────────
+  # The budget the CR states replaces the default rule: the PDB carries
+  # maxUnavailable: 1 and no minAvailable, so two of the three pods keep
+  # serving while a node drains.
+  - try:
+    - patch:
+        file: 03-patch-budget.yaml
+    - assert:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: horizon-scale
+            namespace: openstack
+          spec:
+            maxUnavailable: 1
+            (minAvailable == null): true
+  # ── Step 4: Unset spec.podDisruptionBudget ─────────────────────────────
+  # Without the field the operator renders the default rule again:
+  # minAvailable: 1 at three replicas, and no maxUnavailable.
+  - try:
+    - patch:
+        file: 04-patch-budget-unset.yaml
+    - assert:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: horizon-scale
+            namespace: openstack
+          spec:
+            minAvailable: 1
+            (maxUnavailable == null): true
+  # ── Step 5: Scale up to 5 and assert rollout completed ─────────────────
   - try:
     - patch:
         file: 01-patch-scale-up.yaml
@@ -103,7 +138,7 @@ spec:
           done
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
-  # ── Step 4: Scale down to 1 and assert the PDB flips ───────────────────
+  # ── Step 6: Scale down to 1 and assert the PDB flips ───────────────────
   - try:
     - patch:
         file: 02-patch-scale-to-one.yaml
