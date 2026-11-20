@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.sizing.profile Minimal runs one Keystone API replica, and a
+# podDisruptionBudget.minAvailable of 1 beside it allows no voluntary eviction.
+# Each value is valid as written; the webhook rejects the merged sizing at the
+# lower replica bound the Keystone child would compute (webhook-only).
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-sizing-pdb-blocks-drain
+spec:
+  openStackRelease: "2026.1"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+  services:
+    keystone:
+      mode: Managed
+  sizing:
+    profile: Minimal
+    keystone:
+      api:
+        podDisruptionBudget:
+          minAvailable: 1
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

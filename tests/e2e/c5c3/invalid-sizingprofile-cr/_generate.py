@@ -288,6 +288,37 @@ FIXTURES: tuple[Fixture, ...] = (
             "    applierThreads: 513\n"
         ),
     ),
+    Fixture(
+        filename="14-sizing-pdb-both-set.yaml",
+        comment=(
+            "A spec.keystone.api.podDisruptionBudget that sets both minAvailable and\n"
+            "maxUnavailable violates the CEL rule on the shared PodDisruptionBudgetSpec,\n"
+            "which answers first; the webhook mirrors it."
+        ),
+        name="c5c3-e2e-sizing-pdb-both-set",
+        spec=(
+            "  keystone:\n"
+            "    api:\n"
+            "      podDisruptionBudget:\n"
+            "        minAvailable: 1\n"
+            "        maxUnavailable: 1\n"
+        ),
+    ),
+    Fixture(
+        filename="15-sizing-pdb-malformed-value.yaml",
+        comment=(
+            "A spec.keystone.api.podDisruptionBudget.maxUnavailable of \"half\" is neither an\n"
+            "integer nor a percentage. The int-or-string schema admits any string, so the\n"
+            "webhook answers (webhook-only)."
+        ),
+        name="c5c3-e2e-sizing-pdb-malformed-value",
+        spec=(
+            "  keystone:\n"
+            "    api:\n"
+            "      podDisruptionBudget:\n"
+            "        maxUnavailable: \"half\"\n"
+        ),
+    ),
 )
 
 

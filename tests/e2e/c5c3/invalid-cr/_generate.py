@@ -3268,6 +3268,63 @@ FIXTURES: tuple[Fixture, ...] = (
         infrastructure=MANAGED_INFRA,
         barbican=VALID_BARBICAN + "      dbClean:\n        schedule: every day\n",
     ),
+    Fixture(
+        filename="164-sizing-pdb-both-set.yaml",
+        comment=(
+            "A spec.sizing.keystone.api.podDisruptionBudget that sets both minAvailable and\n"
+            "maxUnavailable violates the CEL rule on the shared PodDisruptionBudgetSpec,\n"
+            "which answers first; the webhook mirrors it on the sizing as written."
+        ),
+        name="cp-sizing-pdb-both-set",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        sizing=(
+            "  sizing:\n"
+            "    keystone:\n"
+            "      api:\n"
+            "        podDisruptionBudget:\n"
+            "          minAvailable: 1\n"
+            "          maxUnavailable: 1\n"
+        ),
+    ),
+    Fixture(
+        filename="165-sizing-pdb-malformed-value.yaml",
+        comment=(
+            "A spec.sizing.keystone.api.podDisruptionBudget.maxUnavailable of \"half\" is\n"
+            "neither an integer nor a percentage. The int-or-string schema admits any\n"
+            "string, so the webhook answers on the sizing as written (webhook-only)."
+        ),
+        name="cp-sizing-pdb-malformed-value",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        sizing=(
+            "  sizing:\n"
+            "    keystone:\n"
+            "      api:\n"
+            "        podDisruptionBudget:\n"
+            "          maxUnavailable: \"half\"\n"
+        ),
+    ),
+    Fixture(
+        filename="166-sizing-pdb-blocks-drain.yaml",
+        comment=(
+            "spec.sizing.profile Minimal runs one Keystone API replica, and a\n"
+            "podDisruptionBudget.minAvailable of 1 beside it allows no voluntary eviction.\n"
+            "Each value is valid as written; the webhook rejects the merged sizing at the\n"
+            "lower replica bound the Keystone child would compute (webhook-only)."
+        ),
+        name="cp-sizing-pdb-blocks-drain",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        sizing=(
+            "  sizing:\n"
+            "    profile: Minimal\n"
+            "    keystone:\n"
+            "      api:\n"
+            "        podDisruptionBudget:\n"
+            "          minAvailable: 1\n"
+        ),
+    ),
     # --- transition wave H: Cinder entry type freeze
     #     (Test: c5c3-invalid-cr-cinder-type-freeze) ---
     Fixture(
