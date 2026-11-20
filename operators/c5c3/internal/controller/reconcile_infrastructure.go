@@ -64,7 +64,11 @@ func childNamespace(cp *c5c3v1alpha1.ControlPlane) string {
 // non-Galera MariaDB so the fresh-create path schedules on a constrained cluster
 // such as a single-node kind), and its storageSize drives the volume size
 // (default 100Gi mirrors deploy/bases/infrastructure/mariadb.yaml; kind/CI
-// pins a far smaller value). TLS / issuerRefs are deliberately NOT set here: the
+// pins a far smaller value). A Galera cluster also gets the applier thread
+// count of the sizing (spec.galera.replicaThreads, which mariadb-operator
+// renders as wsrep_slave_threads), resolved on every pass and never stored in
+// the declared instance, because mariadb-operator accepts a change of it on a
+// live cluster. TLS / issuerRefs are deliberately NOT set here: the
 // baseline wires those from cluster-specific ClusterIssuers that are an
 // infrastructure concern outside the aggregate's knowledge, and the keystone
 // DB-client baseline reads TLS from the projected database spec (the effective
@@ -97,6 +101,11 @@ const (
 	// count; it keeps the projection admissible (replicas >= 1) rather than
 	// creating a zero-replica broker.
 	infraRabbitMQReplicasDefault = commonv1.DefaultReplicas
+	// infraMariaDBApplierThreadsDefault is the Galera applier thread count of a
+	// sizing that names none, the value the mariadb-operator defaults to. A 0
+	// cannot be projected instead: that controller writes 1 over it, and the
+	// next pass would write 0 again.
+	infraMariaDBApplierThreadsDefault = 1
 )
 
 // messagingRecreateAllowedAnnotation, when set to a truthy value on a
@@ -653,9 +662,11 @@ func novaCacheDeclaredAt(cp *c5c3v1alpha1.ControlPlane) string {
 //
 // sizing is the database sizing of the ControlPlane's effective sizing, with the
 // top-level placement already folded in (databaseSizing). It supplies the
-// replica count and the volume size db leaves unset, and the container
-// resources, node selector, tolerations and priority class the MariaDB runs
-// with. A nil sizing projects none of them.
+// replica count and the volume size db leaves unset, the container resources,
+// node selector, tolerations and priority class the MariaDB runs with, and the
+// applier thread count of a Galera cluster (mariaDBApplierThreads). A nil
+// sizing projects none of them, and a Galera cluster then gets one applier
+// thread.
 //
 // Every MariaDB it owns also carries the restricted security contexts of
 // applyMariaDBSecurity, so its pods are admitted in a namespace that enforces
@@ -690,6 +701,7 @@ func (r *ControlPlaneReconciler) ensureMariaDB(
 		replicas = infraMariaDBReplicasDefault
 	}
 	galeraEnabled := replicas > 1
+	threads := mariaDBApplierThreads(sizing)
 
 	// Derive the projected volume size the same way. Storage is immutable on the
 	// mariadb-operator CR, so this value is honoured on fresh create only and
@@ -719,6 +731,9 @@ func (r *ControlPlaneReconciler) ensureMariaDB(
 		mariadb.Namespace = key.Namespace
 		mariadb.Spec.Replicas = replicas
 		mariadb.Spec.Galera = &mariadbv1alpha1.Galera{Enabled: galeraEnabled}
+		if galeraEnabled {
+			mariadb.Spec.Galera.ReplicaThreads = threads
+		}
 		mariadb.Spec.Storage = mariadbv1alpha1.Storage{Size: &size}
 		applyMariaDBPod(mariadb, pod)
 		applyMariaDBSecurity(mariadb, galeraEnabled)
@@ -735,10 +750,10 @@ func (r *ControlPlaneReconciler) ensureMariaDB(
 		//
 		//  1. It is OWNED by this ControlPlane (we created it on an earlier pass):
 		//     re-assert the spec-derived projection — spec.replicas, the derived
-		//     Galera topology, the resources and placement of the sizing, and the
-		//     restricted security contexts — so external drift on the owned cluster
-		//     is corrected back to the declared state, and a sizing change reaches
-		//     the running database.
+		//     Galera topology and applier thread count, the resources and
+		//     placement of the sizing, and the restricted security contexts — so
+		//     external drift on the owned cluster is corrected back to the
+		//     declared state, and a sizing change reaches the running database.
 		//     spec.infrastructure.database.replicas is itself immutable after
 		//     creation (the ControlPlane validating webhook rejects a change), so
 		//     this never scales down or toggles Galera in response to a user edit —
@@ -759,6 +774,7 @@ func (r *ControlPlaneReconciler) ensureMariaDB(
 		if isControlPlaneChild(mariadb, cp) {
 			currentGalera := mariadb.Spec.Galera != nil && mariadb.Spec.Galera.Enabled
 			if mariadb.Spec.Replicas != replicas || currentGalera != galeraEnabled ||
+				!mariaDBApplierThreadsMatch(mariadb, galeraEnabled, threads) ||
 				!mariaDBPodMatches(mariadb, pod) || !mariaDBSecurityMatches(mariadb, galeraEnabled) {
 				mariadb.Spec.Replicas = replicas
 				// spec.galera is updated in place, keeping every live field the
@@ -770,6 +786,9 @@ func (r *ControlPlaneReconciler) ensureMariaDB(
 					mariadb.Spec.Galera = &mariadbv1alpha1.Galera{}
 				}
 				mariadb.Spec.Galera.Enabled = galeraEnabled
+				if galeraEnabled {
+					mariadb.Spec.Galera.ReplicaThreads = threads
+				}
 				applyMariaDBPod(mariadb, pod)
 				applyMariaDBSecurity(mariadb, galeraEnabled)
 				if uerr := c.Update(ctx, mariadb); uerr != nil {
@@ -780,6 +799,26 @@ func (r *ControlPlaneReconciler) ensureMariaDB(
 	}
 
 	return conditions.IsReady(mariadb.Status.Conditions), nil
+}
+
+// mariaDBApplierThreads returns the Galera applier thread count of sizing:
+// infraMariaDBApplierThreadsDefault for a nil sizing, an unset count, or a
+// count below 1 (reachable only when admission was bypassed), the count
+// otherwise. The CRD and the webhook cap it at 512, so it is not capped here.
+func mariaDBApplierThreads(sizing *c5c3v1alpha1.DatabaseSizingSpec) int {
+	if sizing == nil || sizing.ApplierThreads == nil || *sizing.ApplierThreads < 1 {
+		return infraMariaDBApplierThreadsDefault
+	}
+	return int(*sizing.ApplierThreads)
+}
+
+// mariaDBApplierThreadsMatch reports whether m already runs threads applier
+// threads. A MariaDB without Galera has no appliers, so it always matches.
+func mariaDBApplierThreadsMatch(m *mariadbv1alpha1.MariaDB, galeraEnabled bool, threads int) bool {
+	if !galeraEnabled {
+		return true
+	}
+	return m.Spec.Galera != nil && m.Spec.Galera.ReplicaThreads == threads
 }
 
 // applyMariaDBPod writes the container resources and the placement of p onto
