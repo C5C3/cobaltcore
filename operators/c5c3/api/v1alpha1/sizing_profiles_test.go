@@ -54,12 +54,14 @@ func TestBuiltinSizing_StandardMatchesTodaysConstants(t *testing.T) {
 	three := float64(commonv1.DefaultReplicas)
 	one := float64(novav1alpha1.DefaultComponentReplicas)
 
-	// Standard sets replica counts and the database volume size, and nothing
-	// else: no resources, processes, threads, workers, placement, spread or
-	// autoscaling, so every other value stays with the child operators.
+	// Standard sets replica counts, the database volume size and the Galera
+	// applier threads, and nothing else: no resources, processes, threads,
+	// workers, placement, spread or autoscaling, so every other value stays
+	// with the child operators.
 	g.Expect(sizingLeaves(t, BuiltinSizing(SizingProfileStandard))).To(Equal(map[string]any{
 		"database/replicas":          three,
 		"database/storageSize":       commonv1.DatabaseStorageSizeDefault,
+		"database/applierThreads":    float64(StandardDatabaseApplierThreads),
 		"cache/replicas":             three,
 		"messaging/replicas":         three,
 		"keystone/api/replicas":      three,
@@ -78,6 +80,7 @@ func TestBuiltinSizing_StandardMatchesTodaysConstants(t *testing.T) {
 		"nova/consoleProxy/replicas": one,
 	}))
 	g.Expect(commonv1.DatabaseStorageSizeDefault).To(Equal("100Gi"))
+	g.Expect(StandardDatabaseApplierThreads).To(Equal(int32(4)))
 }
 
 func TestBuiltinSizing_MinimalCarriesTable(t *testing.T) {
@@ -115,6 +118,7 @@ func TestBuiltinSizing_MinimalCarriesTable(t *testing.T) {
 
 	g.Expect(leaves).To(HaveKeyWithValue("database/replicas", float64(1)))
 	g.Expect(leaves).To(HaveKeyWithValue("database/storageSize", "512Mi"))
+	g.Expect(leaves).NotTo(HaveKey("database/applierThreads"), "a single-replica database runs no Galera")
 	g.Expect(leaves).To(HaveKeyWithValue("database/resources/requests/cpu", "65m"))
 	g.Expect(leaves).To(HaveKeyWithValue("database/resources/requests/memory", "1Gi"))
 	g.Expect(leaves).To(HaveKeyWithValue("database/resources/limits/memory", "1Gi"))

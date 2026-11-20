@@ -23,8 +23,8 @@ const (
 	// SizingProfileMinimal sizes every component for a single small node.
 	SizingProfileMinimal SizingProfileName = "Minimal"
 	// SizingProfileStandard reproduces the replica counts and the database
-	// volume size a ControlPlane without sizing always had, and sets nothing
-	// else.
+	// volume size a ControlPlane without sizing always had, sets the Galera
+	// applier threads, and sets nothing else.
 	SizingProfileStandard SizingProfileName = "Standard"
 )
 
@@ -331,7 +331,10 @@ type DatabaseSizingSpec struct {
 	// +optional
 	StorageSize string `json:"storageSize,omitempty"`
 
-	// ApplierThreads is the Galera applier thread count per member; unset means 1.
+	// ApplierThreads is the Galera applier thread count per member. Unset takes
+	// the base profile's count (4 under Standard, none under Minimal); a resolved
+	// sizing without a count runs 1, the mariadb-operator default. A
+	// single-replica MariaDB runs without Galera and ignores it.
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=512
 	// +optional

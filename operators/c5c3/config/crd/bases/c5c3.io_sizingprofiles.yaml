@@ -1710,8 +1710,11 @@ spec:
                 description: Database sizes every managed MariaDB.
                 properties:
                   applierThreads:
-                    description: ApplierThreads is the Galera applier thread count
-                      per member; unset means 1.
+                    description: |-
+                      ApplierThreads is the Galera applier thread count per member. Unset takes
+                      the base profile's count (4 under Standard, none under Minimal); a resolved
+                      sizing without a count runs 1, the mariadb-operator default. A
+                      single-replica MariaDB runs without Galera and ignores it.
                     format: int32
                     maximum: 512
                     minimum: 1

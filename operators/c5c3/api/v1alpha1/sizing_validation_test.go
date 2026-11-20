@@ -64,6 +64,7 @@ func TestValidateSizingSpec(t *testing.T) {
 	}{
 		{name: "empty sizing is valid", spec: SizingSpec{}},
 		{name: "both built-in profiles are valid", spec: BuiltinSizing(SizingProfileMinimal)},
+		{name: "the Standard profile is valid", spec: BuiltinSizing(SizingProfileStandard)},
 		{
 			name: "a request above its limit",
 			spec: keystoneAPI(withResourcesAPI(resources(
