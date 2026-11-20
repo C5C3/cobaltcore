@@ -446,6 +446,32 @@ func TestBuildPodDisruptionBudget_FollowsTheHPAMinimum(t *testing.T) {
 	g.Expect(pdb.Spec.MaxUnavailable).To(BeNil())
 }
 
+// TestBuildPodDisruptionBudget_HonorsSpecBudget pins spec.podDisruptionBudget:
+// a set budget is rendered as written, an unset one keeps the default rule,
+// and one that allows no eviction at the lower replica bound (only a resource
+// admitted without the webhook carries it) falls back to the default rule. The
+// selector is the same in all three cases.
+func TestBuildPodDisruptionBudget_HonorsSpecBudget(t *testing.T) {
+	g := NewGomegaWithT(t)
+	horizon := testHorizon()
+	horizon.Spec.Deployment.Replicas = 3
+	unset := buildPodDisruptionBudget(horizon)
+	g.Expect(unset.Spec.MinAvailable).To(HaveValue(Equal(intstr.FromInt32(1))))
+	g.Expect(unset.Spec.MaxUnavailable).To(BeNil())
+
+	horizon.Spec.PodDisruptionBudget = &commonv1.PodDisruptionBudgetSpec{MaxUnavailable: ptr.To(intstr.FromInt32(1))}
+	set := buildPodDisruptionBudget(horizon)
+	g.Expect(set.Spec.MaxUnavailable).To(HaveValue(Equal(intstr.FromInt32(1))))
+	g.Expect(set.Spec.MinAvailable).To(BeNil())
+	g.Expect(set.Spec.Selector).To(Equal(unset.Spec.Selector))
+
+	horizon.Spec.PodDisruptionBudget = &commonv1.PodDisruptionBudgetSpec{MinAvailable: ptr.To(intstr.FromInt32(3))}
+	blocking := buildPodDisruptionBudget(horizon)
+	g.Expect(blocking.Spec.MinAvailable).To(HaveValue(Equal(intstr.FromInt32(1))))
+	g.Expect(blocking.Spec.MaxUnavailable).To(BeNil())
+	g.Expect(blocking.Spec.Selector).To(Equal(unset.Spec.Selector))
+}
+
 // TestHorizonWorkloads_ImagePullPolicy pins the pull policy of every container
 // and init container of every workload the operator renders from spec.image:
 // a tag without pullPolicy resolves to Always, a digest to IfNotPresent,

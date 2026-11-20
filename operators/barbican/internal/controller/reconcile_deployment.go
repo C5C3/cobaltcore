@@ -212,6 +212,7 @@ func (r *BarbicanReconciler) reconcileDeployment(
 		return ctrl.Result{}, fmt.Errorf("ensuring Service: %w", err)
 	}
 
+	deployment.LogPDBBudgetFallback(ctx, &barbican.Spec.Deployment, barbican.Spec.Autoscaling, barbican.Spec.PodDisruptionBudget)
 	pdb := buildPodDisruptionBudget(barbican)
 	if err := deployment.EnsurePDB(ctx, children, r.Scheme, barbican, pdb); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring PodDisruptionBudget: %w", err)
@@ -529,6 +530,10 @@ func barbicanDBTLSVolumeAndMount(barbican *barbicanv1alpha1.Barbican) (corev1.Vo
 // lower bound is the HPA's minReplicas while spec.autoscaling is set, otherwise
 // the effective replica count.
 //
+// A spec.podDisruptionBudget that deployment.PDBBudgetHonored accepts replaces
+// that rule: the PDB carries the one field the budget sets. An unset field, and
+// a budget the validating webhook would have rejected, keep the rule.
+//
 // The selector keeps the stable name and instance labels and excludes the
 // db-sync and db-clean pods by the absence of the Job name label
 // (naming.ExcludeJobPods) rather than by the API component. Both keep Job pods
@@ -540,7 +545,7 @@ func barbicanDBTLSVolumeAndMount(barbican *barbicanv1alpha1.Barbican) (corev1.Vo
 // and the Service's two-phase narrowing has no counterpart here that would bound
 // that gap.
 func buildPodDisruptionBudget(barbican *barbicanv1alpha1.Barbican) *policyv1.PodDisruptionBudget {
-	pdb := deployment.BuildPDB(barbican.Namespace, subResourceName(barbican), commonLabels(barbican), selectorLabels(barbican), &barbican.Spec.Deployment, barbican.Spec.Autoscaling, nil)
+	pdb := deployment.BuildPDB(barbican.Namespace, subResourceName(barbican), commonLabels(barbican), selectorLabels(barbican), &barbican.Spec.Deployment, barbican.Spec.Autoscaling, barbican.Spec.PodDisruptionBudget)
 	pdb.Spec.Selector.MatchExpressions = naming.ExcludeJobPods()
 	return pdb
 }

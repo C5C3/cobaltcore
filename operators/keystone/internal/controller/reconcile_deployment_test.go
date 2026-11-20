@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-logr/logr/funcr"
 	. "github.com/onsi/gomega"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -31,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/cobaltcore/internal/common/database"
 	"github.com/c5c3/cobaltcore/internal/common/deployment"
@@ -2809,6 +2811,87 @@ func TestBuildPodDisruptionBudget_FollowsTheHPAMinimum(t *testing.T) {
 	pdb = buildPodDisruptionBudget(ks)
 	g.Expect(pdb.Spec.MinAvailable).To(HaveValue(Equal(intstr.FromInt32(1))))
 	g.Expect(pdb.Spec.MaxUnavailable).To(BeNil())
+}
+
+// TestBuildPodDisruptionBudget_HonorsSpecBudget pins spec.podDisruptionBudget:
+// a set budget is rendered as written, an unset one keeps the default rule,
+// and one that allows no eviction at the lower replica bound (only a resource
+// admitted without the webhook carries it) falls back to the default rule. The
+// selector is the same in all three cases.
+func TestBuildPodDisruptionBudget_HonorsSpecBudget(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := deployTestKeystone()
+	ks.Spec.Deployment.Replicas = 3
+	unset := buildPodDisruptionBudget(ks)
+	g.Expect(unset.Spec.MinAvailable).To(HaveValue(Equal(intstr.FromInt32(1))))
+	g.Expect(unset.Spec.MaxUnavailable).To(BeNil())
+
+	ks.Spec.PodDisruptionBudget = &commonv1.PodDisruptionBudgetSpec{MaxUnavailable: ptr.To(intstr.FromInt32(1))}
+	set := buildPodDisruptionBudget(ks)
+	g.Expect(set.Spec.MaxUnavailable).To(HaveValue(Equal(intstr.FromInt32(1))))
+	g.Expect(set.Spec.MinAvailable).To(BeNil())
+	g.Expect(set.Spec.Selector).To(Equal(unset.Spec.Selector))
+
+	ks.Spec.PodDisruptionBudget = &commonv1.PodDisruptionBudgetSpec{MinAvailable: ptr.To(intstr.FromInt32(3))}
+	blocking := buildPodDisruptionBudget(ks)
+	g.Expect(blocking.Spec.MinAvailable).To(HaveValue(Equal(intstr.FromInt32(1))))
+	g.Expect(blocking.Spec.MaxUnavailable).To(BeNil())
+	g.Expect(blocking.Spec.Selector).To(Equal(unset.Spec.Selector))
+}
+
+// TestReconcileDeployment_PDBFallbackLogged pins the only trace of the
+// fallback: a budget that allows no eviction at the lower replica bound (only a
+// resource admitted without the webhook carries it) logs one line and stores the
+// default rule, and an honored budget logs nothing of it and is stored as
+// written.
+func TestReconcileDeployment_PDBFallbackLogged(t *testing.T) {
+	const fallback = deployment.PDBBudgetFallbackMessage
+	for _, tc := range []struct {
+		name               string
+		budget             *commonv1.PodDisruptionBudgetSpec
+		wantLogged         bool
+		wantMinAvailable   *intstr.IntOrString
+		wantMaxUnavailable *intstr.IntOrString
+	}{
+		{
+			name:             "blocking budget",
+			budget:           &commonv1.PodDisruptionBudgetSpec{MinAvailable: ptr.To(intstr.FromInt32(3))},
+			wantLogged:       true,
+			wantMinAvailable: ptr.To(intstr.FromInt32(1)),
+		},
+		{
+			name:               "honored budget",
+			budget:             &commonv1.PodDisruptionBudgetSpec{MaxUnavailable: ptr.To(intstr.FromInt32(1))},
+			wantMaxUnavailable: ptr.To(intstr.FromInt32(1)),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ks := deployTestKeystone()
+			ks.Spec.Deployment.Replicas = 3
+			ks.Spec.PodDisruptionBudget = tc.budget
+			r := newDeployTestReconciler(deployTestScheme(), ks)
+
+			var logs []string
+			logger := funcr.New(func(prefix, args string) {
+				logs = append(logs, prefix+" "+args)
+			}, funcr.Options{})
+			ctx := log.IntoContext(context.Background(), logger)
+
+			_, err := r.reconcileDeployment(ctx, r.Client, ks, "keystone-config-abc123", "", "", nil)
+			g.Expect(err).NotTo(HaveOccurred())
+
+			if tc.wantLogged {
+				g.Expect(strings.Join(logs, "\n")).To(ContainSubstring(fallback))
+			} else {
+				g.Expect(strings.Join(logs, "\n")).NotTo(ContainSubstring(fallback))
+			}
+			var pdb policyv1.PodDisruptionBudget
+			g.Expect(r.Client.Get(ctx, types.NamespacedName{Name: "test-keystone", Namespace: "default"}, &pdb)).To(Succeed())
+			g.Expect(pdb.Spec.MinAvailable).To(Equal(tc.wantMinAvailable))
+			g.Expect(pdb.Spec.MaxUnavailable).To(Equal(tc.wantMaxUnavailable))
+		})
+	}
 }
 
 // TestKeystoneWorkloads_ImagePullPolicy pins the pull policy of every

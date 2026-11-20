@@ -169,6 +169,7 @@ func (r *NeutronReconciler) reconcileDeployment(ctx context.Context, children cl
 		return ctrl.Result{}, fmt.Errorf("ensuring Service: %w", err)
 	}
 
+	deployment.LogPDBBudgetFallback(ctx, &neutron.Spec.Deployment, neutron.Spec.Autoscaling, neutron.Spec.PodDisruptionBudget)
 	pdb := buildPodDisruptionBudget(neutron)
 	if err := deployment.EnsurePDB(ctx, children, r.Scheme, neutron, pdb); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring PodDisruptionBudget: %w", err)
@@ -655,6 +656,10 @@ func buildNeutronService(neutron *neutronv1alpha1.Neutron) *corev1.Service {
 // lower bound is the HPA's minReplicas while spec.autoscaling is set, otherwise
 // the effective replica count.
 //
+// A spec.podDisruptionBudget that deployment.PDBBudgetHonored accepts replaces
+// that rule: the PDB carries the one field the budget sets. An unset field, and
+// a budget the validating webhook would have rejected, keep the rule.
+//
 // The selector is the API component's, plus the absence of the Job name label.
 // The component key keeps the worker pods out of the budget, which protects the
 // API pods alone; without it a drain could take every API replica at once while
@@ -664,7 +669,7 @@ func buildNeutronService(neutron *neutronv1alpha1.Neutron) *corev1.Service {
 // disruptionsAllowed.
 func buildPodDisruptionBudget(neutron *neutronv1alpha1.Neutron) *policyv1.PodDisruptionBudget {
 	pdb := deployment.BuildPDB(neutron.Namespace, neutron.Name, commonLabels(neutron),
-		apiSelectorLabels(neutron), &neutron.Spec.Deployment, neutron.Spec.Autoscaling, nil)
+		apiSelectorLabels(neutron), &neutron.Spec.Deployment, neutron.Spec.Autoscaling, neutron.Spec.PodDisruptionBudget)
 	pdb.Spec.Selector.MatchExpressions = naming.ExcludeJobPods()
 	return pdb
 }

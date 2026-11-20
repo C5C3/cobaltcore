@@ -177,6 +177,7 @@ func (r *PlacementReconciler) reconcileDeployment(ctx context.Context, children 
 		return ctrl.Result{}, fmt.Errorf("ensuring Service: %w", err)
 	}
 
+	deployment.LogPDBBudgetFallback(ctx, &placement.Spec.Deployment, placement.Spec.Autoscaling, placement.Spec.PodDisruptionBudget)
 	pdb := buildPodDisruptionBudget(placement)
 	if err := deployment.EnsurePDB(ctx, children, r.Scheme, placement, pdb); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring PodDisruptionBudget: %w", err)
@@ -436,6 +437,10 @@ func placementDBTLSVolumeAndMount(placement *placementv1alpha1.Placement) (corev
 // lower bound is the HPA's minReplicas while spec.autoscaling is set, otherwise
 // the effective replica count.
 //
+// A spec.podDisruptionBudget that deployment.PDBBudgetHonored accepts replaces
+// that rule: the PDB carries the one field the budget sets. An unset field, and
+// a budget the validating webhook would have rejected, keep the rule.
+//
 // The selector keeps the stable name and instance labels and excludes the
 // db-sync pods by the absence of the Job name label (naming.ExcludeJobPods)
 // rather than by the API component. Both keep Job pods from inflating
@@ -447,7 +452,7 @@ func placementDBTLSVolumeAndMount(placement *placementv1alpha1.Placement) (corev
 // all, and the Service's two-phase narrowing has no counterpart here that would
 // bound that gap.
 func buildPodDisruptionBudget(placement *placementv1alpha1.Placement) *policyv1.PodDisruptionBudget {
-	pdb := deployment.BuildPDB(placement.Namespace, subResourceName(placement), commonLabels(placement), selectorLabels(placement), &placement.Spec.Deployment, placement.Spec.Autoscaling, nil)
+	pdb := deployment.BuildPDB(placement.Namespace, subResourceName(placement), commonLabels(placement), selectorLabels(placement), &placement.Spec.Deployment, placement.Spec.Autoscaling, placement.Spec.PodDisruptionBudget)
 	pdb.Spec.Selector.MatchExpressions = naming.ExcludeJobPods()
 	return pdb
 }
