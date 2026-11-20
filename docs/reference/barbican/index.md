@@ -79,8 +79,8 @@ The v1 operator resolves the onboarding decisions as follows:
   deleting a secret, container, or order flips its row to deleted, so the tables
   grow for the lifetime of the deployment. Every Barbican gets the
   `{name}-db-clean` CronJob; `spec.dbClean` only varies its retention window,
-  schedule, extra passes, and suspension. An unbounded soft-delete backlog is a
-  deferred outage rather than a posture worth offering.
+  schedule, extra passes, batch size and pause, and suspension. An unbounded
+  soft-delete backlog is a deferred outage rather than a posture worth offering.
 
 ## Owned resources
 

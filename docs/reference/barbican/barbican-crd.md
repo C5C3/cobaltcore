@@ -111,7 +111,10 @@ retention window. The block is resolved at reconcile time by `effectiveDBClean`
 (`operators/barbican/internal/controller/reconcile_dbclean.go`) and is left
 alone by the defaulting webhook (`barbican_webhook.go`), so a field left unset
 keeps tracking the operator default across upgrades instead of freezing today's
-value into the stored CR. A nil block resolves like an empty one. A ControlPlane
+value into the stored CR. `batchSize` and `batchPauseMilliseconds` are the
+exception: the operator resolves no default for them and passes them only when
+set, so an unset one keeps the image's default. A nil block resolves like an
+empty one. A ControlPlane
 sets this block through
 [`spec.services.barbican.dbClean`](../c5c3/controlplane-crd.md#servicebarbicandbcleanspec).
 
@@ -122,6 +125,8 @@ sets this block through
 | `softDeleteExpiredSecrets` | `*bool` | no | `true` | Adds the `--soft-delete-expired-secrets` pass, which soft-deletes secrets whose expiration has passed so the same run can purge them under the retention window. The `true` default is a documented deviation from barbican's CLI default of `false`: an expired secret is unusable, and without the pass its row is never soft-deleted and therefore never purged. Set it to `false` for the upstream behaviour |
 | `cleanUnassociatedProjects` | `*bool` | no | `false` | Adds the `--clean-unassociated-projects` pass, which deletes project rows that no longer own a secret, container, or order, along with their quota records. Opt-in: the pass keys off barbican's own associations and not off Keystone, so a project whose secrets were all deleted loses its configured quotas too |
 | `suspend` | `bool` | no | `false` | Pauses the CronJob without deleting it. `DBCleanReady` stays True while suspended, under its own reason, because a paused clean-up is an operator's posture. It is the staging escape hatch for a brownfield database whose backlog has never been cleaned |
+| `batchSize` | `*int32` (Minimum=1) | no | none, the image's 500 | Rows the clean-up changes per committed batch (`--batch-size`). The operator passes the flag only when the field is set. A set field needs an image that carries the option: an older image rejects the flag, the run fails, and `DBCleanReady` turns False with reason `DBCleanJobFailed` |
+| `batchPauseMilliseconds` | `*int32` (Minimum=0) | no | none, the image's 0 (no pause) | Milliseconds the clean-up waits after each committed batch (`--batch-pause-ms`); `0` disables the pause. The operator passes the flag only when the field is set, and a set field needs an image that carries the option, as for `batchSize` |
 
 The CronJob is also suspended for the length of a schema convergence, whatever
 `suspend` says: `barbican-manage db upgrade` takes DDL locks the clean-up's bulk
@@ -129,8 +134,30 @@ The CronJob is also suspended for the length of a schema convergence, whatever
 and a `Forbid` concurrency policy, so a wedged run fails instead of accumulating
 one active Job per firing.
 
-The clean-up of the Barbican image changes rows in batches of 10,000 and
-commits each batch ([source patches](../ci-cd/container-images.md#barbican)).
+The clean-up of the Barbican image changes rows in batches and commits each
+batch, 500 rows per commit by default
+([source patches](../ci-cd/container-images.md#barbican)). On a Galera cluster
+one batch is one write set, which the other members apply with their applier
+thread before they apply any later commit, of any database. The MariaDB of a
+ControlPlane runs one applier thread: the c5c3-operator sets only
+`Galera{Enabled: …}`, and mariadb-operator defaults `replicaThreads` to 1. On
+a three-member rig under that configuration, the longest commit of another
+database during a run took 17.5 s with 10,000 rows per batch and 2.8 s with
+500, below the 10 s socket read timeout of the API containers
+([issue #1830](https://github.com/C5C3/cobaltcore/issues/1830)).
+`batchPauseMilliseconds` adds a wait after each committed batch. It is off by
+default, because pauses of 100 to 500 ms showed no benefit on the rig.
+
+A run ends after the one-hour `activeDeadlineSeconds`, so it cleans at most
+3,600,000 × `batchSize` / (`batchPauseMilliseconds` + *t*) rows, where *t* is
+the milliseconds one batch takes; on the rig a 500-row batch took about one
+second. Each batch reads its ids on from the last id of the batch before, so
+*t* does not grow with the rows earlier batches passed. A run that the
+deadline ends is reported as `DBCleanJobFailed`, and the next run continues
+behind the committed batches. For an unset field the
+operator passes no flag, so an image built before the two options keeps
+cleaning with its own default.
+
 A batch that conflicts with a concurrent API write (MariaDB error 1020, 1213 or
 1205) is rolled back, logged at WARNING and retried, up to ten times. A run that
 still fails keeps the batches it committed, and the next attempt of the Job
@@ -189,8 +216,9 @@ return, because the renderer writes them verbatim and a newline would smuggle a
 whole extra option past the ownership and catalog gates. The hostname is on that
 list because it reaches the renderer as `[DEFAULT] host_href`, and `[DEFAULT]`
 is rendered first, so an injected line lands in a section the operator never
-writes again. `spec.dbClean` carries the second: `retentionDays` has a floor of
-one, and `schedule` is parsed for cron grammar.
+writes again. `spec.dbClean` carries the second: `retentionDays` and
+`batchSize` have a floor of one, `batchPauseMilliseconds` a floor of zero, and
+`schedule` is parsed for cron grammar.
 
 Two admission warnings describe what a change deletes, since neither is
 recoverable and both are legitimate operational choices:

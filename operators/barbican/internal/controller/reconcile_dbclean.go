@@ -92,6 +92,12 @@ func dbCleanCronJobName(barbicanName string) string {
 // (RetentionDays, SoftDeleteExpiredSecrets and CleanUnassociatedProjects
 // non-nil, Schedule non-empty).
 //
+// BatchSize and BatchPauseMilliseconds are the exception: they are copied as
+// set and stay nil when unset, so dbCleanCommand passes no flag and the image's
+// default applies. Passing a resolved default instead would fail every run on an
+// image built before barbican-manage had the options, which answers an unknown
+// flag with exit code 2.
+//
 // SoftDeleteExpiredSecrets resolves to true, a deliberate deviation from
 // barbican's own CLI default of false: an expired secret is unusable, and
 // without the pass its row is never soft-deleted and therefore never reaches the
@@ -127,7 +133,8 @@ func effectiveDBClean(spec *barbicanv1alpha1.DBCleanSpec) barbicanv1alpha1.DBCle
 // pass — a Barbican without spec.dbClean still gets the sweep, because barbican
 // never hard-deletes on its own and an unbounded soft-delete backlog is a
 // deferred outage rather than a posture worth offering — and spec.dbClean only
-// varies its retention, schedule, extra passes, and suspension.
+// varies its retention, schedule, extra passes, batch size and pause, and
+// suspension.
 //
 // Run visibility is derived rather than watched: the CronJob controller spawns
 // one Job per firing, so the step lists the Jobs carrying this Barbican's
@@ -352,7 +359,8 @@ func installedReleaseOrNone(barbican *barbicanv1alpha1.Barbican) string {
 
 // dbCleanCommand assembles the barbican-manage invocation from the resolved
 // settings: the retention window, then the two optional passes in the order
-// barbican documents them.
+// barbican documents them, then --batch-size and --batch-pause-ms when
+// spec.dbClean sets them. An explicit pause of 0 is passed as well.
 //
 // It is a plain argv rather than a shell line: the passes are flags of one
 // command, so there is nothing to chain and no shell to interpose.
@@ -363,6 +371,12 @@ func dbCleanCommand(clean barbicanv1alpha1.DBCleanSpec) []string {
 	}
 	if *clean.CleanUnassociatedProjects {
 		cmd = append(cmd, "--clean-unassociated-projects")
+	}
+	if clean.BatchSize != nil {
+		cmd = append(cmd, "--batch-size", strconv.Itoa(int(*clean.BatchSize)))
+	}
+	if clean.BatchPauseMilliseconds != nil {
+		cmd = append(cmd, "--batch-pause-ms", strconv.Itoa(int(*clean.BatchPauseMilliseconds)))
 	}
 	return cmd
 }

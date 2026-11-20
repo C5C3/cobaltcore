@@ -273,6 +273,20 @@ func TestBarbicanValidateCreate_RejectionTable(t *testing.T) {
 			wantSub: "retentionDays must be at least 1",
 		},
 		{
+			name: "dbClean batchSize below one rejected",
+			mutate: func(o *Barbican) {
+				o.Spec.DBClean = &DBCleanSpec{BatchSize: ptr.To(int32(0))}
+			},
+			wantSub: "batchSize must be at least 1",
+		},
+		{
+			name: "dbClean batchPauseMilliseconds negative rejected",
+			mutate: func(o *Barbican) {
+				o.Spec.DBClean = &DBCleanSpec{BatchPauseMilliseconds: ptr.To(int32(-1))}
+			},
+			wantSub: "batchPauseMilliseconds must not be negative",
+		},
+		{
 			name: "rejected owned key in extraConfig",
 			mutate: func(o *Barbican) {
 				o.Spec.ExtraConfig = map[string]map[string]string{
@@ -423,6 +437,37 @@ func TestBarbicanValidate_DBCleanScheduleGrammar(t *testing.T) {
 		ok.Spec.DBClean = &DBCleanSpec{Schedule: schedule}
 		_, err := w.ValidateCreate(context.Background(), ok)
 		g.Expect(err).NotTo(gomega.HaveOccurred(), "schedule %q must be accepted", schedule)
+	}
+}
+
+// The batch size and the pause reach barbican-manage as flags only when set, so
+// the webhook checks a set value against its bound and leaves an unset one, or
+// a missing block, alone.
+func TestBarbicanValidate_DBCleanBatchBounds(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &BarbicanWebhook{}
+
+	bad := validBarbican()
+	bad.Spec.DBClean = &DBCleanSpec{
+		BatchSize:              ptr.To(int32(0)),
+		BatchPauseMilliseconds: ptr.To(int32(-1)),
+	}
+	_, err := w.ValidateCreate(context.Background(), bad)
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err.Error()).To(gomega.ContainSubstring("spec.dbClean.batchSize"))
+	g.Expect(err.Error()).To(gomega.ContainSubstring("batchSize must be at least 1"))
+	g.Expect(err.Error()).To(gomega.ContainSubstring("spec.dbClean.batchPauseMilliseconds"))
+	g.Expect(err.Error()).To(gomega.ContainSubstring("batchPauseMilliseconds must not be negative"))
+
+	for name, clean := range map[string]*DBCleanSpec{
+		"the boundary values":     {BatchSize: ptr.To(int32(1)), BatchPauseMilliseconds: ptr.To(int32(0))},
+		"a block without either":  {RetentionDays: ptr.To(int32(30))},
+		"no dbClean block at all": nil,
+	} {
+		ok := validBarbican()
+		ok.Spec.DBClean = clean
+		_, err := w.ValidateCreate(context.Background(), ok)
+		g.Expect(err).NotTo(gomega.HaveOccurred(), "%s must be accepted", name)
 	}
 }
 

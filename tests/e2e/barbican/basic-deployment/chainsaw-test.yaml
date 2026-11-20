@@ -21,8 +21,9 @@
 #   - The rendered barbican.conf carries [oslo_policy]
 #     enforce_new_defaults = true and no enforce_scope
 #   - The Barbican API answers /healthcheck with 200 from inside the API pod
-#   - A failed run of the db-clean CronJob is deleted once a manual run
-#     completes, and DBCleanReady returns to True
+#   - The db-clean CronJob's command ends with the --batch-size and
+#     --batch-pause-ms flags of spec.dbClean, a failed run of it is deleted once
+#     a manual run completes, and DBCleanReady returns to True
 #   - The barbican-operator release exports its reconcile families and the
 #     db_sync and db_clean counters and duration counts of barbican-basic
 #   - The barbican-basic-db-index Job completes, and containers, orders and
@@ -367,12 +368,22 @@ spec:
   # and DBCleanReady returns to True; a pass between the two runs may have set
   # it False. jq sets the owner reference's controller field explicitly, so the
   # step does not depend on what the kubectl version writes there.
+  # Before the runs the step asserts that the CronJob's command ends with the
+  # --batch-size and --batch-pause-ms flags 00-barbican-cr.yaml sets, so the
+  # manual run proves the 2026.1 image accepts the flags the operator renders.
   - try:
     - script:
         shell: bash
         timeout: 480s
         content: |
           set -euo pipefail
+
+          cmd=$(kubectl get cronjob barbican-basic-db-clean -n openstack \
+            -o jsonpath='{.spec.jobTemplate.spec.template.spec.containers[0].command}')
+          [[ "$cmd" == *'"--batch-size","200","--batch-pause-ms","10"]' ]] || {
+            echo "FAIL: the db-clean command does not end with the batch flags: $cmd"
+            exit 1
+          }
 
           kubectl create job barbican-basic-db-clean-failing \
             --from=cronjob/barbican-basic-db-clean -n openstack --dry-run=client -o json \

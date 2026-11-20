@@ -637,3 +637,22 @@ spec:
             ($error != null): true
             (contains($error, 'openStackRelease')): true
             (contains($error, 'must be 2026.1 or later')): true
+  # spec.dbClean.batchSize of 0 must be rejected by the CRD Minimum=1 marker.
+  - try:
+    - apply:
+        file: 59-dbclean-batchsize-zero.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'dbClean.batchSize')): true
+            (contains($error, 'should be greater than or equal to 1')): true
+  # spec.dbClean.batchPauseMilliseconds of -1 must be rejected by the CRD
+  # Minimum=0 marker.
+  - try:
+    - apply:
+        file: 60-dbclean-batchpause-negative.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'dbClean.batchPauseMilliseconds')): true
+            (contains($error, 'should be greater than or equal to 0')): true

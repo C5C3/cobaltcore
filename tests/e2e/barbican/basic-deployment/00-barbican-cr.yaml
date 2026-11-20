@@ -8,7 +8,9 @@
 # the ESO-synced barbican-db Secret and the service-user password from the
 # pre-seeded keystone-admin Secret (both deploy/overlays/kind/infrastructure). Barbican
 # exits at start-up without a secret store, so 01-barbican-secretstore.yaml
-# attaches one before Ready can settle.
+# attaches one before Ready can settle. dbClean sets the batch size and the pause,
+# so Step 7 can assert the flags in the CronJob's command and run them against the
+# image.
 apiVersion: barbican.openstack.c5c3.io/v1alpha1
 kind: Barbican
 metadata:
@@ -39,3 +41,6 @@ spec:
     secretRef:
       name: keystone-admin
       key: password
+  dbClean:
+    batchSize: 200
+    batchPauseMilliseconds: 10
