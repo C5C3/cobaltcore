@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.podDisruptionBudget.minAvailable of 3 at three API replicas allows no
+# voluntary eviction, so a node drain could not evict an API pod. CEL cannot
+# compare the budget with the replica count, so the validating webhook
+# answers (validation.PodDisruptionBudgetEvictable) with "allows no voluntary
+# eviction".
+apiVersion: placement.openstack.c5c3.io/v1alpha1
+kind: Placement
+metadata:
+  name: placement-invalid-pdb-blocks-drain
+spec:
+  openStackRelease: "2026.1"
+  deployment:
+    replicas: 3
+  image:
+    repository: ghcr.io/c5c3/placement
+    tag: "2026.1"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: placement
+    secretRef:
+      name: placement-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    secretRef:
+      name: placement-service-password
+  podDisruptionBudget:
+    minAvailable: 3

@@ -966,6 +966,48 @@ FIXTURES: list[Fixture] = [
 # answers first with "should be greater than or equal to 2"; the keystone
 # webhook twin ("must be at least 2") is defense in depth.""",
     ),
+    Fixture(
+        filename="41-pdb-both-set.yaml",
+        name="invalid-pdb-both-set",
+        trailing="""\
+  podDisruptionBudget:
+    minAvailable: 1
+    maxUnavailable: 1
+""",
+        comment="""\
+# spec.podDisruptionBudget sets both minAvailable and maxUnavailable. The CEL
+# rule on the shared PodDisruptionBudgetSpec answers first with "exactly one
+# of minAvailable or maxUnavailable must be set"; the webhook mirrors it
+# (validation.PodDisruptionBudgetValues).""",
+    ),
+    Fixture(
+        filename="42-pdb-malformed-value.yaml",
+        name="invalid-pdb-malformed-value",
+        trailing="""\
+  podDisruptionBudget:
+    maxUnavailable: "half"
+""",
+        comment="""\
+# spec.podDisruptionBudget.maxUnavailable of "half" is neither an integer nor a
+# percentage. The int-or-string schema admits any string, so the validating
+# webhook answers (validation.PodDisruptionBudgetValues) with "must be a
+# non-negative integer or a percentage from 0% to 100%".""",
+    ),
+    Fixture(
+        filename="43-pdb-blocks-drain.yaml",
+        name="invalid-pdb-blocks-drain",
+        replicas=3,
+        trailing="""\
+  podDisruptionBudget:
+    minAvailable: 3
+""",
+        comment="""\
+# spec.podDisruptionBudget.minAvailable of 3 at three API replicas allows no
+# voluntary eviction, so a node drain could not evict an API pod. CEL cannot
+# compare the budget with the replica count, so the validating webhook
+# answers (validation.PodDisruptionBudgetEvictable) with "allows no voluntary
+# eviction".""",
+    ),
 ]
 
 

@@ -516,3 +516,36 @@ spec:
             ($error != null): true
             (contains($error, 'spec.uwsgi.httpKeepAliveTimeout')): true
             (contains($error, 'should be greater than or equal to 2')): true
+  # spec.podDisruptionBudget with both minAvailable and maxUnavailable must be
+  # rejected by the CEL rule on PodDisruptionBudgetSpec, which answers before
+  # the webhook twin.
+  - try:
+    - apply:
+        file: 41-pdb-both-set.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.podDisruptionBudget')): true
+            (contains($error, 'exactly one of minAvailable or maxUnavailable must be set')): true
+  # spec.podDisruptionBudget.maxUnavailable that is neither an integer nor a
+  # percentage passes the int-or-string schema and must be rejected by the
+  # validating webhook (webhook-only).
+  - try:
+    - apply:
+        file: 42-pdb-malformed-value.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.podDisruptionBudget.maxUnavailable')): true
+            (contains($error, 'must be a non-negative integer or a percentage')): true
+  # spec.podDisruptionBudget.minAvailable equal to the three API replicas allows
+  # no voluntary eviction and must be rejected by the validating webhook
+  # (webhook-only).
+  - try:
+    - apply:
+        file: 43-pdb-blocks-drain.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.podDisruptionBudget.minAvailable')): true
+            (contains($error, 'allows no voluntary eviction')): true

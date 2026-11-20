@@ -651,6 +651,53 @@ FIXTURES: tuple[Fixture, ...] = (
         name="cinder-invalid-release-floor",
         release="2025.2",
     ),
+    Fixture(
+        filename="31-pdb-both-set.yaml",
+        comment=(
+            "spec.podDisruptionBudget sets both minAvailable and maxUnavailable. The CEL\n"
+            "rule on the shared PodDisruptionBudgetSpec answers first with \"exactly one\n"
+            "of minAvailable or maxUnavailable must be set\"; the webhook mirrors it\n"
+            "(validation.PodDisruptionBudgetValues)."
+        ),
+        name="cinder-invalid-pdb-both-set",
+        extra=(
+            "  podDisruptionBudget:\n"
+            "    minAvailable: 1\n"
+            "    maxUnavailable: 1\n"
+        ),
+    ),
+    Fixture(
+        filename="32-pdb-malformed-value.yaml",
+        comment=(
+            "spec.podDisruptionBudget.maxUnavailable of \"half\" is neither an integer nor a\n"
+            "percentage. The int-or-string schema admits any string, so the validating\n"
+            "webhook answers (validation.PodDisruptionBudgetValues) with \"must be a\n"
+            "non-negative integer or a percentage from 0% to 100%\"."
+        ),
+        name="cinder-invalid-pdb-malformed-value",
+        extra=(
+            "  podDisruptionBudget:\n"
+            "    maxUnavailable: \"half\"\n"
+        ),
+    ),
+    Fixture(
+        filename="33-pdb-blocks-drain.yaml",
+        comment=(
+            "spec.podDisruptionBudget.minAvailable of 3 at three API replicas allows no\n"
+            "voluntary eviction, so a node drain could not evict an API pod. CEL cannot\n"
+            "compare the budget with the replica count, so the validating webhook\n"
+            "answers (validation.PodDisruptionBudgetEvictable) with \"allows no voluntary\n"
+            "eviction\"."
+        ),
+        name="cinder-invalid-pdb-blocks-drain",
+        extra=(
+            "  api:\n"
+            "    deployment:\n"
+            "      replicas: 3\n"
+            "  podDisruptionBudget:\n"
+            "    minAvailable: 3\n"
+        ),
+    ),
 )
 
 

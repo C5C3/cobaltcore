@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.podDisruptionBudget.maxUnavailable of "half" is neither an integer nor a
+# percentage. The int-or-string schema admits any string, so the validating
+# webhook answers (validation.PodDisruptionBudgetValues) with "must be a
+# non-negative integer or a percentage from 0% to 100%".
+apiVersion: horizon.openstack.c5c3.io/v1alpha1
+kind: Horizon
+metadata:
+  name: horizon-invalid-pdb-malformed-value
+  namespace: openstack
+spec:
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/horizon
+    tag: "2026.1"
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  secretKeyRef:
+    name: horizon-secret-key
+    key: secret-key
+  podDisruptionBudget:
+    maxUnavailable: "half"
