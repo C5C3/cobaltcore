@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	. "github.com/onsi/gomega"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 )
 
 func TestParseOptionCatalog_Valid(t *testing.T) {
@@ -233,4 +234,105 @@ func TestKeyExemptionsFromRegistry_IncludesRejectedAndReported(t *testing.T) {
 		"database": {"connection": {}},
 		"token":    {"provider": {}},
 	}))
+}
+
+func overridesPath() *field.Path {
+	return field.NewPath("spec").Child("extraConfig")
+}
+
+func TestValidateOverrides_EmptyOverridesSkipValidation(t *testing.T) {
+	var missing *OptionCatalog
+	for name, catalog := range map[string]*OptionCatalog{"catalog": testCatalog(), "nil catalog": missing} {
+		t.Run(name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			warnings, errs := catalog.ValidateOverrides(overridesPath(), nil, "2026.1", CatalogExemptions{}, "")
+			g.Expect(warnings).To(BeNil())
+			g.Expect(errs).To(BeNil())
+		})
+	}
+}
+
+// A missing catalog never blocks admission. It admits the overrides with one
+// warning that tells a tag naming no release from a release the build ships no
+// catalog for.
+func TestValidateOverrides_NilCatalogFailsOpenWithOneWarning(t *testing.T) {
+	overrides := map[string]map[string]string{"DEFAULT": {"no_such_option": "1"}}
+	for _, tc := range []struct {
+		name, tag, want string
+	}{
+		{
+			name: "tag names no release",
+			tag:  "latest",
+			want: "spec.extraConfig was not validated against an option catalog: spec.openStackRelease does not name an OpenStack release",
+		},
+		{
+			name: "release without an embedded catalog",
+			tag:  "2026.1-p1",
+			want: `spec.extraConfig was not validated against an option catalog: no catalog for release "2026.1" is embedded in this operator build`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			var catalog *OptionCatalog
+			warnings, errs := catalog.ValidateOverrides(overridesPath(), overrides, tc.tag, CatalogExemptions{}, " (hint)")
+			g.Expect(errs).To(BeNil())
+			g.Expect(warnings).To(Equal([]string{tc.want}))
+		})
+	}
+}
+
+// An unknown option and an unknown section are both field errors on the
+// offending key. Only the unknown section carries the service's hint.
+func TestValidateOverrides_UnknownOptionAndSection(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	warnings, errs := testCatalog().ValidateOverrides(overridesPath(), map[string]map[string]string{
+		"DEFAULT": {"log_level": "INFO"},
+		"cache":   {"enabled": "true"},
+	}, "2026.1", CatalogExemptions{}, " (declare plugin sections via spec.plugins)")
+
+	g.Expect(warnings).To(BeNil())
+	g.Expect(errs).To(HaveLen(2))
+	g.Expect(errs[0].Type).To(Equal(field.ErrorTypeInvalid))
+	g.Expect(errs[0].Field).To(Equal("spec.extraConfig[DEFAULT][log_level]"))
+	g.Expect(errs[0].BadValue).To(Equal("log_level"))
+	g.Expect(errs[0].Detail).To(Equal("no such option in the keystone 2026.1 option catalog"))
+	g.Expect(errs[1].Field).To(Equal("spec.extraConfig[cache][enabled]"))
+	g.Expect(errs[1].Detail).To(Equal(
+		"no such section in the keystone 2026.1 option catalog (declare plugin sections via spec.plugins)"))
+}
+
+func TestValidateOverrides_ExemptionsAreHonored(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	warnings, errs := testCatalog().ValidateOverrides(overridesPath(), map[string]map[string]string{
+		"DEFAULT":  {"log_level": "INFO"},
+		"memcache": {"servers": "cache:11211"},
+	}, "2026.1", CatalogExemptions{
+		Sections: map[string]struct{}{"memcache": {}},
+		Keys:     map[string]map[string]struct{}{"DEFAULT": {"log_level": {}}},
+	}, "")
+
+	g.Expect(warnings).To(BeNil())
+	g.Expect(errs).To(BeNil())
+}
+
+// A deprecated option is admitted with a warning that names its replacement,
+// or says that there is none.
+func TestValidateOverrides_DeprecatedOptionsWarn(t *testing.T) {
+	g := NewGomegaWithT(t)
+	catalog := testCatalog()
+	section := catalog.Sections["DEFAULT"]
+	section.Deprecated = map[string]string{"verbose": "debug", "use_syslog_rfc_format": ""}
+	catalog.Sections["DEFAULT"] = section
+
+	warnings, errs := catalog.ValidateOverrides(overridesPath(), map[string]map[string]string{
+		"DEFAULT": {"verbose": "true", "use_syslog_rfc_format": "true"},
+	}, "2026.1", CatalogExemptions{}, "")
+
+	g.Expect(errs).To(BeNil())
+	g.Expect(warnings).To(ConsistOf(
+		"spec.extraConfig [DEFAULT] verbose: deprecated option in keystone 2026.1, replaced by debug",
+		"spec.extraConfig [DEFAULT] use_syslog_rfc_format: deprecated option in keystone 2026.1 with no replacement",
+	))
 }

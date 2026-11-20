@@ -390,3 +390,65 @@ func TestGatewayParentRefSpec_DeepCopy(t *testing.T) {
 		t.Errorf("DeepCopy of a nil *GatewayParentRefSpec must return nil")
 	}
 }
+
+// TestServiceUserSpec_WithDefaults backs the identity admission and
+// reconciliation share: an absent field takes its default, a set field is
+// kept, and the receiver is left as the caller wrote it.
+func TestServiceUserSpec_WithDefaults(t *testing.T) {
+	tests := []struct {
+		name string
+		in   ServiceUserSpec
+		want ServiceUserSpec
+	}{
+		{
+			name: "only the Secret name is set",
+			in:   ServiceUserSpec{SecretRef: SecretRefSpec{Name: "glance-service-user"}},
+			want: ServiceUserSpec{
+				Username:          "glance",
+				ProjectName:       "service",
+				UserDomainName:    "Default",
+				ProjectDomainName: "Default",
+				SecretRef:         SecretRefSpec{Name: "glance-service-user", Key: "password"},
+			},
+		},
+		{
+			name: "explicit values are kept",
+			in: ServiceUserSpec{
+				Username:          "images",
+				ProjectName:       "infra",
+				UserDomainName:    "ops",
+				ProjectDomainName: "platform",
+				SecretRef:         SecretRefSpec{Name: "creds", Key: "token"},
+			},
+			want: ServiceUserSpec{
+				Username:          "images",
+				ProjectName:       "infra",
+				UserDomainName:    "ops",
+				ProjectDomainName: "platform",
+				SecretRef:         SecretRefSpec{Name: "creds", Key: "token"},
+			},
+		},
+		{
+			name: "a partial spec fills only the gaps",
+			in:   ServiceUserSpec{ProjectName: "infra", SecretRef: SecretRefSpec{Name: "creds"}},
+			want: ServiceUserSpec{
+				Username:          "glance",
+				ProjectName:       "infra",
+				UserDomainName:    "Default",
+				ProjectDomainName: "Default",
+				SecretRef:         SecretRefSpec{Name: "creds", Key: "password"},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before := tt.in
+			if got := tt.in.WithDefaults("glance"); got != tt.want {
+				t.Errorf("WithDefaults() = %+v, want %+v", got, tt.want)
+			}
+			if tt.in != before {
+				t.Errorf("WithDefaults() changed its receiver: %+v, was %+v", tt.in, before)
+			}
+		})
+	}
+}
