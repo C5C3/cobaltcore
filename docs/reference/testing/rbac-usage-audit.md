@@ -449,9 +449,9 @@ With `list` removed, `get` no longer follows it: `scheduling.k8s.io/priorityclas
 
 | Kind | Verbs | Outcome | Marker or call site |
 | --- | --- | --- | --- |
-| `configmaps` | `delete` | kept | `operators/glance/internal/controller/reconcile_config.go:181` (`reconcileConfig`) |
+| `configmaps` | `delete` | kept | `operators/glance/internal/controller/reconcile_config.go:170` (`pruneConfigHistory`) |
 | `configmaps` | `update`, `patch` | removed | `operators/glance/internal/controller/glance_controller.go:340` |
-| `secrets` | `delete` | kept | `operators/glance/internal/controller/reconcile_backends.go:192` (`reconcileBackends`) |
+| `secrets` | `delete` | kept | `operators/glance/internal/controller/reconcile_config.go:176` (`pruneConfigHistory`) |
 | `secrets` | `patch` | removed | `operators/glance/internal/controller/glance_controller.go:343` |
 | `secrets` | `update` | kept | `operators/glance/internal/controller/reconcile_dbconnection_secret.go:49` (`reconcileDBConnectionSecret`) |
 | `services` | `delete` | kept | `operators/glance/internal/controller/reconcile_deployment.go:210` (`reconcileDeployment`) |
@@ -462,7 +462,7 @@ With `list` removed, `get` no longer follows it: `scheduling.k8s.io/priorityclas
 | `autoscaling/horizontalpodautoscalers` | `update` | removed | `operators/glance/internal/controller/glance_controller.go:366` |
 | `autoscaling.k8s.io/verticalpodautoscalers` | `create`, `patch` | kept | `internal/common/deployment/vpa_flow.go:190` (`ReconcileVPAs`) |
 | `autoscaling.k8s.io/verticalpodautoscalers` | `delete` | kept | `internal/common/deployment/vpa_flow.go:213` (`ReconcileVPAs`) |
-| `autoscaling.k8s.io/verticalpodautoscalers` | `list`, `watch` | kept | `operators/glance/internal/controller/glance_controller.go:826` (`SetupWithManager`) |
+| `autoscaling.k8s.io/verticalpodautoscalers` | `list`, `watch` | kept | `operators/glance/internal/controller/glance_controller.go:727` (`SetupWithManager`) |
 | `autoscaling.k8s.io/verticalpodautoscalers` | `update` | removed | `operators/glance/internal/controller/glance_controller.go:370` |
 | `batch/cronjobs` | `delete` | kept | `operators/glance/internal/controller/reconcile_dbpurge.go:154` (`reconcileDBPurge`) |
 | `batch/cronjobs` | `update` | removed | `operators/glance/internal/controller/glance_controller.go:347` |
