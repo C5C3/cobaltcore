@@ -1062,6 +1062,15 @@ spec:
             ($error != null): true
             (contains($error, 'spec.sizing.cinder.scheduler.verticalAutoscaling.minReplicas')): true
             (contains($error, 'should be greater than or equal to 1')): true
+    # A Galera applier thread count of 0 at spec.sizing.database.applierThreads
+    # must be rejected by the Minimum=1 marker; the webhook mirrors it.
+    - apply:
+        file: 163-sizing-database-applier-threads-zero.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.sizing.database.applierThreads')): true
+            (contains($error, 'should be greater than or equal to 1')): true
     # A 256-character spec.regionDescription is refused by the CRD's MaxLength 255
     # marker (K-ORC's bound on RegionResourceSpec.Description); there is no
     # webhook mirror, so the error is the API server's own.
