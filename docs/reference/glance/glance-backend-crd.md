@@ -194,8 +194,9 @@ lists the five steps and what differs per kind.
 | `CredentialsReady` | GlanceBackend | False | `TargetClusterUnavailable` | The parent Glance's `spec.targetClusterRef` names a target cluster that is not registered or no longer resolves. The message carries the resolver's error, the backend requeues after 15 seconds, and nothing is created on any cluster. See [Target Clusters](../target-clusters.md). |
 | `ConfigProjected` | GlanceBackend | True | `ConfigProjected` | The parent Glance Deployment mounts a `backends.conf` carrying this backend's `[<name>]` store section. |
 | `ConfigProjected` | GlanceBackend | False | `WaitingForProjection` | The projection has not landed in the Deployment yet. |
-| `Ready` | GlanceBackend | True | `AllReady` | Both sub-conditions are True. |
-| `Ready` | GlanceBackend | False | `NotAllReady` | At least one sub-condition is not True. |
+| `Ready` | GlanceBackend | True | `AllReady` | Both sub-conditions are True for the backend's current generation and the pass succeeded. |
+| `Ready` | GlanceBackend | False | `NotAllReady` | A sub-condition is missing, not True, or was last observed at an older generation. |
+| `Ready` | GlanceBackend | False | `ReconcileError` | Both sub-conditions are current and True, but the pass returned an error. The sub-conditions keep their status, and `Ready` returns to True on the next successful pass. |
 | `BackendsReady` | Glance | True | `AllBackendsProjected` | Every attached backend is credential-ready and projected, with a valid default. |
 | `BackendsReady` | Glance | False | `WaitingForBackends` | A valid default exists but at least one backend is pending (not yet credential-ready, or skipped for a per-backend fault); the ready subset is still projected. |
 | `BackendsReady` | Glance | False | `NoDefaultBackend` | Zero or more than one credential-ready backend is marked `isDefault`; last-good config is retained. |

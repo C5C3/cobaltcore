@@ -262,8 +262,8 @@ func (r *GlanceBackendReconciler) gateCredentials(ctx context.Context, children 
 // watch normally wakes this controller when the projection lands, but a
 // converged Glance status (no write, no event) must not strand the backend.
 // A transient Get/List failure returns the error WITHOUT demoting a
-// currently-True condition, so a converged backend does not flap on a cache
-// blip.
+// currently-True ConfigProjected. Only the aggregate Ready reports the failed
+// pass (False/ReconcileError) until the next pass succeeds.
 func (r *GlanceBackendReconciler) observeConfigProjected(ctx context.Context, children client.Client, backend *glancev1alpha1.GlanceBackend) (ctrl.Result, error) {
 	projected, err := r.isConfigProjected(ctx, children, backend)
 	if err != nil {
