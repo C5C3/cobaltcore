@@ -4180,8 +4180,9 @@ spec:
                       Default.
                     type: string
                   username:
-                    description: Username is the Keystone service username. Glance
-                      defaults to "glance".
+                    description: |-
+                      Username is the Keystone service username. Each operator defaults it to
+                      the name of its service, such as glance.
                     type: string
                 required:
                 - secretRef
