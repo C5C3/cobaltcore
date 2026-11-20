@@ -540,7 +540,7 @@ func barbicanDBTLSVolumeAndMount(barbican *barbicanv1alpha1.Barbican) (corev1.Vo
 // and the Service's two-phase narrowing has no counterpart here that would bound
 // that gap.
 func buildPodDisruptionBudget(barbican *barbicanv1alpha1.Barbican) *policyv1.PodDisruptionBudget {
-	pdb := deployment.BuildPDB(barbican.Namespace, subResourceName(barbican), commonLabels(barbican), selectorLabels(barbican), &barbican.Spec.Deployment, barbican.Spec.Autoscaling)
+	pdb := deployment.BuildPDB(barbican.Namespace, subResourceName(barbican), commonLabels(barbican), selectorLabels(barbican), &barbican.Spec.Deployment, barbican.Spec.Autoscaling, nil)
 	pdb.Spec.Selector.MatchExpressions = naming.ExcludeJobPods()
 	return pdb
 }

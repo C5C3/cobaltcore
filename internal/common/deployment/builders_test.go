@@ -5,8 +5,10 @@
 package deployment
 
 import (
+	"context"
 	"testing"
 
+	"github.com/go-logr/logr/funcr"
 	"github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
@@ -14,6 +16,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
@@ -42,7 +45,7 @@ func TestBuildPDB_MultiReplicaUsesMinAvailable(t *testing.T) {
 
 	labels := map[string]string{"app.kubernetes.io/name": "keystone"}
 	selector := map[string]string{"app.kubernetes.io/instance": "ks"}
-	pdb := BuildPDB("ns", "ks", labels, selector, &commonv1.DeploymentSpec{Replicas: 3}, nil)
+	pdb := BuildPDB("ns", "ks", labels, selector, &commonv1.DeploymentSpec{Replicas: 3}, nil, nil)
 
 	g.Expect(pdb.Name).To(gomega.Equal("ks"))
 	g.Expect(pdb.Namespace).To(gomega.Equal("ns"))
@@ -57,7 +60,7 @@ func TestBuildPDB_MultiReplicaUsesMinAvailable(t *testing.T) {
 func TestBuildPDB_SingleReplicaUsesMaxUnavailable(t *testing.T) {
 	g := gomega.NewWithT(t)
 
-	pdb := BuildPDB("ns", "ks", nil, nil, &commonv1.DeploymentSpec{Replicas: 1}, nil)
+	pdb := BuildPDB("ns", "ks", nil, nil, &commonv1.DeploymentSpec{Replicas: 1}, nil, nil)
 
 	g.Expect(pdb.Spec.MinAvailable).To(gomega.BeNil())
 	g.Expect(pdb.Spec.MaxUnavailable).To(gomega.HaveValue(gomega.Equal(intstr.FromInt32(1))))
@@ -68,7 +71,7 @@ func TestBuildPDB_SingleReplicaUsesMaxUnavailable(t *testing.T) {
 func TestBuildPDB_ZeroReplicasNormalized(t *testing.T) {
 	g := gomega.NewWithT(t)
 
-	pdb := BuildPDB("ns", "ks", nil, nil, &commonv1.DeploymentSpec{}, nil)
+	pdb := BuildPDB("ns", "ks", nil, nil, &commonv1.DeploymentSpec{}, nil, nil)
 
 	g.Expect(pdb.Spec.MinAvailable).To(gomega.HaveValue(gomega.Equal(intstr.FromInt32(1))))
 }
@@ -118,7 +121,7 @@ func TestBuildPDB_FollowsTheHPAMinimum(t *testing.T) {
 	g := gomega.NewWithT(t)
 
 	pdb := BuildPDB("ns", "ks", nil, nil, &commonv1.DeploymentSpec{Replicas: 3},
-		&commonv1.AutoscalingSpec{MinReplicas: ptr.To(int32(1)), MaxReplicas: 5})
+		&commonv1.AutoscalingSpec{MinReplicas: ptr.To(int32(1)), MaxReplicas: 5}, nil)
 
 	g.Expect(pdb.Spec.MaxUnavailable).To(gomega.HaveValue(gomega.Equal(intstr.FromInt32(1))))
 	g.Expect(pdb.Spec.MinAvailable).To(gomega.BeNil())
@@ -130,7 +133,7 @@ func TestBuildPDB_HPAMinimumAboveOneKeepsMinAvailable(t *testing.T) {
 	g := gomega.NewWithT(t)
 
 	pdb := BuildPDB("ns", "ks", nil, nil, &commonv1.DeploymentSpec{Replicas: 1},
-		&commonv1.AutoscalingSpec{MinReplicas: ptr.To(int32(3)), MaxReplicas: 5})
+		&commonv1.AutoscalingSpec{MinReplicas: ptr.To(int32(3)), MaxReplicas: 5}, nil)
 
 	g.Expect(pdb.Spec.MinAvailable).To(gomega.HaveValue(gomega.Equal(intstr.FromInt32(1))))
 	g.Expect(pdb.Spec.MaxUnavailable).To(gomega.BeNil())
@@ -142,10 +145,151 @@ func TestBuildPDB_NonPositiveHPAMinimumAllowsOneDisruption(t *testing.T) {
 	g := gomega.NewWithT(t)
 
 	pdb := BuildPDB("ns", "ks", nil, nil, &commonv1.DeploymentSpec{Replicas: 3},
-		&commonv1.AutoscalingSpec{MinReplicas: ptr.To(int32(0)), MaxReplicas: 5})
+		&commonv1.AutoscalingSpec{MinReplicas: ptr.To(int32(0)), MaxReplicas: 5}, nil)
 
 	g.Expect(pdb.Spec.MaxUnavailable).To(gomega.HaveValue(gomega.Equal(intstr.FromInt32(1))))
 	g.Expect(pdb.Spec.MinAvailable).To(gomega.BeNil())
+}
+
+// A budget that allows an eviction at the lower replica bound is rendered as
+// written: the field it sets, and no other.
+func TestBuildPDB_HonorsTheBudget(t *testing.T) {
+	selector := map[string]string{"app.kubernetes.io/instance": "ks"}
+	for _, tc := range []struct {
+		name               string
+		budget             *commonv1.PodDisruptionBudgetSpec
+		wantMinAvailable   *intstr.IntOrString
+		wantMaxUnavailable *intstr.IntOrString
+	}{
+		{
+			name:               "maxUnavailable",
+			budget:             &commonv1.PodDisruptionBudgetSpec{MaxUnavailable: ptr.To(intstr.FromInt32(1))},
+			wantMaxUnavailable: ptr.To(intstr.FromInt32(1)),
+		},
+		{
+			name:             "minAvailable percentage",
+			budget:           &commonv1.PodDisruptionBudgetSpec{MinAvailable: ptr.To(intstr.FromString("50%"))},
+			wantMinAvailable: ptr.To(intstr.FromString("50%")),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			spec := &commonv1.DeploymentSpec{Replicas: 3}
+
+			g.Expect(PDBBudgetHonored(spec, nil, tc.budget)).To(gomega.BeTrue())
+			pdb := BuildPDB("ns", "ks", nil, selector, spec, nil, tc.budget)
+
+			g.Expect(pdb.Spec.MinAvailable).To(gomega.Equal(tc.wantMinAvailable))
+			g.Expect(pdb.Spec.MaxUnavailable).To(gomega.Equal(tc.wantMaxUnavailable))
+			g.Expect(pdb.Spec.Selector.MatchLabels).To(gomega.Equal(selector))
+		})
+	}
+}
+
+// A budget that cannot be honored (one that would block every drain at the
+// lower replica bound, or a malformed one, both of which only a resource
+// admitted without the webhook carries) renders the default rule.
+func TestBuildPDB_UnhonoredBudgetRendersTheDefault(t *testing.T) {
+	intVal := func(v int32) *intstr.IntOrString { return ptr.To(intstr.FromInt32(v)) }
+	hpaMinOne := &commonv1.AutoscalingSpec{MinReplicas: ptr.To(int32(1)), MaxReplicas: 5}
+	for _, tc := range []struct {
+		name               string
+		autoscaling        *commonv1.AutoscalingSpec
+		budget             *commonv1.PodDisruptionBudgetSpec
+		wantMinAvailable   *intstr.IntOrString
+		wantMaxUnavailable *intstr.IntOrString
+	}{
+		{name: "nil budget", wantMinAvailable: intVal(1)},
+		{
+			name:             "minAvailable equal to the replica count",
+			budget:           &commonv1.PodDisruptionBudgetSpec{MinAvailable: intVal(3)},
+			wantMinAvailable: intVal(1),
+		},
+		{
+			name:             "maxUnavailable 0",
+			budget:           &commonv1.PodDisruptionBudgetSpec{MaxUnavailable: intVal(0)},
+			wantMinAvailable: intVal(1),
+		},
+		{
+			name:               "minAvailable 1 under an HPA minimum of one",
+			autoscaling:        hpaMinOne,
+			budget:             &commonv1.PodDisruptionBudgetSpec{MinAvailable: intVal(1)},
+			wantMaxUnavailable: intVal(1),
+		},
+		{name: "empty block", budget: &commonv1.PodDisruptionBudgetSpec{}, wantMinAvailable: intVal(1)},
+		{
+			name:             "both fields",
+			budget:           &commonv1.PodDisruptionBudgetSpec{MinAvailable: intVal(1), MaxUnavailable: intVal(1)},
+			wantMinAvailable: intVal(1),
+		},
+		{
+			name:             "malformed value",
+			budget:           &commonv1.PodDisruptionBudgetSpec{MaxUnavailable: ptr.To(intstr.FromString("half"))},
+			wantMinAvailable: intVal(1),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			spec := &commonv1.DeploymentSpec{Replicas: 3}
+
+			g.Expect(PDBBudgetHonored(spec, tc.autoscaling, tc.budget)).To(gomega.BeFalse())
+			pdb := BuildPDB("ns", "ks", nil, nil, spec, tc.autoscaling, tc.budget)
+
+			g.Expect(pdb.Spec.MinAvailable).To(gomega.Equal(tc.wantMinAvailable))
+			g.Expect(pdb.Spec.MaxUnavailable).To(gomega.Equal(tc.wantMaxUnavailable))
+		})
+	}
+}
+
+// The PDB holds a copy of the budget value, so a change to the rendered
+// object cannot reach the CR the budget came from.
+func TestBuildPDB_CopiesTheBudget(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	budget := &commonv1.PodDisruptionBudgetSpec{MaxUnavailable: ptr.To(intstr.FromInt32(1))}
+	pdb := BuildPDB("ns", "ks", nil, nil, &commonv1.DeploymentSpec{Replicas: 3}, nil, budget)
+	*pdb.Spec.MaxUnavailable = intstr.FromString("50%")
+
+	g.Expect(budget.MaxUnavailable).To(gomega.HaveValue(gomega.Equal(intstr.FromInt32(1))))
+}
+
+// The fallback line is logged exactly when a set budget is not honored: never
+// for an unset or an honored budget.
+func TestLogPDBBudgetFallback(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		autoscaling *commonv1.AutoscalingSpec
+		budget      *commonv1.PodDisruptionBudgetSpec
+		wantLogged  bool
+	}{
+		{name: "nil budget"},
+		{name: "honored budget", budget: &commonv1.PodDisruptionBudgetSpec{MaxUnavailable: ptr.To(intstr.FromInt32(1))}},
+		{
+			name:       "budget blocking at the replica count",
+			budget:     &commonv1.PodDisruptionBudgetSpec{MinAvailable: ptr.To(intstr.FromInt32(3))},
+			wantLogged: true,
+		},
+		{
+			name:        "budget blocking at the HPA minimum",
+			autoscaling: &commonv1.AutoscalingSpec{MinReplicas: ptr.To(int32(1)), MaxReplicas: 5},
+			budget:      &commonv1.PodDisruptionBudgetSpec{MinAvailable: ptr.To(intstr.FromInt32(1))},
+			wantLogged:  true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			var logs []string
+			logger := funcr.New(func(prefix, args string) { logs = append(logs, prefix+" "+args) }, funcr.Options{})
+
+			LogPDBBudgetFallback(log.IntoContext(context.Background(), logger), &commonv1.DeploymentSpec{Replicas: 3}, tc.autoscaling, tc.budget)
+
+			if tc.wantLogged {
+				g.Expect(logs).To(gomega.ConsistOf(gomega.ContainSubstring(PDBBudgetFallbackMessage)))
+			} else {
+				g.Expect(logs).To(gomega.BeEmpty())
+			}
+		})
+	}
 }
 
 func TestBuildHPA_MinReplicasDefaultsToEffectiveReplicas(t *testing.T) {
