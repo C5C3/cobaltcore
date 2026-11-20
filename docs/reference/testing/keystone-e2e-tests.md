@@ -99,7 +99,7 @@ Deployment rollout, bootstrap Job).
 | [oidc-federation](../keystone/identity-backend-crd.md#chainsaw-e2e-tests) | `keystone-oidc` | Full OIDC federation cycle against an in-suite two-realm Keycloak fixture: federation-object provisioning, mod_auth_openidc sidecar rollout + Service targetPort switch, bearer/CLI flow via introspection, browser websso round trip, mapping-driven group membership, multi-realm issuer pinning, clean detach. The multi-realm coverage exercises both discovery shapes: the second backend reaches Ready via discovery-mode `.well-known` metadata fetch against the in-cluster IdP (the e2e-operator job allowlists kind's Service CIDR through `federation.metadataAllowCidrs`), while the first keeps explicit `spec.oidc.endpoints` |
 | [saml-federation](../keystone/identity-backend-crd.md#chainsaw-e2e-tests) | `keystone-saml` | Full SAML federation cycle against an in-suite Keycloak SAML realm: IdP-metadata Secret from the live descriptor, federation-object provisioning, mod_auth_mellon sidecar rollout + Service targetPort switch, SP-metadata export, OIDC/SAML coexistence on one sidecar, clean detach |
 | [fernet-rotation](#fernet-rotation) | `keystone-fernet` | CronJob schedule and `concurrencyPolicy: Forbid`, manual rotation trigger, Secret data change, pod UID stability (no rollout), token validation, staging-Secret recreation after an out-of-band delete, pruning past `maxActiveKeys` (a pruned token gets a 401), a refused staging PATCH retried without a second rotation, a held scheduled rotation skipped under Forbid (`JobAlreadyActive`) |
-| [scale](#scale) | `keystone-scale` | Replica scaling up (3→5) and down (5→2) |
+| [scale](#scale) | `keystone-scale` | `spec.podDisruptionBudget` set and unset at three replicas, then replica scaling up (3→5) and down (5→2→1) |
 | [suspend](#suspend) | `keystone-suspend` | `spec.suspend`: Suspended=True beside a frozen Ready, no correction of a hand-scaled Deployment or a spec change while suspended, catch-up on resume, finalizer cleanup on delete while suspended |
 | [deletion-cleanup](#deletion-cleanup) | `keystone-cleanup` | Owner reference cascading deletion of all owned resources |
 | [policy-overrides](#policy-overrides) | `keystone-policy` | oslo.policy integration via ConfigMap reference |
@@ -308,20 +308,25 @@ previous key set.
 **File:** `tests/e2e/keystone/scale/chainsaw-test.yaml`
 
 **Purpose:** Validates that patching `spec.deployment.replicas` on the Keystone CR propagates to the
-underlying Deployment. Tests both scale-up (3→5) and scale-down (5→2).
+underlying Deployment and its PodDisruptionBudget, and that `spec.podDisruptionBudget` replaces the
+default budget while it is set. Tests scale-up (3→5) and scale-down (5→2→1).
 
 **Steps:**
 
 | # | Step Name | Type | Details |
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR with replicas: 3 | `apply` | Applies `00-keystone-cr.yaml` — Keystone CR `keystone-scale` with replicas: 3 |
-| 2 | Assert Ready and initial replica count | `assert` (5m) | Ready=True, Deployment `keystone-scale-api` has replicas: 3 and availableReplicas >= 3 |
-| 3 | Scale up to 5 replicas | `patch` | Applies `01-patch-scale-up.yaml` — patches replicas to 5 |
-| 4 | Assert scale-up | `assert` (5m) | Deployment has replicas: 5 and availableReplicas >= 5 |
-| 5 | Scale down to 2 replicas | `patch` | Applies `02-patch-scale-down.yaml` — patches replicas to 2 |
-| 6 | Assert scale-down | `assert` (5m) | Deployment has replicas: 2 and availableReplicas == 2 (exact equality to verify scale-down completed) |
+| 2 | Assert Ready and initial replica count | `assert` (5m) | Ready=True, Deployment `keystone-scale` has replicas: 3 and availableReplicas >= 3, PDB `minAvailable: 1` |
+| 3 | Set spec.podDisruptionBudget to maxUnavailable: 1 | `patch` + `assert` (5m) | Applies `04-patch-budget.yaml`; the PDB carries `maxUnavailable: 1` and no `minAvailable` |
+| 4 | Unset spec.podDisruptionBudget | `patch` + `assert` (5m) | Applies `05-patch-budget-unset.yaml` (`podDisruptionBudget: null`); the PDB is back at `minAvailable: 1` with no `maxUnavailable` |
+| 5 | Scale up to 5 replicas | `patch` | Applies `01-patch-scale-up.yaml` — patches replicas to 5 |
+| 6 | Assert scale-up | `assert` (5m) | Deployment has replicas: 5 and availableReplicas >= 5, PDB `minAvailable: 1` |
+| 7 | Scale down to 2 replicas | `patch` | Applies `02-patch-scale-down.yaml` — patches replicas to 2 |
+| 8 | Assert scale-down | `assert` (5m) | Deployment has replicas: 2 and availableReplicas == 2 (exact equality to verify scale-down completed), PDB `minAvailable: 1` |
+| 9 | Scale down to 1 replica | `patch` | Applies `03-patch-scale-to-one.yaml` — patches replicas to 1 |
+| 10 | Assert the PDB switches to maxUnavailable | `assert` (5m) | Deployment has replicas: 1 and availableReplicas == 1, PDB `maxUnavailable: 1` |
 
-**Fixtures:** `00-keystone-cr.yaml`, `01-patch-scale-up.yaml`, `02-patch-scale-down.yaml`
+**Fixtures:** `00-keystone-cr.yaml`, `01-patch-scale-up.yaml`, `02-patch-scale-down.yaml`, `03-patch-scale-to-one.yaml`, `04-patch-budget.yaml`, `05-patch-budget-unset.yaml`
 
 ---
 
@@ -1591,7 +1596,9 @@ tests/e2e/keystone/
 │   ├── 00-keystone-cr.yaml             Keystone CR with replicas: 3
 │   ├── 01-patch-scale-up.yaml          Patch replicas to 5
 │   ├── 02-patch-scale-down.yaml        Patch replicas to 2
-│   └── 03-patch-scale-to-one.yaml      Patch replicas to 1
+│   ├── 03-patch-scale-to-one.yaml      Patch replicas to 1
+│   ├── 04-patch-budget.yaml            Patch podDisruptionBudget to maxUnavailable: 1
+│   └── 05-patch-budget-unset.yaml      Patch podDisruptionBudget to null
 ├── schema-drift-detection/
 │   ├── chainsaw-test.yaml              Schema drift detection
 │   └── 00-keystone-cr.yaml             Keystone CR for schema drift test

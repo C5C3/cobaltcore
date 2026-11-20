@@ -43,6 +43,7 @@ Suspended (`.spec.suspend`), and Age.
 | `gateway` | `*GatewaySpec` | no | External exposure via a Gateway API HTTPRoute forwarding to the `{name}` Service on port 9311; requires `hostname` and `parentRef.name`, and takes an optional `path` (default `/`) and an optional `annotations` map, copied verbatim onto the generated HTTPRoute's metadata for implementation-specific settings such as rate limits or CORS. Setting it also changes what barbican advertises: `[DEFAULT] host_href` and `status.endpoint` become `https://{hostname}`. Removing the block deletes the HTTPRoute |
 | `networkPolicy` | `*NetworkPolicySpec` | no | Ingress restricted to TCP 9311 from the listed sources; egress auto-derived (DNS, the database, the Keystone endpoint's port, the cache, and the OpenBao servers of the projected stores), with `additionalEgress` appended after it. At least one ingress source is required (fail-closed) |
 | `autoscaling` | `*AutoscalingSpec` | no | HPA bounds, CPU/memory utilization targets and scaling behavior. At least one of `targetCPUUtilization` or `targetMemoryUtilization` is required, and an unset `minReplicas` resolves to `spec.deployment.replicas`. The bound also sizes the database user's `max_user_connections`, which the operator derives from `maxReplicas` when an HPA owns the replica count |
+| `podDisruptionBudget` | [`*PodDisruptionBudgetSpec`](../keystone/keystone-crd.md#poddisruptionbudgetspec) | no | Budget of the API PodDisruptionBudget, `minAvailable` or `maxUnavailable`. When `nil`, the operator renders `minAvailable: 1` above a lower replica bound of one and `maxUnavailable: 1` at one. A set budget must allow one voluntary eviction at the lower replica bound |
 | `logging` | `*LoggingSpec` | no | oslo.log settings: `format` (`text`/`json`), `level`, `debug`, `perLoggerLevels`. The defaulting webhook materializes the block (`text`/`INFO`/`debug: false`) and the validating webhook checks the enums and the per-logger map, but the config renderer does not read the field yet, so no `[DEFAULT]` logging key is derived from it. Set the logging options through `spec.extraConfig` until it is wired |
 | `secretStoreRef` | `*SecretStoreRefSpec` | no | Selects the External Secrets store the operator resolves `SecretsReady` against: `kind` (`ClusterSecretStore` \| `SecretStore`, default `ClusterSecretStore`) and a required `name`. When omitted the shared cluster-scoped `openbao-cluster-store` is used. A namespaced store is resolved in the Barbican's own namespace. Normally projected from the owning [ControlPlane](../c5c3/controlplane-crd.md). It selects the ESO store the credential Secrets arrive through and has nothing to do with the secret stores barbican itself writes to |
 | `targetClusterRef` | `*TargetClusterRefSpec` | no | Names the registered target cluster that receives this Barbican's children: the Deployment, the ConfigMaps, the Secrets, and the database CRs. The CR itself does not move, and neither do its status, its finalizers, or the webhooks that admit it. When omitted the children are created on the local cluster the operator runs on, so an existing CR keeps its behavior without an edit. `name` must be a non-empty DNS-1123 subdomain matching the registration Secret. **Immutable** (CEL transition rule): adding, removing, or renaming the ref strands the children already created on the previously selected cluster; delete and recreate instead. See [Target Clusters](../target-clusters.md) |
@@ -301,6 +302,16 @@ admitted with a warning, so an unrelated edit never blocks the resource:
 this operator version supports; the unchanged value is admitted, but the
 operator renders the 2026.1 configuration for it. Set spec.openStackRelease to
 2026.1 or later.`
+
+`spec.podDisruptionBudget` sets the budget of the API PodDisruptionBudget
+(see [PodDisruptionBudgetSpec](../keystone/keystone-crd.md#poddisruptionbudgetspec)). A CEL rule on
+the block, repeated by the validating webhook, admits exactly one of
+`minAvailable` and `maxUnavailable`. Two rules are webhook-only: each value
+must be an integer of zero or more or a percentage from `0%` to `100%`, and
+the budget must allow one voluntary eviction at the lower replica bound,
+`spec.autoscaling.minReplicas` while it is set and `spec.deployment.replicas`
+otherwise. An update that lowers either below what the budget tolerates is
+rejected.
 
 ## Status
 

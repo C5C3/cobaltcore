@@ -423,9 +423,13 @@ spec:
 
 - At least one of `targetCPUUtilization` or `targetMemoryUtilization` is required.
 - `minReplicas` defaults to `spec.deployment.replicas` if unset.
-- The API PodDisruptionBudget follows `minReplicas`. At `minReplicas: 1` it
-  switches to `maxUnavailable: 1`, so a node drain can still evict the one pod the
-  HPA may leave running. Above one it keeps `minAvailable: 1`.
+- Unless `spec.podDisruptionBudget` sets the budget, the API
+  PodDisruptionBudget follows `minReplicas`. At `minReplicas: 1` it switches to
+  `maxUnavailable: 1`, so a node drain can still evict the one pod the HPA may
+  leave running. Above one it keeps `minAvailable: 1`. A set
+  [`spec.podDisruptionBudget`](../reference/keystone/keystone-crd.md#poddisruptionbudgetspec)
+  must allow one voluntary eviction at `minReplicas`, so lowering
+  `minReplicas` may need the budget changed in the same edit.
 - The HPA measures a target against the summed requests of every container in
   the API pod. While a target is set, the webhook rejects a zero or negative
   request for the resource it measures, on the API container and on a sidecar

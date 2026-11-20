@@ -161,7 +161,7 @@ deletions.
 | [backend-detach](#backend-detach) | `cinder-detach` | `CinderBackend` deletion: volume Deployment removed first, service-remove Job run, finalizer released, service registry and `status.volumeServices` follow |
 | [backup-nfs](#backup-nfs) | `cinder-backup` | Backup round trip on an NFS target: the two backup conditions, the `cinder-backup` Deployment, backup, restore, delete, detach |
 | [backup-rbd](#backup-rbd) | `cinder-bkrbd` | RBD backup target without a Ceph: the credentials gate, the projected driver block, `ceph.conf` and keyring, the volume backend's keyring in the backup pod, the Ceph egress union, the roll on a replaced backup key and on a replaced volume key |
-| [scale](#scale) | `cinder-scale` | `spec.api.deployment.replicas` 3 → 5 → 1 with the PodDisruptionBudget policy flipping, scheduler and volume service left at one replica |
+| [scale](#scale) | `cinder-scale` | `spec.podDisruptionBudget` set and unset at three replicas, then `spec.api.deployment.replicas` 3 → 5 → 1 with the PodDisruptionBudget policy flipping, scheduler and volume service left at one replica |
 | [healthcheck](#healthcheck) | `cinder-health` | `CinderAPIReady=True/APIHealthy` and the cluster-local `status.endpoint` |
 | [namespace-scoped-rbac](#namespace-scoped-rbac) | `cinder-ns-scoped` | A cinder-operator release with `rbac.namespaceScoped=true` and `webhook.enabled=false` in `openstack`: Role and RoleBinding, no ClusterRole, the CR Ready, and the release's own pod unrestarted, started in namespace-scoped mode, free of forbidden watches and counting a `HealthCheck` run of the Cinder and a successful reconcile of its backend |
 | [httproute](#httproute) | `cinder-route` | `spec.gateway` lifecycle: HTTPRoute created, `HTTPRouteNotAccepted` then `HTTPRouteAccepted`, deleted with the spec block |
@@ -427,7 +427,8 @@ own setup the way they do in `rbd-backend`.
 **File:** `tests/e2e/cinder/scale/chainsaw-test.yaml`
 
 **Purpose:** Patching `spec.api.deployment.replicas` propagates to the API
-Deployment and its PodDisruptionBudget. Every step also asserts that the
+Deployment and its PodDisruptionBudget, and `spec.podDisruptionBudget` replaces
+the default budget while it is set. Every step also asserts that the
 scheduler and the volume service still run one available replica: both are
 separate Deployments fed by separate spec fields, so a builder that read the API
 replica count for every workload would scale them along.
@@ -438,12 +439,14 @@ replica count for every workload would scale them along.
 | --- | --- | --- | --- |
 | 1 | Give the suite its vhost, then apply the CRs | `script` (2m) + `apply` | `broker-vhost.sh create cinder-scale …`, then `00-cinder-cr.yaml` (`cinder-scale`, `replicas: 3`) and `01-cinderbackend-cr.yaml` (`scale-nfs1`) |
 | 2 | Assert Ready and the initial replica count | `assert` (5m) | `Ready=True/AllReady`, the API Deployment at 3, PDB `minAvailable: 1`, scheduler and volume Deployment at one available replica each |
-| 3 | Scale up to 5 and assert the rollout completed | `patch` + `assert` (5m) | `02-patch-scale-up.yaml` takes the API to 5, with `updatedReplicas` proving new pods started; `Ready=True/AllReady` holds and the other two Deployments are untouched |
-| 4 | Scale down to 1 and assert the PDB flips | `patch` + `assert` (5m) | `03-patch-scale-to-one.yaml` takes the API to 1 and the PDB to `maxUnavailable: 1`; `Ready=True/AllReady` holds |
+| 3 | Set spec.podDisruptionBudget to maxUnavailable: 1 | `patch` + `assert` (5m) | `04-patch-budget.yaml` sets the budget; the PDB carries `maxUnavailable: 1` and no `minAvailable` |
+| 4 | Unset spec.podDisruptionBudget | `patch` + `assert` (5m) | `05-patch-budget-unset.yaml` sets the field to `null`; the PDB is back at `minAvailable: 1` with no `maxUnavailable` |
+| 5 | Scale up to 5 and assert the rollout completed | `patch` + `assert` (5m) | `02-patch-scale-up.yaml` takes the API to 5, with `updatedReplicas` proving new pods started; `Ready=True/AllReady` holds and the other two Deployments are untouched |
+| 6 | Scale down to 1 and assert the PDB flips | `patch` + `assert` (5m) | `03-patch-scale-to-one.yaml` takes the API to 1 and the PDB to `maxUnavailable: 1`; `Ready=True/AllReady` holds |
 
-**Fixtures:** `00-cinder-cr.yaml`, `01-cinderbackend-cr.yaml`, `02-patch-scale-up.yaml`, `03-patch-scale-to-one.yaml`
+**Fixtures:** `00-cinder-cr.yaml`, `01-cinderbackend-cr.yaml`, `02-patch-scale-up.yaml`, `03-patch-scale-to-one.yaml`, `04-patch-budget.yaml`, `05-patch-budget-unset.yaml`
 
-**Design note:** The suite sets `spec.concurrent: false`. Step 3 holds 490m of
+**Design note:** The suite sets `spec.concurrent: false`. Step 5 holds 490m of
 CPU requests on the single node `hack/kind-config.yaml` declares: five API pods,
 the scheduler and the volume service. Run alone, before the concurrent suites
 start, that peak fits.
@@ -1046,7 +1049,9 @@ tests/e2e/cinder/
     ├── 00-cinder-cr.yaml               Cinder CR cinder-scale with replicas 3
     ├── 01-cinderbackend-cr.yaml        Backend scale-nfs1
     ├── 02-patch-scale-up.yaml          Patch to 5 replicas
-    └── 03-patch-scale-to-one.yaml      Patch to 1 replica
+    ├── 03-patch-scale-to-one.yaml      Patch to 1 replica
+    ├── 04-patch-budget.yaml            Patch podDisruptionBudget to maxUnavailable: 1
+    └── 05-patch-budget-unset.yaml      Patch podDisruptionBudget to null
 
 tests/e2e/cinder-operator/
 ├── env-key-material/

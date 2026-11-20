@@ -168,6 +168,7 @@ status:
 | `secretStoreRef` | [`*SecretStoreRefSpec`](#secretstorerefspec) | No | `nil` | Selects the External Secrets store this Keystone routes its ExternalSecrets and backup PushSecrets through. When omitted, the shared cluster-scoped `ClusterSecretStore` named `openbao-cluster-store` is used, so existing deployments are unchanged. Set to a namespaced `SecretStore` in this Keystone's own namespace to reach OpenBao as a per-tenant identity. Normally projected from the owning ControlPlane rather than set here. |
 | `targetClusterRef` | `*TargetClusterRefSpec` | No | — | Names the registered target cluster that receives this Keystone's children: the Deployment, the ConfigMaps, the Secrets, and the database CRs. The CR itself does not move, and neither do its status, its finalizers, or the webhooks that admit it. When omitted, the children are created on the local cluster the operator runs on, so an existing CR keeps its behavior without an edit. `name` must be a non-empty DNS-1123 subdomain matching the registration Secret. **Immutable** (CEL transition rule): adding, removing, or renaming the ref strands the children already created on the previously selected cluster; delete and recreate instead. See [Target Clusters](../target-clusters.md). |
 | `autoscaling` | [`*AutoscalingSpec`](#autoscalingspec) | No | `nil` | Horizontal pod autoscaling configuration. When set, an HPA is created targeting the `{name}` Deployment. When removed, the HPA is deleted. |
+| `podDisruptionBudget` | [`*PodDisruptionBudgetSpec`](#poddisruptionbudgetspec) | No | `nil` | Budget of the API PodDisruptionBudget, `minAvailable` or `maxUnavailable`. When `nil`, the operator renders `minAvailable: 1` above a lower replica bound of one and `maxUnavailable: 1` at one. A set budget must allow one voluntary eviction at the lower replica bound. |
 | `networkPolicy` | [`*NetworkPolicySpec`](#networkpolicyspec) | No | `nil` | Network isolation for Keystone API pods. When set, a NetworkPolicy restricting ingress to TCP 5000 and auto-deriving egress rules for DNS, MariaDB, and Memcached is created. When `nil`, no NetworkPolicy is managed and traffic is unrestricted. |
 | `gateway` | [`*GatewaySpec`](#gatewayspec) | No | `nil` | Gateway API HTTPRoute configuration. When set, an HTTPRoute is created targeting the `{name}` Service on port 5000 and attached to the referenced pre-existing Gateway; `status.endpoint` is updated to `https://{hostname}/v3`. When removed, the HTTPRoute is deleted and `status.endpoint` reverts to the cluster-local Service URL. |
 | `uwsgi` | [`*UWSGISpec`](#uwsgispec) | No | `nil` | uWSGI application server parameters. When set, the operator uses these values for the Deployment container command. When `nil`, hardcoded defaults (processes=2, threads=1, httpKeepAlive=true) are used in the reconciler. |
@@ -295,6 +296,7 @@ validating webhook is unavailable.
 | `spec` | `!(has(self.autoscaling) && has(self.deployment) && has(self.deployment.verticalAutoscaling))` | "spec.deployment.verticalAutoscaling cannot be set while spec.autoscaling scales the same Deployment" |
 | `spec.deployment.verticalAutoscaling` | `!has(self.minAllowed) \|\| self.minAllowed.all(k, k in ['cpu','memory'])` | "minAllowed may only name cpu and memory" |
 | `spec.deployment.verticalAutoscaling` | `!has(self.maxAllowed) \|\| self.maxAllowed.all(k, k in ['cpu','memory'])` | "maxAllowed may only name cpu and memory" |
+| `spec.podDisruptionBudget` | `has(self.minAvailable) != has(self.maxUnavailable)` | "exactly one of minAvailable or maxUnavailable must be set" |
 | `spec.networkPolicy` | `size(self.ingress) > 0` | "at least one ingress source must be specified" |
 | `spec.deployment` | drain window: effective `preStopSleepSeconds` (default 5) must be `<` effective `terminationGracePeriodSeconds` (default 30) | "preStopSleepSeconds must be strictly less than terminationGracePeriodSeconds" |
 | `spec.uwsgi` | `!has(self.httpKeepAliveTimeout) \|\| !has(self.httpKeepAlive) \|\| self.httpKeepAlive` | "httpKeepAliveTimeout may only be set when httpKeepAlive is true" |
@@ -346,15 +348,17 @@ reconciler does not reset it on each pass. `spec.deployment.replicas` is then us
 as the initial replica count and as the `minReplicas` default when
 `autoscaling.minReplicas` is unset.
 
-The API PodDisruptionBudget follows the HPA's minimum while `spec.autoscaling`
-is set. At `minReplicas: 1` it renders `maxUnavailable: 1`, so a node drain can
-evict the one pod the HPA may leave running; above one it keeps
-`minAvailable: 1`. Removing `spec.autoscaling` returns the budget to
-`spec.deployment.replicas`.
+While `spec.podDisruptionBudget` is unset, the API PodDisruptionBudget follows
+the HPA's minimum while `spec.autoscaling` is set. At `minReplicas: 1` it
+renders `maxUnavailable: 1`, so a node drain can evict the one pod the HPA may
+leave running; above one it keeps `minAvailable: 1`. Removing
+`spec.autoscaling` returns the budget to `spec.deployment.replicas`. A set
+[`spec.podDisruptionBudget`](#poddisruptionbudgetspec) replaces this rule and
+must allow one voluntary eviction at the HPA's minimum.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `minReplicas` | `*int32` | No | `spec.deployment.replicas` | Lower bound for the number of replicas. Minimum: 1. Defaults to `spec.deployment.replicas` when unset, allowing the HPA to scale down to the static replica count. The PodDisruptionBudget follows this bound: `maxUnavailable: 1` at one, `minAvailable: 1` above. |
+| `minReplicas` | `*int32` | No | `spec.deployment.replicas` | Lower bound for the number of replicas. Minimum: 1. Defaults to `spec.deployment.replicas` when unset, allowing the HPA to scale down to the static replica count. Unless `spec.podDisruptionBudget` sets the budget, the PodDisruptionBudget follows this bound: `maxUnavailable: 1` at one, `minAvailable: 1` above. A set `spec.podDisruptionBudget` must allow one voluntary eviction at this bound. |
 | `maxReplicas` | `int32` | Yes | — | Upper bound for the number of replicas. Minimum: 1. |
 | `targetCPUUtilization` | `*int32` | No\* | — | Target average CPU utilization as a percentage of the CPU request. Minimum: 1, no maximum. A value above 100 is valid while a container of the API pod may use more CPU than it requests, which holds for any container without a CPU limit. At least one of `targetCPUUtilization` or `targetMemoryUtilization` must be set. While it is set, the webhook rejects a zero or negative CPU request on the API pod's containers, and a target above 100 that the containers' CPU limits make unreachable. |
 | `targetMemoryUtilization` | `*int32` | No\* | — | Target average memory utilization as a percentage of the memory request. Minimum: 1, no maximum. A container whose block names no memory renders the same figure as request and limit, so a value above 100 needs a container that names a memory limit above its request, or a memory request without a limit. At least one of `targetCPUUtilization` or `targetMemoryUtilization` must be set. While it is set, the webhook rejects a zero or negative memory request on the API pod's containers, and a target above 100 that the containers' memory limits make unreachable. |
@@ -550,6 +554,93 @@ spec:
         memory: 2Gi
   # ... other required fields, and no spec.autoscaling ...
 ```
+
+---
+
+## PodDisruptionBudgetSpec
+
+Sets the budget of the PodDisruptionBudget the operator renders for the
+Keystone API Deployment, through `spec.podDisruptionBudget`. The type lives in
+`internal/common/types`, and all eight service kinds carry it at the spec root:
+Keystone, Glance, Placement, Barbican, Neutron, Cinder, Nova and Horizon. A
+ControlPlane sets it in the `api` block of each service's sizing, see
+[SizingSpec](../c5c3/controlplane-crd.md#sizingspec).
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `minAvailable` | `*intstr.IntOrString` | One of the two | unset | The pod count, or the percentage of the pods, that must stay available through voluntary disruptions. The operator copies it into the PDB's `spec.minAvailable`. |
+| `maxUnavailable` | `*intstr.IntOrString` | One of the two | unset | The pod count, or the percentage of the pods, that voluntary disruptions may take. The operator copies it into the PDB's `spec.maxUnavailable`. |
+
+A block sets exactly one of the two fields. Each takes an integer of zero or
+more, or a percentage from `0%` to `100%` written as a string.
+
+### Budget when unset
+
+Without `spec.podDisruptionBudget` the operator picks the budget from the lower
+replica bound, the lowest pod count the API Deployment runs at:
+`spec.autoscaling.minReplicas` while `spec.autoscaling` sets one, and
+`spec.deployment.replicas` otherwise. Above a bound of one it renders
+`minAvailable: 1`. At one it renders `maxUnavailable: 1`, so a drain can evict
+the last pod.
+
+### Percentage rounding
+
+The Kubernetes disruption controller rounds a percentage up for both fields,
+and the webhook computes the same figures. At three pods:
+
+| Budget | Resolves to | Evictions allowed |
+| --- | --- | --- |
+| `maxUnavailable: "25%"` | 1 pod | 1 |
+| `minAvailable: "50%"` | 2 pods | 1 |
+| `minAvailable: "67%"` | 3 pods | 0 |
+
+### Admission rules
+
+| Rejected | Field path | Layer | Message |
+| --- | --- | --- | --- |
+| Both fields set, or neither | `spec.podDisruptionBudget` | CEL, mirrored by the webhook | `exactly one of minAvailable or maxUnavailable must be set` |
+| A value that is neither an integer of zero or more nor a percentage from `0%` to `100%`, such as `"half"`, `"101%"`, `-1` or `"5"` | `spec.podDisruptionBudget.minAvailable`, `.maxUnavailable` | Webhook only | `must be a non-negative integer or a percentage from 0% to 100%` |
+| A budget that allows no voluntary eviction at the lower replica bound | the field the block sets | Webhook only | `allows no voluntary eviction at a lower replica bound of <n>, so a node drain could not evict an API pod` |
+
+The evictions a budget allows never shrink as the pod count grows, so the check
+at the lower replica bound covers every scale the HPA reaches. CEL cannot round
+a percentage against a replica count held in another block, which is why the
+last two rules live in the webhook. The webhook runs them on create and on every
+update: an update that lowers `spec.deployment.replicas` or
+`spec.autoscaling.minReplicas` below what the stored budget tolerates is
+rejected, so change the budget in the same edit.
+
+### Resources admitted without the webhook
+
+The operator charts allow `webhook.enabled=false`, and a resource admitted that
+way can carry a malformed budget or one that blocks every drain. The operator
+does not rewrite it. It renders the [budget it uses when the field is
+unset](#budget-when-unset) and logs on every reconcile:
+
+```text
+spec.podDisruptionBudget is malformed or allows no eviction at the lower replica bound; rendering the default budget
+```
+
+### Example
+
+Three replicas on three nodes, with two pods serving while a node drains:
+
+```yaml
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone
+  namespace: openstack
+spec:
+  deployment:
+    replicas: 3
+  podDisruptionBudget:
+    maxUnavailable: 1
+  # ... other required fields ...
+```
+
+The PDB carries `maxUnavailable: 1` and no `minAvailable` after the next
+reconcile. Removing the block returns it to `minAvailable: 1`.
 
 ---
 
@@ -1943,6 +2034,9 @@ single `apierrors.NewInvalid` error. It does **not** short-circuit on the first 
 | Vertical autoscaling resources | `spec.deployment.verticalAutoscaling.minAllowed[<key>]`, `.maxAllowed[<key>]` | `field.NotSupported` | A key other than `cpu` and `memory`. Defense-in-depth alongside the two CEL XValidation rules on `VerticalAutoscalingSpec`. |
 | Vertical autoscaling bounds | `spec.deployment.verticalAutoscaling.minAllowed[<key>]` | `field.Invalid` | `minAllowed` of a resource above `maxAllowed` of the same resource (`must not exceed maxAllowed`). Webhook-only: CEL cannot compare quantities across two maps. |
 | Vertical autoscaling bound scale | `spec.deployment.verticalAutoscaling.minAllowed[<key>]`, `.maxAllowed[<key>]` | `field.Invalid` | A `cpu` or `memory` bound whose decimal exponent lies beyond ±30, such as `1e2000000000` (`must not use a decimal exponent beyond ±30`). Webhook-only: comparing such a bound would build the number it spells out, so it is rejected before the bounds check. |
+| PodDisruptionBudget one field | `spec.podDisruptionBudget` | `field.Invalid` | Both `minAvailable` and `maxUnavailable` set, or neither (`exactly one of minAvailable or maxUnavailable must be set`). Defense-in-depth alongside the CEL XValidation rule on `PodDisruptionBudgetSpec`. |
+| PodDisruptionBudget value | `spec.podDisruptionBudget.minAvailable`, `.maxUnavailable` | `field.Invalid` | A value that is neither an integer of zero or more nor a percentage from `0%` to `100%` (`must be a non-negative integer or a percentage from 0% to 100%`). Webhook-only: the int-or-string schema admits any string. |
+| PodDisruptionBudget eviction | `spec.podDisruptionBudget.minAvailable`, `.maxUnavailable` | `field.Invalid` | The budget allows no voluntary eviction at the lower replica bound, `spec.autoscaling.minReplicas` or `spec.deployment.replicas` (`allows no voluntary eviction at a lower replica bound of <n>`). Webhook-only: CEL cannot round a percentage against the replica count. See [PodDisruptionBudgetSpec](#poddisruptionbudgetspec). |
 | NetworkPolicy ingress required | `spec.networkPolicy.ingress` | `field.Required` | `networkPolicy` is set but `ingress` is empty. Defense-in-depth alongside the CEL XValidation rule. |
 | uWSGI processes minimum | `spec.uwsgi.processes` | `field.Invalid` | `processes < 1` when `spec.uwsgi` is non-nil. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker. |
 | uWSGI threads minimum | `spec.uwsgi.threads` | `field.Invalid` | `threads < 1` when `spec.uwsgi` is non-nil. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker. |
@@ -2143,6 +2237,9 @@ is pinned by a Chainsaw step.
 | `image-pull-policy-unsupported-rejected` | `38-image-pull-policy-unsupported.yaml` | ImageSpec.PullPolicy Enum (schema-only) | Error containing "spec.image.pullPolicy" and "Unsupported value" |
 | `image-tag-below-floor-rejected` | `39-image-tag-below-floor.yaml` | Release floor (webhook-only) | Error containing "image.tag" and "must be 2026.1 or later" |
 | `uwsgi-keepalive-timeout-below-minimum-rejected` | `40-uwsgi-keepalive-timeout-below-minimum.yaml` | `httpKeepAliveTimeout` Minimum=2 | Error containing "spec.uwsgi.httpKeepAliveTimeout" and "should be greater than or equal to 2" |
+| `pdb-both-set-rejected` | `41-pdb-both-set.yaml` | `podDisruptionBudget` sets one field (CEL) | Error containing "spec.podDisruptionBudget" and "exactly one of minAvailable or maxUnavailable must be set" |
+| `pdb-malformed-value-rejected` | `42-pdb-malformed-value.yaml` | `podDisruptionBudget` value (webhook-only) | Error containing "spec.podDisruptionBudget.maxUnavailable" and "must be a non-negative integer or a percentage" |
+| `pdb-blocks-drain-rejected` | `43-pdb-blocks-drain.yaml` | `podDisruptionBudget` allows an eviction at the lower replica bound (webhook-only) | Error containing "spec.podDisruptionBudget.minAvailable" and "allows no voluntary eviction" |
 
 Steps `14`-`17` reuse the `immutable-fields` name from `13-immutable-base.yaml`,
 so each is applied as an UPDATE of the base CR and is rejected by the
