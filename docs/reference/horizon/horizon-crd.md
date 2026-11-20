@@ -22,6 +22,7 @@ chart ships a synced copy (`make sync-crds` / `make verify-crd-sync`).
 | `gateway` | `*GatewaySpec` | no | External exposure via a Gateway API HTTPRoute on port 8080; requires `hostname` and `parentRef.name` |
 | `networkPolicy` | `*NetworkPolicySpec` | no | Ingress restricted to TCP 8080 from the listed sources; egress auto-derived (DNS, the Keystone endpoint port, cache ports). At least one ingress source is required (fail-closed) |
 | `autoscaling` | `*AutoscalingSpec` | no | HPA bounds, CPU/memory utilization targets and scaling behavior |
+| `podDisruptionBudget` | [`*PodDisruptionBudgetSpec`](../keystone/keystone-crd.md#poddisruptionbudgetspec) | no | Budget of the dashboard PodDisruptionBudget, `minAvailable` or `maxUnavailable`. When `nil`, the operator renders `minAvailable: 1` above a lower replica bound of one and `maxUnavailable: 1` at one. A set budget must allow one voluntary eviction at the lower replica bound |
 | `logging` | `*LoggingSpec` | no | Django `LOGGING` dictConfig derivation: root `level`, `format`, `debug`, `perLoggerLevels`. Defaulted to `text`/`INFO`/`debug: false`. One stderr handler carries one formatter: `text` prints oslo.log's line format, `<date> <time>.<ms> <pid> <LEVEL> <logger> [-] <message>`, and `json` prints one JSON object per record through `oslo_log.formatters.JSONFormatter`, which the image must ship (both CobaltCore OpenStack Horizon images declare `oslo.log`). On an image without it, such as a custom image or a 2026.2 image built before `releases/2026.2/extra-packages.yaml` declared `oslo.log`, the dashboard fails to load with `Unable to configure formatter 'json'`, the new pods never turn Ready, and with the default rolling strategy the rollout stalls while the old pods keep serving. Move `spec.image` to an image that ships `oslo.log` before or with the operator upgrade, or keep `text` until then. The rendered `loggers` always name `django` at `INFO` (a `perLoggerLevels` entry for it wins), which drops the unformatted console handler Django's defaults attach to it, so each record is printed once, under `debug` too. The entry keeps Django's `mail_admins` handler, so with `debug` off a CR that sets `ADMINS` and the `EMAIL_*` settings through `extraConfig` still gets Django's error mails. Django sends each mail inside the request, on one of the two single-thread uWSGI processes, and its `EMAIL_TIMEOUT` default of `None` sets no SMTP timeout: a relay that accepts the connection and never answers blocks that process until an `EMAIL_TIMEOUT` set through `extraConfig` ends the wait. Unauthenticated requests produce mails too, through the `django.security` reports, for example a POST with more than 1000 fields or a disallowed `Host` header. `debug` maps to Django `DEBUG` and leaves the root level alone. A change of any field renders a new ConfigMap and rolls the Deployment |
 | `extraConfig` | `map[string]JSON` | no | Free-form Django settings rendered after the operator defaults (user values win). `SECRET_KEY` is rejected by the webhook. Overrides of operator-owned settings (for example `STATIC_ROOT`, `COMPRESS_OFFLINE`, `CACHES`, whose override drops the image-scoped `KEY_PREFIX` and the pymemcache timeout `OPTIONS`, or `OPENSTACK_REQUEST_TIMEOUT`, the 30-second bound of every Keystone and service client the dashboard builds, which `OPENSTACK_REQUEST_TIMEOUT: 60` raises) are honored but reported via the `ExtraConfigHealthy` condition and an `ExtraConfigOwnedKeyOverride` Warning event |
 | `websso` | `*WebSSOSpec` | no | Federated single-sign-on choices on the login page. When nil the operator renders no `WEBSSO_*` settings and the dashboard offers local credentials only. The c5c3 ControlPlane projects this from the federation backends attached to its Keystone child |
@@ -59,6 +60,16 @@ blocks the resource: `spec.image.tag "2025.2" is below 2026.1, the oldest
 OpenStack release this operator version supports; the unchanged value is
 admitted, but the operator renders the 2026.1 configuration for it. Set
 spec.image.tag to 2026.1 or later.`
+
+`spec.podDisruptionBudget` sets the budget of the dashboard PodDisruptionBudget
+(see [PodDisruptionBudgetSpec](../keystone/keystone-crd.md#poddisruptionbudgetspec)). A CEL rule on
+the block, repeated by the validating webhook, admits exactly one of
+`minAvailable` and `maxUnavailable`. Two rules are webhook-only: each value
+must be an integer of zero or more or a percentage from `0%` to `100%`, and
+the budget must allow one voluntary eviction at the lower replica bound,
+`spec.autoscaling.minReplicas` while it is set and `spec.deployment.replicas`
+otherwise. An update that lowers either below what the budget tolerates is
+rejected.
 
 ### ExtraConfig ownership guard
 

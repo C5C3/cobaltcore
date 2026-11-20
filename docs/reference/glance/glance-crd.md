@@ -40,6 +40,7 @@ stores are **not** part of this spec — they attach out-of-band through
 | `gateway` | `*GatewaySpec` | no | External exposure via a Gateway API HTTPRoute on port 9292; requires `hostname` and `parentRef.name` |
 | `networkPolicy` | `*NetworkPolicySpec` | no | Ingress restricted to TCP 9292 from the listed sources; egress auto-derived (the ports of DNS, the database, the cache and the attached S3 backends, to any destination). At least one ingress source is required (fail-closed) |
 | `autoscaling` | `*AutoscalingSpec` | no | HPA bounds, CPU/memory utilization targets and scaling behavior |
+| `podDisruptionBudget` | [`*PodDisruptionBudgetSpec`](../keystone/keystone-crd.md#poddisruptionbudgetspec) | no | Budget of the API PodDisruptionBudget, `minAvailable` or `maxUnavailable`. When `nil`, the operator renders `minAvailable: 1` above a lower replica bound of one and `maxUnavailable: 1` at one. A set budget must allow one voluntary eviction at the lower replica bound |
 | `logging` | `*LoggingSpec` | no | oslo.log derivation: `format` (`text`/`json`), `level`, `debug`, `perLoggerLevels`. Materialized by the defaulting webhook to `text`/`INFO`/`debug: false` |
 | `secretStoreRef` | `*SecretStoreRefSpec` | no | Selects the External Secrets store the operator resolves `SecretsReady` against — `kind` (`ClusterSecretStore` \| `SecretStore`, default `ClusterSecretStore`) and a required `name`. When omitted the shared cluster-scoped `openbao-cluster-store` is used. Normally projected from the owning ControlPlane |
 | `targetClusterRef` | `*TargetClusterRefSpec` | no | Names the registered target cluster that receives this Glance's children: the Deployment, the ConfigMaps, the Secrets, and the database CRs. The CR itself does not move, and neither do its status, its finalizers, or the webhooks that admit it. When omitted the children are created on the local cluster the operator runs on, so an existing CR keeps its behavior without an edit. `name` must be a non-empty DNS-1123 subdomain matching the registration Secret. An attached [`GlanceBackend`](./glance-backend-crd.md) carries no ref of its own and follows this one. **Immutable** (CEL transition rule): adding, removing, or renaming the ref strands the children already created on the previously selected cluster; delete and recreate instead. See [Target Clusters](../target-clusters.md) |
@@ -926,6 +927,16 @@ admitted with a warning, so an unrelated edit never blocks the resource:
 this operator version supports; the unchanged value is admitted, but the
 operator renders the 2026.1 configuration for it. Set spec.openStackRelease to
 2026.1 or later.`
+
+`spec.podDisruptionBudget` sets the budget of the API PodDisruptionBudget
+(see [PodDisruptionBudgetSpec](../keystone/keystone-crd.md#poddisruptionbudgetspec)). A CEL rule on
+the block, repeated by the validating webhook, admits exactly one of
+`minAvailable` and `maxUnavailable`. Two rules are webhook-only: each value
+must be an integer of zero or more or a percentage from `0%` to `100%`, and
+the budget must allow one voluntary eviction at the lower replica bound,
+`spec.autoscaling.minReplicas` while it is set and `spec.deployment.replicas`
+otherwise. An update that lowers either below what the budget tolerates is
+rejected.
 
 ## Status
 

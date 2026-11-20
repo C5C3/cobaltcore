@@ -47,6 +47,7 @@ Suspended (`.spec.suspend`) and Age.
 | `gateway` | `GatewaySpec` | no | External exposure through a Gateway API HTTPRoute on port 8776; requires `hostname` and `parentRef.name`. Setting it requires `keystoneEndpoint` (CEL rule): without it the API renders `auth_strategy = noauth`, so a Gateway would publish every volume operation unauthenticated |
 | `networkPolicy` | `NetworkPolicySpec` | no | Ingress restricted to TCP 8776 from the listed sources; egress auto-derived (DNS, database, cache, Keystone, Glance, Barbican, the broker port, the NFS exports, and the Ceph monitor and OSD ports towards the networks the RBD backends name). At least one ingress source is required (fail-closed) |
 | `autoscaling` | `AutoscalingSpec` | no | HPA bounds, CPU/memory utilization targets and scaling behavior. It reaches the API Deployment alone |
+| `podDisruptionBudget` | [`*PodDisruptionBudgetSpec`](../keystone/keystone-crd.md#poddisruptionbudgetspec) | no | Budget of the API PodDisruptionBudget, `minAvailable` or `maxUnavailable`. When `nil`, the operator renders `minAvailable: 1` above a lower replica bound of one and `maxUnavailable: 1` at one. A set budget must allow one voluntary eviction at the lower replica bound |
 | `logging` | `LoggingSpec` | no | oslo.log derivation: `format` (`text`/`json`), `level`, `debug`, `perLoggerLevels`. Materialized by the defaulting webhook to `text`/`INFO`/`debug: false` |
 | `policyOverrides` | `PolicySpec` | no | Custom oslo.policy rules. A CEL rule requires at least one of `rules` or `configMapRef`; when set, the operator renders `policy.yaml` and wires `[oslo_policy] policy_file` |
 | `extraConfig` | `map[string]map[string]string` | no | Free-form INI sections for options with no dedicated field. See [extraConfig](#extraconfig) |
@@ -264,6 +265,16 @@ admitted with a warning, so an unrelated edit never blocks the resource:
 this operator version supports; the unchanged value is admitted, but the
 operator renders the 2026.1 configuration for it. Set spec.openStackRelease to
 2026.1 or later.`
+
+`spec.podDisruptionBudget` sets the budget of the API PodDisruptionBudget
+(see [PodDisruptionBudgetSpec](../keystone/keystone-crd.md#poddisruptionbudgetspec)). A CEL rule on
+the block, repeated by the validating webhook, admits exactly one of
+`minAvailable` and `maxUnavailable`. Two rules are webhook-only: each value
+must be an integer of zero or more or a percentage from `0%` to `100%`, and
+the budget must allow one voluntary eviction at the lower replica bound,
+`spec.autoscaling.minReplicas` while it is set and `spec.api.deployment.replicas`
+otherwise. An update that lowers either below what the budget tolerates is
+rejected.
 
 ## Rendered configuration
 

@@ -67,11 +67,16 @@ kubectl rollout status deploy/controlplane-keystone -n openstack
 ```
 
 Scale down the same way. The keystone-operator maintains a `PodDisruptionBudget`
-named `controlplane-keystone`, sized from the child's replica count. At
+named `controlplane-keystone`. Unless `spec.sizing.keystone.api.podDisruptionBudget`
+sets the budget, it is sized from the child's replica count. At
 `replicas > 1` it sets `minAvailable=1` so a voluntary disruption never drains
 the last healthy pod; at `replicas == 1` it sets `maxUnavailable=1` instead,
 allowing eviction so a node drain cannot deadlock on a
-single-replica child.
+single-replica child. A set budget, such as `maxUnavailable: 1` to keep two of
+three pods serving through a drain, must allow one voluntary eviction at the
+new replica count, so admission rejects a scale-down below what it tolerates
+until the budget changes in the same patch. See
+[PodDisruptionBudgetSpec](../reference/keystone/keystone-crd.md#poddisruptionbudgetspec).
 
 `spec.sizing.keystone.api.autoscaling` projects a `HorizontalPodAutoscaler` onto
 the Keystone child, which then scales between its bounds on load. The HPA needs

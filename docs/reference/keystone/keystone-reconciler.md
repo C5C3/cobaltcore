@@ -2462,15 +2462,31 @@ sequence and does not mutate `status.endpoint`.
 **PodDisruptionBudget:**
 
 After ensuring the Deployment and Service, `reconcileDeployment` creates or updates
-a PodDisruptionBudget via `deployment.EnsurePDB()`. The PDB branches on the lower
-replica bound, `deployment.EffectiveMinReplicas`: the HPA's `minReplicas` while
-`spec.autoscaling` is set, otherwise the effective `spec.deployment.replicas`.
-An unset `minReplicas` falls back to the replica count, the value the HPA renders.
+a PodDisruptionBudget via `deployment.EnsurePDB()`. When
+[`spec.podDisruptionBudget`](./keystone-crd.md#poddisruptionbudgetspec) is set
+and `deployment.PDBBudgetHonored` accepts it, the PDB carries the one field the
+budget sets, copied as written. `PDBBudgetHonored` accepts a budget that sets
+exactly one well-formed field and allows at least one voluntary eviction at the
+lower replica bound, `deployment.EffectiveMinReplicas`: the HPA's `minReplicas`
+while `spec.autoscaling` is set, otherwise the effective
+`spec.deployment.replicas`. An unset `minReplicas` falls back to the replica
+count, the value the HPA renders.
+
+Without the field, the PDB branches on that bound:
 
 | Lower bound | Field | Value | Rationale |
 | --- | --- | --- | --- |
 | `> 1` | `minAvailable` | `1` | Guarantees at least one pod remains during voluntary disruptions |
 | `<= 1` | `maxUnavailable` | `1` | Avoids drain deadlock: a PDB with `minAvailable=1` on a single pod would block all evictions, including the one pod an HPA at `minReplicas: 1` may leave running |
+
+The validating webhook rejects a budget `PDBBudgetHonored` would refuse, so only
+a Keystone admitted without the webhook reaches the fallback. The operator then
+renders the table's budget, leaves the stored field as it is, and logs on every
+pass:
+
+```text
+spec.podDisruptionBudget is malformed or allows no eviction at the lower replica bound; rendering the default budget
+```
 
 A flip between the two fields drops the one the operator no longer asserts,
 because `EnsurePDB` applies the budget with server-side apply.

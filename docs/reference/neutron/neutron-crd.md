@@ -66,6 +66,7 @@ of the fields below the plane fills and which it leaves to this CR.
 | `gateway` | [`*commonv1.GatewaySpec`](../keystone/keystone-crd.md#gatewayspec) | no | `nil` | External exposure through a Gateway API HTTPRoute forwarding to the `{name}` Service on port 9696. Requires `hostname` and `parentRef.name`, and takes an optional `path` and `annotations` map. Removing the block deletes the HTTPRoute. It does not change `status.endpoint`, which stays the cluster-local Service URL |
 | `networkPolicy` | [`*commonv1.NetworkPolicySpec`](../keystone/keystone-crd.md#networkpolicyspec) | no | `nil` | Ingress restricted to TCP 9696 from the listed sources; egress derived for DNS, the database, the Keystone endpoint, the cache, the two OVN databases, and the broker port, with `additionalEgress` appended after it. At least one ingress source is required (fail-closed) |
 | `autoscaling` | [`*commonv1.AutoscalingSpec`](../keystone/keystone-crd.md#autoscalingspec) | no | `nil` | HPA bounds, CPU/memory utilization targets and scaling behavior for the API Deployment. At least one of `targetCPUUtilization` or `targetMemoryUtilization` is required, and an unset `minReplicas` resolves to `spec.deployment.replicas`. The two worker Deployments are never autoscaled |
+| `podDisruptionBudget` | [`*commonv1.PodDisruptionBudgetSpec`](../keystone/keystone-crd.md#poddisruptionbudgetspec) | no | `nil` | Budget of the API PodDisruptionBudget, `minAvailable` or `maxUnavailable`. When `nil`, the operator renders `minAvailable: 1` above a lower replica bound of one and `maxUnavailable: 1` at one. A set budget must allow one voluntary eviction at the lower replica bound |
 | `logging` | [`*commonv1.LoggingSpec`](../keystone/keystone-crd.md#loggingspec) | no | `text` / `INFO` / `debug: false` | oslo.log derivation: `format` (`text` or `json`), `level`, `debug`, `perLoggerLevels`. Materialized by the defaulting webhook. The `json` format ships a `logging.conf` in the config ConfigMap and points `[DEFAULT] log_config_append` at it |
 | `secretStoreRef` | [`*commonv1.SecretStoreRefSpec`](../keystone/keystone-crd.md#secretstorerefspec) | no | `nil` (`openbao-cluster-store`) | Selects the External Secrets store the operator resolves `SecretsReady` against: `kind` (`ClusterSecretStore` \| `SecretStore`, default `ClusterSecretStore`) and a required `name`. A namespaced store is resolved in this Neutron's own namespace. The ControlPlane projects this field onto the Neutron it owns |
 | `targetClusterRef` | [`*commonv1.TargetClusterRefSpec`](../target-clusters.md#the-field) | no | `nil` (the local cluster) | Names the registered target cluster that receives this Neutron's children: the three Deployments, the ConfigMaps, the Secrets, and the database CRs. The CR itself stays on the management cluster, and so do its status and its finalizers. Immutable, enforced by two CEL transition rules and by the webhook. See [Target Clusters](../target-clusters.md) |
@@ -410,6 +411,7 @@ These hold even when the webhook is down.
 | `httpKeepAliveTimeout may only be set when httpKeepAlive is true` | Inherited from `commonv1.UWSGISpec` |
 | `at least one of targetCPUUtilization or targetMemoryUtilization must be set` | Inherited from `commonv1.AutoscalingSpec` |
 | `minReplicas must not exceed maxReplicas` | Inherited from `commonv1.AutoscalingSpec` |
+| `exactly one of minAvailable or maxUnavailable must be set` | Inherited from `commonv1.PodDisruptionBudgetSpec` on `spec.podDisruptionBudget` |
 | `at least one ingress source must be specified` | Inherited from `commonv1.NetworkPolicySpec` |
 | `logger name must not be empty` | Inherited from `commonv1.LoggingSpec` on `perLoggerLevels` |
 | `per-logger level must be one of DEBUG, INFO, WARNING, ERROR, CRITICAL` | Inherited from `commonv1.LoggingSpec` on `perLoggerLevels` |
@@ -498,6 +500,14 @@ Autoscaling:
 | `at least one of targetCPUUtilization or targetMemoryUtilization must be set` | An autoscaling block with no target |
 | `%s request must be greater than zero while %s is set: the HorizontalPodAutoscaler divides the pods' usage by the sum of their containers' requests` | A zero or negative request in `spec.deployment.resources` for the resource a set target measures, reported at `requests.<cpu\|memory>`. The arguments are the resource and the target field |
 | `%s limit must be greater than zero while %s is set: without a request the API server copies the limit into the request, and the HorizontalPodAutoscaler divides the pods' usage by the sum of their containers' requests` | `spec.deployment.resources` names no request for the resource a set target measures, and its limit is zero or negative, reported at `limits.<cpu\|memory>`. The arguments are the resource and the target field |
+
+Disruption budget, both rules webhook-only (see
+[PodDisruptionBudgetSpec](../keystone/keystone-crd.md#poddisruptionbudgetspec)):
+
+| Message | Trigger |
+| --- | --- |
+| `must be a non-negative integer or a percentage from 0% to 100%` | `spec.podDisruptionBudget.minAvailable` or `.maxUnavailable` is neither an integer of zero or more nor a percentage from `0%` to `100%` |
+| `allows no voluntary eviction at a lower replica bound of %d, so a node drain could not evict an API pod` | The budget allows no eviction at `spec.autoscaling.minReplicas`, or at `spec.deployment.replicas` without it, so an update that lowers either below what the budget tolerates is rejected. The argument is that bound |
 
 Network policy, gateway, resources and scheduling:
 
