@@ -1796,8 +1796,9 @@ overlaid by its own `spec.sizing` values, one value at a time
 
 A ControlPlane that sets no `spec.sizing` resolves to `Standard`, which repeats
 the replica counts and the database volume size the ControlPlane has always
-projected and sets nothing else, so every other value stays with the child
-operators' render-time defaults and the backing-service operators' defaults.
+projected, sets `database.applierThreads` to 4, and sets nothing else, so every
+other value stays with the child operators' render-time defaults and the
+backing-service operators' defaults.
 `spec.sizing` is **forbidden in External mode**, where no workload is deployed.
 
 The resolved sizing is reported by the [`SizingReady`](#sizingready) condition.
@@ -1809,7 +1810,7 @@ the controller watches the kind; a built-in profile needs no read at all.
 | `profile` | `string` (`Minimal` \| `Standard`) | `""` (Standard, unless `profileRef` is set) | Selects a built-in profile as the base. Mutually exclusive with `profileRef` (CEL: `profile and profileRef are mutually exclusive`). |
 | `profileRef.name` | `string` | — | Names a cluster-scoped [`SizingProfile`](#sizingprofile), whose `base` then becomes the base. MinLength 1, MaxLength 253. Admission rejects a name no `SizingProfile` answers to, on create and when the name changes. |
 | `nodeSelector`, `tolerations`, `priorityClassName` | map, list, `*string` | — | The fallback placement of every component that sets none of its own. They are not merged into the components; the projection reads them when a component leaves the field unset. |
-| `database` | `DatabaseSizingSpec` | — | Every managed MariaDB: `replicas` (Minimum 1), `storageSize` (Pattern `^[0-9]+(Mi\|Gi\|Ti)$`), `resources`, and placement. |
+| `database` | `DatabaseSizingSpec` | — | Every managed MariaDB: `replicas` (Minimum 1), `storageSize` (Pattern `^[0-9]+(Mi\|Gi\|Ti)$`), `applierThreads` (Minimum 1, Maximum 512; unset takes the base profile's count, 4 under `Standard`, and 1 when the resolved sizing names none, see [Built-in profiles](#built-in-profiles)), `resources`, and placement. |
 | `cache` | `CacheSizingSpec` | — | Every managed Memcached: `replicas` (Minimum 1) and `resources`. |
 | `messaging` | `ScaledSizingSpec` | — | The managed RabbitmqCluster: `replicas` (Minimum 1), `resources`, and placement. |
 | `secretStore` | `ContainerSizingSpec` | — | The voters of Barbican's dedicated OpenBao: `resources`. |
@@ -1877,10 +1878,47 @@ the `e2e-controlplane` job checks.
 | `nova.scheduler`, `nova.conductor` | replicas 1 | replicas 1, workers 1, requests.cpu 15m |
 | `nova.consoleProxy` | replicas 1 | replicas 1, requests.cpu 15m |
 | `<service>.jobs` | none | requests.cpu 15m |
-| `database` | replicas 3, storageSize 100Gi | replicas 1, storageSize 512Mi, requests cpu 65m / memory 1Gi, limits memory 1Gi |
+| `database` | replicas 3, storageSize 100Gi, applierThreads 4 | replicas 1, storageSize 512Mi, requests cpu 65m / memory 1Gi, limits memory 1Gi |
 | `cache` | replicas 3 | replicas 1, requests cpu 15m / memory 96Mi, limits memory 96Mi |
 | `messaging` | replicas 3 | replicas 1, requests cpu 815m / memory 1Gi, limits memory 1Gi |
 | `secretStore` | none | requests cpu 35m / memory 64Mi, limits memory 64Mi |
+
+`database.applierThreads` is the number of Galera applier threads per member,
+the threads that apply the write sets the other members replicate. The
+ControlPlane writes it into `spec.galera.replicaThreads` of every Galera
+MariaDB it owns, and mariadb-operator renders that as `wsrep_slave_threads`. A
+resolved sizing without a count runs 1, the mariadb-operator default. A
+database with one replica runs without Galera and ignores the value, which is
+why `Minimal` sets none.
+`Standard`'s 4 comes from the rig of #1830, three members on one host: a
+Barbican clean-up held the cluster under flow control for 156 s of a 475 s run
+with one thread and for 26 s of a 382 s run with four. No other value was
+measured, and the figure is not sized to a CPU count.
+
+A member that applies write sets slower than they arrive pauses every commit of
+the cluster under flow control, and `wsrep_flow_control_paused` reports the
+fraction of time spent paused. More threads help only as far as write sets are
+independent of each other. Galera's
+[documentation](https://galeracluster.com/library/kb/parallel-applier-threads.html)
+names `wsrep_cert_deps_distance`, the average number of write sets that could
+be applied in parallel, as the upper bound of a useful thread count.
+`SELECT @@wsrep_slave_threads` on a member shows the count it runs. A change of
+the value rolls the members one at a time (see Galera applier threads under
+[reconcileInfrastructure](controlplane-reconciler.md#reconcileinfrastructure)).
+
+Parallel applying was checked once on a rig: three `mariadb:12.3.3` members in
+Docker on one host, four applier threads, and the Barbican schema of the
+2026.2 image with 30,000 soft-deleted secrets and 210,000 rows in the two tables
+that reference `secrets.id` by foreign key. Four sessions deleted 24,000 of the
+secrets in steps of 500 and 200 child rows and then their 100 parent rows, each
+step its own transaction. `wsrep_apply_oooe` read 0.78 to 0.81 on the three
+members, so write sets were applied out of order, and afterwards all three
+reported the same `CHECKSUM TABLE` values and row counts and logged no apply or
+foreign-key error. `barbican-manage db clean` from the same image commits one
+transaction per table, which leaves the appliers nothing to run in parallel
+(`wsrep_apply_oooe` 0). The rig covers one host and the tables of one service;
+members on separate nodes and the schemas of the other services were not
+measured.
 
 The `Minimal` broker figure follows from the broker's memory alarm. For a
 RabbitmqCluster with a memory limit, the RabbitMQ Cluster Operator sets
@@ -1926,8 +1964,8 @@ in a `SizingProfile` with `base: Minimal`.
 `MergeSizing(base, override)` overlays one sizing on another, field by field,
 and returns a new value that aliases neither input:
 
-- `replicas`, `processes`, `threads`, `workers`, `priorityClassName`, and
-  `storageSize`: a set override wins.
+- `replicas`, `processes`, `threads`, `workers`, `priorityClassName`,
+  `storageSize`, and `applierThreads`: a set override wins.
 - `resources`: every request and every limit the override names replaces or adds
   the base entry of that resource name; the override's `claims` replace the
   base's when set.
@@ -1974,7 +2012,7 @@ the graceful-termination timings are never written.
 | `nova.scheduler`, `nova.conductor` | `spec.<component>.deployment.*`, `spec.<component>.workers` |
 | `nova.consoleProxy` | `spec.consoleProxy.deployment.*` whenever the proxy is enabled, including the default of an absent `services.nova.consoleProxy` |
 | `<service>.jobs` | `spec.jobs` (resources and priority class; the child falls back to its API Deployment for the rest) |
-| `database` | every managed MariaDB: `spec.replicas` and `spec.storage.size` when the block leaves them unset, `spec.resources`, `spec.nodeSelector`, `spec.tolerations`, `spec.priorityClassName` |
+| `database` | every managed MariaDB: `spec.replicas` and `spec.storage.size` when the block leaves them unset, `spec.resources`, `spec.nodeSelector`, `spec.tolerations`, `spec.priorityClassName`, and on a Galera cluster `spec.galera.replicaThreads` (1 when `applierThreads` is unset) |
 | `cache` | every managed Memcached: `spec.replicas` when the block leaves it unset, `spec.resources` (removed when unset). The Memcached CRD has no placement. |
 | `messaging` | the managed RabbitmqCluster: `spec.replicas` when the block leaves it unset, `spec.resources`, `spec.tolerations`, and the node selector and priority class through `spec.override.statefulSet.spec.template.spec`. Unset resources leave the operator's default (1 CPU and 2Gi requested, 2 CPU and 2Gi limit). |
 | `secretStore` | the dedicated OpenBaoCluster's `spec.resources`; the replica count stays 1 |
@@ -1982,15 +2020,24 @@ the graceful-termination timings are never written.
 The managed database's replica count and volume size cannot change after
 creation, so the defaulting webhook writes the resolved values into
 `spec.infrastructure.database` and every declared dedicated database block at
-admission (see [Defaulting Webhook](#defaulting-webhook)). Cache and bus replica
-counts are resolved on every pass and follow a profile change: an owned cache
-scales in both directions, an owned bus grows in place, and a bus shrink still
-needs the `c5c3.io/allow-messaging-recreate` annotation.
+admission (see [Defaulting Webhook](#defaulting-webhook)). The applier thread
+count is resolved on every pass and never stored, so a changed value reaches
+the running cluster. Cache and bus replica counts are resolved on every pass
+and follow a profile change: an owned cache scales in both directions, an owned
+bus grows in place, and a bus shrink still needs the
+`c5c3.io/allow-messaging-recreate` annotation.
 
 ### Upgrade behavior
 
 - A ControlPlane that names no profile renders identical children, and its
-  backing services keep their operators' defaults.
+  backing services keep their operators' defaults, apart from the Galera
+  applier threads.
+- Every owned Galera MariaDB whose resolved sizing carries 4 applier threads
+  (`Standard`, or a `SizingProfile` with `base: Standard`) is updated once and
+  rolls. `applierThreads: 1`, set under the new CRDs before the operator
+  upgrade on a ControlPlane the old operator has no finalizer left to add to,
+  or on its `SizingProfile`, keeps one thread and skips the roll; see Galera applier
+  threads under [reconcileInfrastructure](controlplane-reconciler.md#reconcileinfrastructure).
 - The service replica fields moved into `spec.sizing`: the `replicas` of every
   service block, Neutron's `workerReplicas`, Nova's `metadataReplicas`,
   `schedulerReplicas` and `conductorReplicas`, and the `replicas` of Nova's
@@ -2067,8 +2114,8 @@ uncached API reader:
 - `Default` sets an empty `spec.base` to `Standard`.
 - Create checks the values with the same rules as `spec.sizing` (requests within
   limits, label keys of node selectors and tolerations, the Galera quorum, the
-  96Mi Memcached floor, the spread-entry markers, the `verticalAutoscaling`
-  rules), the `base` enum, and that
+  applier thread bounds, the 96Mi Memcached floor, the spread-entry markers,
+  the `verticalAutoscaling` rules), the `base` enum, and that
   every named PriorityClass exists. It then resolves the sizing of every
   ControlPlane that already references the profile against its values, as an
   update does: a restored profile meets ControlPlanes whose `spec.sizing` edits
@@ -3035,6 +3082,7 @@ Keystone discipline:
 | `spec.sizing.profileRef.name` | MinLength 1; MaxLength 253 |
 | `spec.sizing` and `SizingProfile spec`: every `replicas`, `processes`, `threads`, `workers` | Minimum: 1 |
 | `spec.sizing.database.storageSize`, `SizingProfile spec.database.storageSize` | Pattern `^[0-9]+(Mi\|Gi\|Ti)$` |
+| `spec.sizing.database.applierThreads`, `SizingProfile spec.database.applierThreads` | Minimum: 1; Maximum: 512 |
 | `spec.sizing` and `SizingProfile spec`: every `spreadConstraints[]` | `maxSkew` Minimum 1; `topologyKey` MinLength 1; `whenUnsatisfiable` Enum `DoNotSchedule`, `ScheduleAnyway` |
 | `spec.sizing` and `SizingProfile spec`: every `api` and `horizon.api` (CEL) | `!(has(self.autoscaling) && has(self.verticalAutoscaling))` → "autoscaling and verticalAutoscaling cannot both be set on one component" |
 | `spec.sizing` and `SizingProfile spec`: every `verticalAutoscaling` | `updateMode` Enum `Off`, `Initial`, `Recreate`, `InPlaceOrRecreate`, `Auto`; `minReplicas` Minimum 1; `minAllowed` and `maxAllowed` at most two keys, CEL: only `cpu` and `memory` (see [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec)) |
@@ -3118,6 +3166,7 @@ short-circuit on the first error.
 | Sizing node selector and tolerations | `spec.sizing[.<component>].nodeSelector`, `.tolerations` | `field.Invalid` / `field.NotSupported` | A node-selector key that is no qualified name or a value that is no label value, or a toleration the API server's own toleration validation refuses. **Webhook-only.** |
 | Sizing database quorum | `spec.sizing.database.replicas` | `field.Invalid` | Value is exactly `2`, with the message of the database quorum rule above. **Webhook-only.** |
 | Sizing storage size | `spec.sizing.database.storageSize` | `field.Invalid` | Value does not match `^[0-9]+(Mi\|Gi\|Ti)$`. Twin of the CRD pattern. |
+| Sizing applier threads | `spec.sizing.database.applierThreads` | `field.Invalid` | Value below 1 or above 512, the range MariaDB 12.3.3 reports for `wsrep_slave_threads`. Message: `must be between 1 and 512`. Twin of the CRD markers. |
 | Sizing cache memory floor | `spec.sizing.cache.resources.limits.memory` | `field.Invalid` | A limit below `96Mi`. Message: `memory limit must be at least 96Mi: the Memcached operator requires maxMemoryMB (64) plus 32Mi`. **Webhook-only.** |
 | Sizing spread entries | `spec.sizing.<component>.spreadConstraints[i].{maxSkew,topologyKey,whenUnsatisfiable}` | `field.Invalid` / `field.Required` / `field.NotSupported` | `maxSkew` below 1, an empty `topologyKey`, or a `whenUnsatisfiable` outside `DoNotSchedule`, `ScheduleAnyway`. Twins of the CRD markers. |
 | Sizing vertical autoscaling beside autoscaling | `spec.sizing.<service>.api.verticalAutoscaling`, `spec.sizing.horizon.api.verticalAutoscaling` | `field.Forbidden` | The component sets both `autoscaling` and `verticalAutoscaling`, as written and on the merged sizing, so a profile's VPA meets a ControlPlane's HPA on the same component, and the reverse. Message: `autoscaling and verticalAutoscaling cannot both be set on one component`. Twin of the CEL rule on the API sizing types. |
