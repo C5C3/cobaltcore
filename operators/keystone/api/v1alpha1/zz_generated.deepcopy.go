@@ -435,6 +435,11 @@ func (in *KeystoneSpec) DeepCopyInto(out *KeystoneSpec) {
 		*out = new(AutoscalingSpec)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.PodDisruptionBudget != nil {
+		in, out := &in.PodDisruptionBudget, &out.PodDisruptionBudget
+		*out = new(types.PodDisruptionBudgetSpec)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.NetworkPolicy != nil {
 		in, out := &in.NetworkPolicy, &out.NetworkPolicy
 		*out = new(NetworkPolicySpec)

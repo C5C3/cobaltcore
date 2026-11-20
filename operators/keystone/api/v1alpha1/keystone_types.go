@@ -224,6 +224,12 @@ type KeystoneSpec struct {
 	// +optional
 	Autoscaling *AutoscalingSpec `json:"autoscaling,omitempty"`
 
+	// PodDisruptionBudget sets the budget of the API PodDisruptionBudget. Unset,
+	// the operator renders minAvailable: 1 above a lower replica bound of one
+	// and maxUnavailable: 1 at one.
+	// +optional
+	PodDisruptionBudget *commonv1.PodDisruptionBudgetSpec `json:"podDisruptionBudget,omitempty"`
+
 	// NetworkPolicy configures network isolation for Keystone API pods.
 	// When set, a NetworkPolicy is created restricting ingress and egress traffic.
 	// When removed (nil), the NetworkPolicy is deleted and traffic flows unrestricted.

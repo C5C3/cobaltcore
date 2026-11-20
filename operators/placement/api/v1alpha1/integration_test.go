@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -426,6 +427,51 @@ func TestIntegration_CRD_CELOnly_VerticalAutoscaling(t *testing.T) {
 			err := c.Create(ctx, o)
 			g.Expect(err).To(HaveOccurred())
 			g.Expect(apierrors.IsInvalid(err)).To(BeTrue(), fmt.Sprintf("expected Invalid status error, got: %v", err))
+			g.Expect(err.Error()).To(ContainSubstring(tc.wantSub))
+		})
+	}
+}
+
+// TestIntegration_CRD_CELOnly_PodDisruptionBudget pins the CEL rule of
+// spec.podDisruptionBudget on the Placement CRD against an envtest API server
+// with NO validating webhook installed: the block sets exactly one of
+// minAvailable or maxUnavailable.
+func TestIntegration_CRD_CELOnly_PodDisruptionBudget(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	one := intstr.FromInt32(1)
+	for _, tc := range []struct {
+		name    string
+		budget  *commonv1.PodDisruptionBudgetSpec
+		wantSub string // empty: the object must be admitted
+	}{
+		{
+			name:    "both-set",
+			budget:  &commonv1.PodDisruptionBudgetSpec{MinAvailable: &one, MaxUnavailable: &one},
+			wantSub: "exactly one of minAvailable or maxUnavailable must be set",
+		},
+		{
+			name:    "neither",
+			budget:  &commonv1.PodDisruptionBudgetSpec{},
+			wantSub: "exactly one of minAvailable or maxUnavailable must be set",
+		},
+		{name: "max-unavailable", budget: &commonv1.PodDisruptionBudgetSpec{MaxUnavailable: &one}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ns := newNamespace(t, ctx, c, "celonly-pdb-")
+			o := integrationPlacement("pdb-"+tc.name, ns)
+			o.Spec.PodDisruptionBudget = tc.budget
+
+			err := c.Create(ctx, o)
+			if tc.wantSub == "" {
+				g.Expect(err).NotTo(HaveOccurred())
+				return
+			}
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(apierrors.IsInvalid(err)).To(BeTrue(), fmt.Sprintf("expected Invalid status error, got: %v", err))
+			g.Expect(err.Error()).To(ContainSubstring("spec.podDisruptionBudget"))
 			g.Expect(err.Error()).To(ContainSubstring(tc.wantSub))
 		})
 	}

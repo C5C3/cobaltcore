@@ -457,6 +457,14 @@ func (w *HorizonWebhook) validate(ctx context.Context, h *Horizon, extra field.E
 	allErrs = append(allErrs, validation.VerticalAutoscaling(verticalPath, h.Spec.Deployment.VerticalAutoscaling)...)
 	allErrs = append(allErrs, validation.VerticalAutoscalingBesideAutoscaling(verticalPath, h.Spec.Deployment.VerticalAutoscaling, h.Spec.Autoscaling)...)
 
+	// The budget must set exactly one field (the twin of the CEL rule on the
+	// type), with a well-formed value, and must allow one voluntary eviction
+	// at the lower replica bound. The last two rules are webhook-only.
+	pdbPath := specPath.Child("podDisruptionBudget")
+	allErrs = append(allErrs, validation.PodDisruptionBudgetValues(pdbPath, h.Spec.PodDisruptionBudget)...)
+	allErrs = append(allErrs, validation.PodDisruptionBudgetEvictable(pdbPath, h.Spec.PodDisruptionBudget,
+		commonv1.LowerReplicaBound(h.Spec.Deployment.Replicas, h.Spec.Autoscaling))...)
+
 	// An HPA utilization target is measured against the summed requests of
 	// every container in the API pod, so a zero request under a target either
 	// fails the metric or inflates it. The render-time default fills a positive

@@ -543,6 +543,14 @@ func (w *CinderWebhook) validate(ctx context.Context, c *Cinder, extra field.Err
 	allErrs = append(allErrs, validation.VerticalAutoscalingBesideAutoscaling(specPath.Child("api", "deployment", "verticalAutoscaling"),
 		c.Spec.API.Deployment.VerticalAutoscaling, c.Spec.Autoscaling)...)
 
+	// The budget must set exactly one field (the twin of the CEL rule on the
+	// type), with a well-formed value, and must allow one voluntary eviction
+	// at the lower replica bound. The last two rules are webhook-only.
+	pdbPath := specPath.Child("podDisruptionBudget")
+	allErrs = append(allErrs, validation.PodDisruptionBudgetValues(pdbPath, c.Spec.PodDisruptionBudget)...)
+	allErrs = append(allErrs, validation.PodDisruptionBudgetEvictable(pdbPath, c.Spec.PodDisruptionBudget,
+		commonv1.LowerReplicaBound(c.Spec.API.Deployment.Replicas, c.Spec.Autoscaling))...)
+
 	// An HPA utilization target is measured against the summed requests of
 	// every container in the API pod, so a zero request under a target either
 	// fails the metric or inflates it. The render-time default fills a positive

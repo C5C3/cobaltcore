@@ -1439,6 +1439,107 @@ func TestValidate_VerticalAutoscaling_Rejections(t *testing.T) {
 	}
 }
 
+// --- PodDisruptionBudget validation tests ---
+
+func TestValidate_PodDisruptionBudget_Accepted(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		replicas int32
+		budget   *commonv1.PodDisruptionBudgetSpec
+	}{
+		{name: "maxUnavailable 1 at one replica", replicas: 1, budget: &commonv1.PodDisruptionBudgetSpec{MaxUnavailable: ptr.To(intstr.FromInt32(1))}},
+		{name: "maxUnavailable 1 at three replicas", replicas: 3, budget: &commonv1.PodDisruptionBudgetSpec{MaxUnavailable: ptr.To(intstr.FromInt32(1))}},
+		{name: "minAvailable 2 at three replicas", replicas: 3, budget: &commonv1.PodDisruptionBudgetSpec{MinAvailable: ptr.To(intstr.FromInt32(2))}},
+		{name: "no budget", replicas: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			k := validKeystone()
+			k.Spec.Deployment.Replicas = tc.replicas
+			k.Spec.PodDisruptionBudget = tc.budget
+
+			_, err := (&KeystoneWebhook{}).ValidateCreate(context.Background(), k)
+			g.Expect(err).NotTo(HaveOccurred())
+		})
+	}
+}
+
+func TestValidate_PodDisruptionBudget_Rejections(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		mutate   func(k *Keystone)
+		wantPath string
+		wantSub  string
+	}{
+		{
+			name: "both fields",
+			mutate: func(k *Keystone) {
+				k.Spec.PodDisruptionBudget = &commonv1.PodDisruptionBudgetSpec{MinAvailable: ptr.To(intstr.FromInt32(1)), MaxUnavailable: ptr.To(intstr.FromInt32(1))}
+			},
+			wantPath: "spec.podDisruptionBudget",
+			wantSub:  "exactly one of minAvailable or maxUnavailable must be set",
+		},
+		{
+			name:     "empty block",
+			mutate:   func(k *Keystone) { k.Spec.PodDisruptionBudget = &commonv1.PodDisruptionBudgetSpec{} },
+			wantPath: "spec.podDisruptionBudget",
+			wantSub:  "exactly one of minAvailable or maxUnavailable must be set",
+		},
+		{
+			name: "malformed value",
+			mutate: func(k *Keystone) {
+				k.Spec.PodDisruptionBudget = &commonv1.PodDisruptionBudgetSpec{MaxUnavailable: ptr.To(intstr.FromString("half"))}
+			},
+			wantPath: "spec.podDisruptionBudget.maxUnavailable",
+			wantSub:  "must be a non-negative integer or a percentage from 0% to 100%",
+		},
+		{
+			name: "blocks drains at the replica count",
+			mutate: func(k *Keystone) {
+				k.Spec.Deployment.Replicas = 3
+				k.Spec.PodDisruptionBudget = &commonv1.PodDisruptionBudgetSpec{MinAvailable: ptr.To(intstr.FromInt32(3))}
+			},
+			wantPath: "spec.podDisruptionBudget.minAvailable",
+			wantSub:  "allows no voluntary eviction at a lower replica bound of 3",
+		},
+		{
+			name: "blocks drains at the HPA minimum",
+			mutate: func(k *Keystone) {
+				k.Spec.Autoscaling = &AutoscalingSpec{MinReplicas: ptr.To(int32(1)), MaxReplicas: 5, TargetCPUUtilization: ptr.To(int32(80))}
+				k.Spec.PodDisruptionBudget = &commonv1.PodDisruptionBudgetSpec{MinAvailable: ptr.To(intstr.FromInt32(1))}
+			},
+			wantPath: "spec.podDisruptionBudget.minAvailable",
+			wantSub:  "allows no voluntary eviction at a lower replica bound of 1",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			k := validKeystone()
+			tc.mutate(k)
+
+			_, err := (&KeystoneWebhook{}).ValidateCreate(context.Background(), k)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring(tc.wantPath))
+			g.Expect(err.Error()).To(ContainSubstring(tc.wantSub))
+		})
+	}
+}
+
+// Lowering the replica count below what a stored budget tolerates is rejected
+// in the same update, so the budget never blocks a drain.
+func TestValidateUpdate_ReplicasBelowPodDisruptionBudget(t *testing.T) {
+	g := NewGomegaWithT(t)
+	old := validKeystone()
+	old.Spec.Deployment.Replicas = 3
+	old.Spec.PodDisruptionBudget = &commonv1.PodDisruptionBudgetSpec{MinAvailable: ptr.To(intstr.FromInt32(2))}
+	updated := old.DeepCopy()
+	updated.Spec.Deployment.Replicas = 1
+
+	_, err := (&KeystoneWebhook{}).ValidateUpdate(context.Background(), old, updated)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring(`spec.podDisruptionBudget.minAvailable: Invalid value: "2": allows no voluntary eviction at a lower replica bound of 1`))
+}
+
 // --- NetworkPolicy validation tests ---
 
 func TestValidate_NetworkPolicy_Nil_IsValid(t *testing.T) {
