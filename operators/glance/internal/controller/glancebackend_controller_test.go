@@ -32,6 +32,7 @@ import (
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	"github.com/c5c3/cobaltcore/internal/common/watch"
 	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
 )
 
@@ -67,6 +68,7 @@ func glanceFakeClientBuilder(objs ...client.Object) *fake.ClientBuilder {
 		WithObjects(objs...).
 		WithStatusSubresource(&glancev1alpha1.Glance{}, &glancev1alpha1.GlanceBackend{}).
 		WithIndex(&glancev1alpha1.Glance{}, GlanceSecretNameIndexKey, glanceSecretNameExtractor).
+		WithIndex(&glancev1alpha1.Glance{}, policyConfigMapIndexKey, watch.ParentRefIndexer(glancePolicyConfigMapRef)).
 		WithIndex(&glancev1alpha1.GlanceBackend{}, GlanceBackendGlanceRefIndexKey, glanceBackendGlanceRefExtractor).
 		WithIndex(&glancev1alpha1.GlanceBackend{}, GlanceBackendSecretNameIndexKey, glanceBackendSecretNameExtractor)
 }

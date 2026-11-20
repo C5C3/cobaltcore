@@ -201,3 +201,53 @@ func TestMemcachedToGlanceMapper(t *testing.T) {
 		NamespacedName: types.NamespacedName{Namespace: "default", Name: "match"},
 	}))
 }
+
+// TestGlancePolicyConfigMapRef verifies the index extractor names the policy
+// ConfigMap only when spec.policyOverrides.configMapRef is set.
+func TestGlancePolicyConfigMapRef(t *testing.T) {
+	g := NewGomegaWithT(t)
+	glance := testGlance()
+
+	g.Expect(glancePolicyConfigMapRef(glance)).To(BeEmpty(), "no policyOverrides")
+
+	glance.Spec.PolicyOverrides = &commonv1.PolicySpec{Rules: map[string]string{"get_image": "role:reader"}}
+	g.Expect(glancePolicyConfigMapRef(glance)).To(BeEmpty(), "inline rules name no ConfigMap")
+
+	glance.Spec.PolicyOverrides.ConfigMapRef = &corev1.LocalObjectReference{Name: "rules"}
+	g.Expect(glancePolicyConfigMapRef(glance)).To(Equal("rules"))
+
+	g.Expect(glancePolicyConfigMapRef(&corev1.Secret{})).To(BeEmpty(), "another type indexes nothing")
+}
+
+// TestPolicyConfigMapToGlanceMapper verifies a ConfigMap event enqueues exactly
+// the Glance CRs in its namespace whose spec.policyOverrides.configMapRef names
+// it. The mapper keys on the event's name alone, so the event that restores a
+// missing ConfigMap wakes the Glance the same way an edit does.
+func TestPolicyConfigMapToGlanceMapper(t *testing.T) {
+	withPolicy := func(name, namespace string, policy *commonv1.PolicySpec) *glancev1alpha1.Glance {
+		cr := testGlance()
+		cr.Name, cr.Namespace = name, namespace
+		cr.Spec.PolicyOverrides = policy
+		return cr
+	}
+	fromConfigMap := func(name string) *commonv1.PolicySpec {
+		return &commonv1.PolicySpec{ConfigMapRef: &corev1.LocalObjectReference{Name: name}}
+	}
+	c := newMapperFakeClient(
+		withPolicy("match", "default", fromConfigMap("rules")),
+		withPolicy("inline", "default", &commonv1.PolicySpec{Rules: map[string]string{"get_image": "role:reader"}}),
+		withPolicy("none", "default", nil),
+		withPolicy("other-ns", "elsewhere", fromConfigMap("rules")),
+		withPolicy("other-name", "default", fromConfigMap("other-rules")),
+	)
+	event := func(name string) *corev1.ConfigMap {
+		return &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"}}
+	}
+	mapper := policyConfigMapToGlanceMapper(c)
+
+	g := NewGomegaWithT(t)
+	g.Expect(mapper(context.Background(), event("rules"))).To(ConsistOf(reconcile.Request{
+		NamespacedName: types.NamespacedName{Namespace: "default", Name: "match"},
+	}))
+	g.Expect(mapper(context.Background(), event("unreferenced"))).To(BeEmpty())
+}
