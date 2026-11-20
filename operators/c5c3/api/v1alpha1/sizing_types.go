@@ -198,6 +198,10 @@ type APISizingSpec struct {
 	// Autoscaling adds a HorizontalPodAutoscaler; it replaces as a whole.
 	// +optional
 	Autoscaling *commonv1.AutoscalingSpec `json:"autoscaling,omitempty"`
+
+	// PodDisruptionBudget sets the API budget; it replaces as a whole.
+	// +optional
+	PodDisruptionBudget *commonv1.PodDisruptionBudgetSpec `json:"podDisruptionBudget,omitempty"`
 }
 
 // HorizonAPISizingSpec sizes the dashboard Deployment.
@@ -208,6 +212,10 @@ type HorizonAPISizingSpec struct {
 	// Autoscaling adds a HorizontalPodAutoscaler; it replaces as a whole.
 	// +optional
 	Autoscaling *commonv1.AutoscalingSpec `json:"autoscaling,omitempty"`
+
+	// PodDisruptionBudget sets the API budget; it replaces as a whole.
+	// +optional
+	PodDisruptionBudget *commonv1.PodDisruptionBudgetSpec `json:"podDisruptionBudget,omitempty"`
 }
 
 // MetadataAPISizingSpec sizes the Nova metadata API Deployment.

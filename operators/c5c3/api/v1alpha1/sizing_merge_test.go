@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
@@ -55,6 +56,15 @@ func TestMergeSizing(t *testing.T) {
 	tolerations := func(key string) []corev1.Toleration {
 		return []corev1.Toleration{{Key: key, Operator: corev1.TolerationOpExists}}
 	}
+	withBudget := func(api APISizingSpec, b *commonv1.PodDisruptionBudgetSpec) APISizingSpec {
+		api.PodDisruptionBudget = b
+		return api
+	}
+	horizonBudget := func(b *commonv1.PodDisruptionBudgetSpec) SizingSpec {
+		return SizingSpec{Horizon: &HorizonSizingSpec{API: &HorizonAPISizingSpec{PodDisruptionBudget: b}}}
+	}
+	minAvailable2 := &commonv1.PodDisruptionBudgetSpec{MinAvailable: ptr.To(intstr.FromInt32(2))}
+	maxUnavailable1 := &commonv1.PodDisruptionBudgetSpec{MaxUnavailable: ptr.To(intstr.FromInt32(1))}
 
 	tests := []struct {
 		name     string
@@ -175,6 +185,44 @@ func TestMergeSizing(t *testing.T) {
 			})),
 		},
 		{
+			name:     "an unset podDisruptionBudget keeps the base block",
+			base:     keystoneAPI(withBudget(apiReplicas(3), minAvailable2)),
+			override: keystoneAPI(apiReplicas(2)),
+			want:     keystoneAPI(withBudget(apiReplicas(2), minAvailable2)),
+		},
+		{
+			name:     "a podDisruptionBudget override over no base budget is taken",
+			base:     keystoneAPI(apiReplicas(3)),
+			override: keystoneAPI(withBudget(APISizingSpec{}, maxUnavailable1)),
+			want:     keystoneAPI(withBudget(apiReplicas(3), maxUnavailable1)),
+		},
+		{
+			// minAvailable of the base never meets maxUnavailable of the
+			// override in one block.
+			name:     "a set podDisruptionBudget replaces the whole block",
+			base:     keystoneAPI(withBudget(APISizingSpec{}, minAvailable2)),
+			override: keystoneAPI(withBudget(APISizingSpec{}, maxUnavailable1)),
+			want:     keystoneAPI(withBudget(APISizingSpec{}, maxUnavailable1)),
+		},
+		{
+			name:     "horizon.api keeps an unset podDisruptionBudget",
+			base:     horizonBudget(minAvailable2),
+			override: horizonBudget(nil),
+			want:     horizonBudget(minAvailable2),
+		},
+		{
+			name:     "horizon.api takes a podDisruptionBudget over no base budget",
+			base:     horizonBudget(nil),
+			override: horizonBudget(maxUnavailable1),
+			want:     horizonBudget(maxUnavailable1),
+		},
+		{
+			name:     "horizon.api replaces a set podDisruptionBudget as a whole",
+			base:     horizonBudget(minAvailable2),
+			override: horizonBudget(maxUnavailable1),
+			want:     horizonBudget(maxUnavailable1),
+		},
+		{
 			name: "a set verticalAutoscaling replaces the whole block",
 			base: SizingSpec{Neutron: &NeutronSizingSpec{Workers: &WorkersSizingSpec{
 				ScaledSizingSpec: ScaledSizingSpec{Replicas: ptr.To[int32](2)},
@@ -258,8 +306,12 @@ func TestMergeSizing_DoesNotAliasInputs(t *testing.T) {
 				},
 			},
 		}},
-		Horizon: &HorizonSizingSpec{API: &HorizonAPISizingSpec{DeploymentSizingSpec: deploymentReplicas(4)}},
+		Horizon: &HorizonSizingSpec{API: &HorizonAPISizingSpec{
+			DeploymentSizingSpec: deploymentReplicas(4),
+			PodDisruptionBudget:  &commonv1.PodDisruptionBudgetSpec{MaxUnavailable: ptr.To(intstr.FromInt32(1))},
+		}},
 	}
+	base.Keystone.API.PodDisruptionBudget = &commonv1.PodDisruptionBudgetSpec{MinAvailable: ptr.To(intstr.FromInt32(2))}
 	baseBefore := base.DeepCopy()
 	overrideBefore := override.DeepCopy()
 
@@ -273,6 +325,8 @@ func TestMergeSizing_DoesNotAliasInputs(t *testing.T) {
 	got.Keystone.API.Resources.Requests[corev1.ResourceMemory] = resource.MustParse("1Gi")
 	got.Keystone.API.Resources.Limits[corev1.ResourceCPU] = resource.MustParse("3")
 	*got.Horizon.API.Replicas = 9
+	*got.Horizon.API.PodDisruptionBudget.MaxUnavailable = intstr.FromString("50%")
+	*got.Keystone.API.PodDisruptionBudget.MinAvailable = intstr.FromInt32(1)
 	got.NodeSelector["b"] = "2"
 	*got.Database.Replicas = 9
 	g.Expect(equality.Semantic.DeepEqual(base, *baseBefore)).To(BeTrue())

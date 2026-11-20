@@ -134,8 +134,9 @@ func TestBuiltinSizing_MinimalCarriesTable(t *testing.T) {
 	g.Expect(leaves).To(HaveKeyWithValue("secretStore/resources/requests/memory", "64Mi"))
 	g.Expect(leaves).To(HaveKeyWithValue("secretStore/resources/limits/memory", "64Mi"))
 
-	// Neither profile sets placement, spread, autoscaling or a priority class,
-	// and the federation proxy keeps the Keystone operator's own default.
+	// Neither profile sets placement, spread, autoscaling, a disruption budget
+	// or a priority class, and the federation proxy keeps the Keystone
+	// operator's own default.
 	for key := range leaves {
 		g.Expect(key).NotTo(ContainSubstring("nodeSelector"))
 		g.Expect(key).NotTo(ContainSubstring("tolerations"))
@@ -143,6 +144,7 @@ func TestBuiltinSizing_MinimalCarriesTable(t *testing.T) {
 		g.Expect(key).NotTo(ContainSubstring("spreadConstraints"))
 		g.Expect(key).NotTo(ContainSubstring("autoscaling"))
 		g.Expect(key).NotTo(ContainSubstring("verticalAutoscaling"))
+		g.Expect(key).NotTo(ContainSubstring("podDisruptionBudget"))
 		g.Expect(key).NotTo(ContainSubstring("federationProxy"))
 	}
 }
@@ -194,6 +196,19 @@ func TestBuiltinSizing_SetsNoVerticalAutoscaling(t *testing.T) {
 			raw, err := json.Marshal(BuiltinSizing(name))
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(string(raw)).NotTo(ContainSubstring("verticalAutoscaling"))
+		})
+	}
+}
+
+// Neither built-in profile sets a disruption budget, so a ControlPlane that
+// sets none projects none and every API keeps the operators' default rule.
+func TestBuiltinSizing_SetsNoPodDisruptionBudget(t *testing.T) {
+	for _, name := range []SizingProfileName{SizingProfileMinimal, SizingProfileStandard} {
+		t.Run(string(name), func(t *testing.T) {
+			g := NewWithT(t)
+			raw, err := json.Marshal(BuiltinSizing(name))
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(string(raw)).NotTo(ContainSubstring("podDisruptionBudget"))
 		})
 	}
 }

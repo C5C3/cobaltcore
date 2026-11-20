@@ -53,6 +53,9 @@ type sizingComponent struct {
 	autoscaling       *commonv1.AutoscalingSpec
 	// verticalAutoscaling is the component's VerticalPodAutoscaler opt-in.
 	verticalAutoscaling *commonv1.VerticalAutoscalingSpec
+	// podDisruptionBudget is the budget of an API component's
+	// PodDisruptionBudget.
+	podDisruptionBudget *commonv1.PodDisruptionBudgetSpec
 	// sidecarResources are the resources of the other containers an API
 	// component's pod runs (the Keystone federation proxy), which an
 	// autoscaling target is measured against too.
@@ -93,7 +96,7 @@ func sizingComponents(fldPath *field.Path, s *SizingSpec) []sizingComponent {
 	api := func(path *field.Path, a *APISizingSpec, sidecars ...*corev1.ResourceRequirements) {
 		if a != nil {
 			c := deploymentComponent(path, &a.DeploymentSizingSpec)
-			c.autoscaling, c.sidecarResources = a.Autoscaling, sidecars
+			c.autoscaling, c.podDisruptionBudget, c.sidecarResources = a.Autoscaling, a.PodDisruptionBudget, sidecars
 			out = append(out, c)
 		}
 	}
@@ -147,7 +150,7 @@ func sizingComponents(fldPath *field.Path, s *SizingSpec) []sizingComponent {
 	}
 	if hz := s.Horizon; hz != nil && hz.API != nil {
 		c := deploymentComponent(fldPath.Child("horizon", "api"), &hz.API.DeploymentSizingSpec)
-		c.autoscaling = hz.API.Autoscaling
+		c.autoscaling, c.podDisruptionBudget = hz.API.Autoscaling, hz.API.PodDisruptionBudget
 		out = append(out, c)
 	}
 	for _, svc := range []struct {
@@ -203,8 +206,11 @@ func sizingComponents(fldPath *field.Path, s *SizingSpec) []sizingComponent {
 // autoscaling/v2 API enforces, a verticalAutoscaling minAllowed above its
 // maxAllowed, the Galera quorum and the Memcached memory floor), the webhook
 // twins of the markers on the spread entries, the database volume size, the
-// database applier thread count and the verticalAutoscaling block, and the
-// rule that one component sets autoscaling or verticalAutoscaling, not both.
+// database applier thread count and the verticalAutoscaling block, the rule
+// that one component sets autoscaling or verticalAutoscaling, not both, and
+// the twin of the CEL rule and the value rule of a podDisruptionBudget block.
+// Whether a budget allows an eviction depends on the merged replica count, so
+// validateResolvedSizing checks that.
 func validateSizingSpec(fldPath *field.Path, s *SizingSpec) field.ErrorList {
 	var allErrs field.ErrorList
 	for _, c := range sizingComponents(fldPath, s) {
@@ -216,6 +222,7 @@ func validateSizingSpec(fldPath *field.Path, s *SizingSpec) field.ErrorList {
 		}
 		allErrs = append(allErrs, validation.VerticalAutoscaling(c.path.Child("verticalAutoscaling"), c.verticalAutoscaling)...)
 		allErrs = append(allErrs, verticalAutoscalingBesideAutoscaling(c)...)
+		allErrs = append(allErrs, validation.PodDisruptionBudgetValues(c.path.Child("podDisruptionBudget"), c.podDisruptionBudget)...)
 		for i, sc := range c.spread {
 			scPath := c.path.Child("spreadConstraints").Index(i)
 			if sc.MaxSkew < 1 {
@@ -269,7 +276,11 @@ func validateSizingSpec(fldPath *field.Path, s *SizingSpec) field.ErrorList {
 // The replica check is the child webhooks' rule: without minReplicas the HPA
 // minimum defaults to the projected replica count (commonv1.DefaultReplicas
 // when the component names none), so a maxReplicas below it would have every
-// child reject the projection.
+// child reject the projection. The podDisruptionBudget check is the child
+// webhooks' rule too: a budget must allow one voluntary eviction at the lower
+// replica bound the child computes from the projected replicas and
+// autoscaling, so a profile's budget cannot meet a ControlPlane's lower
+// replica count unchecked.
 func validateResolvedSizing(fldPath *field.Path, s *SizingSpec) field.ErrorList {
 	var allErrs field.ErrorList
 	for _, c := range sizingComponents(fldPath, s) {
@@ -279,6 +290,8 @@ func validateResolvedSizing(fldPath *field.Path, s *SizingSpec) field.ErrorList 
 		allErrs = append(allErrs, validation.AutoscalingTargetRequests(rrPath, c.resources, c.autoscaling)...)
 		allErrs = append(allErrs, validation.AutoscalingTargetsReachable(c.path.Child("autoscaling"), c.autoscaling,
 			append([]*corev1.ResourceRequirements{c.resources}, c.sidecarResources...)...)...)
+		allErrs = append(allErrs, validation.PodDisruptionBudgetEvictable(c.path.Child("podDisruptionBudget"), c.podDisruptionBudget,
+			commonv1.LowerReplicaBound(ptr.Deref(c.replicas, commonv1.DefaultReplicas), c.autoscaling))...)
 		if a := c.autoscaling; a != nil && a.MinReplicas == nil {
 			if replicas := ptr.Deref(c.replicas, commonv1.DefaultReplicas); replicas > a.MaxReplicas {
 				allErrs = append(allErrs, field.Invalid(c.path.Child("autoscaling", "maxReplicas"), a.MaxReplicas,

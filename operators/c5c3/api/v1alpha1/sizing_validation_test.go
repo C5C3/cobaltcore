@@ -7,6 +7,7 @@ package v1alpha1
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -19,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
@@ -220,6 +222,33 @@ func TestValidateSizingSpec(t *testing.T) {
 				"spec.sizing.nova.conductor.verticalAutoscaling.minReplicas: Invalid value: 0: must be at least 1",
 			},
 		},
+		{
+			name: "a podDisruptionBudget with both fields",
+			spec: keystoneAPI(APISizingSpec{PodDisruptionBudget: &commonv1.PodDisruptionBudgetSpec{
+				MinAvailable: ptr.To(intstr.FromInt32(1)), MaxUnavailable: ptr.To(intstr.FromInt32(1)),
+			}}),
+			wantErr: []string{"spec.sizing.keystone.api.podDisruptionBudget: Invalid value", "exactly one of minAvailable or maxUnavailable must be set"},
+		},
+		{
+			name:    "an empty podDisruptionBudget on horizon.api",
+			spec:    SizingSpec{Horizon: &HorizonSizingSpec{API: &HorizonAPISizingSpec{PodDisruptionBudget: &commonv1.PodDisruptionBudgetSpec{}}}},
+			wantErr: []string{"spec.sizing.horizon.api.podDisruptionBudget: Invalid value: {}: exactly one of minAvailable or maxUnavailable must be set"},
+		},
+		{
+			name: "a malformed podDisruptionBudget value",
+			spec: keystoneAPI(APISizingSpec{PodDisruptionBudget: &commonv1.PodDisruptionBudgetSpec{
+				MaxUnavailable: ptr.To(intstr.FromString("half")),
+			}}),
+			wantErr: []string{`spec.sizing.keystone.api.podDisruptionBudget.maxUnavailable: Invalid value: "half": must be a non-negative integer or a percentage from 0% to 100%`},
+		},
+		{
+			// Whether a budget allows an eviction depends on the merged
+			// replica count, which only validateResolvedSizing knows.
+			name: "a podDisruptionBudget that would block drains at one replica is valid as written",
+			spec: keystoneAPI(APISizingSpec{PodDisruptionBudget: &commonv1.PodDisruptionBudgetSpec{
+				MinAvailable: ptr.To(intstr.FromInt32(1)),
+			}}),
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -350,6 +379,68 @@ func TestValidateResolvedSizing(t *testing.T) {
 		g.Expect(errs[0].Detail).To(Equal("autoscaling and verticalAutoscaling cannot both be set on one component"))
 	})
 
+	t.Run("a podDisruptionBudget that allows no eviction at the lower replica bound", func(t *testing.T) {
+		minAvailable := func(n int32) *commonv1.PodDisruptionBudgetSpec {
+			return &commonv1.PodDisruptionBudgetSpec{MinAvailable: ptr.To(intstr.FromInt32(n))}
+		}
+		maxUnavailable1 := &commonv1.PodDisruptionBudgetSpec{MaxUnavailable: ptr.To(intstr.FromInt32(1))}
+		hpaMinTwo := &commonv1.AutoscalingSpec{
+			MinReplicas: ptr.To[int32](2), MaxReplicas: 5, TargetCPUUtilization: ptr.To[int32](80),
+		}
+		cpu := resources(corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")}, nil)
+		for _, tc := range []struct {
+			name      string
+			resolved  func(b *commonv1.PodDisruptionBudgetSpec) SizingSpec
+			blocking  *commonv1.PodDisruptionBudgetSpec
+			wantField string
+			wantBound int32
+		}{
+			{
+				name: "Minimal's one replica",
+				resolved: func(b *commonv1.PodDisruptionBudgetSpec) SizingSpec {
+					return MergeSizing(BuiltinSizing(SizingProfileMinimal), keystoneAPI(APISizingSpec{PodDisruptionBudget: b}))
+				},
+				blocking:  minAvailable(1),
+				wantField: "spec.sizing.keystone.api.podDisruptionBudget.minAvailable",
+				wantBound: 1,
+			},
+			{
+				name: "an HPA minimum of two",
+				resolved: func(b *commonv1.PodDisruptionBudgetSpec) SizingSpec {
+					api := withResourcesAPI(cpu)
+					api.Autoscaling, api.PodDisruptionBudget = hpaMinTwo, b
+					return MergeSizing(BuiltinSizing(SizingProfileStandard), SizingSpec{Glance: &APIServiceSizingSpec{API: &api}})
+				},
+				blocking:  minAvailable(2),
+				wantField: "spec.sizing.glance.api.podDisruptionBudget.minAvailable",
+				wantBound: 2,
+			},
+			{
+				name: "a component that names no replicas",
+				resolved: func(b *commonv1.PodDisruptionBudgetSpec) SizingSpec {
+					return SizingSpec{Horizon: &HorizonSizingSpec{API: &HorizonAPISizingSpec{PodDisruptionBudget: b}}}
+				},
+				blocking:  minAvailable(3),
+				wantField: "spec.sizing.horizon.api.podDisruptionBudget.minAvailable",
+				wantBound: commonv1.DefaultReplicas,
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				g := NewWithT(t)
+				resolved := tc.resolved(tc.blocking)
+				errs := validateResolvedSizing(path, &resolved)
+				g.Expect(errs).To(HaveLen(1))
+				g.Expect(errs[0].Type).To(Equal(field.ErrorTypeInvalid))
+				g.Expect(errs[0].Field).To(Equal(tc.wantField))
+				g.Expect(errs[0].Detail).To(Equal(fmt.Sprintf(
+					"allows no voluntary eviction at a lower replica bound of %d, so a node drain could not evict an API pod", tc.wantBound)))
+
+				resolved = tc.resolved(maxUnavailable1)
+				g.Expect(validateResolvedSizing(path, &resolved)).To(BeEmpty())
+			})
+		}
+	})
+
 	t.Run("both built-in profiles resolve valid", func(t *testing.T) {
 		g := NewWithT(t)
 		for _, name := range []SizingProfileName{SizingProfileMinimal, SizingProfileStandard} {
@@ -390,7 +481,7 @@ func TestSizingComponents_CoverEveryBlock(t *testing.T) {
 	g := NewWithT(t)
 	var s SizingSpec
 	skeletonSizing(reflect.ValueOf(&s).Elem())
-	var wantResources, wantSelectors, wantClasses []string
+	var wantResources, wantSelectors, wantClasses, wantBudgets []string
 	walkSizing(reflect.ValueOf(&s).Elem(), field.NewPath("spec"), func(path *field.Path, v reflect.Value) {
 		switch b := v.Addr().Interface().(type) {
 		case *ContainerSizingSpec:
@@ -405,20 +496,30 @@ func TestSizingComponents_CoverEveryBlock(t *testing.T) {
 		case *JobSizingSpec:
 			b.PriorityClassName = ptr.To(path.String())
 			wantClasses = append(wantClasses, path.Child("priorityClassName").String())
+		case *APISizingSpec:
+			b.PodDisruptionBudget = &commonv1.PodDisruptionBudgetSpec{}
+			wantBudgets = append(wantBudgets, path.Child("podDisruptionBudget").String())
+		case *HorizonAPISizingSpec:
+			b.PodDisruptionBudget = &commonv1.PodDisruptionBudgetSpec{}
+			wantBudgets = append(wantBudgets, path.Child("podDisruptionBudget").String())
 		}
 	})
 
-	var gotResources, gotSelectors []string
+	var gotResources, gotSelectors, gotBudgets []string
 	for _, err := range validateSizingSpec(field.NewPath("spec"), &s) {
 		switch {
 		case strings.HasSuffix(err.Field, ".resources.requests.cpu"):
 			gotResources = append(gotResources, err.Field)
 		case strings.HasSuffix(err.Field, "nodeSelector"):
 			gotSelectors = append(gotSelectors, err.Field)
+		case strings.HasSuffix(err.Field, "podDisruptionBudget"):
+			gotBudgets = append(gotBudgets, err.Field)
 		}
 	}
 	g.Expect(gotResources).To(ConsistOf(wantResources))
 	g.Expect(gotSelectors).To(ConsistOf(wantSelectors))
+	g.Expect(wantBudgets).To(HaveLen(8), "seven api blocks and horizon.api")
+	g.Expect(gotBudgets).To(ConsistOf(wantBudgets))
 
 	var gotClasses []string
 	for _, pc := range sizingPriorityClassNames(field.NewPath("spec"), &s) {
@@ -614,6 +715,69 @@ func TestValidateCreate_SizingVerticalAutoscalingMeetsProfileAutoscaling(t *test
 				"spec.sizing.glance.api.verticalAutoscaling: Forbidden: autoscaling and verticalAutoscaling cannot both be set on one component"))
 		})
 	}
+}
+
+// A SizingProfile's podDisruptionBudget is checked as written at spec, and a
+// budget that would block drains at Minimal's one replica is valid there: only
+// the merge with a referencing ControlPlane knows the replica count.
+func TestValidateSizingProfile_PodDisruptionBudget(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		budget  *commonv1.PodDisruptionBudgetSpec
+		wantErr string
+	}{
+		{
+			name:    "both fields",
+			budget:  &commonv1.PodDisruptionBudgetSpec{MinAvailable: ptr.To(intstr.FromInt32(1)), MaxUnavailable: ptr.To(intstr.FromInt32(1))},
+			wantErr: "spec.keystone.api.podDisruptionBudget: Invalid value",
+		},
+		{
+			name:    "empty block",
+			budget:  &commonv1.PodDisruptionBudgetSpec{},
+			wantErr: "spec.keystone.api.podDisruptionBudget: Invalid value: {}: exactly one of minAvailable or maxUnavailable must be set",
+		},
+		{
+			name:    "malformed value",
+			budget:  &commonv1.PodDisruptionBudgetSpec{MaxUnavailable: ptr.To(intstr.FromString("half"))},
+			wantErr: `spec.keystone.api.podDisruptionBudget.maxUnavailable: Invalid value: "half"`,
+		},
+		{name: "minAvailable 1 on base Minimal", budget: &commonv1.PodDisruptionBudgetSpec{MinAvailable: ptr.To(intstr.FromInt32(1))}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+			errs := validateSizingProfile(sizingProfile("site", SizingProfileMinimal,
+				keystoneAPI(APISizingSpec{PodDisruptionBudget: tc.budget})))
+			if tc.wantErr == "" {
+				g.Expect(errs).To(BeEmpty())
+				return
+			}
+			g.Expect(errs).To(HaveLen(1))
+			g.Expect(errs.ToAggregate().Error()).To(ContainSubstring(tc.wantErr))
+		})
+	}
+}
+
+// A ControlPlane update that lowers the Keystone replicas below what the
+// referenced SizingProfile's budget tolerates is rejected at the merged path.
+func TestValidateUpdate_ReplicasBelowProfileBudget(t *testing.T) {
+	g := NewWithT(t)
+	c := fake.NewClientBuilder().WithScheme(sizingScheme(t)).WithObjects(
+		sizingProfile("site", SizingProfileStandard, keystoneAPI(APISizingSpec{
+			PodDisruptionBudget: &commonv1.PodDisruptionBudgetSpec{MinAvailable: ptr.To(intstr.FromInt32(2))},
+		})),
+	).Build()
+	w := &ControlPlaneWebhook{Client: c}
+	oldCP := managedControlPlane()
+	oldCP.Spec.Sizing = &ControlPlaneSizingSpec{ProfileRef: &SizingProfileRef{Name: "site"}}
+	_, err := w.ValidateCreate(context.Background(), oldCP)
+	g.Expect(err).NotTo(HaveOccurred(), "Standard's three replicas leave one eviction")
+
+	newCP := oldCP.DeepCopy()
+	newCP.Spec.Sizing.SizingSpec = keystoneAPI(apiReplicas(1))
+	_, err = w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring(
+		`spec.sizing.keystone.api.podDisruptionBudget.minAvailable: Invalid value: "2": allows no voluntary eviction at a lower replica bound of 1`))
 }
 
 func TestValidateCreate_AcceptsResolvableSizing(t *testing.T) {

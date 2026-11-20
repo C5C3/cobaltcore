@@ -6773,6 +6773,29 @@ spec:
                             description: NodeSelector restricts the pods to nodes
                               carrying every listed label.
                             type: object
+                          podDisruptionBudget:
+                            description: PodDisruptionBudget sets the API budget;
+                              it replaces as a whole.
+                            properties:
+                              maxUnavailable:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                description: MaxUnavailable is the pod count or percentage
+                                  that may be unavailable.
+                                x-kubernetes-int-or-string: true
+                              minAvailable:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                description: MinAvailable is the pod count or percentage
+                                  that must stay available.
+                                x-kubernetes-int-or-string: true
+                            type: object
+                            x-kubernetes-validations:
+                            - message: exactly one of minAvailable or maxUnavailable
+                                must be set
+                              rule: has(self.minAvailable) != has(self.maxUnavailable)
                           priorityClassName:
                             description: PriorityClassName sets the pods' priority
                               class; "" sets none.
@@ -7357,6 +7380,29 @@ spec:
                             description: NodeSelector restricts the pods to nodes
                               carrying every listed label.
                             type: object
+                          podDisruptionBudget:
+                            description: PodDisruptionBudget sets the API budget;
+                              it replaces as a whole.
+                            properties:
+                              maxUnavailable:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                description: MaxUnavailable is the pod count or percentage
+                                  that may be unavailable.
+                                x-kubernetes-int-or-string: true
+                              minAvailable:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                description: MinAvailable is the pod count or percentage
+                                  that must stay available.
+                                x-kubernetes-int-or-string: true
+                            type: object
+                            x-kubernetes-validations:
+                            - message: exactly one of minAvailable or maxUnavailable
+                                must be set
+                              rule: has(self.minAvailable) != has(self.maxUnavailable)
                           priorityClassName:
                             description: PriorityClassName sets the pods' priority
                               class; "" sets none.
@@ -8573,6 +8619,29 @@ spec:
                             description: NodeSelector restricts the pods to nodes
                               carrying every listed label.
                             type: object
+                          podDisruptionBudget:
+                            description: PodDisruptionBudget sets the API budget;
+                              it replaces as a whole.
+                            properties:
+                              maxUnavailable:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                description: MaxUnavailable is the pod count or percentage
+                                  that may be unavailable.
+                                x-kubernetes-int-or-string: true
+                              minAvailable:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                description: MinAvailable is the pod count or percentage
+                                  that must stay available.
+                                x-kubernetes-int-or-string: true
+                            type: object
+                            x-kubernetes-validations:
+                            - message: exactly one of minAvailable or maxUnavailable
+                                must be set
+                              rule: has(self.minAvailable) != has(self.maxUnavailable)
                           priorityClassName:
                             description: PriorityClassName sets the pods' priority
                               class; "" sets none.
@@ -9088,6 +9157,29 @@ spec:
                             description: NodeSelector restricts the pods to nodes
                               carrying every listed label.
                             type: object
+                          podDisruptionBudget:
+                            description: PodDisruptionBudget sets the API budget;
+                              it replaces as a whole.
+                            properties:
+                              maxUnavailable:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                description: MaxUnavailable is the pod count or percentage
+                                  that may be unavailable.
+                                x-kubernetes-int-or-string: true
+                              minAvailable:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                description: MinAvailable is the pod count or percentage
+                                  that must stay available.
+                                x-kubernetes-int-or-string: true
+                            type: object
+                            x-kubernetes-validations:
+                            - message: exactly one of minAvailable or maxUnavailable
+                                must be set
+                              rule: has(self.minAvailable) != has(self.maxUnavailable)
                           priorityClassName:
                             description: PriorityClassName sets the pods' priority
                               class; "" sets none.
@@ -9524,6 +9616,29 @@ spec:
                             description: NodeSelector restricts the pods to nodes
                               carrying every listed label.
                             type: object
+                          podDisruptionBudget:
+                            description: PodDisruptionBudget sets the API budget;
+                              it replaces as a whole.
+                            properties:
+                              maxUnavailable:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                description: MaxUnavailable is the pod count or percentage
+                                  that may be unavailable.
+                                x-kubernetes-int-or-string: true
+                              minAvailable:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                description: MinAvailable is the pod count or percentage
+                                  that must stay available.
+                                x-kubernetes-int-or-string: true
+                            type: object
+                            x-kubernetes-validations:
+                            - message: exactly one of minAvailable or maxUnavailable
+                                must be set
+                              rule: has(self.minAvailable) != has(self.maxUnavailable)
                           priorityClassName:
                             description: PriorityClassName sets the pods' priority
                               class; "" sets none.
@@ -10224,6 +10339,29 @@ spec:
                             description: NodeSelector restricts the pods to nodes
                               carrying every listed label.
                             type: object
+                          podDisruptionBudget:
+                            description: PodDisruptionBudget sets the API budget;
+                              it replaces as a whole.
+                            properties:
+                              maxUnavailable:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                description: MaxUnavailable is the pod count or percentage
+                                  that may be unavailable.
+                                x-kubernetes-int-or-string: true
+                              minAvailable:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                description: MinAvailable is the pod count or percentage
+                                  that must stay available.
+                                x-kubernetes-int-or-string: true
+                            type: object
+                            x-kubernetes-validations:
+                            - message: exactly one of minAvailable or maxUnavailable
+                                must be set
+                              rule: has(self.minAvailable) != has(self.maxUnavailable)
                           priorityClassName:
                             description: PriorityClassName sets the pods' priority
                               class; "" sets none.
@@ -10926,6 +11064,29 @@ spec:
                             description: NodeSelector restricts the pods to nodes
                               carrying every listed label.
                             type: object
+                          podDisruptionBudget:
+                            description: PodDisruptionBudget sets the API budget;
+                              it replaces as a whole.
+                            properties:
+                              maxUnavailable:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                description: MaxUnavailable is the pod count or percentage
+                                  that may be unavailable.
+                                x-kubernetes-int-or-string: true
+                              minAvailable:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                description: MinAvailable is the pod count or percentage
+                                  that must stay available.
+                                x-kubernetes-int-or-string: true
+                            type: object
+                            x-kubernetes-validations:
+                            - message: exactly one of minAvailable or maxUnavailable
+                                must be set
+                              rule: has(self.minAvailable) != has(self.maxUnavailable)
                           priorityClassName:
                             description: PriorityClassName sets the pods' priority
                               class; "" sets none.
@@ -12313,6 +12474,29 @@ spec:
                             description: NodeSelector restricts the pods to nodes
                               carrying every listed label.
                             type: object
+                          podDisruptionBudget:
+                            description: PodDisruptionBudget sets the API budget;
+                              it replaces as a whole.
+                            properties:
+                              maxUnavailable:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                description: MaxUnavailable is the pod count or percentage
+                                  that may be unavailable.
+                                x-kubernetes-int-or-string: true
+                              minAvailable:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                description: MinAvailable is the pod count or percentage
+                                  that must stay available.
+                                x-kubernetes-int-or-string: true
+                            type: object
+                            x-kubernetes-validations:
+                            - message: exactly one of minAvailable or maxUnavailable
+                                must be set
+                              rule: has(self.minAvailable) != has(self.maxUnavailable)
                           priorityClassName:
                             description: PriorityClassName sets the pods' priority
                               class; "" sets none.
