@@ -20,6 +20,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 
 	commonenvtest "github.com/c5c3/cobaltcore/internal/common/testutil/envtest"
@@ -44,7 +45,7 @@ func callerDir() string {
 // of the CRD has no reject case.
 //
 // Rules: types.go:68, 149, 150, 285, 286, 311, 444, 445
-// Rules: workload.go:124, 226, 227, 280, 281, 317, 386, 387
+// Rules: workload.go:133, 240, 241, 294, 295, 328, 411, 480, 481
 // Rules: uwsgi.go:15
 func TestIntegration_CRD_CELOnly_SharedTypes(t *testing.T) {
 	commonenvtest.SkipIfEnvTestUnavailable(t)
@@ -57,10 +58,12 @@ func TestIntegration_CRD_CELOnly_SharedTypes(t *testing.T) {
 		cacheExactlyOne     = "exactly one of clusterRef or servers must be set"
 		messagingExactlyOne = "exactly one of clusterRef or secretRef must be set"
 		preStopBeforeGrace  = "preStopSleepSeconds must be strictly less than terminationGracePeriodSeconds"
+		budgetExactlyOne    = "exactly one of minAvailable or maxUnavailable must be set"
 	)
 	ref := func(name string) *corev1.LocalObjectReference { return &corev1.LocalObjectReference{Name: name} }
 	secret := commonv1.SecretRefSpec{Name: "s"}
 	storage := corev1.ResourceList{corev1.ResourceEphemeralStorage: resource.MustParse("1Gi")}
+	one := ptr.To(intstr.FromInt32(1))
 
 	cases := []struct {
 		name    string
@@ -183,6 +186,21 @@ func TestIntegration_CRD_CELOnly_SharedTypes(t *testing.T) {
 			wantSub: "maxAllowed may only name cpu and memory",
 		},
 		{
+			name:    "pod-disruption-budget-both-set",
+			spec:    CELHostSpec{PodDisruptionBudget: &commonv1.PodDisruptionBudgetSpec{MinAvailable: one, MaxUnavailable: one}},
+			wantSub: budgetExactlyOne,
+		},
+		{
+			name:    "pod-disruption-budget-neither",
+			spec:    CELHostSpec{PodDisruptionBudget: &commonv1.PodDisruptionBudgetSpec{}},
+			wantSub: budgetExactlyOne,
+		},
+		{
+			// The schema admits a percentage; its range is a webhook rule.
+			name: "pod-disruption-budget-max-unavailable-percentage",
+			spec: CELHostSpec{PodDisruptionBudget: &commonv1.PodDisruptionBudgetSpec{MaxUnavailable: ptr.To(intstr.FromString("25%"))}},
+		},
+		{
 			name:    "network-policy-empty-ingress",
 			spec:    CELHostSpec{NetworkPolicy: &commonv1.NetworkPolicySpec{Ingress: []commonv1.NetworkPolicyIngressSource{}}},
 			wantSub: "at least one ingress source must be specified",
@@ -221,9 +239,10 @@ func TestIntegration_CRD_CELOnly_SharedTypes(t *testing.T) {
 					MinAllowed: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")},
 					MaxAllowed: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")},
 				},
-				NetworkPolicy: &commonv1.NetworkPolicySpec{Ingress: []commonv1.NetworkPolicyIngressSource{{}}},
-				Logging:       &commonv1.LoggingSpec{PerLoggerLevels: map[string]string{"keystone": "DEBUG"}},
-				UWSGI:         &commonv1.UWSGISpec{HTTPKeepAlive: ptr.To(true), HTTPKeepAliveTimeout: ptr.To[int32](5)},
+				PodDisruptionBudget: &commonv1.PodDisruptionBudgetSpec{MaxUnavailable: one},
+				NetworkPolicy:       &commonv1.NetworkPolicySpec{Ingress: []commonv1.NetworkPolicyIngressSource{{}}},
+				Logging:             &commonv1.LoggingSpec{PerLoggerLevels: map[string]string{"keystone": "DEBUG"}},
+				UWSGI:               &commonv1.UWSGISpec{HTTPKeepAlive: ptr.To(true), HTTPKeepAliveTimeout: ptr.To[int32](5)},
 			},
 		},
 		{

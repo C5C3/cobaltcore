@@ -2370,6 +2370,28 @@ spec:
                 x-kubernetes-validations:
                 - message: at least one ingress source must be specified
                   rule: size(self.ingress) > 0
+              podDisruptionBudget:
+                description: PodDisruptionBudget carries the PodDisruptionBudgetSpec
+                  rule.
+                properties:
+                  maxUnavailable:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: MaxUnavailable is the pod count or percentage that
+                      may be unavailable.
+                    x-kubernetes-int-or-string: true
+                  minAvailable:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: MinAvailable is the pod count or percentage that
+                      must stay available.
+                    x-kubernetes-int-or-string: true
+                type: object
+                x-kubernetes-validations:
+                - message: exactly one of minAvailable or maxUnavailable must be set
+                  rule: has(self.minAvailable) != has(self.maxUnavailable)
               policy:
                 description: Policy carries the PolicySpec rules.
                 properties:

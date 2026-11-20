@@ -82,6 +82,11 @@ func (in *CELHostSpec) DeepCopyInto(out *CELHostSpec) {
 		*out = new(types.VerticalAutoscalingSpec)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.PodDisruptionBudget != nil {
+		in, out := &in.PodDisruptionBudget, &out.PodDisruptionBudget
+		*out = new(types.PodDisruptionBudgetSpec)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.NetworkPolicy != nil {
 		in, out := &in.NetworkPolicy, &out.NetworkPolicy
 		*out = new(types.NetworkPolicySpec)
