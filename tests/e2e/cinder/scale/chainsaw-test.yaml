@@ -6,6 +6,8 @@
 # Verifies that patching spec.api.deployment.replicas propagates to the API
 # Deployment and its PDB:
 #   - initial deployment with replicas: 3 (PDB: minAvailable=1)
+#   - set spec.podDisruptionBudget to maxUnavailable: 1 (PDB: maxUnavailable=1)
+#   - unset it again (PDB: minAvailable=1)
 #   - scale up to 5 replicas, where updatedReplicas proves new pods started
 #   - scale down to 1 replica (PDB: maxUnavailable=1)
 #
@@ -19,7 +21,7 @@
 #
 # spec.concurrent is false because of the CPU the scale-up requests. Every
 # Cinder pod carries the shared 70m request (internal/common/types/workload.go),
-# so step 3 holds 490m on the single node hack/kind-config.yaml declares: five
+# so step 5 holds 490m on the single node hack/kind-config.yaml declares: five
 # API pods, the scheduler and the volume service. Run alone, before the
 # concurrent suites start, the peak fits the node.
 #
@@ -128,7 +130,40 @@ spec:
         tail: 200
     - events:
         namespace: openstack
-  # ── Step 3: Scale up to 5 and assert the rollout completed ─────────────
+  # ── Step 3: Set spec.podDisruptionBudget to maxUnavailable: 1 ──────────
+  # The budget the CR states replaces the default rule: the PDB carries
+  # maxUnavailable: 1 and no minAvailable, so two of the three pods keep
+  # serving while a node drains.
+  - try:
+    - patch:
+        file: 04-patch-budget.yaml
+    - assert:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: cinder-scale
+            namespace: openstack
+          spec:
+            maxUnavailable: 1
+            (minAvailable == null): true
+  # ── Step 4: Unset spec.podDisruptionBudget ─────────────────────────────
+  # Without the field the operator renders the default rule again:
+  # minAvailable: 1 at three replicas, and no maxUnavailable.
+  - try:
+    - patch:
+        file: 05-patch-budget-unset.yaml
+    - assert:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: cinder-scale
+            namespace: openstack
+          spec:
+            minAvailable: 1
+            (maxUnavailable == null): true
+  # ── Step 5: Scale up to 5 and assert the rollout completed ─────────────
   - try:
     - patch:
         file: 02-patch-scale-up.yaml
@@ -194,7 +229,7 @@ spec:
         tail: 200
     - events:
         namespace: openstack
-  # ── Step 4: Scale down to 1 and assert the PDB flips ───────────────────
+  # ── Step 6: Scale down to 1 and assert the PDB flips ───────────────────
   - try:
     - patch:
         file: 03-patch-scale-to-one.yaml
