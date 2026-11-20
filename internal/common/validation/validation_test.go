@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
@@ -880,6 +881,138 @@ func TestVerticalAutoscalingBesideAutoscaling(t *testing.T) {
 		g.Expect(errs[0].Field).To(gomega.Equal("spec.deployment.verticalAutoscaling"))
 		g.Expect(errs[0].Detail).To(gomega.Equal("cannot be set while spec.autoscaling scales the same Deployment"))
 	})
+}
+
+func TestPodDisruptionBudgetValues(t *testing.T) {
+	path := field.NewPath("spec", "podDisruptionBudget")
+	one := ptr.To(intstr.FromInt32(1))
+
+	for _, tc := range []struct {
+		name string
+		b    *commonv1.PodDisruptionBudgetSpec
+	}{
+		{name: "nil"},
+		{name: "maxUnavailable", b: &commonv1.PodDisruptionBudgetSpec{MaxUnavailable: one}},
+		{name: "minAvailable percentage", b: &commonv1.PodDisruptionBudgetSpec{MinAvailable: ptr.To(intstr.FromString("50%"))}},
+		{name: "zero blocks drains but is a valid value", b: &commonv1.PodDisruptionBudgetSpec{MaxUnavailable: ptr.To(intstr.FromInt32(0))}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			g.Expect(PodDisruptionBudgetValues(path, tc.b)).To(gomega.BeEmpty())
+		})
+	}
+
+	for _, tc := range []struct {
+		name string
+		b    *commonv1.PodDisruptionBudgetSpec
+	}{
+		{name: "empty block", b: &commonv1.PodDisruptionBudgetSpec{}},
+		{name: "both fields", b: &commonv1.PodDisruptionBudgetSpec{MinAvailable: one, MaxUnavailable: one}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			errs := PodDisruptionBudgetValues(path, tc.b)
+			g.Expect(errs).To(gomega.HaveLen(1))
+			g.Expect(errs[0].Type).To(gomega.Equal(field.ErrorTypeInvalid))
+			g.Expect(errs[0].Field).To(gomega.Equal("spec.podDisruptionBudget"))
+			g.Expect(errs[0].Detail).To(gomega.Equal("exactly one of minAvailable or maxUnavailable must be set"))
+		})
+	}
+
+	for _, tc := range []struct {
+		name      string
+		b         *commonv1.PodDisruptionBudgetSpec
+		wantField string
+		wantValue string
+	}{
+		{
+			name:      "word",
+			b:         &commonv1.PodDisruptionBudgetSpec{MaxUnavailable: ptr.To(intstr.FromString("half"))},
+			wantField: "spec.podDisruptionBudget.maxUnavailable",
+			wantValue: "half",
+		},
+		{
+			name:      "negative integer",
+			b:         &commonv1.PodDisruptionBudgetSpec{MinAvailable: ptr.To(intstr.FromInt32(-1))},
+			wantField: "spec.podDisruptionBudget.minAvailable",
+			wantValue: "-1",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			errs := PodDisruptionBudgetValues(path, tc.b)
+			g.Expect(errs).To(gomega.HaveLen(1))
+			g.Expect(errs[0].Type).To(gomega.Equal(field.ErrorTypeInvalid))
+			g.Expect(errs[0].Field).To(gomega.Equal(tc.wantField))
+			g.Expect(errs[0].BadValue).To(gomega.Equal(tc.wantValue))
+			g.Expect(errs[0].Detail).To(gomega.Equal("must be a non-negative integer or a percentage from 0% to 100%"))
+		})
+	}
+
+	t.Run("both fields and a malformed value report both", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		errs := PodDisruptionBudgetValues(path, &commonv1.PodDisruptionBudgetSpec{
+			MinAvailable: one, MaxUnavailable: ptr.To(intstr.FromString("101%")),
+		})
+		g.Expect(errs).To(gomega.HaveLen(2))
+		g.Expect(errs[0].Field).To(gomega.Equal("spec.podDisruptionBudget"))
+		g.Expect(errs[1].Field).To(gomega.Equal("spec.podDisruptionBudget.maxUnavailable"))
+	})
+}
+
+func TestPodDisruptionBudgetEvictable(t *testing.T) {
+	path := field.NewPath("spec", "podDisruptionBudget")
+	intVal := func(v int32) *intstr.IntOrString { return ptr.To(intstr.FromInt32(v)) }
+
+	for _, tc := range []struct {
+		name  string
+		b     *commonv1.PodDisruptionBudgetSpec
+		bound int32
+	}{
+		{name: "nil", bound: 1},
+		{name: "empty block is left to the value check", b: &commonv1.PodDisruptionBudgetSpec{}, bound: 1},
+		{name: "both fields are left to the value check", b: &commonv1.PodDisruptionBudgetSpec{MinAvailable: intVal(3), MaxUnavailable: intVal(0)}, bound: 3},
+		{name: "malformed value is left to the value check", b: &commonv1.PodDisruptionBudgetSpec{MaxUnavailable: ptr.To(intstr.FromString("half"))}, bound: 3},
+		{name: "maxUnavailable 1 at one replica", b: &commonv1.PodDisruptionBudgetSpec{MaxUnavailable: intVal(1)}, bound: 1},
+		{name: "minAvailable 2 at three replicas", b: &commonv1.PodDisruptionBudgetSpec{MinAvailable: intVal(2)}, bound: 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			g.Expect(PodDisruptionBudgetEvictable(path, tc.b, tc.bound)).To(gomega.BeEmpty())
+		})
+	}
+
+	for _, tc := range []struct {
+		name       string
+		b          *commonv1.PodDisruptionBudgetSpec
+		bound      int32
+		wantField  string
+		wantDetail string
+	}{
+		{
+			name:       "minAvailable equal to the bound",
+			b:          &commonv1.PodDisruptionBudgetSpec{MinAvailable: intVal(3)},
+			bound:      3,
+			wantField:  "spec.podDisruptionBudget.minAvailable",
+			wantDetail: "allows no voluntary eviction at a lower replica bound of 3, so a node drain could not evict an API pod",
+		},
+		{
+			name:       "maxUnavailable 0%",
+			b:          &commonv1.PodDisruptionBudgetSpec{MaxUnavailable: ptr.To(intstr.FromString("0%"))},
+			bound:      2,
+			wantField:  "spec.podDisruptionBudget.maxUnavailable",
+			wantDetail: "allows no voluntary eviction at a lower replica bound of 2, so a node drain could not evict an API pod",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			errs := PodDisruptionBudgetEvictable(path, tc.b, tc.bound)
+			g.Expect(errs).To(gomega.HaveLen(1))
+			g.Expect(errs[0].Type).To(gomega.Equal(field.ErrorTypeInvalid))
+			g.Expect(errs[0].Field).To(gomega.Equal(tc.wantField))
+			g.Expect(errs[0].Detail).To(gomega.Equal(tc.wantDetail))
+		})
+	}
 }
 
 func TestJob(t *testing.T) {

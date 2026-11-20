@@ -36,6 +36,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	k8svalidation "k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -757,6 +758,56 @@ func VerticalAutoscalingBesideAutoscaling(fldPath *field.Path, v *commonv1.Verti
 		return nil
 	}
 	return field.ErrorList{field.Forbidden(fldPath, "cannot be set while spec.autoscaling scales the same Deployment")}
+}
+
+// PodDisruptionBudgetValues checks a podDisruptionBudget block at fldPath as
+// written. A nil b returns none. A block that sets both minAvailable and
+// maxUnavailable, or neither, is rejected at fldPath, the twin of the CEL rule
+// on commonv1.PodDisruptionBudgetSpec. A set value that
+// commonv1.ResolveBudgetValue rejects is rejected at its field; that rule is
+// webhook-only, since the schema admits any integer or string.
+func PodDisruptionBudgetValues(fldPath *field.Path, b *commonv1.PodDisruptionBudgetSpec) field.ErrorList {
+	if b == nil {
+		return nil
+	}
+	var errs field.ErrorList
+	if (b.MinAvailable == nil) == (b.MaxUnavailable == nil) {
+		errs = append(errs, field.Invalid(fldPath, *b, commonv1.ErrBudgetExactlyOne.Error()))
+	}
+	for _, f := range []struct {
+		name string
+		v    *intstr.IntOrString
+	}{{name: "minAvailable", v: b.MinAvailable}, {name: "maxUnavailable", v: b.MaxUnavailable}} {
+		if f.v == nil {
+			continue
+		}
+		if _, err := commonv1.ResolveBudgetValue(*f.v, 1); err != nil {
+			errs = append(errs, field.Invalid(fldPath.Child(f.name), f.v.String(), err.Error()))
+		}
+	}
+	return errs
+}
+
+// PodDisruptionBudgetEvictable rejects a podDisruptionBudget block at fldPath
+// that allows no voluntary eviction at lowerBound, the lowest pod count the
+// API Deployment runs at (commonv1.LowerReplicaBound). The disruption
+// controller lets evictions take no fewer pods as the count grows, so the
+// check at the lower bound covers every scale an HPA reaches. A nil b, and a
+// block PodDisruptionBudgetValues rejects, return none, so one mistake is
+// reported once. The rule is webhook-only: CEL cannot round a percentage
+// against a replica count held in another block.
+func PodDisruptionBudgetEvictable(fldPath *field.Path, b *commonv1.PodDisruptionBudgetSpec, lowerBound int32) field.ErrorList {
+	// DisruptionsAllowed errors on a nil b and on exactly the blocks
+	// PodDisruptionBudgetValues rejects, so this one check skips both.
+	if allowed, err := b.DisruptionsAllowed(lowerBound); err != nil || allowed > 0 {
+		return nil
+	}
+	name, v := "maxUnavailable", b.MaxUnavailable
+	if b.MinAvailable != nil {
+		name, v = "minAvailable", b.MinAvailable
+	}
+	return field.ErrorList{field.Invalid(fldPath.Child(name), v.String(), fmt.Sprintf(
+		"allows no voluntary eviction at a lower replica bound of %d, so a node drain could not evict an API pod", lowerBound))}
 }
 
 // Job checks a CR's spec.jobs block: requests within limits, an existing
