@@ -17,6 +17,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -1580,4 +1581,127 @@ func TestPruneImmutableSecrets_skipsSecretsOwnedByDifferentController(t *testing
 	g.Expect(c.List(ctx, &secList, client.InNamespace("default"))).To(Succeed())
 	g.Expect(secList.Items).To(HaveLen(1))
 	g.Expect(secList.Items[0].Name).To(Equal("my-domains-ffffffff"))
+}
+
+// TestRenderServiceINI_precedence pins the merge order every service config
+// shares: operator defaults win over a plugin's section, user overrides win
+// over both, and the policy file is wired last.
+func TestRenderServiceINI_precedence(t *testing.T) {
+	g := NewGomegaWithT(t)
+	defaults := map[string]map[string]string{
+		"DEFAULT":  {"debug": "false", "workers": "4"},
+		"database": {"max_retries": "-1"},
+	}
+	plugins := map[string]map[string]string{
+		"DEFAULT": {"debug": "true"},
+		"audit":   {"enabled": "true"},
+	}
+	overrides := map[string]map[string]string{
+		"DEFAULT": {"workers": "8"},
+		"audit":   {"enabled": "false"},
+	}
+
+	got := RenderServiceINI(defaults, plugins, overrides, "/etc/service/policy.yaml")
+
+	g.Expect(got).To(Equal(RenderINI(map[string]map[string]string{
+		"DEFAULT":     {"debug": "false", "workers": "8"},
+		"audit":       {"enabled": "false"},
+		"database":    {"max_retries": "-1"},
+		"oslo_policy": {"policy_file": "/etc/service/policy.yaml"},
+	})))
+	// The inputs are shared with the caller and must come back untouched.
+	g.Expect(defaults).To(Equal(map[string]map[string]string{
+		"DEFAULT":  {"debug": "false", "workers": "4"},
+		"database": {"max_retries": "-1"},
+	}))
+	g.Expect(plugins["DEFAULT"]).To(Equal(map[string]string{"debug": "true"}))
+	g.Expect(overrides["DEFAULT"]).To(Equal(map[string]string{"workers": "8"}))
+}
+
+func TestRenderServiceINI_defaultsOnly(t *testing.T) {
+	g := NewGomegaWithT(t)
+	defaults := map[string]map[string]string{"DEFAULT": {"debug": "false"}}
+
+	for _, empty := range []map[string]map[string]string{nil, {}} {
+		got := RenderServiceINI(defaults, empty, empty, "")
+		g.Expect(got).To(Equal("[DEFAULT]\ndebug = false\n"))
+	}
+}
+
+// pruneHistory seeds four historical ConfigMaps (aaaaaaaa is the oldest) and
+// the current one, and returns the client holding them.
+func pruneHistory(owner *corev1.ConfigMap) client.Client {
+	baseTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	objects := []client.Object{owner, ownedConfigMap("my-config-current1", "default", "my-config", owner, baseTime.Add(5*time.Hour))}
+	for i, suffix := range []string{"aaaaaaaa", "bbbbbbbb", "cccccccc", "dddddddd"} {
+		objects = append(objects, ownedConfigMap("my-config-"+suffix, "default", "my-config", owner,
+			baseTime.Add(time.Duration(i)*time.Hour)))
+	}
+	return fake.NewClientBuilder().WithScheme(newScheme()).WithObjects(objects...).Build()
+}
+
+func remainingConfigMaps(g Gomega, c client.Client) []string {
+	var list corev1.ConfigMapList
+	g.Expect(c.List(context.Background(), &list, client.InNamespace("default"))).To(Succeed())
+	names := make([]string, 0, len(list.Items))
+	for _, cm := range list.Items {
+		if cm.Name != "test-owner" {
+			names = append(names, cm.Name)
+		}
+	}
+	return names
+}
+
+// A revision a workload still mounts survives the prune even when it is older
+// than the retained window. Its unpinned neighbours are deleted as usual.
+func TestPruneImmutableConfigMaps_inUseKeepsPinnedHistory(t *testing.T) {
+	g := NewGomegaWithT(t)
+	owner := testOwner()
+	c := pruneHistory(owner)
+
+	err := PruneImmutableConfigMaps(context.Background(), c, newScheme(), owner, PruneOptions{
+		BaseName: "my-config", Namespace: "default", CurrentName: "my-config-current1", Retain: 1,
+		InUse: func(context.Context) (sets.Set[string], error) {
+			return sets.New("my-config-aaaaaaaa"), nil
+		},
+	})
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(remainingConfigMaps(g, c)).To(ConsistOf("my-config-current1", "my-config-dddddddd", "my-config-aaaaaaaa"))
+}
+
+// A failed observation must not be read as "nothing is pinned": the prune
+// returns the error and deletes nothing.
+func TestPruneImmutableConfigMaps_inUseErrorLeavesHistoryIntact(t *testing.T) {
+	g := NewGomegaWithT(t)
+	owner := testOwner()
+	c := pruneHistory(owner)
+	boom := errors.New("listing workloads failed")
+
+	err := PruneImmutableConfigMaps(context.Background(), c, newScheme(), owner, PruneOptions{
+		BaseName: "my-config", Namespace: "default", CurrentName: "my-config-current1", Retain: 1,
+		InUse: func(context.Context) (sets.Set[string], error) { return nil, boom },
+	})
+
+	g.Expect(err).To(MatchError(boom))
+	g.Expect(remainingConfigMaps(g, c)).To(HaveLen(5))
+}
+
+// The observation costs a List of workloads, so it runs only when the history
+// exceeds the retained window.
+func TestPruneImmutableConfigMaps_inUseNotConsultedWithoutHistoryToDelete(t *testing.T) {
+	g := NewGomegaWithT(t)
+	owner := testOwner()
+	c := pruneHistory(owner)
+
+	err := PruneImmutableConfigMaps(context.Background(), c, newScheme(), owner, PruneOptions{
+		BaseName: "my-config", Namespace: "default", CurrentName: "my-config-current1", Retain: 4,
+		InUse: func(context.Context) (sets.Set[string], error) {
+			t.Fatal("InUse must not run when nothing would be deleted")
+			return nil, nil
+		},
+	})
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(remainingConfigMaps(g, c)).To(HaveLen(5))
 }
