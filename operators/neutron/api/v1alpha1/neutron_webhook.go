@@ -508,6 +508,14 @@ func (w *NeutronWebhook) validate(
 	allErrs = append(allErrs, validation.VerticalAutoscalingBesideAutoscaling(specPath.Child("deployment", "verticalAutoscaling"),
 		n.Spec.Deployment.VerticalAutoscaling, n.Spec.Autoscaling)...)
 
+	// The budget must set exactly one field (the twin of the CEL rule on the
+	// type), with a well-formed value, and must allow one voluntary eviction
+	// at the lower replica bound. The last two rules are webhook-only.
+	pdbPath := specPath.Child("podDisruptionBudget")
+	allErrs = append(allErrs, validation.PodDisruptionBudgetValues(pdbPath, n.Spec.PodDisruptionBudget)...)
+	allErrs = append(allErrs, validation.PodDisruptionBudgetEvictable(pdbPath, n.Spec.PodDisruptionBudget,
+		commonv1.LowerReplicaBound(n.Spec.Deployment.Replicas, n.Spec.Autoscaling))...)
+
 	// An HPA utilization target is measured against the summed requests of
 	// every container in the API pod, so a zero request under a target either
 	// fails the metric or inflates it. The render-time default fills a positive

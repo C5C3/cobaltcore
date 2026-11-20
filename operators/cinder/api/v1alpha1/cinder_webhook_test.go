@@ -16,6 +16,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -600,6 +601,43 @@ func TestCinderValidateCreate_RejectionTable(t *testing.T) {
 			mutate:  func(o *Cinder) { o.Spec.OpenStackRelease = "2025.2" },
 			wantSub: `spec.openStackRelease: Invalid value: "2025.2": must be 2026.1 or later`,
 		},
+		{
+			name: "podDisruptionBudget with both fields rejected",
+			mutate: func(o *Cinder) {
+				o.Spec.PodDisruptionBudget = &commonv1.PodDisruptionBudgetSpec{MinAvailable: ptr.To(intstr.FromInt32(1)), MaxUnavailable: ptr.To(intstr.FromInt32(1))}
+			},
+			wantSub: `spec.podDisruptionBudget: Invalid value: {"minAvailable":1,"maxUnavailable":1}: exactly one of minAvailable or maxUnavailable must be set`,
+		},
+		{
+			name: "empty podDisruptionBudget rejected",
+			mutate: func(o *Cinder) {
+				o.Spec.PodDisruptionBudget = &commonv1.PodDisruptionBudgetSpec{}
+			},
+			wantSub: `spec.podDisruptionBudget: Invalid value: {}: exactly one of minAvailable or maxUnavailable must be set`,
+		},
+		{
+			name: "malformed podDisruptionBudget value rejected",
+			mutate: func(o *Cinder) {
+				o.Spec.PodDisruptionBudget = &commonv1.PodDisruptionBudgetSpec{MaxUnavailable: ptr.To(intstr.FromString("half"))}
+			},
+			wantSub: `spec.podDisruptionBudget.maxUnavailable: Invalid value: "half": must be a non-negative integer or a percentage from 0% to 100%`,
+		},
+		{
+			name: "podDisruptionBudget blocking drains at the replica count rejected",
+			mutate: func(o *Cinder) {
+				o.Spec.API.Deployment.Replicas = 3
+				o.Spec.PodDisruptionBudget = &commonv1.PodDisruptionBudgetSpec{MinAvailable: ptr.To(intstr.FromInt32(3))}
+			},
+			wantSub: `spec.podDisruptionBudget.minAvailable: Invalid value: "3": allows no voluntary eviction at a lower replica bound of 3`,
+		},
+		{
+			name: "podDisruptionBudget blocking drains at the HPA minimum rejected",
+			mutate: func(o *Cinder) {
+				o.Spec.Autoscaling = &AutoscalingSpec{MinReplicas: ptr.To(int32(1)), MaxReplicas: 5, TargetCPUUtilization: ptr.To(int32(80))}
+				o.Spec.PodDisruptionBudget = &commonv1.PodDisruptionBudgetSpec{MinAvailable: ptr.To(intstr.FromInt32(1))}
+			},
+			wantSub: `spec.podDisruptionBudget.minAvailable: Invalid value: "1": allows no voluntary eviction at a lower replica bound of 1`,
+		},
 	}
 
 	for _, tc := range tests {
@@ -614,6 +652,46 @@ func TestCinderValidateCreate_RejectionTable(t *testing.T) {
 			g.Expect(err.Error()).To(gomega.ContainSubstring(tc.wantSub))
 		})
 	}
+}
+
+// A podDisruptionBudget that allows one voluntary eviction at the lower
+// replica bound is admitted, and so is a Cinder without one.
+func TestCinderValidate_PodDisruptionBudgetAccepted(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		replicas int32
+		budget   *commonv1.PodDisruptionBudgetSpec
+	}{
+		{name: "maxUnavailable 1 at one replica", replicas: 1, budget: &commonv1.PodDisruptionBudgetSpec{MaxUnavailable: ptr.To(intstr.FromInt32(1))}},
+		{name: "maxUnavailable 1 at three replicas", replicas: 3, budget: &commonv1.PodDisruptionBudgetSpec{MaxUnavailable: ptr.To(intstr.FromInt32(1))}},
+		{name: "minAvailable 2 at three replicas", replicas: 3, budget: &commonv1.PodDisruptionBudgetSpec{MinAvailable: ptr.To(intstr.FromInt32(2))}},
+		{name: "no budget", replicas: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			obj := validCinder()
+			obj.Spec.API.Deployment.Replicas = tc.replicas
+			obj.Spec.PodDisruptionBudget = tc.budget
+
+			_, err := (&CinderWebhook{}).ValidateCreate(context.Background(), obj)
+			g.Expect(err).NotTo(gomega.HaveOccurred())
+		})
+	}
+}
+
+// Lowering the replica count below what a stored budget tolerates is rejected
+// in the same update, so the budget never blocks a drain.
+func TestCinderValidateUpdate_ReplicasBelowPodDisruptionBudget(t *testing.T) {
+	g := gomega.NewWithT(t)
+	oldObj := validCinder()
+	oldObj.Spec.API.Deployment.Replicas = 3
+	oldObj.Spec.PodDisruptionBudget = &commonv1.PodDisruptionBudgetSpec{MinAvailable: ptr.To(intstr.FromInt32(2))}
+	newObj := oldObj.DeepCopy()
+	newObj.Spec.API.Deployment.Replicas = 1
+
+	_, err := (&CinderWebhook{}).ValidateUpdate(context.Background(), oldObj, newObj)
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err.Error()).To(gomega.ContainSubstring(`spec.podDisruptionBudget.minAvailable: Invalid value: "2": allows no voluntary eviction at a lower replica bound of 1`))
 }
 
 // TestCinderValidate_ReleaseFloor pins the release floor on spec.openStackRelease:

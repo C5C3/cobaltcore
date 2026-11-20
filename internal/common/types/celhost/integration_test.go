@@ -45,7 +45,7 @@ func callerDir() string {
 // of the CRD has no reject case.
 //
 // Rules: types.go:68, 149, 150, 285, 286, 311, 444, 445
-// Rules: workload.go:133, 240, 241, 294, 295, 328, 411, 480, 481
+// Rules: workload.go:133, 240, 241, 296, 297, 330, 413, 482, 483
 // Rules: uwsgi.go:15
 func TestIntegration_CRD_CELOnly_SharedTypes(t *testing.T) {
 	commonenvtest.SkipIfEnvTestUnavailable(t)

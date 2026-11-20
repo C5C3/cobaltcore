@@ -303,6 +303,12 @@ type NovaSpec struct {
 	// +optional
 	Autoscaling *AutoscalingSpec `json:"autoscaling,omitempty"`
 
+	// PodDisruptionBudget sets the budget of the API PodDisruptionBudget. Unset,
+	// the operator renders minAvailable: 1 above a lower replica bound of one
+	// and maxUnavailable: 1 at one.
+	// +optional
+	PodDisruptionBudget *commonv1.PodDisruptionBudgetSpec `json:"podDisruptionBudget,omitempty"`
+
 	// Logging configures oslo.log output for the Nova containers.
 	// When unset, the defaulting webhook materializes a LoggingSpec with
 	// Format=text, Level=INFO, Debug=false.

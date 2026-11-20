@@ -17,6 +17,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
 
@@ -333,6 +334,43 @@ func TestValidateCreate_RejectionTable(t *testing.T) {
 			mutate:  func(h *Horizon) { h.Spec.Image.Tag = "2025.2" },
 			wantSub: `spec.image.tag: Invalid value: "2025.2": must be 2026.1 or later`,
 		},
+		{
+			name: "podDisruptionBudget with both fields rejected",
+			mutate: func(h *Horizon) {
+				h.Spec.PodDisruptionBudget = &commonv1.PodDisruptionBudgetSpec{MinAvailable: ptr.To(intstr.FromInt32(1)), MaxUnavailable: ptr.To(intstr.FromInt32(1))}
+			},
+			wantSub: `spec.podDisruptionBudget: Invalid value: {"minAvailable":1,"maxUnavailable":1}: exactly one of minAvailable or maxUnavailable must be set`,
+		},
+		{
+			name: "empty podDisruptionBudget rejected",
+			mutate: func(h *Horizon) {
+				h.Spec.PodDisruptionBudget = &commonv1.PodDisruptionBudgetSpec{}
+			},
+			wantSub: `spec.podDisruptionBudget: Invalid value: {}: exactly one of minAvailable or maxUnavailable must be set`,
+		},
+		{
+			name: "malformed podDisruptionBudget value rejected",
+			mutate: func(h *Horizon) {
+				h.Spec.PodDisruptionBudget = &commonv1.PodDisruptionBudgetSpec{MaxUnavailable: ptr.To(intstr.FromString("half"))}
+			},
+			wantSub: `spec.podDisruptionBudget.maxUnavailable: Invalid value: "half": must be a non-negative integer or a percentage from 0% to 100%`,
+		},
+		{
+			name: "podDisruptionBudget blocking drains at the replica count rejected",
+			mutate: func(h *Horizon) {
+				h.Spec.Deployment.Replicas = 3
+				h.Spec.PodDisruptionBudget = &commonv1.PodDisruptionBudgetSpec{MinAvailable: ptr.To(intstr.FromInt32(3))}
+			},
+			wantSub: `spec.podDisruptionBudget.minAvailable: Invalid value: "3": allows no voluntary eviction at a lower replica bound of 3`,
+		},
+		{
+			name: "podDisruptionBudget blocking drains at the HPA minimum rejected",
+			mutate: func(h *Horizon) {
+				h.Spec.Autoscaling = &AutoscalingSpec{MinReplicas: ptr.To(int32(1)), MaxReplicas: 5, TargetCPUUtilization: ptr.To(int32(80))}
+				h.Spec.PodDisruptionBudget = &commonv1.PodDisruptionBudgetSpec{MinAvailable: ptr.To(intstr.FromInt32(1))}
+			},
+			wantSub: `spec.podDisruptionBudget.minAvailable: Invalid value: "1": allows no voluntary eviction at a lower replica bound of 1`,
+		},
 	}
 
 	for _, tc := range tests {
@@ -347,6 +385,46 @@ func TestValidateCreate_RejectionTable(t *testing.T) {
 			g.Expect(err.Error()).To(gomega.ContainSubstring(tc.wantSub))
 		})
 	}
+}
+
+// A podDisruptionBudget that allows one voluntary eviction at the lower
+// replica bound is admitted, and so is a Horizon without one.
+func TestHorizonValidate_PodDisruptionBudgetAccepted(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		replicas int32
+		budget   *commonv1.PodDisruptionBudgetSpec
+	}{
+		{name: "maxUnavailable 1 at one replica", replicas: 1, budget: &commonv1.PodDisruptionBudgetSpec{MaxUnavailable: ptr.To(intstr.FromInt32(1))}},
+		{name: "maxUnavailable 1 at three replicas", replicas: 3, budget: &commonv1.PodDisruptionBudgetSpec{MaxUnavailable: ptr.To(intstr.FromInt32(1))}},
+		{name: "minAvailable 2 at three replicas", replicas: 3, budget: &commonv1.PodDisruptionBudgetSpec{MinAvailable: ptr.To(intstr.FromInt32(2))}},
+		{name: "no budget", replicas: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			obj := validHorizon()
+			obj.Spec.Deployment.Replicas = tc.replicas
+			obj.Spec.PodDisruptionBudget = tc.budget
+
+			_, err := (&HorizonWebhook{}).ValidateCreate(context.Background(), obj)
+			g.Expect(err).NotTo(gomega.HaveOccurred())
+		})
+	}
+}
+
+// Lowering the replica count below what a stored budget tolerates is rejected
+// in the same update, so the budget never blocks a drain.
+func TestHorizonValidateUpdate_ReplicasBelowPodDisruptionBudget(t *testing.T) {
+	g := gomega.NewWithT(t)
+	oldObj := validHorizon()
+	oldObj.Spec.Deployment.Replicas = 3
+	oldObj.Spec.PodDisruptionBudget = &commonv1.PodDisruptionBudgetSpec{MinAvailable: ptr.To(intstr.FromInt32(2))}
+	newObj := oldObj.DeepCopy()
+	newObj.Spec.Deployment.Replicas = 1
+
+	_, err := (&HorizonWebhook{}).ValidateUpdate(context.Background(), oldObj, newObj)
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err.Error()).To(gomega.ContainSubstring(`spec.podDisruptionBudget.minAvailable: Invalid value: "2": allows no voluntary eviction at a lower replica bound of 1`))
 }
 
 // TestValidate_ImageTagReleaseFloor pins the release floor on spec.image.tag,

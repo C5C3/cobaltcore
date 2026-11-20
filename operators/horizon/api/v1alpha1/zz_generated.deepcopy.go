@@ -121,6 +121,11 @@ func (in *HorizonSpec) DeepCopyInto(out *HorizonSpec) {
 		*out = new(AutoscalingSpec)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.PodDisruptionBudget != nil {
+		in, out := &in.PodDisruptionBudget, &out.PodDisruptionBudget
+		*out = new(types.PodDisruptionBudgetSpec)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.Logging != nil {
 		in, out := &in.Logging, &out.Logging
 		*out = new(LoggingSpec)

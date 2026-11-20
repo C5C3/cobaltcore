@@ -241,9 +241,11 @@ func (d *DeploymentSpec) Default() {
 // +kubebuilder:validation:XValidation:rule="!has(self.minReplicas) || self.minReplicas <= self.maxReplicas",message="minReplicas must not exceed maxReplicas"
 type AutoscalingSpec struct {
 	// MinReplicas is the lower bound for the number of replicas.
-	// Defaults to the API block's replica count if unset. The API
-	// PodDisruptionBudget follows this bound: maxUnavailable: 1 at one
-	// replica, so a drain can evict the last pod, and minAvailable: 1 above.
+	// Defaults to the API block's replica count if unset. Unless
+	// podDisruptionBudget sets it, the API PodDisruptionBudget follows this
+	// bound: maxUnavailable: 1 at one replica, so a drain can evict the last
+	// pod, and minAvailable: 1 above. A set podDisruptionBudget must allow one
+	// voluntary eviction at this bound.
 	// +optional
 	// +kubebuilder:validation:Minimum=1
 	MinReplicas *int32 `json:"minReplicas,omitempty"`
