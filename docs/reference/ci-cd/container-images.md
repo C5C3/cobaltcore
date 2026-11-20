@@ -724,8 +724,10 @@ primary key and commits each batch, so a failed run keeps what it committed.
 The cherry-pick applies without a conflict, and `clean.py`, `db_manage.py` and
 `test_db_cleanup.py` then equal their 23.0.0 versions; the upstream test hunks
 travel inside the patch. The legacy `barbican-db-manage` entry point gains a
-`--batch-size` option. `barbican-manage db clean`, the command the
-barbican-operator runs, takes none and uses 10,000. The retry assertion of
+`--batch-size` option. At this point of the series
+`barbican-manage db clean`, the command the barbican-operator runs, takes
+none and uses 10,000; the batch-size patch below lowers the default to 500
+and adds the options. The retry assertion of
 `verify_barbican.sh` covers the backport as well, because without it no batch
 commits on its own. No 2026.2 twin: 23.0.0 carries the commit. Upstream
 status: merged on master as `a28ddb94c3` (2026-06-03).
@@ -755,7 +757,8 @@ through on its first occurrence. When the retries run out,
 `barbican-manage db clean` exits non-zero, the Job retries the pod, and the
 next attempt continues behind the committed batches.
 
-A batch still commits 10,000 rows, but each `DELETE` or `UPDATE` names at most
+At this point of the series a batch still commits 10,000 rows (the batch-size
+patch below lowers that to 500), but each `DELETE` or `UPDATE` names at most
 500 of its ids. MariaDB 12.3.3 runs a `DELETE` that names 10,000 ids of a
 50,000-row table as a full table scan. Under REPEATABLE READ that scan fails
 with 1020 on any row written after the batch read its ids, and every retry
@@ -902,6 +905,74 @@ and expects 400, 404 and 404, each with a JSON object as the body. Upstream
 status: proposed as
 [openstack/barbican change 1010872](https://review.opendev.org/c/openstack/barbican/+/1010872).
 
+**Source patch:**
+`patches/barbican/2026.1/0006-commit-the-clean-up-in-small-batches-with-an-optional-pause.patch`
+and its 2026.2 twin
+`patches/barbican/2026.2/0005-commit-the-clean-up-in-small-batches-with-an-optional-pause.patch`
+make `barbican-manage db clean` commit 500 rows per transaction and give it
+the options `--batch-size` and `--batch-pause-ms`. The twins differ in their
+`Applies to` line only. Before this patch a batch commits 10,000 rows, and
+the command has no option to change that. On a Galera cluster one commit is
+one write set, which the other members apply with their applier thread
+before any later commit. The MariaDB of a ControlPlane runs one applier
+thread, because mariadb-operator defaults `replicaThreads` to 1. While the
+two other members apply a 10,000-row write set, their receive queues pass the
+flow control limit, and the cluster pauses the commits of every database. In
+the playground cluster one clean-up run paused the cluster for 20 to 65 % of
+every minute, and during eight runs on 2026-11-18 the public gateway answered
+73 requests with 5xx, among them Keystone 503 after a commit waited 10 s
+(issue #1830). On a three-member rig with one applier thread, 500 rows per
+commit cut the longest commit of another database during a run from
+17,487 ms to 2,766 ms and the time under flow control from 313 s to 156 s.
+With 100-row batches or pauses of 100 to 500 ms the cluster still spent 112 to
+178 s under flow control, the longest commit stayed between 2.0 and 8.9 s,
+and the run took up to 2.8 times as long.
+
+The patch sets `DEFAULT_CLEANUP_BATCH_SIZE` to 500, so a default batch is
+one statement of `_IDS_PER_STATEMENT` ids, and adds
+`DEFAULT_CLEANUP_BATCH_PAUSE_MS = 0`. `_run_batches` waits the pause after
+each committed batch, once for a batch that `wrap_db_retry` runs again, and
+never after the empty query that ends a loop. No index covers the filters of
+the id queries, so each id query walked the primary key from the first row
+and read again the rows the batches before it had passed, 20 times as often
+with 500-row batches as with 10,000. `_run_batch` therefore reads the ids in
+id order and only those after the last id of the batch before. MariaDB reads
+the three-table join of the ACL-user id query from `secret_acls` and sorts all
+of it for every batch, so the patch starts that query with
+`SELECT STRAIGHT_JOIN` on MySQL and MariaDB, and `secret_acl_users` is read
+from the last id on. On one
+MariaDB 12.3.3 node with 250,000 secrets and 1.75 million metadata rows, a run
+that changes 460,000 rows read 367.5 million rows in 241.0 s with 500-row
+batches without the id order, 4.2 million in 37.6 to 71.2 s over four runs
+with it, and 24.3 million in 56.3 s with 10,000-row batches without it.
+`clean_command` takes
+`batch_pause_ms`, holds the pause in a module-level value for the length of
+its run, and rejects a `batch_size` below 1 and a negative `batch_pause_ms`
+with a `ValueError` before it touches the database. It logs both values once
+at INFO, `Clean-up batches: 500 rows per commit, 0 ms pause after each
+commit`. `barbican-manage db clean` gains `--batch-size` (`-b`, default 500)
+and `--batch-pause-ms` (default 0), and answers a rejected value with
+`ERROR: batch_size must be at least 1, got 0` and exit code 1. The legacy
+`barbican-db-manage` takes the new batch default through the same constant
+and has no pause option. The barbican-operator passes the two flags only when
+`spec.dbClean.batchSize` or `spec.dbClean.batchPauseMilliseconds` is set,
+because an image without the patch answers them with `unrecognized
+arguments` and exit code 2. The upstream tests `test_db_clean_no_args` and
+`test_db_clean_with_args` pin the keyword arguments of `clean_command` and
+move with the patch, and so does the retry patch's
+`test_run_batch_names_a_bounded_number_of_ids_per_statement`, because
+`_run_batch` returns the last id it read with the count. The patch adds
+`test_db_clean_with_batch_args` and nine tests of `clean_command` to
+`barbican/tests/cmd/test_db_cleanup.py`, covering the pauses, the defaults and
+their INFO line, the reset after a run, a retried batch, the last retry and
+the two rejected values, a test that each batch reads on after the last id
+of the batch before, and one that the id query of the ACL users starts with
+`SELECT STRAIGHT_JOIN` on MySQL and MariaDB.
+`verify_barbican.sh` Test 13 checks the defaults and the `--help` text of both
+options, cleans five rows in batches of 2 with a 7 ms pause in the built
+image and expects three pauses, and expects exit code 1 and the error line
+from `--batch-size 0`. Upstream status: not yet proposed.
+
 **Final image properties:**
 
 - Runs as `openstack` user (UID 42424, GID 42424)
@@ -926,7 +997,9 @@ committed, that the storage index of an OpenBao write is recorded and sent
 back with the next read, that a secret metadata write whose statement raises
 `DBDeadlock` is rolled back and run again, that the five requests whose
 handlers upstream exposes with `template='json'` answer 204 with an empty
-body and their 400 and 404 answers carry JSON, non-root execution, and the absence of build tools. Both plugin halves are loaded through their entry-point metadata
+body and their 400 and 404 answers carry JSON, that `barbican-manage db clean`
+defaults to 500 rows per commit and no pause and pauses after each committed
+batch when asked to, non-root execution, and the absence of build tools. Both plugin halves are loaded through their entry-point metadata
 rather than imported by module path, because that is how barbican and
 castellan resolve them at runtime — an import would go green off the `.py`
 file on disk while the runtime lookup raises stevedore `NoMatches`. The WSGI

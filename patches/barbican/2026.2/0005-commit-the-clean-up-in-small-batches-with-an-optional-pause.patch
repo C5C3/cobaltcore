@@ -1,0 +1,697 @@
+SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+SPDX-License-Identifier: Apache-2.0
+
+Commit the clean-up in small batches with an optional pause
+
+With the patches numbered before this one, `barbican-manage db clean`
+commits 10,000 rows per transaction (`DEFAULT_CLEANUP_BATCH_SIZE` in
+barbican/model/clean.py) and has no option to change that; only the
+legacy `barbican-db-manage clean` takes `--batch-size`.
+
+On a Galera cluster one transaction is one write set. The other
+members apply the write sets with their applier thread, one at a time
+and in commit order, so a 10,000-row write set holds up every later
+commit until they have applied it. While they do, their receive queues
+pass the flow control limit and the cluster pauses the commits of
+every database. The MariaDB of a ControlPlane runs one applier thread
+(mariadb-operator's default for `replicaThreads`). In the
+C5C3/playground cluster one clean-up run paused the cluster for 20 to
+65 % of every minute, and during the eight runs of 2026-11-18 the
+public gateway answered 73 requests with 5xx, among them Keystone 503
+after a commit waited past the 10 s read timeout of the API containers
+(C5C3/cobaltcore#1830).
+
+Measured on 2026-11-19 on three mariadb:12.3 (12.3.3) containers as
+one Galera cluster with gcs.fc_limit=16 and a 24 MB buffer pool, so
+that the deletes are bound by disk reads. Each run cleans 240,000 rows
+(30,000 soft-deleted secrets with their metadata) through member 1,
+while eight connections commit single-row inserts into another
+database on member 1 at 40 commits/s in total:
+
+  rows   pause  appliers      run  longest    over 1 s  paused
+  10,000     0         1    572 s  17,487 ms       105  313 s (54.7 %)
+     500     0         1    475 s   2,766 ms        50  156 s (32.8 %)
+     500   500         1    616 s   2,703 ms        61  112 s (18.2 %)
+     100   100         1    647 s   2,020 ms        48  154 s (23.8 %)
+     100   400         1  1,330 s   8,859 ms        98  178 s (13.4 %)
+     500     0         4    382 s   1,938 ms        44   26 s (6.7 %)
+
+"rows" is the rows per commit, "pause" the wait after each commit in
+milliseconds, "appliers" wsrep_slave_threads, "run" the length of the
+clean-up, "longest" the slowest insert during it, "over 1 s" the
+inserts that took longer than 1 s, and "paused" the time the cluster
+spent paused by flow control. Before each run the same inserts take
+7 ms at the median. 500 rows per commit cut the longest wait from
+17.5 s to 2.8 s, below the 10 s socket bound, and halve the time under
+flow control. Neither a smaller batch nor a pause improves on that:
+with one applier thread the cluster spends 112 to 178 s under flow
+control whatever the pacing, and the run gets up to 2.8 times longer.
+More applier threads are a change to the database
+(C5C3/cobaltcore#1835).
+
+The patch sets `DEFAULT_CLEANUP_BATCH_SIZE` to 500, the number of ids
+one statement names already (`_IDS_PER_STATEMENT`), so a default batch
+is one statement. It adds `DEFAULT_CLEANUP_BATCH_PAUSE_MS = 0` and a
+module-level `_batch_pause` in seconds: `_run_batches` sleeps that
+long after each committed batch and never after the empty query that
+ends a loop, so a batch that wrap_db_retry runs several times pauses
+once, after its commit. The pause is off by default, as the rig showed
+no benefit; it lets a deployment try one without a new image.
+`clean_command` takes `batch_pause_ms`, sets `_batch_pause` for the
+length of its run and resets it to 0 first thing in its `finally`, so
+the helpers called on their own, as the upstream tests call them,
+never pause. A keyword threaded through the ten helpers between
+`clean_command` and `_run_batches` would instead touch every signature
+the upstream batching commit a28ddb94c3 introduced.
+
+A run of 500-row batches issues 20 times as many id queries as one of
+10,000. No index covers their filters (`deleted`, `deleted_at`,
+`expiration`), so each id query walked the primary key from the first
+row and read again every row the batches before it had passed: for a
+table with L rows that stay and N rows to change, about
+L * N / (2 * batch size) rows per pass. `_run_batch` therefore orders
+the ids by the id column, the first column of the id query, reads only
+the ids above `after`, the last id of the batch before, and returns the
+last id it read with the count; `_run_batches` passes it on, and a batch
+that wrap_db_retry runs again keeps its `after`. The order changes no
+write set, so the Galera measurement above still holds. Measured on
+2026-11-20 on one mariadb:12.3 (12.3.3) container with a 2 GB buffer
+pool, 250,000 secrets with five store and two user metadata rows each,
+and an ACL of two users on 70,000 of them. One run with
+`--soft-delete-expired-secrets` changes 460,000 rows: it removes 30,000
+soft-deleted secrets with their metadata and the ACLs of 20,000 expired
+secrets, and soft-deletes those with their metadata:
+
+  rows    id order      run  rows scanned
+  10,000        no   56.3 s        24.3 M
+     500        no  241.0 s       367.5 M
+     500       yes   37.6 s         4.2 M
+  10,000       yes   45.9 s         4.2 M
+
+"rows scanned" is the sum of Handler_read_rnd_next and Handler_read_next
+over the run. Three more runs of the final code in 500-row batches, two
+of them with the built image, took 60.0 to 71.2 s and scanned the same
+4.2 M rows: the run time on this rig varies with the load of the host,
+the rows scanned do not. The id query of the ACL users joins three
+tables. MariaDB reads that join from `secret_acls` and sorts all of it
+for every batch (EXPLAIN: `Using temporary; Using filesort`), so `after`
+bounds none of its reads; a semi-join, `acl_id IN (SELECT ...)`, gets
+the same plan. The patch therefore starts that query with `SELECT
+STRAIGHT_JOIN` for the `mysql` and `mariadb` dialects. MariaDB then
+reads `secret_acl_users` by a range of its primary key from `after` and
+stops at the batch size; the other dialects get the query unchanged.
+After the 20,000 expired secrets are soft-deleted, the pass that deletes
+their 40,000 ACL users took 11.4 s and scanned 12.3 M rows in 500-row
+batches without the prefix, 2.0 s and 0.14 M rows with it, and 1.6 s and
+0.86 M rows in 10,000-row batches without the id order. The "yes" rows
+above include the prefix; without it the 500-row run took 42.9 s and
+scanned 17.1 M rows. For every other id query of the clean-up, EXPLAIN
+on the rig shows a range of the primary key and no filesort.
+
+`clean_command` raises `ValueError` for a `batch_size` below 1 and a
+negative `batch_pause_ms` before it touches the configuration or the
+database, and logs both values once at INFO: "Clean-up batches: 500
+rows per commit, 0 ms pause after each commit". `barbican-manage db
+clean` gains `--batch-size`/`-b` (default 500) and `--batch-pause-ms`
+(default 0) and passes both to `clean_command`; its `main()` turns the
+`ValueError` into `ERROR: batch_size must be at least 1, got 0` and
+exit code 1. The legacy `barbican-db-manage clean` passes its
+`--batch-size`, whose default is the same constant, and gets no pause
+option. The barbican-operator passes the two flags only when
+`spec.dbClean.batchSize` or `.batchPauseMilliseconds` is set, because
+an image without this patch answers them with `unrecognized
+arguments` and exit code 2.
+
+Tests: `test_db_clean_no_args` and `test_db_clean_with_args`
+(barbican/tests/cmd/test_barbican_manage.py) pin the exact keyword
+arguments of `clean_command` and move with the patch: they expect
+`batch_size` and `batch_pause_ms` with their defaults. The patch adds
+`test_db_clean_with_batch_args`, which passes `--batch-size 200
+--batch-pause-ms 50`. No other upstream test depends on the
+10,000-row default. barbican/tests/cmd/test_db_cleanup.py gains nine
+tests of `clean_command`: three pauses of 7 ms and four commits for
+five rows in batches of 2, no pause with 0 ms, no pause when nothing
+is cleaned, the defaults of 500 rows and no pause with their INFO
+line, no pause from a helper called on its own before and after a
+paused run, one pause for a batch retried after `DBDeadlock`, no pause
+and a reset value after the last retry, and the two `ValueError`s
+raised before the database is set up. They patch `time.sleep` and
+count only the non-zero waits, because oslo.db calls `time.sleep(0)`
+on each sqlite connection checkout. A tenth test runs `_run_batches`
+in batches of 2 over five rows its apply function leaves in place and
+expects each id read once, in order. An eleventh compiles the id query
+of the ACL users for `mysql+pymysql://`, `mariadb+pymysql://` and
+`sqlite://` and expects `SELECT STRAIGHT_JOIN` for the first two only.
+The retry patch's
+`test_run_batch_names_a_bounded_number_of_ids_per_statement` moves: it
+takes the last id from `_run_batch` with the count. The eleven tests and
+the three barbican-manage tests fail without the change to the code.
+
+Proof: tests/container-images/verify_barbican.sh (Test 13) asserts in
+the built image the two defaults, both options with their defaults in
+`barbican-manage db clean --help`, three pauses of 7 ms for five rows
+in batches of 2, and the error line and exit code 1 of `--batch-size
+0`.
+
+The twins under patches/barbican/2026.1/ and patches/barbican/2026.2/
+carry the same diff and differ in their Applies-to line only.
+
+Applies to barbican 23.0.0 (2026.2), on top of 0001.
+
+Upstream status: not yet proposed.
+
+diff --git a/barbican/cmd/barbican_manage.py b/barbican/cmd/barbican_manage.py
+index aba1aeb6..c7889009 100644
+--- a/barbican/cmd/barbican_manage.py
++++ b/barbican/cmd/barbican_manage.py
+@@ -71,9 +71,19 @@ class DbCommands(object):
+     @args('--soft-delete-expired-secrets', '-e', action='store_true',
+           dest='do_soft_delete_expired_secrets', default=False,
+           help='Soft delete secrets that are expired.')
++    @args('--batch-size', '-b', metavar='<rows>', dest='batch_size',
++          type=int, default=clean.DEFAULT_CLEANUP_BATCH_SIZE,
++          help='Number of rows to change per committed batch. '
++               'Default is %(default)s.')
++    @args('--batch-pause-ms', metavar='<milliseconds>',
++          dest='batch_pause_ms', type=int,
++          default=clean.DEFAULT_CLEANUP_BATCH_PAUSE_MS,
++          help='Milliseconds to wait after each committed batch; 0 '
++               'disables the pause. Default is %(default)s.')
+     def clean(self, conf, dburl=None, min_days=None, verbose=None,
+               log_file=None, do_clean_unassociated_projects=None,
+-              do_soft_delete_expired_secrets=None):
++              do_soft_delete_expired_secrets=None, batch_size=None,
++              batch_pause_ms=None):
+         """Clean soft deletions in the database"""
+         if dburl is None:
+             dburl = CONF.database.connection
+@@ -86,7 +96,9 @@ class DbCommands(object):
+             do_clean_unassociated_projects=do_clean_unassociated_projects,
+             do_soft_delete_expired_secrets=do_soft_delete_expired_secrets,
+             verbose=verbose,
+-            log_file=log_file)
++            log_file=log_file,
++            batch_size=batch_size,
++            batch_pause_ms=batch_pause_ms)
+ 
+     revision_description = "Create a new database version file"
+ 
+diff --git a/barbican/model/clean.py b/barbican/model/clean.py
+index 776c5ff5..15de1e7d 100644
+--- a/barbican/model/clean.py
++++ b/barbican/model/clean.py
+@@ -22,15 +22,31 @@ from oslo_log import log
+ from oslo_utils import timeutils
+ 
+ import datetime
++import time
+ 
+ # Import and configure logging.
+ CONF = config.CONF
+ log.setup(CONF, 'barbican')
+ LOG = log.getLogger(__name__)
+ 
+-# Default batch size for cleanup operations. Sized so a single batch fits
+-# comfortably in the InnoDB buffer pool and undo log on a 10 GB pool.
+-DEFAULT_CLEANUP_BATCH_SIZE = 10000
++# Default batch size for cleanup operations. A batch is one transaction,
++# and on a Galera cluster one write set, which every other member applies
++# with its applier thread before it applies any later commit. While a
++# member applies a large write set its receive queue passes the flow
++# control limit and the cluster pauses the commits of every database. A
++# batch of 500 rows keeps that pause short, and since one statement names
++# at most _IDS_PER_STATEMENT ids, a default batch is one statement.
++DEFAULT_CLEANUP_BATCH_SIZE = 500
++
++# Default pause after each committed batch, in milliseconds. 0 disables
++# the pause; a deployment can set one per run to give the other members of
++# a Galera cluster time to apply the write sets.
++DEFAULT_CLEANUP_BATCH_PAUSE_MS = 0
++
++# Seconds _run_batches waits after each committed batch. clean_command sets
++# it for the length of one run, so the helpers called on their own never
++# pause.
++_batch_pause = 0.0
+ 
+ # Emit a progress log line every Nth batch so operators can monitor long
+ # cleanup runs without attaching a debugger or querying the database.
+@@ -55,12 +71,16 @@ _IDS_PER_STATEMENT = 500
+                            inc_retry_interval=True,
+                            max_retry_interval=10,
+                            retry_on_deadlock=True)
+-def _run_batch(label, id_query_fn, apply_fn, batch_size):
++def _run_batch(label, id_query_fn, apply_fn, batch_size, after=None):
+     """Change one batch of rows and commit it.
+ 
+-    Reads up to ``batch_size`` ids through ``id_query_fn``, changes those
+-    rows through ``apply_fn``, at most _IDS_PER_STATEMENT ids per call,
+-    and commits, so each batch is a short transaction of its own.
++    Reads up to ``batch_size`` ids through ``id_query_fn``, in the order of
++    the id column and only those above ``after``, changes those rows
++    through ``apply_fn``, at most _IDS_PER_STATEMENT ids per call, and
++    commits, so each batch is a short transaction of its own. No index
++    covers the filters of the id queries, so a query without ``after``
++    walks the primary key from the first row; with it, the walk starts
++    where the batch before it stopped.
+ 
+     A batch that conflicts with a concurrent write raises ``DBDeadlock``:
+     oslo.db maps MySQL errors 1213 and 1205 to it, and MariaDB's 1020
+@@ -76,17 +96,23 @@ def _run_batch(label, id_query_fn, apply_fn, batch_size):
+ 
+     :param label: name of the rows in log lines.
+     :param id_query_fn: callable taking the session and returning the
+-                        query of the ids to change.
++                        query of the ids to change, the id column first.
+     :param apply_fn: callable taking the session and a list of ids,
+                      changing those rows and returning how many it
+                      changed.
+     :param batch_size: max rows changed per committed batch.
+-    :returns: the rows changed, or None when id_query_fn finds no id.
++    :param after: the last id of the batch before, or None for the first.
++    :returns: the rows changed and the last id read, or None when
++              id_query_fn finds no id.
+     """
+     session = repo.get_session()
+     try:
++        query = id_query_fn(session)
++        id_column = query.column_descriptions[0]['expr']
++        if after is not None:
++            query = query.filter(id_column > after)
+         ids = [row[0] for row in
+-               id_query_fn(session).limit(batch_size).all()]
++               query.order_by(id_column).limit(batch_size).all()]
+         if not ids:
+             return None
+         count = 0
+@@ -99,7 +125,7 @@ def _run_batch(label, id_query_fn, apply_fn, batch_size):
+         # detached state.
+         session.expunge_all()
+         repo.commit()
+-        return count
++        return count, ids[-1]
+     except db_exc.DBDeadlock as exc:
+         repo.rollback()
+         LOG.warning("Clean-up batch for %(label)s conflicted with a "
+@@ -112,7 +138,10 @@ def _run_batches(label, id_query_fn, apply_fn, batch_size):
+     """Change rows in committed batches until the id query finds none.
+ 
+     Each batch is run by _run_batch, so a failure keeps the batches
+-    committed before it.
++    committed before it. Each batch reads on after the last id of the
++    batch before it, so no batch reads again the rows the earlier ones
++    passed, whatever the batch size, and a batch that wrap_db_retry runs
++    again keeps its start.
+ 
+     :param label: name of the rows in log lines.
+     :param id_query_fn: see _run_batch.
+@@ -122,15 +151,19 @@ def _run_batches(label, id_query_fn, apply_fn, batch_size):
+     """
+     total = 0
+     batch_no = 0
++    after = None
+     while True:
+-        count = _run_batch(label, id_query_fn, apply_fn, batch_size)
+-        if count is None:
++        batch = _run_batch(label, id_query_fn, apply_fn, batch_size, after)
++        if batch is None:
+             return total
++        count, after = batch
+         total += count
+         batch_no += 1
+         if batch_no % _PROGRESS_LOG_EVERY_N_BATCHES == 0:
+             LOG.debug("[%s] progress: %d batches committed, %d rows so far",
+                       label, batch_no, total)
++        if _batch_pause > 0:
++            time.sleep(_batch_pause)
+ 
+ 
+ def cleanup_unassociated_projects(
+@@ -395,8 +428,15 @@ def _hard_delete_acls_for_soft_deleted_secrets(
+     :returns: total ACL rows deleted.
+     """
+     # SecretACLUser rows: joined-three-table predicate (user -> ACL -> secret).
++    # MariaDB reads this join from secret_acls and sorts all of it for every
++    # batch. SELECT STRAIGHT_JOIN, which MySQL and MariaDB take, joins the
++    # tables in the order named here: secret_acl_users is read in the order
++    # of its primary key from the last id of the batch before, and the read
++    # stops at the batch size. The other dialects get the query without it.
+     def _acl_user_id_query(session):
+         sub_query = session.query(models.SecretACLUser.id)
++        sub_query = sub_query.prefix_with('STRAIGHT_JOIN', dialect='mysql')
++        sub_query = sub_query.prefix_with('STRAIGHT_JOIN', dialect='mariadb')
+         sub_query = sub_query.join(models.SecretACL)
+         sub_query = sub_query.join(models.Secret)
+         return sub_query.filter(models.Secret.deleted)
+@@ -511,7 +551,8 @@ def soft_delete_expired_secrets(threshold_date,
+ 
+ def clean_command(sql_url, min_num_days, do_clean_unassociated_projects,
+                   do_soft_delete_expired_secrets, verbose, log_file,
+-                  batch_size=DEFAULT_CLEANUP_BATCH_SIZE):
++                  batch_size=DEFAULT_CLEANUP_BATCH_SIZE,
++                  batch_pause_ms=DEFAULT_CLEANUP_BATCH_PAUSE_MS):
+     """Clean command to clean up the database.
+ 
+     :param sql_url: sql connection string to connect to a database
+@@ -525,7 +566,20 @@ def clean_command(sql_url, min_num_days, do_clean_unassociated_projects,
+     :param batch_size: max rows hard-deleted per committed batch across all
+                        cleanup operations. Defaults to
+                        DEFAULT_CLEANUP_BATCH_SIZE.
++    :param batch_pause_ms: milliseconds to wait after each committed batch.
++                           Defaults to DEFAULT_CLEANUP_BATCH_PAUSE_MS; 0
++                           disables the pause.
++    :raises ValueError: if batch_size is below 1 or batch_pause_ms is
++                        negative, before the database is touched.
+     """
++    global _batch_pause
++
++    if batch_size < 1:
++        raise ValueError("batch_size must be at least 1, got %s" % batch_size)
++    if batch_pause_ms < 0:
++        raise ValueError("batch_pause_ms must not be negative, got %s"
++                         % batch_pause_ms)
++
+     if verbose:
+         # The verbose flag prints out log events to the screen, otherwise
+         # the log events will only go to the log file
+@@ -536,11 +590,15 @@ def clean_command(sql_url, min_num_days, do_clean_unassociated_projects,
+ 
+     LOG.info("Cleaning up soft deletions in the barbican database")
+     log.setup(CONF, 'barbican')
++    LOG.info("Clean-up batches: %(batch_size)s rows per commit, "
++             "%(batch_pause_ms)s ms pause after each commit",
++             {'batch_size': batch_size, 'batch_pause_ms': batch_pause_ms})
+ 
+     cleanup_total = 0
+     current_time = timeutils.utcnow()
+     stop_watch = timeutils.StopWatch()
+     stop_watch.start()
++    _batch_pause = batch_pause_ms / 1000.0
+     try:
+         if sql_url:
+             CONF.set_override('connection', sql_url, 'database')
+@@ -578,6 +636,7 @@ def clean_command(sql_url, min_num_days, do_clean_unassociated_projects,
+         repo.rollback()
+         raise
+     finally:
++        _batch_pause = 0.0
+         stop_watch.stop()
+         elapsed_time = stop_watch.elapsed()
+         if verbose:
+diff --git a/barbican/tests/cmd/test_barbican_manage.py b/barbican/tests/cmd/test_barbican_manage.py
+index c37fb02f..5164a56e 100644
+--- a/barbican/tests/cmd/test_barbican_manage.py
++++ b/barbican/tests/cmd/test_barbican_manage.py
+@@ -17,6 +17,7 @@ from unittest import mock
+ import fixtures
+ 
+ from barbican.cmd import barbican_manage as manager
++from barbican.model import clean
+ from barbican.tests import utils
+ 
+ 
+@@ -98,7 +99,9 @@ class TestBarbicanManage(TestBarbicanManageBase):
+             do_clean_unassociated_projects=False,
+             do_soft_delete_expired_secrets=False,
+             verbose=False,
+-            log_file='mock_log_file')
++            log_file='mock_log_file',
++            batch_size=clean.DEFAULT_CLEANUP_BATCH_SIZE,
++            batch_pause_ms=clean.DEFAULT_CLEANUP_BATCH_PAUSE_MS)
+         manager.CONF.clear_override('log_file')
+ 
+     @mock.patch('barbican.model.clean.clean_command')
+@@ -115,7 +118,26 @@ class TestBarbicanManage(TestBarbicanManageBase):
+             do_clean_unassociated_projects=True,
+             do_soft_delete_expired_secrets=True,
+             verbose=True,
+-            log_file='/tmp/whatevs')
++            log_file='/tmp/whatevs',
++            batch_size=clean.DEFAULT_CLEANUP_BATCH_SIZE,
++            batch_pause_ms=clean.DEFAULT_CLEANUP_BATCH_PAUSE_MS)
++        manager.CONF.clear_override('log_file')
++
++    @mock.patch('barbican.model.clean.clean_command')
++    def test_db_clean_with_batch_args(self, mock_clean_command):
++        manager.CONF.set_override('log_file', 'mock_log_file')
++        self._main_test_helper(
++            ['barbican.cmd.barbican_manage', 'db', 'clean',
++             '--batch-size', '200', '--batch-pause-ms', '50'],
++            func_name=mock_clean_command,
++            sql_url='mockdburl',
++            min_num_days=90,
++            do_clean_unassociated_projects=False,
++            do_soft_delete_expired_secrets=False,
++            verbose=False,
++            log_file='mock_log_file',
++            batch_size=200,
++            batch_pause_ms=50)
+         manager.CONF.clear_override('log_file')
+ 
+     @mock.patch('barbican.model.sync.sync_secret_stores')
+diff --git a/barbican/tests/cmd/test_db_cleanup.py b/barbican/tests/cmd/test_db_cleanup.py
+index 430b1171..866e8816 100644
+--- a/barbican/tests/cmd/test_db_cleanup.py
++++ b/barbican/tests/cmd/test_db_cleanup.py
+@@ -18,6 +18,7 @@ from unittest import mock
+ 
+ from oslo_db import exception as db_exc
+ from oslo_utils import timeutils
++from sqlalchemy.engine import url as sa_url
+ from sqlalchemy.exc import IntegrityError
+ 
+ from barbican.model import clean
+@@ -105,6 +106,13 @@ def _commit_failing_on(error, calls):
+     return commit
+ 
+ 
++# The required arguments of clean_command for a run on the test database:
++# sql_url=None keeps the test engine, min_num_days=-1 puts every soft-deleted
++# row past the retention window, and the two optional passes, verbose and
++# log_file are off.
++_CLEAN_ALL_ARGS = (None, -1, False, False, False, None)
++
++
+ class WhenTestingDBCleanUpCommand(utils.RepositoryTestCase):
+ 
+     def tearDown(self):
+@@ -788,9 +796,11 @@ class WhenTestingDBCleanUpCommand(utils.RepositoryTestCase):
+         with mock.patch.object(clean, '_IDS_PER_STATEMENT', 2), \
+                 mock.patch('barbican.model.clean.repo.commit',
+                            wraps=repos.commit) as mock_commit:
+-            count = clean._run_batch('TransportKey', _id_query, _delete, 10)
++            count, last_id = clean._run_batch('TransportKey', _id_query,
++                                              _delete, 10)
+ 
+         self.assertEqual(5, count)
++        self.assertEqual(max(ids), last_id)
+         self.assertEqual([2, 2, 1], [len(s) for s in statements])
+         self.assertEqual(sorted(ids), sorted(sum(statements, [])))
+         self.assertEqual(1, mock_commit.call_count)
+@@ -826,3 +836,207 @@ class WhenTestingDBCleanUpCommand(utils.RepositoryTestCase):
+         self.assertEqual(5, total)
+         self.assertEqual(1, mock_commit.call_count)
+         self.assertEqual(0, _transport_keys_left(ids))
++
++    # ------------------------------------------------------------------
++    # Tests for the batch size and the pause after each committed batch.
++    # ------------------------------------------------------------------
++
++    def _clean_command(self, commit=None, raises=None, **kwargs):
++        """Run clean_command on the test database and return its waits.
++
++        The engine, the session factory and the logging set-up of the test
++        stay in place: clean_command would replace the first two, clear
++        the session and reconfigure logging. oslo.db calls time.sleep(0)
++        on each sqlite connection checkout, so only the non-zero waits are
++        returned, the pauses and the waits of wrap_db_retry.
++
++        :param commit: replaces repo.commit; the real commit by default.
++        :param raises: the exception clean_command must raise, if any.
++        :returns: the non-zero waits and the mock of repo.commit.
++        """
++        with mock.patch('barbican.model.clean.time.sleep') as mock_sleep, \
++                mock.patch('barbican.model.clean.log'), \
++                mock.patch('barbican.model.clean.repo.'
++                           'setup_database_engine_and_factory'), \
++                mock.patch('barbican.model.clean.repo.clear'), \
++                mock.patch('barbican.model.clean.repo.commit',
++                           side_effect=commit or repos.commit) as mock_commit:
++            if raises:
++                self.assertRaises(raises, clean.clean_command,
++                                  *_CLEAN_ALL_ARGS, **kwargs)
++            else:
++                clean.clean_command(*_CLEAN_ALL_ARGS, **kwargs)
++        waits = [c.args[0] for c in mock_sleep.call_args_list if c.args[0]]
++        return waits, mock_commit
++
++    def test_clean_command_pauses_after_each_committed_batch(self):
++        """Batches of 2 out of 5 rows: three commits, three pauses."""
++        ids = _committed_soft_deleted_transport_keys(5)
++
++        waits, mock_commit = self._clean_command(batch_size=2,
++                                                 batch_pause_ms=7)
++
++        self.assertEqual([0.007] * 3, waits)
++        # Batches of 2, 2 and 1 rows, and the final commit.
++        self.assertEqual(4, mock_commit.call_count)
++        self.assertEqual(0, _transport_keys_left(ids))
++        self.assertEqual(0.0, clean._batch_pause)
++
++    def test_clean_command_without_a_pause_does_not_wait(self):
++        """batch_pause_ms=0 disables the pause."""
++        ids = _committed_soft_deleted_transport_keys(5)
++
++        waits, mock_commit = self._clean_command(batch_size=2,
++                                                 batch_pause_ms=0)
++
++        self.assertEqual([], waits)
++        self.assertEqual(4, mock_commit.call_count)
++        self.assertEqual(0, _transport_keys_left(ids))
++
++    def test_clean_command_with_nothing_to_clean_does_not_wait(self):
++        """No batch is committed, so no pause follows one."""
++        waits, mock_commit = self._clean_command(batch_size=2,
++                                                 batch_pause_ms=7)
++
++        self.assertEqual([], waits)
++        # Only the final commit of clean_command.
++        self.assertEqual(1, mock_commit.call_count)
++
++    def test_clean_command_defaults_to_500_rows_and_no_pause(self):
++        """Without the two arguments: 500 rows per commit, no pause."""
++        self.assertEqual(500, clean.DEFAULT_CLEANUP_BATCH_SIZE)
++        self.assertEqual(0, clean.DEFAULT_CLEANUP_BATCH_PAUSE_MS)
++        ids = _committed_soft_deleted_transport_keys(5)
++
++        with mock.patch.object(clean, 'cleanup_all',
++                               wraps=clean.cleanup_all) as mock_cleanup, \
++                mock.patch.object(clean.LOG, 'info') as mock_info:
++            waits, mock_commit = self._clean_command()
++
++        self.assertEqual([], waits)
++        self.assertEqual(500, mock_cleanup.call_args.kwargs['batch_size'])
++        # One batch for the 5 rows, and the final commit.
++        self.assertEqual(2, mock_commit.call_count)
++        self.assertEqual(0, _transport_keys_left(ids))
++        batch_lines = [c.args[0] % c.args[1]
++                       for c in mock_info.call_args_list
++                       if c.args[0].startswith('Clean-up batches')]
++        self.assertEqual(['Clean-up batches: 500 rows per commit, '
++                          '0 ms pause after each commit'], batch_lines)
++
++    def test_helpers_called_alone_never_pause(self):
++        """The pause of a clean_command run ends with that run."""
++        with mock.patch('barbican.model.clean.time.sleep') as mock_sleep:
++            _committed_soft_deleted_transport_keys(5)
++            clean.cleanup_softdeletes(models.TransportKey, batch_size=2)
++            self.assertEqual([], [c for c in mock_sleep.call_args_list
++                                  if c.args[0]])
++
++        _committed_soft_deleted_transport_keys(5)
++        waits, _ = self._clean_command(batch_size=2, batch_pause_ms=7)
++        self.assertEqual([0.007] * 3, waits)
++        self.assertEqual(0.0, clean._batch_pause)
++
++        ids = _committed_soft_deleted_transport_keys(5)
++        with mock.patch('barbican.model.clean.time.sleep') as mock_sleep:
++            total = clean.cleanup_softdeletes(models.TransportKey,
++                                              batch_size=2)
++            self.assertEqual([], [c for c in mock_sleep.call_args_list
++                                  if c.args[0]])
++        self.assertEqual(5, total)
++        self.assertEqual(0, _transport_keys_left(ids))
++
++    def test_clean_command_pauses_once_for_a_retried_batch(self):
++        """A batch that wrap_db_retry runs twice pauses after its commit."""
++        ids = _committed_soft_deleted_transport_keys(1)
++
++        waits, mock_commit = self._clean_command(
++            commit=_commit_failing_on(db_exc.DBDeadlock(), {1}),
++            batch_pause_ms=7)
++
++        self.assertEqual(1, waits.count(0.007))
++        self.assertEqual(0.007, waits[-1])
++        # The failed commit, its retry, and the final commit.
++        self.assertEqual(3, mock_commit.call_count)
++        self.assertEqual(0, _transport_keys_left(ids))
++
++    def test_clean_command_reraises_after_the_last_retry(self):
++        """A batch that never commits fails the run and ends the pause."""
++        ids = _committed_soft_deleted_transport_keys(3)
++
++        waits, mock_commit = self._clean_command(
++            commit=mock.Mock(side_effect=db_exc.DBDeadlock()),
++            raises=db_exc.DBDeadlock, batch_size=2, batch_pause_ms=7)
++
++        self.assertEqual(clean.CLEANUP_BATCH_MAX_RETRIES + 1,
++                         mock_commit.call_count)
++        self.assertNotIn(0.007, waits)
++        self.assertEqual(0.0, clean._batch_pause)
++        self.assertEqual(3, _transport_keys_left(ids))
++
++    def test_clean_command_rejects_a_batch_size_below_one(self):
++        """batch_size=0 is rejected before the database is set up."""
++        with mock.patch('barbican.model.clean.repo.'
++                        'setup_database_engine_and_factory') as mock_setup:
++            exc = self.assertRaises(ValueError, clean.clean_command,
++                                    *_CLEAN_ALL_ARGS, batch_size=0)
++
++        self.assertEqual('batch_size must be at least 1, got 0', str(exc))
++        mock_setup.assert_not_called()
++
++    def test_clean_command_rejects_a_negative_pause(self):
++        """batch_pause_ms=-1 is rejected before the database is set up."""
++        with mock.patch('barbican.model.clean.repo.'
++                        'setup_database_engine_and_factory') as mock_setup:
++            exc = self.assertRaises(ValueError, clean.clean_command,
++                                    *_CLEAN_ALL_ARGS, batch_pause_ms=-1)
++
++        self.assertEqual('batch_pause_ms must not be negative, got -1',
++                         str(exc))
++        mock_setup.assert_not_called()
++
++    def test_run_batches_reads_on_after_the_last_id_of_a_batch(self):
++        """Each batch reads the ids after the last id of the batch before.
++
++        _keep leaves every row in place, so a batch that read from the
++        first row again would read the ids of the batch before it.
++        """
++        ids = sorted(_committed_soft_deleted_transport_keys(5))
++        batches = []
++
++        def _keep(session, chunk):
++            batches.append(list(chunk))
++            if len(batches) > 3:
++                self.fail('batches read the same ids again: %s' % batches)
++            return 0
++
++        def _id_query(session):
++            return session.query(models.TransportKey.id).filter_by(
++                deleted=True)
++
++        total = clean._run_batches('TransportKey', _id_query, _keep, 2)
++
++        self.assertEqual(0, total)
++        self.assertEqual([ids[0:2], ids[2:4], ids[4:]], batches)
++        self.assertEqual(5, _transport_keys_left(ids))
++
++    def test_acl_user_id_query_fixes_the_join_order_on_mysql(self):
++        """MySQL and MariaDB read the ACL users in the order of their ids.
++
++        MariaDB reads the three-table join of the ACL-user pass from
++        secret_acls and sorts all of it for every batch, unless the query
++        starts with SELECT STRAIGHT_JOIN. sqlite gets it without the prefix.
++        """
++        with mock.patch.object(clean, '_run_batches',
++                               return_value=0) as mock_run_batches:
++            clean._hard_delete_acls_for_soft_deleted_secrets(batch_size=2)
++
++        label, id_query_fn = mock_run_batches.call_args_list[0].args[:2]
++        self.assertEqual('SecretACLUser', label)
++        query = id_query_fn(repos.get_session())
++        for url, start in (('mysql+pymysql://', 'SELECT STRAIGHT_JOIN '),
++                           ('mariadb+pymysql://', 'SELECT STRAIGHT_JOIN '),
++                           ('sqlite://', 'SELECT secret_acl_users.id ')):
++            dialect = sa_url.make_url(url).get_dialect()()
++            sql = str(query.statement.compile(dialect=dialect))
++            self.assertTrue(sql.startswith(start), sql)

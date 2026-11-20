@@ -489,6 +489,79 @@ if bad:
   assert_eq "the five 204 handlers send no body and JSON errors" "0" "$exit_code"
 }
 
+# --- Test 13: the clean-up commits 500 rows per batch and can pause ---
+test_db_clean_batch_options_patch_applied() {
+  echo "Test: db clean commits small batches and pauses after each commit"
+  # Proves both build paths applied
+  # patches/barbican/2026.1/0006-commit-the-clean-up-in-small-batches-with-an-optional-pause.patch
+  # and patches/barbican/2026.2/0005-commit-the-clean-up-in-small-batches-with-an-optional-pause.patch.
+  # Five soft-deleted transport keys are committed to an in-memory database
+  # and cleaned with batch_size=2 and batch_pause_ms=7: three committed
+  # batches, each followed by a 7 ms pause. oslo.db calls time.sleep(0) on
+  # each sqlite connection checkout, so only non-zero waits count. An
+  # unpatched image has neither default nor the keyword and fails with an
+  # AttributeError. The help text is squeezed to single spaces, because
+  # argparse wraps it, and stderr is echoed on failure so the reason is named.
+  local exit_code=0 err="" help="" out=""
+  err=$(docker run --rm "$IMAGE" \
+    /var/lib/openstack/bin/python -c \
+    'import sys
+from unittest import mock
+
+from oslo_utils import timeutils
+
+from barbican.common import config
+from barbican.model import clean
+from barbican.model import models
+from barbican.model import repositories as repo
+
+if (clean.DEFAULT_CLEANUP_BATCH_SIZE, clean.DEFAULT_CLEANUP_BATCH_PAUSE_MS) \
+        != (500, 0):
+    sys.exit("defaults %r, want (500, 0)" % (
+        (clean.DEFAULT_CLEANUP_BATCH_SIZE,
+         clean.DEFAULT_CLEANUP_BATCH_PAUSE_MS),))
+
+CONF = config.CONF
+CONF.set_override("connection", "sqlite://", "database")
+CONF.set_override("db_auto_create", True)
+repo.setup_database_engine_and_factory()
+
+for _ in range(5):
+    key = models.TransportKey("plugin", "key")
+    key.deleted = True
+    key.deleted_at = timeutils.utcnow()
+    repo.get_session().add(key)
+repo.commit()
+
+with mock.patch.object(clean.time, "sleep") as sleep, \
+        mock.patch.object(clean.repo, "clear"):
+    clean.clean_command(None, -1, False, False, False, None,
+                        batch_size=2, batch_pause_ms=7)
+waits = [c.args[0] for c in sleep.call_args_list if c.args[0]]
+left = repo.get_session().query(models.TransportKey).count()
+if waits != [0.007] * 3 or left != 0:
+    sys.exit("waited %r with %d rows left, want [0.007] * 3 with 0 left"
+             % (waits, left))' \
+    2>&1 > /dev/null) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "    $err"
+  assert_eq "five rows in batches of 2 pause three times for 7 ms" "0" "$exit_code"
+
+  exit_code=0
+  help=$(docker run --rm "$IMAGE" barbican-manage db clean --help 2>/dev/null) || exit_code=$?
+  help=$(printf '%s' "$help" | tr -s '[:space:]' ' ')
+  assert_eq "barbican-manage db clean --help exits 0" "0" "$exit_code"
+  assert_contains "--help lists --batch-size with its default" "$help" \
+    "--batch-size <rows>, -b <rows> Number of rows to change per committed batch. Default is 500."
+  assert_contains "--help lists --batch-pause-ms with its default" "$help" \
+    "--batch-pause-ms <milliseconds> Milliseconds to wait after each committed batch; 0 disables the pause. Default is 0."
+
+  exit_code=0
+  out=$(docker run --rm "$IMAGE" barbican-manage db clean --batch-size 0 --db-url sqlite:// 2>&1) || exit_code=$?
+  assert_eq "db clean --batch-size 0 exits 1" "1" "$exit_code"
+  assert_contains "db clean --batch-size 0 names the bound" "$out" \
+    "ERROR: batch_size must be at least 1, got 0"
+}
+
 # --- Run all tests ---
 echo "=== barbican container verification tests ==="
 echo "Image: $IMAGE"
@@ -516,6 +589,8 @@ echo ""
 test_secret_metadata_retry_patch_applied
 echo ""
 test_no_body_on_204_patch_applied
+echo ""
+test_db_clean_batch_options_patch_applied
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 
