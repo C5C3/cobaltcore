@@ -216,6 +216,18 @@ func TestMergeSizing(t *testing.T) {
 			want:     SizingSpec{Database: &DatabaseSizingSpec{StorageSize: "100Gi", Replicas: ptr.To[int32](1)}},
 		},
 		{
+			name:     "a set applierThreads override wins",
+			base:     SizingSpec{Database: &DatabaseSizingSpec{ApplierThreads: ptr.To[int32](4)}},
+			override: SizingSpec{Database: &DatabaseSizingSpec{ApplierThreads: ptr.To[int32](8)}},
+			want:     SizingSpec{Database: &DatabaseSizingSpec{ApplierThreads: ptr.To[int32](8)}},
+		},
+		{
+			name:     "an unset applierThreads keeps the base",
+			base:     SizingSpec{Database: &DatabaseSizingSpec{ApplierThreads: ptr.To[int32](4), Replicas: ptr.To[int32](3)}},
+			override: SizingSpec{Database: &DatabaseSizingSpec{Replicas: ptr.To[int32](1)}},
+			want:     SizingSpec{Database: &DatabaseSizingSpec{ApplierThreads: ptr.To[int32](4), Replicas: ptr.To[int32](1)}},
+		},
+		{
 			name:     "zero merged with zero is zero",
 			base:     SizingSpec{},
 			override: SizingSpec{},

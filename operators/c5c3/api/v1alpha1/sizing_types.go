@@ -331,6 +331,12 @@ type DatabaseSizingSpec struct {
 	// +optional
 	StorageSize string `json:"storageSize,omitempty"`
 
+	// ApplierThreads is the Galera applier thread count per member; unset means 1.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=512
+	// +optional
+	ApplierThreads *int32 `json:"applierThreads,omitempty"`
+
 	PinnedSizingSpec `json:",inline"`
 }
 

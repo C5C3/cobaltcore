@@ -16,6 +16,7 @@ import (
 	"time"
 
 	. "github.com/onsi/gomega"
+	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -24,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	"sigs.k8s.io/yaml"
 
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
@@ -142,6 +144,47 @@ func TestDefault_IsIdempotent(t *testing.T) {
 		To(Equal(first.Spec.KORC.AdminCredential.PasswordSecretRef.Key))
 	g.Expect(cp.Spec.KORC.AdminCredential.CloudCredentialsRef.CloudName).
 		To(Equal(first.Spec.KORC.AdminCredential.CloudCredentialsRef.CloudName))
+}
+
+// TestDefault_KeepsASizingFieldItsTypeDoesNotKnow pins what the upgrade of a
+// release that adds a sizing field relies on: under the new CRDs, a value set
+// while the previous operator still runs must survive that operator's
+// mutating webhook, whose Go type does not know the field. The webhook's patch
+// is the diff between the request and the marshalled, defaulted object, which
+// lacks the field, and controller-runtime drops every removal the decode alone
+// causes. The test runs the real handler, so a controller-runtime bump that
+// drops the behavior fails here.
+func TestDefault_KeepsASizingFieldItsTypeDoesNotKnow(t *testing.T) {
+	g := NewGomegaWithT(t)
+	raw, err := json.Marshal(validControlPlane())
+	g.Expect(err).NotTo(HaveOccurred())
+	obj := map[string]any{}
+	g.Expect(json.Unmarshal(raw, &obj)).To(Succeed())
+	obj["apiVersion"], obj["kind"] = GroupVersion.String(), "ControlPlane"
+	obj["spec"].(map[string]any)["sizing"] = map[string]any{
+		"database": map[string]any{"fieldOfANewerRelease": 1},
+	}
+	raw, err = json.Marshal(obj)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	resp := admission.WithDefaulter[*ControlPlane](webhookScheme(t), &ControlPlaneWebhook{}).Handle(
+		context.Background(),
+		admission.Request{AdmissionRequest: admissionv1.AdmissionRequest{
+			Operation: admissionv1.Update,
+			Object:    runtime.RawExtension{Raw: raw},
+		}},
+	)
+
+	g.Expect(resp.Allowed).To(BeTrue())
+	g.Expect(resp.Patches).NotTo(BeEmpty(), "the fixture must leave the webhook defaults to write")
+	// An op on the field or on an object above it would replace or drop it.
+	const kept = "/spec/sizing/database/fieldOfANewerRelease/"
+	for _, p := range resp.Patches {
+		g.Expect(p.Operation).NotTo(Equal("remove"),
+			"the defaulting patch must not remove a field the request carried: %+v", p)
+		g.Expect(kept).NotTo(HavePrefix(p.Path+"/"),
+			"the defaulting patch must not write the field or an object above it: %+v", p)
+	}
 }
 
 // TestDefault_PreservesExplicitValues verifies the defaulting webhook never

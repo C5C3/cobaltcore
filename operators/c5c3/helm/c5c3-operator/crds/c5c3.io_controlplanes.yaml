@@ -8193,6 +8193,13 @@ spec:
                   database:
                     description: Database sizes every managed MariaDB.
                     properties:
+                      applierThreads:
+                        description: ApplierThreads is the Galera applier thread count
+                          per member; unset means 1.
+                        format: int32
+                        maximum: 512
+                        minimum: 1
+                        type: integer
                       nodeSelector:
                         additionalProperties:
                           type: string
