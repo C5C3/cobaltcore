@@ -985,6 +985,25 @@ spec:
                           every field at the barbican-operator's own resolution, which still runs
                           the clean-up. See ServiceBarbicanDBCleanSpec.
                         properties:
+                          batchPauseMilliseconds:
+                            description: |-
+                              BatchPauseMilliseconds is how long the clean-up waits after each committed
+                              batch, the --batch-pause-ms argument; 0 disables the pause. When unset the
+                              barbican image's default applies, no pause. A set value needs a barbican
+                              image that carries the option, or the clean-up run fails.
+                            format: int32
+                            minimum: 0
+                            type: integer
+                          batchSize:
+                            description: |-
+                              BatchSize is the number of rows the clean-up changes per committed batch,
+                              the --batch-size argument. On a Galera cluster one batch is one write set,
+                              which the other members apply before any later commit. When unset the
+                              barbican image's default applies, 500 rows. A set value needs a barbican
+                              image that carries the option, or the clean-up run fails.
+                            format: int32
+                            minimum: 1
+                            type: integer
                           cleanUnassociatedProjects:
                             description: |-
                               CleanUnassociatedProjects adds the --clean-unassociated-projects pass,

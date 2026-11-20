@@ -4883,8 +4883,30 @@ func TestIntegration_ControlPlane_ValidationMarkers(t *testing.T) {
 			},
 		},
 		{
+			// Minimum=1 on services.barbican.dbClean.batchSize, the bound the
+			// Barbican CRD carries on the field it is projected onto.
+			name:    "barbican dbClean batchSize zero",
+			wantErr: true,
+			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
+				bn := integrationBarbicanService()
+				bn.DBClean = &c5c3v1alpha1.ServiceBarbicanDBCleanSpec{BatchSize: ptr.To(int32(0))}
+				cp.Spec.Services.Barbican = bn
+			},
+		},
+		{
+			// Minimum=0 on services.barbican.dbClean.batchPauseMilliseconds, as
+			// on the Barbican CRD.
+			name:    "barbican dbClean batchPauseMilliseconds negative",
+			wantErr: true,
+			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
+				bn := integrationBarbicanService()
+				bn.DBClean = &c5c3v1alpha1.ServiceBarbicanDBCleanSpec{BatchPauseMilliseconds: ptr.To(int32(-1))}
+				cp.Spec.Services.Barbican = bn
+			},
+		},
+		{
 			// The accepted twin: the same block with every field set, so the
-			// rejection above answers the bound and not the block.
+			// rejections above answer the bounds and not the block.
 			name:    "barbican dbClean all fields",
 			wantErr: false,
 			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
@@ -4895,6 +4917,8 @@ func TestIntegration_ControlPlane_ValidationMarkers(t *testing.T) {
 					SoftDeleteExpiredSecrets:  ptr.To(false),
 					CleanUnassociatedProjects: ptr.To(true),
 					Suspend:                   true,
+					BatchSize:                 ptr.To(int32(1)),
+					BatchPauseMilliseconds:    ptr.To(int32(0)),
 				}
 				cp.Spec.Services.Barbican = bn
 			},

@@ -595,8 +595,34 @@ spec:
                   barbican only ever soft-deletes. The operator resolves the effective
                   retention and schedule at reconcile time rather than materializing them
                   into the CR, so a nil block resolves exactly like an empty struct and both
-                  keep tracking the operator defaults.
+                  keep tracking the operator defaults. The batch size and the pause after
+                  each batch are passed only when set and otherwise keep the image's
+                  defaults.
                 properties:
+                  batchPauseMilliseconds:
+                    description: |-
+                      BatchPauseMilliseconds is how long the clean-up waits after each committed
+                      batch, the --batch-pause-ms argument of barbican-manage db clean. 0
+                      disables the pause. When unset the operator passes no flag and the
+                      image's default applies, no pause. Setting the field needs an image that
+                      carries the option: an older image rejects the flag, the run fails, and
+                      DBCleanReady turns False with reason DBCleanJobFailed.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  batchSize:
+                    description: |-
+                      BatchSize is the number of rows the clean-up changes per committed batch,
+                      the --batch-size argument of barbican-manage db clean. When unset the
+                      operator passes no flag and the image's default applies, 500 rows. On a
+                      Galera cluster one batch is one write set, which the other members apply
+                      before any later commit of any database, so a larger batch makes every
+                      service wait longer while it is applied. Setting the field needs an image
+                      that carries the option: an older image rejects the flag, the run fails,
+                      and DBCleanReady turns False with reason DBCleanJobFailed.
+                    format: int32
+                    minimum: 1
+                    type: integer
                   cleanUnassociatedProjects:
                     description: |-
                       CleanUnassociatedProjects adds the --clean-unassociated-projects pass,

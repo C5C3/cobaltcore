@@ -144,7 +144,9 @@ type BarbicanSpec struct {
 	// barbican only ever soft-deletes. The operator resolves the effective
 	// retention and schedule at reconcile time rather than materializing them
 	// into the CR, so a nil block resolves exactly like an empty struct and both
-	// keep tracking the operator defaults.
+	// keep tracking the operator defaults. The batch size and the pause after
+	// each batch are passed only when set and otherwise keep the image's
+	// defaults.
 	// +optional
 	DBClean *DBCleanSpec `json:"dbClean,omitempty"`
 
@@ -329,7 +331,10 @@ type UWSGISpec = commonv1.UWSGISpec
 // clean-up is scheduled on every Barbican, since an unbounded soft-delete
 // backlog is a deferred outage rather than a posture worth offering. The
 // destructive extra is opt-in (CleanUnassociatedProjects) and the whole
-// CronJob is reversible (Suspend).
+// CronJob is reversible (Suspend). BatchSize and BatchPauseMilliseconds are
+// not resolved by the operator: they reach barbican-manage only when set, so
+// an unset field keeps the default of the image, also of an image built
+// before the options existed.
 type DBCleanSpec struct {
 	// RetentionDays is how long a soft-deleted row survives before the clean-up
 	// hard-deletes it, the --min-days argument the command takes. When unset the
@@ -376,6 +381,28 @@ type DBCleanSpec struct {
 	// deliberate posture, not a failure.
 	// +optional
 	Suspend bool `json:"suspend,omitempty"`
+
+	// BatchSize is the number of rows the clean-up changes per committed batch,
+	// the --batch-size argument of barbican-manage db clean. When unset the
+	// operator passes no flag and the image's default applies, 500 rows. On a
+	// Galera cluster one batch is one write set, which the other members apply
+	// before any later commit of any database, so a larger batch makes every
+	// service wait longer while it is applied. Setting the field needs an image
+	// that carries the option: an older image rejects the flag, the run fails,
+	// and DBCleanReady turns False with reason DBCleanJobFailed.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	BatchSize *int32 `json:"batchSize,omitempty"`
+
+	// BatchPauseMilliseconds is how long the clean-up waits after each committed
+	// batch, the --batch-pause-ms argument of barbican-manage db clean. 0
+	// disables the pause. When unset the operator passes no flag and the
+	// image's default applies, no pause. Setting the field needs an image that
+	// carries the option: an older image rejects the flag, the run fails, and
+	// DBCleanReady turns False with reason DBCleanJobFailed.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	BatchPauseMilliseconds *int32 `json:"batchPauseMilliseconds,omitempty"`
 }
 
 // BarbicanStatus defines the observed state of Barbican.

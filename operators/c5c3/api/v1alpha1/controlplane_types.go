@@ -1578,7 +1578,9 @@ type ServiceBarbicanSpec struct {
 // projects rather than importing them into its types. A field left unset
 // resolves at the barbican-operator's defaults at reconcile time, and a nil
 // block resolves like an empty struct, so the clean-up runs on every projected
-// Barbican.
+// Barbican. BatchSize and BatchPauseMilliseconds left unset fall to the
+// barbican image's defaults instead, because the barbican-operator passes them
+// only when set.
 type ServiceBarbicanDBCleanSpec struct {
 	// RetentionDays is how long a soft-deleted row survives before the clean-up
 	// hard-deletes it, the --min-days argument. When unset the barbican-operator
@@ -1613,6 +1615,23 @@ type ServiceBarbicanDBCleanSpec struct {
 	// Suspend pauses the clean-up CronJob without deleting it.
 	// +optional
 	Suspend bool `json:"suspend,omitempty"`
+
+	// BatchSize is the number of rows the clean-up changes per committed batch,
+	// the --batch-size argument. On a Galera cluster one batch is one write set,
+	// which the other members apply before any later commit. When unset the
+	// barbican image's default applies, 500 rows. A set value needs a barbican
+	// image that carries the option, or the clean-up run fails.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	BatchSize *int32 `json:"batchSize,omitempty"`
+
+	// BatchPauseMilliseconds is how long the clean-up waits after each committed
+	// batch, the --batch-pause-ms argument; 0 disables the pause. When unset the
+	// barbican image's default applies, no pause. A set value needs a barbican
+	// image that carries the option, or the clean-up run fails.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	BatchPauseMilliseconds *int32 `json:"batchPauseMilliseconds,omitempty"`
 }
 
 // ServiceBarbicanSecretStoreSpec selects the secret-store backend of the

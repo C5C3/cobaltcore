@@ -771,9 +771,11 @@ keep every deleted row until the barbican operator's clean-up CronJob
 hard-deletes the ones older than the retention window. This block is a local
 copy of the Barbican CRD's [`DBCleanSpec`](../barbican/barbican-crd.md#dbcleanspec),
 projected onto the child's `spec.dbClean`. A field left unset resolves at the
-barbican operator's default at reconcile time. An omitted block projects nil,
-which the barbican operator resolves like an empty one, so the clean-up runs on
-every projected Barbican.
+barbican operator's default at reconcile time, except `batchSize` and
+`batchPauseMilliseconds`: the barbican operator passes those only when set, so
+an unset one keeps the default of the barbican image. An omitted block projects
+nil, which the barbican operator resolves like an empty one, so the clean-up
+runs on every projected Barbican.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
@@ -782,6 +784,8 @@ every projected Barbican.
 | `softDeleteExpiredSecrets` | `*bool` | No | `nil` (the barbican operator's default, `true`) | Adds the `--soft-delete-expired-secrets` pass, which soft-deletes the secrets whose expiration has passed so the same run can purge them under the retention window. |
 | `cleanUnassociatedProjects` | `*bool` | No | `nil` (the barbican operator's default, `false`) | Adds the `--clean-unassociated-projects` pass, which deletes the project rows that own no secret, container or order, together with their quota records. |
 | `suspend` | `bool` | No | `false` | Pauses the clean-up CronJob without deleting it. |
+| `batchSize` | `*int32` | No | `nil` (the barbican image's default, 500 rows) | Rows the clean-up changes per committed batch, the `--batch-size` argument. On a Galera cluster one batch is one write set, which the other members apply before any later commit. A set value needs a barbican image that carries the option, or the clean-up run fails. Minimum 1. |
+| `batchPauseMilliseconds` | `*int32` | No | `nil` (the barbican image's default, no pause) | Milliseconds the clean-up waits after each committed batch, the `--batch-pause-ms` argument; `0` disables the pause. A set value needs a barbican image that carries the option, or the clean-up run fails. Minimum 0. |
 
 An update that lowers the retention is admitted with a warning, because the next
 run hard-deletes the rows soft-deleted between the two windows. A missing block
@@ -3081,6 +3085,8 @@ Keystone discipline:
 | `spec.services.nova.consoleProxy` (CEL) | `!has(self.enabled) \|\| self.enabled \|\| !has(self.gateway)` → "gateway must not be set when consoleProxy.enabled is false" |
 | `spec.services.nova.dbArchive.maxRows`, `.retentionDays` | Minimum: 1 |
 | `spec.services.barbican.dbClean.retentionDays` | Minimum: 1 |
+| `spec.services.barbican.dbClean.batchSize` | Minimum: 1 |
+| `spec.services.barbican.dbClean.batchPauseMilliseconds` | Minimum: 0 |
 | `spec.services.nova.dbArchive.sleep` | Minimum: 0 |
 | `spec.services.nova.dedicatedBackingServices` (CEL) | `has(self.database) \|\| has(self.cache)` → "dedicatedBackingServices must declare at least one backing-service class (database, cache)" |
 | `spec.korc.serviceRegistrations.allowedNamespaces` | `listType=set` (the API server rejects duplicate entries); MaxItems 32; item MinLength 1; item MaxLength 63; item Pattern `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$` |
