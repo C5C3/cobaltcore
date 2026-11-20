@@ -1085,6 +1085,8 @@ func TestReconcileBarbican_DBCleanCopiedFieldByField(t *testing.T) {
 		SoftDeleteExpiredSecrets:  ptr.To(false),
 		CleanUnassociatedProjects: ptr.To(true),
 		Suspend:                   true,
+		BatchSize:                 ptr.To(int32(200)),
+		BatchPauseMilliseconds:    ptr.To(int32(0)),
 	}
 	r := newBarbicanTestReconciler(t, cp)
 	ctx := context.Background()
@@ -1099,9 +1101,15 @@ func TestReconcileBarbican_DBCleanCopiedFieldByField(t *testing.T) {
 		SoftDeleteExpiredSecrets:  ptr.To(false),
 		CleanUnassociatedProjects: ptr.To(true),
 		Suspend:                   true,
+		BatchSize:                 ptr.To(int32(200)),
+		BatchPauseMilliseconds:    ptr.To(int32(0)),
 	}))
 	g.Expect(b.Spec.DBClean.RetentionDays).NotTo(BeIdenticalTo(cp.Spec.Services.Barbican.DBClean.RetentionDays),
 		"the projected clean-up must not alias the ControlPlane spec")
+	g.Expect(b.Spec.DBClean.BatchSize).NotTo(BeIdenticalTo(cp.Spec.Services.Barbican.DBClean.BatchSize),
+		"the projected batch size must not alias the ControlPlane spec")
+	g.Expect(b.Spec.DBClean.BatchPauseMilliseconds).NotTo(BeIdenticalTo(cp.Spec.Services.Barbican.DBClean.BatchPauseMilliseconds),
+		"the projected pause must not alias the ControlPlane spec")
 
 	cp.Spec.Services.Barbican.DBClean = nil
 	_, err = r.reconcileBarbican(ctx, cp)

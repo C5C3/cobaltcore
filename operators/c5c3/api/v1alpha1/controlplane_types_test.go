@@ -1010,6 +1010,8 @@ func TestServiceBarbicanSpecDeepCopy(t *testing.T) {
 			SoftDeleteExpiredSecrets:  ptr.To(false),
 			CleanUnassociatedProjects: ptr.To(true),
 			Suspend:                   true,
+			BatchSize:                 ptr.To(int32(200)),
+			BatchPauseMilliseconds:    ptr.To(int32(0)),
 		},
 	}
 
@@ -1022,6 +1024,12 @@ func TestServiceBarbicanSpecDeepCopy(t *testing.T) {
 	}
 	if clone.DBClean.RetentionDays == spec.DBClean.RetentionDays {
 		t.Errorf("DeepCopy did not allocate a new *int32 for DBClean.RetentionDays")
+	}
+	if clone.DBClean.BatchSize == spec.DBClean.BatchSize {
+		t.Errorf("DeepCopy did not allocate a new *int32 for DBClean.BatchSize")
+	}
+	if clone.DBClean.BatchPauseMilliseconds == spec.DBClean.BatchPauseMilliseconds {
+		t.Errorf("DeepCopy did not allocate a new *int32 for DBClean.BatchPauseMilliseconds")
 	}
 	if clone.SecretStore.External == spec.SecretStore.External {
 		t.Errorf("DeepCopy did not allocate a new *BarbicanExternalSecretStoreSpec")
