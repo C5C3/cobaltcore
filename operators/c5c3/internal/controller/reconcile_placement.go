@@ -313,12 +313,13 @@ func (r *ControlPlaneReconciler) reconcilePlacement(ctx context.Context, cp *c5c
 	if sizing.Placement != nil {
 		plSizing = *sizing.Placement
 	}
-	uwsgi, autoscaling := projectAPI(&pl.Spec.Deployment, sizing.PodPlacementSpec, plSizing.API,
+	uwsgi, autoscaling, budget := projectAPI(&pl.Spec.Deployment, sizing.PodPlacementSpec, plSizing.API,
 		placementv1alpha1.APIPodSelector(pl.Name))
 	if uwsgi != nil {
 		pl.Spec.APIServer = &placementv1alpha1.APIServerSpec{UWSGI: uwsgi}
 	}
 	pl.Spec.Autoscaling = autoscaling
+	pl.Spec.PodDisruptionBudget = budget
 	pl.Spec.Jobs = projectJobs(plSizing.Jobs)
 
 	res, err := commonreconcile.ProjectChild(ctx, r.Client, r.Scheme, cp,

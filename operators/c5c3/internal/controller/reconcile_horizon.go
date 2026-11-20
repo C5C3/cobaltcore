@@ -264,7 +264,7 @@ func (r *ControlPlaneReconciler) reconcileHorizon(ctx context.Context, cp *c5c3v
 		horizon.Spec.Gateway = cp.Spec.Services.Horizon.Gateway.DeepCopy()
 
 		// Project the resolved spec.sizing.horizon.api onto the dashboard
-		// Deployment and the autoscaling block. Every field is assigned on the
+		// Deployment and the autoscaling and podDisruptionBudget blocks. Every field is assigned on the
 		// fetched child whether set or not, so clearing a value on the
 		// ControlPlane reverts the child instead of leaving the previously
 		// projected value pinned (a lost update). The replica fallback,
@@ -274,13 +274,16 @@ func (r *ControlPlaneReconciler) reconcileHorizon(ctx context.Context, cp *c5c3v
 		// timings, the rollout strategy and affinity.
 		var deployment *c5c3v1alpha1.DeploymentSizingSpec
 		var autoscaling *commonv1.AutoscalingSpec
+		var budget *commonv1.PodDisruptionBudgetSpec
 		if hzAPI != nil {
 			deployment = &hzAPI.DeploymentSizingSpec
 			autoscaling = hzAPI.Autoscaling
+			budget = hzAPI.PodDisruptionBudget
 		}
 		projectDeployment(&horizon.Spec.Deployment, sizing.PodPlacementSpec, deployment,
 			commonv1.DefaultReplicas, horizonv1alpha1.APIPodSelector(horizon.Name))
 		horizon.Spec.Autoscaling = autoscaling.DeepCopy()
+		horizon.Spec.PodDisruptionBudget = budget.DeepCopy()
 
 		// Project the dashboard's extraConfig verbatim. Horizon is flat Django
 		// settings, not INI, so the global INI block never applies — only the

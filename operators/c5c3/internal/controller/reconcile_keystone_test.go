@@ -1216,6 +1216,7 @@ func TestReconcileKeystone_NoSizingProjectsTodaysChild(t *testing.T) {
 	expectUnsized(g, k.Spec.Deployment, commonv1.DefaultReplicas)
 	g.Expect(k.Spec.UWSGI).To(BeNil())
 	g.Expect(k.Spec.Autoscaling).To(BeNil())
+	g.Expect(k.Spec.PodDisruptionBudget).To(BeNil())
 	g.Expect(k.Spec.Jobs).To(BeNil())
 	g.Expect(k.Spec.Federation.ProxyResources).To(BeNil())
 }

@@ -369,7 +369,7 @@ func (r *ControlPlaneReconciler) reconcileGlance(ctx context.Context, cp *c5c3v1
 	if glSizing.API != nil {
 		processes = glSizing.API.ProcessSizingSpec
 	}
-	_, glance.Spec.Autoscaling = projectAPI(&glance.Spec.Deployment, sizing.PodPlacementSpec, glSizing.API,
+	_, glance.Spec.Autoscaling, glance.Spec.PodDisruptionBudget = projectAPI(&glance.Spec.Deployment, sizing.PodPlacementSpec, glSizing.API,
 		glancev1alpha1.APIPodSelector(glance.Name))
 	glance.Spec.APIServer = glanceAPIServer(processes)
 	glance.Spec.Jobs = projectJobs(glSizing.Jobs)

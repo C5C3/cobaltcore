@@ -152,20 +152,24 @@ func projectDeployment(
 }
 
 // projectAPI projects a service API component onto its Deployment d and
-// returns the uWSGI and autoscaling blocks the caller places on the child.
+// returns the uWSGI, autoscaling and podDisruptionBudget blocks the caller
+// places on the child. All three are fresh values that alias nothing in a, and
+// nil for a nil a.
 func projectAPI(
 	d *commonv1.DeploymentSpec, top c5c3v1alpha1.PodPlacementSpec, a *c5c3v1alpha1.APISizingSpec, selector map[string]string,
-) (*commonv1.UWSGISpec, *commonv1.AutoscalingSpec) {
+) (*commonv1.UWSGISpec, *commonv1.AutoscalingSpec, *commonv1.PodDisruptionBudgetSpec) {
 	var deployment *c5c3v1alpha1.DeploymentSizingSpec
 	var processes c5c3v1alpha1.ProcessSizingSpec
 	var autoscaling *commonv1.AutoscalingSpec
+	var budget *commonv1.PodDisruptionBudgetSpec
 	if a != nil {
 		deployment = &a.DeploymentSizingSpec
 		processes = a.ProcessSizingSpec
 		autoscaling = a.Autoscaling
+		budget = a.PodDisruptionBudget
 	}
 	projectDeployment(d, top, deployment, commonv1.DefaultReplicas, selector)
-	return projectUWSGI(processes), autoscaling.DeepCopy()
+	return projectUWSGI(processes), autoscaling.DeepCopy(), budget.DeepCopy()
 }
 
 // projectWorker projects an RPC worker component onto its Deployment d and

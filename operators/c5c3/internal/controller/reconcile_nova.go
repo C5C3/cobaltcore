@@ -663,7 +663,7 @@ func (r *ControlPlaneReconciler) reconcileNova(ctx context.Context, cp *c5c3v1al
 	}
 	top := sizing.PodPlacementSpec
 
-	nv.Spec.API.UWSGI, nv.Spec.Autoscaling = projectAPI(&nv.Spec.API.Deployment, top, nvSizing.API,
+	nv.Spec.API.UWSGI, nv.Spec.Autoscaling, nv.Spec.PodDisruptionBudget = projectAPI(&nv.Spec.API.Deployment, top, nvSizing.API,
 		novav1alpha1.APIPodSelector(nv.Name))
 
 	// The metadata API, with the shared secret its caller signs requests with. The

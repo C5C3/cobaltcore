@@ -1564,6 +1564,7 @@ func TestReconcilePlacement_NoSizingProjectsTodaysChild(t *testing.T) {
 	expectUnsized(g, pl.Spec.Deployment, commonv1.DefaultReplicas)
 	g.Expect(pl.Spec.APIServer).To(BeNil())
 	g.Expect(pl.Spec.Autoscaling).To(BeNil())
+	g.Expect(pl.Spec.PodDisruptionBudget).To(BeNil())
 	g.Expect(pl.Spec.Jobs).To(BeNil())
 }
 
