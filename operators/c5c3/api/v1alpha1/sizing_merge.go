@@ -19,8 +19,9 @@ import (
 //     replaces the base. An empty one inherits, because the defaulting
 //     webhook's JSON round trip drops an empty map or list, so "empty" cannot
 //     mean "clear".
-//   - autoscaling and verticalAutoscaling: a set override replaces the whole
-//     block, since its bounds and targets only make sense together.
+//   - autoscaling, verticalAutoscaling and podDisruptionBudget: a set
+//     override replaces the whole block, since its bounds and targets only
+//     make sense together, and a budget sets one of its two fields.
 //   - blocks: a nil override keeps the base, a nil base takes the override,
 //     and two set blocks merge recursively.
 func MergeSizing(base, override SizingSpec) SizingSpec {
@@ -167,11 +168,13 @@ func mergeAPI(b, o *APISizingSpec) {
 	mergeDeployment(&b.DeploymentSizingSpec, &o.DeploymentSizingSpec)
 	mergeProcess(&b.ProcessSizingSpec, &o.ProcessSizingSpec)
 	b.Autoscaling = mergeValue(b.Autoscaling, o.Autoscaling)
+	b.PodDisruptionBudget = mergeValue(b.PodDisruptionBudget, o.PodDisruptionBudget)
 }
 
 func mergeHorizonAPI(b, o *HorizonAPISizingSpec) {
 	mergeDeployment(&b.DeploymentSizingSpec, &o.DeploymentSizingSpec)
 	b.Autoscaling = mergeValue(b.Autoscaling, o.Autoscaling)
+	b.PodDisruptionBudget = mergeValue(b.PodDisruptionBudget, o.PodDisruptionBudget)
 }
 
 func mergeMetadataAPI(b, o *MetadataAPISizingSpec) {

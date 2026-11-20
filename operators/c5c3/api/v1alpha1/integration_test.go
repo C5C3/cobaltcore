@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -610,12 +611,16 @@ func TestIntegration_CRD_CELOnly_ControlPlaneNovaConsoleProxy(t *testing.T) {
 }
 
 // TestIntegration_CRD_CELOnly_ControlPlaneSizing pins the sizing rules: profile
-// and profileRef are mutually exclusive, and an API component takes either
-// autoscaling or verticalAutoscaling. The two API-component markers render a
+// and profileRef are mutually exclusive, an API component takes either
+// autoscaling or verticalAutoscaling, and its podDisruptionBudget sets exactly
+// one of minAvailable or maxUnavailable. The API-component markers render a
 // second time into the SizingProfile CRD through its inline SizingSpec; they
-// are the same Go markers and are proven once, here.
+// are the same Go markers and are proven once, here, apart from the budget
+// rule of the shared PodDisruptionBudgetSpec, which a SizingProfile subtest
+// pins on that CRD too.
 //
-// Rules: sizing_types.go:71, 193, 204
+// Rules: sizing_types.go:71, 193, 208
+// Rules: workload.go:330
 func TestIntegration_CRD_CELOnly_ControlPlaneSizing(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	c, ctx, _ := setupEnvTestNoWebhook(t)
@@ -635,11 +640,18 @@ func TestIntegration_CRD_CELOnly_ControlPlaneSizing(t *testing.T) {
 			Autoscaling:          a,
 		}}}}
 	}
+	const budgetExactlyOne = "exactly one of minAvailable or maxUnavailable must be set"
+	one := intstr.FromInt32(1)
+	bothBudgets := &commonv1.PodDisruptionBudgetSpec{MinAvailable: &one, MaxUnavailable: &one}
+	keystoneBudget := func(b *commonv1.PodDisruptionBudgetSpec) SizingSpec {
+		return SizingSpec{Keystone: &KeystoneSizingSpec{API: &APISizingSpec{PodDisruptionBudget: b}}}
+	}
 
 	for _, tc := range []struct {
-		name    string
-		sizing  *ControlPlaneSizingSpec
-		wantSub string // empty: the object must be admitted
+		name     string
+		sizing   *ControlPlaneSizingSpec
+		wantSub  string // empty: the object must be admitted
+		wantPath string // empty: the path is not asserted
 	}{
 		{
 			name:    "profile-and-profile-ref",
@@ -654,11 +666,54 @@ func TestIntegration_CRD_CELOnly_ControlPlaneSizing(t *testing.T) {
 		{name: "keystone-api-vertical-autoscaling-only", sizing: keystoneAPI(nil, vpa)},
 		{name: "horizon-api-autoscaling-only", sizing: horizonAPI(hpa, nil)},
 		{name: "horizon-api-vertical-autoscaling-only", sizing: horizonAPI(nil, vpa)},
+		{
+			name:     "keystone-api-pdb-both-set",
+			sizing:   &ControlPlaneSizingSpec{SizingSpec: keystoneBudget(bothBudgets)},
+			wantSub:  budgetExactlyOne,
+			wantPath: "spec.sizing.keystone.api.podDisruptionBudget",
+		},
+		{
+			name:     "keystone-api-pdb-neither",
+			sizing:   &ControlPlaneSizingSpec{SizingSpec: keystoneBudget(&commonv1.PodDisruptionBudgetSpec{})},
+			wantSub:  budgetExactlyOne,
+			wantPath: "spec.sizing.keystone.api.podDisruptionBudget",
+		},
+		{
+			name:   "keystone-api-pdb-max-unavailable-only",
+			sizing: &ControlPlaneSizingSpec{SizingSpec: keystoneBudget(&commonv1.PodDisruptionBudgetSpec{MaxUnavailable: &one})},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cp := stamp(validControlPlane(), "cp", newNamespace(t, ctx, c, "celonly-sizing-"))
 			cp.Spec.Sizing = tc.sizing
-			expectAdmission(t, c.Create(ctx, cp), tc.wantSub)
+			err := c.Create(ctx, cp)
+			expectAdmission(t, err, tc.wantSub)
+			if tc.wantPath != "" {
+				NewGomegaWithT(t).Expect(err.Error()).To(ContainSubstring(tc.wantPath))
+			}
+		})
+	}
+
+	// The SizingProfile CRD carries the budget rule at spec.<service>.api. A
+	// SizingProfile is cluster-scoped, so each case gets its own name.
+	for _, tc := range []struct {
+		name    string
+		budget  *commonv1.PodDisruptionBudgetSpec
+		wantSub string // empty: the object must be admitted
+	}{
+		{name: "both-set", budget: bothBudgets, wantSub: budgetExactlyOne},
+		{name: "max-unavailable-only", budget: &commonv1.PodDisruptionBudgetSpec{MaxUnavailable: &one}},
+	} {
+		t.Run("sizing-profile-pdb-"+tc.name, func(t *testing.T) {
+			p := &SizingProfile{
+				ObjectMeta: metav1.ObjectMeta{Name: "celonly-pdb-" + tc.name},
+				Spec:       SizingProfileSpec{Base: SizingProfileMinimal, SizingSpec: keystoneBudget(tc.budget)},
+			}
+			err := c.Create(ctx, p)
+			expectAdmission(t, err, tc.wantSub)
+			if tc.wantSub != "" {
+				NewGomegaWithT(t).Expect(err.Error()).To(ContainSubstring("spec.keystone.api.podDisruptionBudget"))
+			}
 		})
 	}
 }

@@ -17,6 +17,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -265,6 +266,36 @@ func TestSizingProfileValidateUpdate_RejectsVerticalAutoscalingBesideReferencing
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
+// A profile edit that sets a budget allowing no eviction at the one Keystone
+// replica of a referencing ControlPlane on base Minimal is rejected, naming the
+// ControlPlane. Without a referencing ControlPlane the same edit is admitted.
+func TestSizingProfileValidateUpdate_RejectsBudgetBlockingReferencingDrain(t *testing.T) {
+	oldP := sizingProfile("site", SizingProfileMinimal, SizingSpec{})
+	newP := sizingProfile("site", SizingProfileMinimal, keystoneAPI(APISizingSpec{
+		PodDisruptionBudget: &commonv1.PodDisruptionBudgetSpec{MinAvailable: ptr.To(intstr.FromInt32(1))},
+	}))
+
+	t.Run("referenced", func(t *testing.T) {
+		g := NewWithT(t)
+		w := &SizingProfileWebhook{Client: fake.NewClientBuilder().WithScheme(sizingScheme(t)).
+			WithObjects(referencingControlPlane("tenant-a", "cp", "site", "1")).Build()}
+
+		_, err := w.ValidateUpdate(context.Background(), oldP, newP)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("ControlPlane tenant-a/cp: spec.sizing.keystone.api.podDisruptionBudget.minAvailable: " +
+			`Invalid value: "1": allows no voluntary eviction at a lower replica bound of 1`))
+	})
+
+	t.Run("unreferenced", func(t *testing.T) {
+		g := NewWithT(t)
+		w := &SizingProfileWebhook{Client: fake.NewClientBuilder().WithScheme(sizingScheme(t)).
+			WithObjects(referencingControlPlane("tenant-b", "cp", "other", "1")).Build()}
+
+		_, err := w.ValidateUpdate(context.Background(), oldP, newP)
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+}
+
 func TestSizingProfileValidateUpdate_AdmitsWhenUnreferenced(t *testing.T) {
 	g := NewWithT(t)
 	unrelated := referencingControlPlane("tenant-b", "cp", "other", "10m")
@@ -299,6 +330,16 @@ func TestSizingProfileValidateUpdate_ListErrorIsInternal(t *testing.T) {
 	g.Expect(errors.As(err, &status)).To(BeTrue())
 	g.Expect(status.Status().Details.Causes).To(HaveLen(1))
 	g.Expect(err.Error()).To(ContainSubstring("spec: Internal error: listing ControlPlanes"))
+
+	// A budget in the profile, valid as written, changes nothing: the List
+	// still fails and rejects the edit with the one internal error.
+	_, err = w.ValidateUpdate(context.Background(), oldP, sizingProfile("site", SizingProfileMinimal, keystoneAPI(APISizingSpec{
+		PodDisruptionBudget: &commonv1.PodDisruptionBudgetSpec{MinAvailable: ptr.To(intstr.FromInt32(1))},
+	})))
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(errors.As(err, &status)).To(BeTrue())
+	g.Expect(status.Status().Details.Causes).To(HaveLen(1))
+	g.Expect(err.Error()).To(ContainSubstring("spec: Internal error: listing ControlPlanes: etcd is down"))
 }
 
 func TestSizingProfileValidateUpdate_LooksUpOnlyNewPriorityClasses(t *testing.T) {
