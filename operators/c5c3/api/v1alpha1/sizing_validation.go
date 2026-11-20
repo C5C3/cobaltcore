@@ -25,6 +25,11 @@ import (
 // DatabaseSizingSpec.StorageSize.
 var sizingStorageSizePattern = regexp.MustCompile(`^[0-9]+(Mi|Gi|Ti)$`)
 
+// maxDatabaseApplierThreads mirrors the Maximum marker on
+// DatabaseSizingSpec.ApplierThreads: the largest wsrep_slave_threads
+// MariaDB 12.3.3 accepts.
+const maxDatabaseApplierThreads = 512
+
 // minCacheMemoryLimit is the smallest memory limit the Memcached operator
 // admits: its maxMemoryMB default (64) plus 32Mi of headroom.
 var minCacheMemoryLimit = resource.MustParse("96Mi")
@@ -197,9 +202,9 @@ func sizingComponents(fldPath *field.Path, s *SizingSpec) []sizingComponent {
 // of node selectors and tolerations, the autoscaling behavior bounds the
 // autoscaling/v2 API enforces, a verticalAutoscaling minAllowed above its
 // maxAllowed, the Galera quorum and the Memcached memory floor), the webhook
-// twins of the markers on the spread entries, the database volume size and
-// the verticalAutoscaling block, and the rule that one component sets
-// autoscaling or verticalAutoscaling, not both.
+// twins of the markers on the spread entries, the database volume size, the
+// database applier thread count and the verticalAutoscaling block, and the
+// rule that one component sets autoscaling or verticalAutoscaling, not both.
 func validateSizingSpec(fldPath *field.Path, s *SizingSpec) field.ErrorList {
 	var allErrs field.ErrorList
 	for _, c := range sizingComponents(fldPath, s) {
@@ -233,6 +238,10 @@ func validateSizingSpec(fldPath *field.Path, s *SizingSpec) field.ErrorList {
 		if db.StorageSize != "" && !sizingStorageSizePattern.MatchString(db.StorageSize) {
 			allErrs = append(allErrs, field.Invalid(dbPath.Child("storageSize"), db.StorageSize,
 				fmt.Sprintf("must match %s (e.g. 512Mi, 100Gi)", sizingStorageSizePattern)))
+		}
+		if t := db.ApplierThreads; t != nil && (*t < 1 || *t > maxDatabaseApplierThreads) {
+			allErrs = append(allErrs, field.Invalid(dbPath.Child("applierThreads"), *t,
+				fmt.Sprintf("must be between 1 and %d", maxDatabaseApplierThreads)))
 		}
 	}
 	if c := s.Cache; c != nil && c.Resources != nil {

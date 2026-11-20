@@ -95,6 +95,33 @@ func TestValidateSizingSpec(t *testing.T) {
 			wantErr: []string{"spec.sizing.database.storageSize: Invalid value: \"10G\""},
 		},
 		{
+			name:    "database applierThreads 0",
+			spec:    SizingSpec{Database: &DatabaseSizingSpec{ApplierThreads: ptr.To[int32](0)}},
+			wantErr: []string{"spec.sizing.database.applierThreads: Invalid value: 0: must be between 1 and 512"},
+		},
+		{
+			name:    "database applierThreads -1",
+			spec:    SizingSpec{Database: &DatabaseSizingSpec{ApplierThreads: ptr.To[int32](-1)}},
+			wantErr: []string{"spec.sizing.database.applierThreads: Invalid value: -1"},
+		},
+		{
+			name:    "database applierThreads 513",
+			spec:    SizingSpec{Database: &DatabaseSizingSpec{ApplierThreads: ptr.To[int32](513)}},
+			wantErr: []string{"spec.sizing.database.applierThreads: Invalid value: 513"},
+		},
+		{
+			name: "database applierThreads 1 is valid",
+			spec: SizingSpec{Database: &DatabaseSizingSpec{ApplierThreads: ptr.To[int32](1)}},
+		},
+		{
+			name: "database applierThreads 512 is valid",
+			spec: SizingSpec{Database: &DatabaseSizingSpec{ApplierThreads: ptr.To[int32](512)}},
+		},
+		{
+			name: "a database block without applierThreads is valid",
+			spec: SizingSpec{Database: &DatabaseSizingSpec{Replicas: ptr.To[int32](3)}},
+		},
+		{
 			name: "a cache memory limit below 96Mi",
 			spec: SizingSpec{Cache: &CacheSizingSpec{ContainerSizingSpec: ContainerSizingSpec{
 				Resources: &corev1.ResourceRequirements{Limits: corev1.ResourceList{

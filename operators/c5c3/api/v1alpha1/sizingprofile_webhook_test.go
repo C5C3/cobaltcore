@@ -10,15 +10,18 @@ import (
 	"testing"
 
 	. "github.com/onsi/gomega"
+	admissionv1 "k8s.io/api/admission/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	schedulingv1 "k8s.io/api/scheduling/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
@@ -34,6 +37,41 @@ func TestSizingProfileDefault_SetsStandard(t *testing.T) {
 	p = sizingProfile("site", SizingProfileMinimal, SizingSpec{})
 	g.Expect(w.Default(context.Background(), p)).To(Succeed())
 	g.Expect(p.Spec.Base).To(Equal(SizingProfileMinimal))
+}
+
+// TestSizingProfileDefault_KeepsAFieldItsTypeDoesNotKnow is the SizingProfile
+// twin of TestDefault_KeepsASizingFieldItsTypeDoesNotKnow: a value set under
+// the new CRDs while the previous operator still runs survives that operator's
+// mutating webhook, whose Go type does not know the field.
+func TestSizingProfileDefault_KeepsAFieldItsTypeDoesNotKnow(t *testing.T) {
+	g := NewWithT(t)
+	s := runtime.NewScheme()
+	g.Expect(AddToScheme(s)).To(Succeed())
+	raw := []byte(`{
+		"apiVersion": "c5c3.io/v1alpha1",
+		"kind": "SizingProfile",
+		"metadata": {"name": "site"},
+		"spec": {"database": {"fieldOfANewerRelease": 1}}
+	}`)
+
+	resp := admission.WithDefaulter[*SizingProfile](s, &SizingProfileWebhook{}).Handle(
+		context.Background(),
+		admission.Request{AdmissionRequest: admissionv1.AdmissionRequest{
+			Operation: admissionv1.Update,
+			Object:    runtime.RawExtension{Raw: raw},
+		}},
+	)
+
+	g.Expect(resp.Allowed).To(BeTrue())
+	g.Expect(resp.Patches).NotTo(BeEmpty(), "the empty base leaves the webhook a default to write")
+	// An op on the field or on an object above it would replace or drop it.
+	const kept = "/spec/database/fieldOfANewerRelease/"
+	for _, p := range resp.Patches {
+		g.Expect(p.Operation).NotTo(Equal("remove"),
+			"the defaulting patch must not remove a field the request carried: %+v", p)
+		g.Expect(kept).NotTo(HavePrefix(p.Path+"/"),
+			"the defaulting patch must not write the field or an object above it: %+v", p)
+	}
 }
 
 func TestSizingProfileValidateCreate(t *testing.T) {
@@ -63,6 +101,11 @@ func TestSizingProfileValidateCreate(t *testing.T) {
 			name: "database replicas 2",
 			spec: SizingSpec{Database: &DatabaseSizingSpec{Replicas: ptr.To[int32](2)}},
 			want: "spec.database.replicas: Invalid value: 2",
+		},
+		{
+			name: "database applierThreads 513",
+			spec: SizingSpec{Database: &DatabaseSizingSpec{ApplierThreads: ptr.To[int32](513)}},
+			want: "spec.database.applierThreads: Invalid value: 513",
 		},
 		{
 			name: "a cache memory limit of 64Mi",
@@ -113,6 +156,14 @@ func TestSizingProfileValidateCreate(t *testing.T) {
 			_, err := w.ValidateCreate(context.Background(), sizingProfile("site", name, BuiltinSizing(name)))
 			g.Expect(err).NotTo(HaveOccurred(), string(name))
 		}
+	})
+
+	t.Run("a database applierThreads of 8 is admitted", func(t *testing.T) {
+		g := NewWithT(t)
+		w := &SizingProfileWebhook{Client: fake.NewClientBuilder().WithScheme(sizingScheme(t)).Build()}
+		_, err := w.ValidateCreate(context.Background(), sizingProfile("site", SizingProfileStandard,
+			SizingSpec{Database: &DatabaseSizingSpec{ApplierThreads: ptr.To[int32](8)}}))
+		g.Expect(err).NotTo(HaveOccurred())
 	})
 }
 

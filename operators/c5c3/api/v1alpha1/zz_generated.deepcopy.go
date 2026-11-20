@@ -853,6 +853,11 @@ func (in *DatabaseSizingSpec) DeepCopyInto(out *DatabaseSizingSpec) {
 		*out = new(int32)
 		**out = **in
 	}
+	if in.ApplierThreads != nil {
+		in, out := &in.ApplierThreads, &out.ApplierThreads
+		*out = new(int32)
+		**out = **in
+	}
 	in.PinnedSizingSpec.DeepCopyInto(&out.PinnedSizingSpec)
 }
 

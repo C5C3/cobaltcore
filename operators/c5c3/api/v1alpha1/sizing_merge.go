@@ -11,8 +11,8 @@ import (
 // MergeSizing overlays override on base, one value at a time, and returns a
 // new value that aliases neither input:
 //
-//   - replicas, processes, threads, workers, priorityClassName and
-//     storageSize: a set override wins.
+//   - replicas, processes, threads, workers, priorityClassName, storageSize
+//     and applierThreads: a set override wins.
 //   - resources: every request and limit the override names replaces or adds
 //     the base entry of that resource; override claims replace when non-nil.
 //   - nodeSelector, tolerations and spreadConstraints: a non-empty override
@@ -191,6 +191,7 @@ func mergeJob(b, o *JobSizingSpec) {
 
 func mergeDatabase(b, o *DatabaseSizingSpec) {
 	b.Replicas = mergeValue(b.Replicas, o.Replicas)
+	b.ApplierThreads = mergeValue(b.ApplierThreads, o.ApplierThreads)
 	if o.StorageSize != "" {
 		b.StorageSize = o.StorageSize
 	}
