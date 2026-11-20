@@ -547,11 +547,11 @@ func (r *GlanceReconciler) reconcileService(ctx context.Context, children client
 }
 
 // reconcileDelete drives the finalizer cleanup when the Glance CR is being
-// deleted. It is a no-op when the finalizer is absent. Otherwise it issues
-// Delete on the MariaDB Database/User/Grant CRs (idempotent, NotFound-tolerant)
-// and, while at least one of them was still live (not yet issued a Delete),
-// holds the finalizer for one more pass so the schema teardown is triggered
-// before the owner-ref chain disappears. Once no live resource remains it drops
+// deleted. It is a no-op when the finalizer is absent. In managed mode
+// (spec.database.clusterRef is set) it requests deletion of the MariaDB
+// Database, User, and Grant this Glance owns, and holds the finalizer for one
+// more pass whenever it requested one, so the schema teardown starts before the
+// owner-ref chain disappears. A brownfield CR skips that step. It then drops
 // the per-CR metrics, evicts the health-probe cache, and releases the finalizer.
 //
 // A nil children client means the target cluster this CR named is no longer
