@@ -292,6 +292,77 @@ func TestReconcileBackends_DeterministicSectionOrder(t *testing.T) {
 	g.Expect(strings.Index(conf, "[aaa]")).To(BeNumerically("<", strings.Index(conf, "[bbb]")))
 }
 
+// A spec edit on a non-default backend reaches this step before the backend's
+// controller has checked the new spec. The projection is held, so the store is
+// not rolled out of the API and back in one status write later.
+func TestStaleNonDefaultBackendHoldsProjection(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	glance := testGlance()
+	original := testArtifacts()
+	secondary := credentialReadyBackend("secondary", glance.Name, false)
+	secondary.Generation++
+	r := newGlanceTestReconciler(
+		glance, readyGlanceDeployment(glance, original),
+		credentialReadyBackend("store", glance.Name, true), testS3CredentialsSecret("store"),
+		secondary, testS3CredentialsSecret("secondary"),
+	)
+
+	res, projection, err := r.reconcileBackends(ctx, r.Client, glance)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.IsZero()).To(BeTrue(), "waiting states never requeue")
+	g.Expect(projection.valid).To(BeFalse())
+	g.Expect(projection.secretName).To(BeEmpty())
+	g.Expect(projection.hosts).To(HaveLen(2))
+	cond := conditions.GetCondition(glance.Status.Conditions, conditionTypeBackendsReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonWaitingForBackends))
+	g.Expect(cond.Message).To(ContainSubstring("secondary (spec changed since its credentials were checked)"))
+
+	_, art, err := r.reconcileConfig(ctx, r.Client, glance, projection)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(art).To(Equal(original))
+	var secrets corev1.SecretList
+	g.Expect(r.List(ctx, &secrets)).To(Succeed())
+	for _, secret := range secrets.Items {
+		g.Expect(secret.Name).NotTo(HavePrefix(glance.Name + "-backends-"))
+	}
+
+	// The backend's controller checks the new spec and stamps the generation.
+	// Its status write wakes the Glance, and the next pass projects both stores.
+	g.Expect(r.Get(ctx, client.ObjectKeyFromObject(secondary), secondary)).To(Succeed())
+	for i := range secondary.Status.Conditions {
+		secondary.Status.Conditions[i].ObservedGeneration = secondary.Generation
+	}
+	g.Expect(r.Status().Update(ctx, secondary)).To(Succeed())
+	_, projection, err = r.reconcileBackends(ctx, r.Client, glance)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(projection.valid).To(BeTrue())
+	g.Expect(projection.enabledBackends).To(Equal("secondary:s3,store:s3"))
+}
+
+// A backend that has not reported CredentialsReady yet is not part of the
+// mounted configuration, so it waits without holding its ready siblings.
+func TestUnreportedNonDefaultBackendDoesNotHoldProjection(t *testing.T) {
+	g := NewGomegaWithT(t)
+	glance := testGlance()
+	fresh := credentialReadyBackend("secondary", glance.Name, false)
+	fresh.Status.Conditions = nil
+	r := newGlanceTestReconciler(
+		glance, credentialReadyBackend("store", glance.Name, true), testS3CredentialsSecret("store"), fresh,
+	)
+
+	_, projection, err := r.reconcileBackends(context.Background(), r.Client, glance)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(projection.valid).To(BeTrue())
+	g.Expect(projection.enabledBackends).To(Equal("store:s3"))
+	cond := conditions.GetCondition(glance.Status.Conditions, conditionTypeBackendsReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Reason).To(Equal(conditionReasonWaitingForBackends))
+	g.Expect(cond.Message).To(ContainSubstring("secondary (credentials not ready)"))
+}
+
 func TestDefaultBackendFailureRetainsMountedArtifacts(t *testing.T) {
 	for _, stale := range []bool{false, true} {
 		name := "missing secret"

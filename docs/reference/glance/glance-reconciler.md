@@ -154,6 +154,12 @@ generation. Waiting for its aggregate `Ready` would deadlock because
   skipped with a `GlanceBackendSkipped` Warning event on the Glance CR while the
   healthy siblings keep projecting. If the default store is skipped, the API
   keeps its mounted configuration and a first install waits.
+- **Spec edits hold the projection.** A backend whose spec changed after it
+  last reported `CredentialsReady==True` holds the whole projection
+  (`BackendsReady=False / WaitingForBackends`). The API keeps its mounted
+  configuration until the backend's controller has checked the new spec, so an
+  edit never rolls the store out of `enabled_backends` and back in. A backend
+  that has not reported yet, or reports `False`, holds nothing.
 
 Pruning waits for rollout and preserves older ConfigMaps still mounted by Jobs.
 

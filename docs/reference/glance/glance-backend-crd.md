@@ -198,7 +198,7 @@ lists the five steps and what differs per kind.
 | `Ready` | GlanceBackend | False | `NotAllReady` | A sub-condition is missing, not True, or was last observed at an older generation. |
 | `Ready` | GlanceBackend | False | `ReconcileError` | Both sub-conditions are current and True, but the pass returned an error. The sub-conditions keep their status, and `Ready` returns to True on the next successful pass. |
 | `BackendsReady` | Glance | True | `AllBackendsProjected` | Every attached backend is credential-ready and projected, with a valid default. |
-| `BackendsReady` | Glance | False | `WaitingForBackends` | A valid default exists but at least one backend is pending (not yet credential-ready, or skipped for a per-backend fault); the ready subset is still projected. |
+| `BackendsReady` | Glance | False | `WaitingForBackends` | A valid default exists but at least one backend is pending (not yet credential-ready, or skipped for a per-backend fault). The ready subset is still projected. Two cases retain the mounted config instead: the default's own store section fails to render, or a backend's spec changed since it last reported `CredentialsReady=True`. |
 | `BackendsReady` | Glance | False | `NoDefaultBackend` | Zero or more than one credential-ready backend is marked `isDefault`; last-good config is retained. |
 
 **Per-backend fault isolation.** When a backend's credentials Secret is
