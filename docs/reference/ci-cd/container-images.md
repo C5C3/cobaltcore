@@ -973,6 +973,33 @@ options, cleans five rows in batches of 2 with a 7 ms pause in the built
 image and expects three pauses, and expects exit code 1 and the error line
 from `--batch-size 0`. Upstream status: not yet proposed.
 
+**Source patch:**
+`patches/barbican/2026.1/0007-clear-the-request-session-when-its-commit-fails.patch`
+and its 2026.2 twin
+`patches/barbican/2026.2/0006-clear-the-request-session-when-its-commit-fails.patch`
+clear the database session of a request whose commit or rollback raises. The
+twins differ in their `Applies to` line only. `BarbicanTransactionHook`
+(`barbican/api/hooks.py`) hands `repositories.commit`, `rollback` and
+`clear` to pecan's `TransactionHook`, whose `after()` (pecan 1.7.0 and
+1.8.0) commits or rolls back and only then clears. When the commit raises,
+for example on the 10 s socket read timeout while the Galera cluster is
+paused, the clear never runs. SQLAlchemy leaves the session of the worker
+thread in `prepared` state, the thread's next request gets the same session,
+and its first statement fails with `InvalidRequestError`, so one stalled
+commit fails two requests or more (issue #1830). The patch runs pecan's
+`after()` in a `try` and `repositories.clear()` in its `finally`. The
+exception of the commit propagates as before, and the failing request still
+answers 500. On the success path the second clear finds no session and does
+nothing. The patch needs no operator configuration. No upstream test covers
+the hook; the patch adds `barbican/tests/api/test_hooks.py`. Four unit tests
+drive `after()` with a raising commit, a raising rollback, a request that is
+not transactional and a successful commit. A request test makes the commit
+of `POST /secrets/` fail through a listener on the engine and expects the
+following `GET /secrets/`, which answers 500 without the patch, to answer
+200. `verify_barbican.sh` Test 14 runs the hook of the built image with a
+commit that raises `DBConnectionError` and expects a new session that runs
+`SELECT 1`. Upstream status: not yet proposed.
+
 **Final image properties:**
 
 - Runs as `openstack` user (UID 42424, GID 42424)
@@ -999,7 +1026,8 @@ back with the next read, that a secret metadata write whose statement raises
 handlers upstream exposes with `template='json'` answer 204 with an empty
 body and their 400 and 404 answers carry JSON, that `barbican-manage db clean`
 defaults to 500 rows per commit and no pause and pauses after each committed
-batch when asked to, non-root execution, and the absence of build tools. Both plugin halves are loaded through their entry-point metadata
+batch when asked to, that a request whose commit raises leaves a new session
+behind, non-root execution, and the absence of build tools. Both plugin halves are loaded through their entry-point metadata
 rather than imported by module path, because that is how barbican and
 castellan resolve them at runtime — an import would go green off the `.py`
 file on disk while the runtime lookup raises stevedore `NoMatches`. The WSGI
