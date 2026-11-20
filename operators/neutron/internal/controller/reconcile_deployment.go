@@ -664,7 +664,7 @@ func buildNeutronService(neutron *neutronv1alpha1.Neutron) *corev1.Service {
 // disruptionsAllowed.
 func buildPodDisruptionBudget(neutron *neutronv1alpha1.Neutron) *policyv1.PodDisruptionBudget {
 	pdb := deployment.BuildPDB(neutron.Namespace, neutron.Name, commonLabels(neutron),
-		apiSelectorLabels(neutron), &neutron.Spec.Deployment, neutron.Spec.Autoscaling)
+		apiSelectorLabels(neutron), &neutron.Spec.Deployment, neutron.Spec.Autoscaling, nil)
 	pdb.Spec.Selector.MatchExpressions = naming.ExcludeJobPods()
 	return pdb
 }

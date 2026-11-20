@@ -473,7 +473,7 @@ func buildAPIService(nova *novav1alpha1.Nova) *corev1.Service {
 // removes their last pod costs no request.
 func buildPodDisruptionBudget(nova *novav1alpha1.Nova) *policyv1.PodDisruptionBudget {
 	pdb := deployment.BuildPDB(nova.Namespace, nova.Name, commonLabels(nova),
-		apiSelectorLabels(nova), &nova.Spec.API.Deployment, nova.Spec.Autoscaling)
+		apiSelectorLabels(nova), &nova.Spec.API.Deployment, nova.Spec.Autoscaling, nil)
 	pdb.Spec.Selector.MatchExpressions = naming.ExcludeJobPods()
 	return pdb
 }

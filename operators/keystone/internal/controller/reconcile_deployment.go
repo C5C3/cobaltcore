@@ -607,7 +607,7 @@ func buildFederationVolumes(fed *federationProjection) []corev1.Volume {
 // all, and the Service's two-phase narrowing has no counterpart here that would
 // bound that gap.
 func buildPodDisruptionBudget(keystone *keystonev1alpha1.Keystone) *policyv1.PodDisruptionBudget {
-	pdb := deployment.BuildPDB(keystone.Namespace, subResourceName(keystone), commonLabels(keystone), selectorLabels(keystone), &keystone.Spec.Deployment, keystone.Spec.Autoscaling)
+	pdb := deployment.BuildPDB(keystone.Namespace, subResourceName(keystone), commonLabels(keystone), selectorLabels(keystone), &keystone.Spec.Deployment, keystone.Spec.Autoscaling, nil)
 	pdb.Spec.Selector.MatchExpressions = naming.ExcludeJobPods()
 	return pdb
 }

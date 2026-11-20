@@ -392,7 +392,7 @@ func buildCinderService(cinder *cinderv1alpha1.Cinder) *corev1.Service {
 // the budget exists to protect.
 func buildPodDisruptionBudget(cinder *cinderv1alpha1.Cinder) *policyv1.PodDisruptionBudget {
 	pdb := deployment.BuildPDB(cinder.Namespace, cinder.Name, commonLabels(cinder),
-		apiSelectorLabels(cinder), &cinder.Spec.API.Deployment, cinder.Spec.Autoscaling)
+		apiSelectorLabels(cinder), &cinder.Spec.API.Deployment, cinder.Spec.Autoscaling, nil)
 	pdb.Spec.Selector.MatchExpressions = naming.ExcludeJobPods()
 	return pdb
 }

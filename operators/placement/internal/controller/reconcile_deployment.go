@@ -447,7 +447,7 @@ func placementDBTLSVolumeAndMount(placement *placementv1alpha1.Placement) (corev
 // all, and the Service's two-phase narrowing has no counterpart here that would
 // bound that gap.
 func buildPodDisruptionBudget(placement *placementv1alpha1.Placement) *policyv1.PodDisruptionBudget {
-	pdb := deployment.BuildPDB(placement.Namespace, subResourceName(placement), commonLabels(placement), selectorLabels(placement), &placement.Spec.Deployment, placement.Spec.Autoscaling)
+	pdb := deployment.BuildPDB(placement.Namespace, subResourceName(placement), commonLabels(placement), selectorLabels(placement), &placement.Spec.Deployment, placement.Spec.Autoscaling, nil)
 	pdb.Spec.Selector.MatchExpressions = naming.ExcludeJobPods()
 	return pdb
 }

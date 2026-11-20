@@ -5,6 +5,7 @@
 package deployment
 
 import (
+	"context"
 	"fmt"
 	"maps"
 
@@ -15,6 +16,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
@@ -37,16 +39,14 @@ func EffectiveReplicas(spec *commonv1.DeploymentSpec) int32 {
 }
 
 // EffectiveMinReplicas returns the lowest replica count the API Deployment can
-// run at: the HPA's minReplicas while autoscaling is set, EffectiveReplicas(spec)
-// when minReplicas is unset (the value BuildHPA renders), and
-// EffectiveReplicas(spec) without autoscaling. A minReplicas of 0 or below can
-// only arrive past the Minimum=1 marker and the webhook; it is returned as it
-// is, so BuildPDB treats it as a lower bound of one.
+// run at, commonv1.LowerReplicaBound of spec.Replicas: the HPA's minReplicas
+// while autoscaling is set, EffectiveReplicas(spec) when minReplicas is unset
+// (the value BuildHPA renders), and EffectiveReplicas(spec) without
+// autoscaling. A minReplicas of 0 or below can only arrive past the Minimum=1
+// marker and the webhook; it is returned as it is, so BuildPDB treats it as a
+// lower bound of one.
 func EffectiveMinReplicas(spec *commonv1.DeploymentSpec, autoscaling *commonv1.AutoscalingSpec) int32 {
-	if autoscaling == nil || autoscaling.MinReplicas == nil {
-		return EffectiveReplicas(spec)
-	}
-	return *autoscaling.MinReplicas
+	return commonv1.LowerReplicaBound(spec.Replicas, autoscaling)
 }
 
 // DeploymentReplicas returns the desired .spec.replicas for the API
@@ -64,17 +64,40 @@ func DeploymentReplicas(spec *commonv1.DeploymentSpec, autoscaling *commonv1.Aut
 	return ptr.To(EffectiveReplicas(spec))
 }
 
-// BuildPDB constructs the desired PDB for the API deployment. It branches on
-// the lower replica bound, EffectiveMinReplicas(spec, autoscaling): the HPA's
-// minReplicas while autoscaling is set, otherwise the effective replica count
-// (a zero-valued spec.deployment.replicas normalizes to the default, matching
-// the Deployment's own replica count). When the bound is > 1, minAvailable=1
+// PDBBudgetHonored reports whether BuildPDB renders budget as it is written:
+// budget is set, well formed, and allows at least one voluntary eviction at the
+// lower replica bound, EffectiveMinReplicas(spec, autoscaling).
+func PDBBudgetHonored(spec *commonv1.DeploymentSpec, autoscaling *commonv1.AutoscalingSpec, budget *commonv1.PodDisruptionBudgetSpec) bool {
+	allowed, err := budget.DisruptionsAllowed(EffectiveMinReplicas(spec, autoscaling))
+	return err == nil && allowed >= 1
+}
+
+// PDBBudgetFallbackMessage is the line LogPDBBudgetFallback logs.
+const PDBBudgetFallbackMessage = "spec.podDisruptionBudget is malformed or allows no eviction at the lower replica bound; rendering the default budget"
+
+// LogPDBBudgetFallback logs PDBBudgetFallbackMessage when budget is set and
+// BuildPDB renders the default rule instead, the only trace of that fallback.
+func LogPDBBudgetFallback(ctx context.Context, spec *commonv1.DeploymentSpec, autoscaling *commonv1.AutoscalingSpec, budget *commonv1.PodDisruptionBudgetSpec) {
+	if budget != nil && !PDBBudgetHonored(spec, autoscaling, budget) {
+		log.FromContext(ctx).Info(PDBBudgetFallbackMessage)
+	}
+}
+
+// BuildPDB constructs the desired PDB for the API deployment. A budget that
+// PDBBudgetHonored accepts is copied into the PDB: the one field it sets, and
+// nothing else. Any other budget (nil, malformed, or one that would block every
+// drain, which only a resource admitted without the webhook carries) gives the
+// default rule, which branches on the lower replica bound,
+// EffectiveMinReplicas(spec, autoscaling): the HPA's minReplicas while
+// autoscaling is set, otherwise the effective replica count (a zero-valued
+// spec.deployment.replicas normalizes to the default, matching the
+// Deployment's own replica count). When the bound is > 1, minAvailable=1
 // guarantees at least one pod remains during voluntary disruptions. When it is
 // 1, maxUnavailable=1 is used instead to avoid drain deadlock: a PDB with
 // minAvailable=1 on a single pod blocks every eviction. The same holds for an
 // autoscaler that may scale the Deployment down to one pod, whatever
 // spec.deployment.replicas says.
-func BuildPDB(namespace, name string, labels, selector map[string]string, spec *commonv1.DeploymentSpec, autoscaling *commonv1.AutoscalingSpec) *policyv1.PodDisruptionBudget {
+func BuildPDB(namespace, name string, labels, selector map[string]string, spec *commonv1.DeploymentSpec, autoscaling *commonv1.AutoscalingSpec, budget *commonv1.PodDisruptionBudgetSpec) *policyv1.PodDisruptionBudget {
 	pdb := &policyv1.PodDisruptionBudget{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -88,10 +111,16 @@ func BuildPDB(namespace, name string, labels, selector map[string]string, spec *
 		},
 	}
 
-	if EffectiveMinReplicas(spec, autoscaling) > 1 {
+	honored := PDBBudgetHonored(spec, autoscaling, budget)
+	switch {
+	case honored && budget.MinAvailable != nil:
+		pdb.Spec.MinAvailable = ptr.To(*budget.MinAvailable)
+	case honored:
+		pdb.Spec.MaxUnavailable = ptr.To(*budget.MaxUnavailable)
+	case EffectiveMinReplicas(spec, autoscaling) > 1:
 		minAvailable := intstr.FromInt32(1)
 		pdb.Spec.MinAvailable = &minAvailable
-	} else {
+	default:
 		maxUnavailable := intstr.FromInt32(1)
 		pdb.Spec.MaxUnavailable = &maxUnavailable
 	}

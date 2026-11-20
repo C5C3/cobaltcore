@@ -814,7 +814,7 @@ func glanceDBTLSVolumeAndMount(glance *glancev1alpha1.Glance) (corev1.Volume, co
 // all, and the Service's two-phase narrowing has no counterpart here that would
 // bound that gap.
 func buildPodDisruptionBudget(glance *glancev1alpha1.Glance) *policyv1.PodDisruptionBudget {
-	pdb := deployment.BuildPDB(glance.Namespace, subResourceName(glance), commonLabels(glance), selectorLabels(glance), &glance.Spec.Deployment, glance.Spec.Autoscaling)
+	pdb := deployment.BuildPDB(glance.Namespace, subResourceName(glance), commonLabels(glance), selectorLabels(glance), &glance.Spec.Deployment, glance.Spec.Autoscaling, nil)
 	pdb.Spec.Selector.MatchExpressions = naming.ExcludeJobPods()
 	return pdb
 }

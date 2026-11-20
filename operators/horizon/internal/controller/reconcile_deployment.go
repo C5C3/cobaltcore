@@ -325,7 +325,7 @@ func uwsgiCommand() []string {
 // Service's two-phase narrowing has no counterpart here that would bound that
 // gap.
 func buildPodDisruptionBudget(horizon *horizonv1alpha1.Horizon) *policyv1.PodDisruptionBudget {
-	pdb := deployment.BuildPDB(horizon.Namespace, subResourceName(horizon), commonLabels(horizon), selectorLabels(horizon), &horizon.Spec.Deployment, horizon.Spec.Autoscaling)
+	pdb := deployment.BuildPDB(horizon.Namespace, subResourceName(horizon), commonLabels(horizon), selectorLabels(horizon), &horizon.Spec.Deployment, horizon.Spec.Autoscaling, nil)
 	pdb.Spec.Selector.MatchExpressions = naming.ExcludeJobPods()
 	return pdb
 }
