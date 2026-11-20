@@ -416,7 +416,7 @@ With `list` removed, `get` no longer follows it: `generators.external-secrets.io
 
 | Kind | Verbs | Outcome | Marker or call site |
 | --- | --- | --- | --- |
-| `configmaps` | `delete` | kept | `internal/common/config/config.go:517` (`pruneImmutableObjects`) |
+| `configmaps` | `delete` | kept | `internal/common/config/config.go:544` (`pruneImmutableObjects`) |
 | `configmaps` | `update`, `patch` | removed | `operators/horizon/internal/controller/horizon_controller.go:216` |
 | `services` | `delete` | kept | `operators/horizon/internal/controller/reconcile_deployment.go:125` (`reconcileDeployment`) |
 | `services` | `update` | removed | `operators/horizon/internal/controller/horizon_controller.go:215` |
@@ -490,7 +490,7 @@ With `list` removed, `get` no longer follows it: `scheduling.k8s.io/priorityclas
 
 | Kind | Verbs | Outcome | Marker or call site |
 | --- | --- | --- | --- |
-| `configmaps` | `delete` | kept | `internal/common/config/config.go:517` (`pruneImmutableObjects`) |
+| `configmaps` | `delete` | kept | `internal/common/config/config.go:544` (`pruneImmutableObjects`) |
 | `configmaps` | `update`, `patch` | removed | `operators/placement/internal/controller/placement_controller.go:258` |
 | `secrets` | `patch`, `delete` | removed | `operators/placement/internal/controller/placement_controller.go:260` |
 | `secrets` | `update` | kept | `internal/common/database/connection.go:342` (`ReconcileConnectionSecret`) |
