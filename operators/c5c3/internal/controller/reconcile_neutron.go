@@ -408,12 +408,13 @@ func (r *ControlPlaneReconciler) reconcileNeutron(ctx context.Context, cp *c5c3v
 	if sizing.Neutron != nil {
 		nnSizing = *sizing.Neutron
 	}
-	uwsgi, autoscaling := projectAPI(&nn.Spec.Deployment, sizing.PodPlacementSpec, nnSizing.API,
+	uwsgi, autoscaling, budget := projectAPI(&nn.Spec.Deployment, sizing.PodPlacementSpec, nnSizing.API,
 		neutronv1alpha1.APIPodSelector(nn.Name))
 	if uwsgi != nil {
 		nn.Spec.APIServer = &neutronv1alpha1.APIServerSpec{UWSGI: uwsgi}
 	}
 	nn.Spec.Autoscaling = autoscaling
+	nn.Spec.PodDisruptionBudget = budget
 	projectWorkers(&nn.Spec.Workers.Deployment, sizing.PodPlacementSpec, nnSizing.Workers, commonv1.DefaultReplicas)
 	nn.Spec.Jobs = projectJobs(nnSizing.Jobs)
 

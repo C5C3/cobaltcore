@@ -14,6 +14,7 @@ import (
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -260,7 +261,7 @@ func TestProjectAPI_CarriesAutoscalingBehavior(t *testing.T) {
 		g := NewGomegaWithT(t)
 		api := withBehavior()
 		var d commonv1.DeploymentSpec
-		_, autoscaling := projectAPI(&d, c5c3v1alpha1.PodPlacementSpec{}, api, selector)
+		_, autoscaling, _ := projectAPI(&d, c5c3v1alpha1.PodPlacementSpec{}, api, selector)
 		g.Expect(autoscaling).To(Equal(api.Autoscaling))
 		*autoscaling.Behavior.ScaleDown.StabilizationWindowSeconds = 300
 		g.Expect(api.Autoscaling.Behavior.ScaleDown.StabilizationWindowSeconds).To(HaveValue(Equal(int32(15))),
@@ -270,9 +271,9 @@ func TestProjectAPI_CarriesAutoscalingBehavior(t *testing.T) {
 	t.Run("an unset autoscaling projects nil", func(t *testing.T) {
 		g := NewGomegaWithT(t)
 		var d commonv1.DeploymentSpec
-		_, autoscaling := projectAPI(&d, c5c3v1alpha1.PodPlacementSpec{}, apiReplicas(1), selector)
+		_, autoscaling, _ := projectAPI(&d, c5c3v1alpha1.PodPlacementSpec{}, apiReplicas(1), selector)
 		g.Expect(autoscaling).To(BeNil())
-		_, autoscaling = projectAPI(&d, c5c3v1alpha1.PodPlacementSpec{}, nil, selector)
+		_, autoscaling, _ = projectAPI(&d, c5c3v1alpha1.PodPlacementSpec{}, nil, selector)
 		g.Expect(autoscaling).To(BeNil())
 	})
 
@@ -291,6 +292,28 @@ func TestProjectAPI_CarriesAutoscalingBehavior(t *testing.T) {
 		k := getProjectedKeystone(t, c, cp)
 		g.Expect(k.Spec.Autoscaling.Behavior).To(Equal(withBehavior().Autoscaling.Behavior))
 	})
+}
+
+// TestProjectAPI_ProjectsPodDisruptionBudget pins the budget projectAPI
+// returns: nil for a nil component and for one without the block, and a copy
+// of the block otherwise.
+func TestProjectAPI_ProjectsPodDisruptionBudget(t *testing.T) {
+	g := NewGomegaWithT(t)
+	selector := keystonev1alpha1.APIPodSelector("cp-keystone")
+	var d commonv1.DeploymentSpec
+
+	_, _, budget := projectAPI(&d, c5c3v1alpha1.PodPlacementSpec{}, nil, selector)
+	g.Expect(budget).To(BeNil())
+	_, _, budget = projectAPI(&d, c5c3v1alpha1.PodPlacementSpec{}, apiReplicas(3), selector)
+	g.Expect(budget).To(BeNil())
+
+	api := apiReplicas(3)
+	api.PodDisruptionBudget = &commonv1.PodDisruptionBudgetSpec{MaxUnavailable: ptr.To(intstr.FromInt32(1))}
+	_, _, budget = projectAPI(&d, c5c3v1alpha1.PodPlacementSpec{}, api, selector)
+	g.Expect(budget).To(Equal(api.PodDisruptionBudget))
+	*budget.MaxUnavailable = intstr.FromString("50%")
+	g.Expect(api.PodDisruptionBudget.MaxUnavailable).To(HaveValue(Equal(intstr.FromInt32(1))),
+		"changing the child's copy must leave the ControlPlane's block unchanged")
 }
 
 func TestProjectUWSGIAndJobs(t *testing.T) {
@@ -511,6 +534,150 @@ func TestReconcileServices_SizingProjectsVerticalAutoscaling(t *testing.T) {
 			for component, d := range pass() {
 				g.Expect(d.VerticalAutoscaling).To(BeNil(), "%s after the block is removed", component)
 			}
+		})
+	}
+}
+
+// TestReconcileServices_SizingProjectsPodDisruptionBudget follows the
+// podDisruptionBudget block of every API sizing component to the
+// spec.podDisruptionBudget of the child it lands on, and shows that a
+// ControlPlane without the block writes nil there on the next pass, so the
+// service operator returns to its default rule.
+func TestReconcileServices_SizingProjectsPodDisruptionBudget(t *testing.T) {
+	budget := func() *commonv1.PodDisruptionBudgetSpec {
+		return &commonv1.PodDisruptionBudgetSpec{MaxUnavailable: ptr.To(intstr.FromInt32(1))}
+	}
+	api := func() *c5c3v1alpha1.APISizingSpec {
+		return &c5c3v1alpha1.APISizingSpec{PodDisruptionBudget: budget()}
+	}
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		name   string
+		cp     func() *c5c3v1alpha1.ControlPlane
+		sizing c5c3v1alpha1.SizingSpec
+		// pass reconciles cp once and returns the child's projected budget.
+		pass func(t *testing.T, cp *c5c3v1alpha1.ControlPlane) func() *commonv1.PodDisruptionBudgetSpec
+	}{
+		{
+			name:   "keystone",
+			cp:     keystoneControlPlane,
+			sizing: c5c3v1alpha1.SizingSpec{Keystone: &c5c3v1alpha1.KeystoneSizingSpec{API: api()}},
+			pass: func(t *testing.T, cp *c5c3v1alpha1.ControlPlane) func() *commonv1.PodDisruptionBudgetSpec {
+				s := keystoneTestScheme(t)
+				c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+				r := &ControlPlaneReconciler{Client: c, Scheme: s}
+				return func() *commonv1.PodDisruptionBudgetSpec {
+					_, err := r.reconcileKeystone(ctx, cp)
+					NewGomegaWithT(t).Expect(err).NotTo(HaveOccurred())
+					return getProjectedKeystone(t, c, cp).Spec.PodDisruptionBudget
+				}
+			},
+		},
+		{
+			name: "horizon",
+			cp:   horizonControlPlane,
+			sizing: c5c3v1alpha1.SizingSpec{Horizon: &c5c3v1alpha1.HorizonSizingSpec{
+				API: &c5c3v1alpha1.HorizonAPISizingSpec{PodDisruptionBudget: budget()},
+			}},
+			pass: func(t *testing.T, cp *c5c3v1alpha1.ControlPlane) func() *commonv1.PodDisruptionBudgetSpec {
+				r := newHorizonTestReconciler(t, cp)
+				return func() *commonv1.PodDisruptionBudgetSpec {
+					_, err := r.reconcileHorizon(ctx, cp)
+					NewGomegaWithT(t).Expect(err).NotTo(HaveOccurred())
+					return getProjectedHorizon(t, r.Client, cp).Spec.PodDisruptionBudget
+				}
+			},
+		},
+		{
+			name:   "glance",
+			cp:     glanceControlPlane,
+			sizing: c5c3v1alpha1.SizingSpec{Glance: &c5c3v1alpha1.APIServiceSizingSpec{API: api()}},
+			pass: func(t *testing.T, cp *c5c3v1alpha1.ControlPlane) func() *commonv1.PodDisruptionBudgetSpec {
+				r := newGlanceTestReconciler(t, cp)
+				return func() *commonv1.PodDisruptionBudgetSpec {
+					_, err := r.reconcileGlance(ctx, cp)
+					NewGomegaWithT(t).Expect(err).NotTo(HaveOccurred())
+					return getProjectedGlance(t, r.Client, cp).Spec.PodDisruptionBudget
+				}
+			},
+		},
+		{
+			name:   "placement",
+			cp:     placementControlPlane,
+			sizing: c5c3v1alpha1.SizingSpec{Placement: &c5c3v1alpha1.APIServiceSizingSpec{API: api()}},
+			pass: func(t *testing.T, cp *c5c3v1alpha1.ControlPlane) func() *commonv1.PodDisruptionBudgetSpec {
+				r := newPlacementTestReconciler(t, cp)
+				return func() *commonv1.PodDisruptionBudgetSpec {
+					_, err := r.reconcilePlacement(ctx, cp)
+					NewGomegaWithT(t).Expect(err).NotTo(HaveOccurred())
+					return getProjectedPlacement(t, r.Client, cp).Spec.PodDisruptionBudget
+				}
+			},
+		},
+		{
+			name:   "barbican",
+			cp:     barbicanControlPlane,
+			sizing: c5c3v1alpha1.SizingSpec{Barbican: &c5c3v1alpha1.APIServiceSizingSpec{API: api()}},
+			pass: func(t *testing.T, cp *c5c3v1alpha1.ControlPlane) func() *commonv1.PodDisruptionBudgetSpec {
+				r := newBarbicanTestReconciler(t, cp)
+				return func() *commonv1.PodDisruptionBudgetSpec {
+					_, err := r.reconcileBarbican(ctx, cp)
+					NewGomegaWithT(t).Expect(err).NotTo(HaveOccurred())
+					return getProjectedBarbican(t, r.Client, cp).Spec.PodDisruptionBudget
+				}
+			},
+		},
+		{
+			name:   "neutron",
+			cp:     neutronControlPlane,
+			sizing: c5c3v1alpha1.SizingSpec{Neutron: &c5c3v1alpha1.NeutronSizingSpec{API: api()}},
+			pass: func(t *testing.T, cp *c5c3v1alpha1.ControlPlane) func() *commonv1.PodDisruptionBudgetSpec {
+				r := newNeutronTestReconciler(t, cp)
+				return func() *commonv1.PodDisruptionBudgetSpec {
+					_, err := r.reconcileNeutron(ctx, cp)
+					NewGomegaWithT(t).Expect(err).NotTo(HaveOccurred())
+					return getProjectedNeutron(t, r.Client, cp).Spec.PodDisruptionBudget
+				}
+			},
+		},
+		{
+			name:   "cinder",
+			cp:     cinderControlPlane,
+			sizing: c5c3v1alpha1.SizingSpec{Cinder: &c5c3v1alpha1.CinderSizingSpec{API: api()}},
+			pass: func(t *testing.T, cp *c5c3v1alpha1.ControlPlane) func() *commonv1.PodDisruptionBudgetSpec {
+				r := newCinderTestReconciler(t, cp)
+				return func() *commonv1.PodDisruptionBudgetSpec {
+					_, err := r.reconcileCinder(ctx, cp)
+					NewGomegaWithT(t).Expect(err).NotTo(HaveOccurred())
+					return getProjectedCinder(t, r.Client, cp).Spec.PodDisruptionBudget
+				}
+			},
+		},
+		{
+			name:   "nova",
+			cp:     novaControlPlane,
+			sizing: c5c3v1alpha1.SizingSpec{Nova: &c5c3v1alpha1.NovaSizingSpec{API: api()}},
+			pass: func(t *testing.T, cp *c5c3v1alpha1.ControlPlane) func() *commonv1.PodDisruptionBudgetSpec {
+				r := newNovaTestReconciler(t, cp)
+				return func() *commonv1.PodDisruptionBudgetSpec {
+					_, err := r.reconcileNova(ctx, cp)
+					NewGomegaWithT(t).Expect(err).NotTo(HaveOccurred())
+					return getProjectedNova(t, r.Client, cp).Spec.PodDisruptionBudget
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := tc.cp()
+			cp.Spec.Sizing = sizingOf(tc.sizing)
+			pass := tc.pass(t, cp)
+
+			g.Expect(pass()).To(Equal(budget()))
+
+			cp.Spec.Sizing = nil
+			g.Expect(pass()).To(BeNil(), "after the block is removed")
 		})
 	}
 }

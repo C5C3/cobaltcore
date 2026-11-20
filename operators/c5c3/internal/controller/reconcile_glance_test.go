@@ -2356,6 +2356,7 @@ func TestReconcileGlance_NoSizingProjectsTodaysChild(t *testing.T) {
 	expectUnsized(g, gl.Spec.Deployment, commonv1.DefaultReplicas)
 	g.Expect(gl.Spec.APIServer).To(BeNil())
 	g.Expect(gl.Spec.Autoscaling).To(BeNil())
+	g.Expect(gl.Spec.PodDisruptionBudget).To(BeNil())
 	g.Expect(gl.Spec.Jobs).To(BeNil())
 }
 

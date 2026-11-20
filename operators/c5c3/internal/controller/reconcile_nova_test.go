@@ -2830,6 +2830,7 @@ func TestReconcileNova_NoSizingProjectsTodaysChild(t *testing.T) {
 	g.Expect(nv.Spec.Scheduler.Workers).To(BeNil())
 	g.Expect(nv.Spec.Conductor.Workers).To(BeNil())
 	g.Expect(nv.Spec.Autoscaling).To(BeNil())
+	g.Expect(nv.Spec.PodDisruptionBudget).To(BeNil())
 	g.Expect(nv.Spec.Jobs).To(BeNil())
 
 	projected := nv.DeepCopy()

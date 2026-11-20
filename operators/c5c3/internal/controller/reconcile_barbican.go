@@ -494,12 +494,13 @@ func (r *ControlPlaneReconciler) reconcileBarbican(ctx context.Context, cp *c5c3
 	if sizing.Barbican != nil {
 		bnSizing = *sizing.Barbican
 	}
-	uwsgi, autoscaling := projectAPI(&barbican.Spec.Deployment, sizing.PodPlacementSpec, bnSizing.API,
+	uwsgi, autoscaling, budget := projectAPI(&barbican.Spec.Deployment, sizing.PodPlacementSpec, bnSizing.API,
 		barbicanv1alpha1.APIPodSelector(barbican.Name))
 	if uwsgi != nil {
 		barbican.Spec.APIServer = &barbicanv1alpha1.APIServerSpec{UWSGI: uwsgi}
 	}
 	barbican.Spec.Autoscaling = autoscaling
+	barbican.Spec.PodDisruptionBudget = budget
 	barbican.Spec.Jobs = projectJobs(bnSizing.Jobs)
 
 	// The local copy converts in one step. Nil projects nil, which the

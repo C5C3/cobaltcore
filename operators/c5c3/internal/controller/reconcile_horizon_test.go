@@ -1472,6 +1472,7 @@ func TestReconcileHorizon_NoSizingProjectsTodaysChild(t *testing.T) {
 	h := getProjectedHorizon(t, r.Client, cp)
 	expectUnsized(g, h.Spec.Deployment, commonv1.DefaultReplicas)
 	g.Expect(h.Spec.Autoscaling).To(BeNil())
+	g.Expect(h.Spec.PodDisruptionBudget).To(BeNil())
 }
 
 // TestReconcileHorizon_SizingProjectsAndClears projects Minimal plus overrides

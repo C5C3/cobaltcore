@@ -604,7 +604,7 @@ func (r *ControlPlaneReconciler) reconcileCinder(ctx context.Context, cp *c5c3v1
 	if sizing.Cinder != nil {
 		cdSizing = *sizing.Cinder
 	}
-	cn.Spec.API.UWSGI, cn.Spec.Autoscaling = projectAPI(&cn.Spec.API.Deployment, sizing.PodPlacementSpec,
+	cn.Spec.API.UWSGI, cn.Spec.Autoscaling, cn.Spec.PodDisruptionBudget = projectAPI(&cn.Spec.API.Deployment, sizing.PodPlacementSpec,
 		cdSizing.API, cinderv1alpha1.APIPodSelector(cn.Name))
 
 	// The shared bus reaches the child as a BROWNFIELD secretRef naming the Secret

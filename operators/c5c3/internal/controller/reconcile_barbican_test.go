@@ -2475,6 +2475,7 @@ func TestReconcileBarbican_NoSizingProjectsTodaysChild(t *testing.T) {
 	expectUnsized(g, b.Spec.Deployment, commonv1.DefaultReplicas)
 	g.Expect(b.Spec.APIServer).To(BeNil())
 	g.Expect(b.Spec.Autoscaling).To(BeNil())
+	g.Expect(b.Spec.PodDisruptionBudget).To(BeNil())
 	g.Expect(b.Spec.Jobs).To(BeNil())
 }
 

@@ -327,10 +327,10 @@ func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3
 	keystone.Spec.Bootstrap.PublicEndpoint = keystonePublicEndpoint(cp.Spec.Services.Keystone)
 
 	// Project the resolved spec.sizing.keystone onto the API Deployment, the
-	// uWSGI and autoscaling blocks, and the Job pods. What stays unprojected is
+	// uWSGI, autoscaling and podDisruptionBudget blocks, and the Job pods. What stays unprojected is
 	// the child's own: network policy, logging, the graceful-termination
 	// timings, the rollout strategy and affinity.
-	keystone.Spec.UWSGI, keystone.Spec.Autoscaling = projectAPI(&keystone.Spec.Deployment,
+	keystone.Spec.UWSGI, keystone.Spec.Autoscaling, keystone.Spec.PodDisruptionBudget = projectAPI(&keystone.Spec.Deployment,
 		sizing.PodPlacementSpec, ksSizing.API, keystonev1alpha1.APIPodSelector(keystone.Name))
 	keystone.Spec.Jobs = projectJobs(ksSizing.Jobs)
 

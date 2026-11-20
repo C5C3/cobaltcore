@@ -2942,6 +2942,7 @@ func TestReconcileCinder_NoSizingProjectsTodaysChild(t *testing.T) {
 	expectUnsized(g, cn.Spec.Backup.Deployment, 1)
 	g.Expect(cn.Spec.API.UWSGI).To(BeNil())
 	g.Expect(cn.Spec.Autoscaling).To(BeNil())
+	g.Expect(cn.Spec.PodDisruptionBudget).To(BeNil())
 	g.Expect(cn.Spec.Jobs).To(BeNil())
 }
 

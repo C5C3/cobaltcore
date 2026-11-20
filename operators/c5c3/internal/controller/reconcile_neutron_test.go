@@ -2462,6 +2462,7 @@ func TestReconcileNeutron_NoSizingProjectsTodaysChild(t *testing.T) {
 	expectUnsized(g, nn.Spec.Workers.Deployment, commonv1.DefaultReplicas)
 	g.Expect(nn.Spec.APIServer).To(BeNil())
 	g.Expect(nn.Spec.Autoscaling).To(BeNil())
+	g.Expect(nn.Spec.PodDisruptionBudget).To(BeNil())
 	g.Expect(nn.Spec.Jobs).To(BeNil())
 }
 
