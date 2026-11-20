@@ -160,3 +160,13 @@ spec:
             ($error != null): true
             (contains($error, 'spec.cinder.scheduler.verticalAutoscaling.minReplicas')): true
             (contains($error, 'should be greater than or equal to 1')): true
+  # A Galera applier thread count of 513 at spec.database.applierThreads must
+  # be rejected by the Maximum=512 marker; the webhook mirrors it.
+  - try:
+    - apply:
+        file: 13-database-applier-threads-above-maximum.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.database.applierThreads')): true
+            (contains($error, 'should be less than or equal to 512')): true

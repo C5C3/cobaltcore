@@ -3022,6 +3022,21 @@ FIXTURES: tuple[Fixture, ...] = (
         ),
     ),
     Fixture(
+        filename="163-sizing-database-applier-threads-zero.yaml",
+        comment=(
+            "spec.sizing.database.applierThreads of zero violates the Minimum=1 marker;\n"
+            "the webhook mirrors it with \"must be between 1 and 512\"."
+        ),
+        name="cp-sizing-db-applier-threads-zero",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        sizing=(
+            "  sizing:\n"
+            "    database:\n"
+            "      applierThreads: 0\n"
+        ),
+    ),
+    Fixture(
         filename="137-image-pull-policy-unsupported.yaml",
         comment=(
             "spec.imagePullPolicy outside Always, IfNotPresent and Never violates the Enum\n"

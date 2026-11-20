@@ -276,6 +276,18 @@ FIXTURES: tuple[Fixture, ...] = (
             "        minReplicas: 0\n"
         ),
     ),
+    Fixture(
+        filename="13-database-applier-threads-above-maximum.yaml",
+        comment=(
+            "database.applierThreads of 513 violates the Maximum=512 marker, the largest\n"
+            "wsrep_slave_threads MariaDB 12.3.3 accepts; the webhook mirrors it."
+        ),
+        name="c5c3-e2e-sizing-db-applier-threads-513",
+        spec=(
+            "  database:\n"
+            "    applierThreads: 513\n"
+        ),
+    ),
 )
 
 
