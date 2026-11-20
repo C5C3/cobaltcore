@@ -590,9 +590,9 @@ func (w *BarbicanWebhook) validate(ctx context.Context, b *Barbican, extra field
 		)...)
 	}
 
-	// Defense-in-depth dbClean validation alongside the Minimum marker on
-	// DBCleanSpec.RetentionDays, plus the cron-grammar check that has no schema
-	// counterpart.
+	// Defense-in-depth dbClean validation alongside the Minimum markers on
+	// DBCleanSpec.RetentionDays, BatchSize and BatchPauseMilliseconds, plus the
+	// cron-grammar check that has no schema counterpart.
 	allErrs = append(allErrs, validateDBClean(specPath.Child("dbClean"), b.Spec.DBClean)...)
 
 	// extraConfig sanity: reject an empty section name or an empty option key so
@@ -728,11 +728,12 @@ func gatewayHostname(b *Barbican) string {
 }
 
 // validateDBClean mirrors the spec.dbClean schema as defense in depth behind the
-// CRD layer — the Minimum marker on retentionDays — and carries the one check
-// with no schema counterpart: the cron grammar, which DBCleanSpec.Schedule
-// deliberately leaves to the webhook. It is nil-safe, and so is each half: an
-// unset field carries nothing to validate and is resolved to the operator default
-// at reconcile time.
+// CRD layer — the Minimum markers on retentionDays, batchSize and
+// batchPauseMilliseconds — and carries the one check with no schema
+// counterpart: the cron grammar, which DBCleanSpec.Schedule deliberately leaves
+// to the webhook. It is nil-safe, and so is each check: an unset field carries
+// nothing to validate and is resolved to the operator default at reconcile
+// time, or for the batch size and the pause left to the image's default.
 func validateDBClean(fldPath *field.Path, c *DBCleanSpec) field.ErrorList {
 	if c == nil {
 		return nil
@@ -746,6 +747,17 @@ func validateDBClean(fldPath *field.Path, c *DBCleanSpec) field.ErrorList {
 	}
 	if c.Schedule != "" {
 		errs = append(errs, validation.CronSchedule(fldPath.Child("schedule"), c.Schedule)...)
+	}
+	if c.BatchSize != nil && *c.BatchSize < 1 {
+		errs = append(errs, field.Invalid(
+			fldPath.Child("batchSize"), *c.BatchSize, "batchSize must be at least 1",
+		))
+	}
+	if c.BatchPauseMilliseconds != nil && *c.BatchPauseMilliseconds < 0 {
+		errs = append(errs, field.Invalid(
+			fldPath.Child("batchPauseMilliseconds"), *c.BatchPauseMilliseconds,
+			"batchPauseMilliseconds must not be negative",
+		))
 	}
 	return errs
 }

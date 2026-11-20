@@ -98,6 +98,9 @@ func TestEffectiveDBClean(t *testing.T) {
 		want barbicanv1alpha1.DBCleanSpec
 	}{
 		{
+			// BatchSize and BatchPauseMilliseconds stay nil in the nil and the
+			// empty block: the operator resolves no default for them, so the
+			// image's default applies.
 			name: "nil block resolves every operator default",
 			in:   nil,
 			want: barbicanv1alpha1.DBCleanSpec{
@@ -145,6 +148,8 @@ func TestEffectiveDBClean(t *testing.T) {
 				SoftDeleteExpiredSecrets:  ptr.To(false),
 				CleanUnassociatedProjects: ptr.To(true),
 				Suspend:                   true,
+				BatchSize:                 ptr.To(int32(1)),
+				BatchPauseMilliseconds:    ptr.To(int32(0)),
 			},
 			want: barbicanv1alpha1.DBCleanSpec{
 				RetentionDays:             ptr.To(int32(1)),
@@ -152,6 +157,8 @@ func TestEffectiveDBClean(t *testing.T) {
 				SoftDeleteExpiredSecrets:  ptr.To(false),
 				CleanUnassociatedProjects: ptr.To(true),
 				Suspend:                   true,
+				BatchSize:                 ptr.To(int32(1)),
+				BatchPauseMilliseconds:    ptr.To(int32(0)),
 			},
 		},
 	}
@@ -206,6 +213,36 @@ func TestDBCleanCommand(t *testing.T) {
 			want: []string{
 				"barbican-manage", "db", "clean", "--min-days", "7",
 				"--soft-delete-expired-secrets", "--clean-unassociated-projects",
+			},
+		},
+		{
+			name: "a set batch size is passed",
+			spec: &barbicanv1alpha1.DBCleanSpec{BatchSize: ptr.To(int32(200))},
+			want: []string{
+				"barbican-manage", "db", "clean", "--min-days", "90",
+				"--soft-delete-expired-secrets", "--batch-size", "200",
+			},
+		},
+		{
+			// 0 disables the pause, and an explicit 0 is still passed.
+			name: "an explicit pause of 0 is passed",
+			spec: &barbicanv1alpha1.DBCleanSpec{BatchPauseMilliseconds: ptr.To(int32(0))},
+			want: []string{
+				"barbican-manage", "db", "clean", "--min-days", "90",
+				"--soft-delete-expired-secrets", "--batch-pause-ms", "0",
+			},
+		},
+		{
+			name: "the batch flags follow the passes, batch size first",
+			spec: &barbicanv1alpha1.DBCleanSpec{
+				CleanUnassociatedProjects: ptr.To(true),
+				BatchSize:                 ptr.To(int32(200)),
+				BatchPauseMilliseconds:    ptr.To(int32(50)),
+			},
+			want: []string{
+				"barbican-manage", "db", "clean", "--min-days", "90",
+				"--soft-delete-expired-secrets", "--clean-unassociated-projects",
+				"--batch-size", "200", "--batch-pause-ms", "50",
 			},
 		},
 	}
@@ -281,6 +318,8 @@ func TestReconcileDBClean_HonorsSpecKnobs(t *testing.T) {
 		Schedule:                  "0 3 * * *",
 		CleanUnassociatedProjects: ptr.To(true),
 		Suspend:                   true,
+		BatchSize:                 ptr.To(int32(200)),
+		BatchPauseMilliseconds:    ptr.To(int32(50)),
 	}
 	r := newBarbicanTestReconciler(barbican)
 
@@ -295,11 +334,39 @@ func TestReconcileDBClean_HonorsSpecKnobs(t *testing.T) {
 	g.Expect(cronJob.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Command).To(Equal([]string{
 		"barbican-manage", "db", "clean", "--min-days", "7",
 		"--soft-delete-expired-secrets", "--clean-unassociated-projects",
+		"--batch-size", "200", "--batch-pause-ms", "50",
 	}))
 
 	cond := barbicanCondition(barbican, conditionTypeDBCleanReady)
 	g.Expect(cond.Message).To(ContainSubstring(`"0 3 * * *"`))
 	g.Expect(cond.Message).To(ContainSubstring("7 days"))
+}
+
+// Unsetting batchSize and batchPauseMilliseconds is the recovery for an image
+// whose barbican-manage lacks the options: the CronJob the operator already
+// applied must lose both flags, or every later run fails with exit code 2.
+func TestReconcileDBClean_UnsetBatchFieldsDropTheFlags(t *testing.T) {
+	g := NewGomegaWithT(t)
+	barbican := dbCleanBarbican()
+	barbican.Spec.DBClean = &barbicanv1alpha1.DBCleanSpec{
+		BatchSize:              ptr.To(int32(200)),
+		BatchPauseMilliseconds: ptr.To(int32(50)),
+	}
+	r := newBarbicanTestReconciler(barbican)
+	ctx := context.Background()
+
+	_, err := r.reconcileDBClean(ctx, r.Client, barbican, dbCleanConfigSecretName)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	barbican.Spec.DBClean = &barbicanv1alpha1.DBCleanSpec{}
+	_, err = r.reconcileDBClean(ctx, r.Client, barbican, dbCleanConfigSecretName)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var cronJob batchv1.CronJob
+	g.Expect(r.Get(ctx, dbCleanKey, &cronJob)).To(Succeed())
+	g.Expect(cronJob.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Command).To(Equal([]string{
+		"barbican-manage", "db", "clean", "--min-days", "90", "--soft-delete-expired-secrets",
+	}))
 }
 
 // A suspended clean-up stays True — pausing it is a deliberate posture, not a

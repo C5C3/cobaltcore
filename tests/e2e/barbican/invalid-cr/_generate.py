@@ -1097,6 +1097,32 @@ FIXTURES: tuple[Fixture, ...] = (
         name="barbican-invalid-release-floor",
         release="2025.2",
     ),
+    Fixture(
+        filename="59-dbclean-batchsize-zero.yaml",
+        comment=(
+            "spec.dbClean.batchSize of 0 violates the CRD Minimum=1 marker on\n"
+            "DBCleanSpec; validateDBClean repeats it as defense in depth. A batch of\n"
+            "no rows would never advance the clean-up."
+        ),
+        name="barbican-invalid-dbclean-batchsize",
+        extra=(
+            "  dbClean:\n"
+            "    batchSize: 0\n"
+        ),
+    ),
+    Fixture(
+        filename="60-dbclean-batchpause-negative.yaml",
+        comment=(
+            "spec.dbClean.batchPauseMilliseconds of -1 violates the CRD Minimum=0\n"
+            "marker on DBCleanSpec; validateDBClean repeats it as defense in depth.\n"
+            "barbican-manage db clean rejects a negative --batch-pause-ms as well."
+        ),
+        name="barbican-invalid-dbclean-batchpause",
+        extra=(
+            "  dbClean:\n"
+            "    batchPauseMilliseconds: -1\n"
+        ),
+    ),
 )
 
 
