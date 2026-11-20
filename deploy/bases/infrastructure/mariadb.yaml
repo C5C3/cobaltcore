@@ -35,6 +35,12 @@ spec:
   replicas: 3
   galera:
     enabled: true
+    # Galera applier threads per member. mariadb-operator renders the value
+    # as wsrep_slave_threads and rolls the members one at a time when it
+    # changes. It follows StandardDatabaseApplierThreads in
+    # operators/c5c3/api/v1alpha1/sizing_profiles.go, and
+    # tests/unit/deploy/mariadb_applier_threads_test.sh keeps the two equal.
+    replicaThreads: 4
   # Makes the MariaDB MaxScale-aware: it takes the primary MaxScale reports
   # and leaves primary failover to MaxScale.
   maxScaleRef:

@@ -58,6 +58,10 @@ patches:
         replicas: 1
         galera:
           enabled: false
+          # A single replica runs no Galera, so drop the base's applier
+          # thread count the way maxScaleRef is dropped below; spec.galera
+          # renders as {enabled: false}.
+          replicaThreads: null
         # The base's MaxScale CR is deleted by the next patch; drop the
         # reference to it as well.
         maxScaleRef: null
