@@ -327,6 +327,48 @@ type NovaSizingSpec struct {
 	Jobs *JobSizingSpec `json:"jobs,omitempty"`
 }
 
+// AntiAffinityMode is the strength of a backing service's hostname
+// anti-affinity.
+// +kubebuilder:validation:Enum=Required;Preferred;Off
+type AntiAffinityMode string
+
+const (
+	// AntiAffinityRequired never schedules two pods on one node.
+	AntiAffinityRequired AntiAffinityMode = "Required"
+	// AntiAffinityPreferred spreads the pods across nodes where it can.
+	AntiAffinityPreferred AntiAffinityMode = "Preferred"
+	// AntiAffinityOff sets no anti-affinity.
+	AntiAffinityOff AntiAffinityMode = "Off"
+)
+
+// BackingPodDisruptionBudgetSpec is a backing service's disruption budget.
+type BackingPodDisruptionBudgetSpec struct {
+	// Enabled false removes the budget and wins over a MaxUnavailable beside
+	// it. Unset or true keeps the budget.
+	// +optional
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// MaxUnavailable is the pod count a drain may evict at once. Unset means 1.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	MaxUnavailable *int32 `json:"maxUnavailable,omitempty"`
+}
+
+// AvailabilitySizingSpec spreads a multi-replica backing service and bounds
+// its disruptions.
+type AvailabilitySizingSpec struct {
+	// AntiAffinity sets the hostname anti-affinity of a multi-replica instance.
+	// Unset takes the class default: Required for database and messaging,
+	// Preferred for cache. A single-replica instance gets none.
+	// +optional
+	AntiAffinity AntiAffinityMode `json:"antiAffinity,omitempty"`
+
+	// PodDisruptionBudget bounds the pods of a multi-replica instance a drain
+	// evicts at once; it merges one value at a time.
+	// +optional
+	PodDisruptionBudget *BackingPodDisruptionBudgetSpec `json:"podDisruptionBudget,omitempty"`
+}
+
 // DatabaseSizingSpec sizes every managed MariaDB.
 type DatabaseSizingSpec struct {
 	// Replicas is the MariaDB replica count, frozen at creation.
@@ -348,7 +390,8 @@ type DatabaseSizingSpec struct {
 	// +optional
 	ApplierThreads *int32 `json:"applierThreads,omitempty"`
 
-	PinnedSizingSpec `json:",inline"`
+	PinnedSizingSpec       `json:",inline"`
+	AvailabilitySizingSpec `json:",inline"`
 }
 
 // CacheSizingSpec sizes every managed Memcached.
@@ -358,7 +401,14 @@ type CacheSizingSpec struct {
 	// +optional
 	Replicas *int32 `json:"replicas,omitempty"`
 
-	ContainerSizingSpec `json:",inline"`
+	ContainerSizingSpec    `json:",inline"`
+	AvailabilitySizingSpec `json:",inline"`
+}
+
+// MessagingSizingSpec sizes, places and spreads the managed RabbitmqCluster.
+type MessagingSizingSpec struct {
+	ScaledSizingSpec       `json:",inline"`
+	AvailabilitySizingSpec `json:",inline"`
 }
 
 // SizingSpec sizes and places every component a ControlPlane creates. The
@@ -372,9 +422,9 @@ type SizingSpec struct {
 	// Cache sizes every managed Memcached.
 	// +optional
 	Cache *CacheSizingSpec `json:"cache,omitempty"`
-	// Messaging sizes the managed RabbitmqCluster.
+	// Messaging sizes, places and spreads the managed RabbitmqCluster.
 	// +optional
-	Messaging *ScaledSizingSpec `json:"messaging,omitempty"`
+	Messaging *MessagingSizingSpec `json:"messaging,omitempty"`
 	// SecretStore sizes the dedicated OpenBao of Barbican.
 	// +optional
 	SecretStore *ContainerSizingSpec `json:"secretStore,omitempty"`

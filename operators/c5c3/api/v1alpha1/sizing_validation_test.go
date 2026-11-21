@@ -606,10 +606,10 @@ func TestValidateCreate_SizingRejections(t *testing.T) {
 			name: "Minimal plus a messaging memory limit below its 1Gi request",
 			cp: withSizing(ControlPlaneSizingSpec{
 				Profile: SizingProfileMinimal,
-				SizingSpec: SizingSpec{Messaging: &ScaledSizingSpec{PinnedSizingSpec: PinnedSizingSpec{
+				SizingSpec: SizingSpec{Messaging: &MessagingSizingSpec{ScaledSizingSpec: ScaledSizingSpec{PinnedSizingSpec: PinnedSizingSpec{
 					ContainerSizingSpec: ContainerSizingSpec{Resources: resources(nil,
 						corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("768Mi")})},
-				}}},
+				}}}},
 			}),
 			want: []string{"spec.sizing.messaging.resources.requests.memory: Invalid value", "memory request must not exceed limit (768Mi)"},
 		},

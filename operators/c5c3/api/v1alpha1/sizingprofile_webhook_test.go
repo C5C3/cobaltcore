@@ -85,12 +85,12 @@ func TestSizingProfileValidateCreate(t *testing.T) {
 		{name: "an unknown base", base: "Large", want: `spec.base: Unsupported value: "Large"`},
 		{
 			name: "a request above its limit",
-			spec: SizingSpec{Messaging: &ScaledSizingSpec{PinnedSizingSpec: PinnedSizingSpec{
+			spec: SizingSpec{Messaging: &MessagingSizingSpec{ScaledSizingSpec: ScaledSizingSpec{PinnedSizingSpec: PinnedSizingSpec{
 				ContainerSizingSpec: ContainerSizingSpec{Resources: resources(
 					corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("2Gi")},
 					corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")},
 				)},
-			}}},
+			}}}},
 			want: "spec.messaging.resources.requests.memory: Invalid value",
 		},
 		{

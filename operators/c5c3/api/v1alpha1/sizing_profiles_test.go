@@ -213,6 +213,20 @@ func TestBuiltinSizing_SetsNoPodDisruptionBudget(t *testing.T) {
 	}
 }
 
+// Neither built-in profile sets an anti-affinity mode: a multi-replica
+// backing service takes its default from the projection, so a profile that
+// raises a replica count gets it too.
+func TestBuiltinSizing_SetsNoAntiAffinity(t *testing.T) {
+	for _, name := range []SizingProfileName{SizingProfileMinimal, SizingProfileStandard} {
+		t.Run(string(name), func(t *testing.T) {
+			g := NewWithT(t)
+			raw, err := json.Marshal(BuiltinSizing(name))
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(string(raw)).NotTo(ContainSubstring("antiAffinity"))
+		})
+	}
+}
+
 func TestBuiltinSizing_ReturnsFreshCopy(t *testing.T) {
 	g := NewWithT(t)
 	for _, name := range []SizingProfileName{SizingProfileMinimal, SizingProfileStandard} {

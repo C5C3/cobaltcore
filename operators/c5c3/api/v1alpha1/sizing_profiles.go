@@ -36,7 +36,9 @@ const StandardDatabaseApplierThreads int32 = 4
 // ControlPlane without sizing always projected, sets the Galera applier
 // threads to StandardDatabaseApplierThreads, and sets nothing else: every
 // other value stays with the child operators' render-time defaults and the
-// backing-service operators' defaults. Minimal sizes every component for a
+// backing-service operators' defaults, except that a multi-replica backing
+// service takes its anti-affinity and disruption budget from the projection,
+// which neither profile sets. Minimal sizes every component for a
 // single small node. Its figures come from the VPA recommendations of CI run
 // 36339033005 (2026-09-27, docs/reference/testing/sizing-calibration.md) and
 // keep the full stack within one 4 vCPU / 16 GiB node, which the node budget
@@ -69,7 +71,7 @@ func standardSizing() SizingSpec {
 			ApplierThreads: ptr.To(StandardDatabaseApplierThreads),
 		},
 		Cache:     &CacheSizingSpec{Replicas: ptr.To(commonv1.DefaultReplicas)},
-		Messaging: &ScaledSizingSpec{Replicas: ptr.To(commonv1.DefaultReplicas)},
+		Messaging: &MessagingSizingSpec{ScaledSizingSpec: ScaledSizingSpec{Replicas: ptr.To(commonv1.DefaultReplicas)}},
 		Keystone:  &KeystoneSizingSpec{API: api()},
 		Horizon: &HorizonSizingSpec{
 			API: &HorizonAPISizingSpec{DeploymentSizingSpec: deploymentReplicas(commonv1.DefaultReplicas)},
@@ -134,10 +136,10 @@ func minimalSizing() SizingSpec {
 		// 491.5 MiB, twice the idle footprint. The figure must keep the
 		// watermark above twice the idle footprint
 		// (TestBuiltinSizing_MinimalBrokerHeadroom).
-		Messaging: &ScaledSizingSpec{
+		Messaging: &MessagingSizingSpec{ScaledSizingSpec: ScaledSizingSpec{
 			Replicas:         ptr.To[int32](1),
 			PinnedSizingSpec: PinnedSizingSpec{ContainerSizingSpec: memoryBound("815m", "1Gi")},
-		},
+		}},
 		SecretStore: ptr.To(memoryBound("35m", "64Mi")),
 		Keystone:    &KeystoneSizingSpec{API: api(), Jobs: jobs()},
 		Horizon:     &HorizonSizingSpec{API: &HorizonAPISizingSpec{DeploymentSizingSpec: minimalDeployment()}},
