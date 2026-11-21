@@ -14,6 +14,11 @@
 #   - the ControlPlane reports SizingReady=True;
 #   - an edit of the profile reaches the Memcached it sizes within 60 s,
 #     through the watch the ControlPlane controller keeps on SizingProfiles;
+#   - a profile that raises the cache to two replicas gives the dedicated
+#     Memcached soft anti-affinity and a budget of one pod, and the
+#     memcached-operator creates that PodDisruptionBudget;
+#   - disabling the budget in the profile removes the budget from the
+#     Memcached and the PodDisruptionBudget, and keeps the soft preset;
 #   - deleting the profile turns SizingReady False with reason
 #     SizingProfileNotFound;
 #   - the c5c3-operator release exports its reconcile families, the Sizing
@@ -186,6 +191,32 @@ spec:
           wait_jsonpath "the profile edit reaches the Memcached" memcached "${DEDICATED_CACHE}" "${CP_NS}" \
             '{.spec.resources.limits.memory}' 192Mi 60
 
+          # ── A second cache pod brings soft anti-affinity and a budget ─────
+          # The dedicated cache sets no replica count, so it follows the
+          # profile. Preferred is the cache default, so two pods still schedule
+          # on one node; the memcached-operator names its budget like the CR.
+          kubectl patch sizingprofile "${PROFILE}" --type=merge \
+            -p '{"spec":{"cache":{"replicas":2}}}'
+          wait_jsonpath "the dedicated Memcached runs two replicas" memcached "${DEDICATED_CACHE}" "${CP_NS}" \
+            '{.spec.replicas}' 2 60
+          wait_jsonpath "the Memcached takes soft anti-affinity" memcached "${DEDICATED_CACHE}" "${CP_NS}" \
+            '{.spec.highAvailability.antiAffinityPreset}' soft 30
+          wait_jsonpath "the Memcached takes a budget of one pod" memcached "${DEDICATED_CACHE}" "${CP_NS}" \
+            '{.spec.highAvailability.podDisruptionBudget.maxUnavailable}' 1 30
+          wait_jsonpath "the memcached-operator creates the budget" pdb "${DEDICATED_CACHE}" "${CP_NS}" \
+            '{.spec.maxUnavailable}' 1 120
+
+          # ── Disabling the budget removes it and keeps the preset ──────────
+          kubectl patch sizingprofile "${PROFILE}" --type=merge \
+            -p '{"spec":{"cache":{"podDisruptionBudget":{"enabled":false}}}}'
+          kubectl wait --for=delete "pdb/${DEDICATED_CACHE}" -n "${CP_NS}" --timeout=120s
+          assert_eq "the Memcached carries no budget" "" \
+            "$(kubectl get memcached "${DEDICATED_CACHE}" -n "${CP_NS}" \
+              -o 'jsonpath={.spec.highAvailability.podDisruptionBudget}')"
+          assert_eq "the Memcached keeps soft anti-affinity" "soft" \
+            "$(kubectl get memcached "${DEDICATED_CACHE}" -n "${CP_NS}" \
+              -o 'jsonpath={.spec.highAvailability.antiAffinityPreset}')"
+
           # ── Deleting the profile turns SizingReady False ──────────────────
           kubectl delete sizingprofile "${PROFILE}" --wait --timeout=60s
           wait_jsonpath "SizingReady reason is SizingProfileNotFound" controlplane "${CP_NAME}" "${CP_NS}" \
@@ -205,6 +236,8 @@ spec:
           echo "=== Dedicated MariaDB and Memcached ==="
           kubectl get mariadb cp-keystone-db -n "${NAMESPACE}" -o yaml 2>&1 || true
           kubectl get memcached cp-keystone-cache -n "${NAMESPACE}" -o yaml 2>&1 || true
+          echo "=== PodDisruptionBudgets ==="
+          kubectl get pdb -n "${NAMESPACE}" -o yaml 2>&1 || true
           echo "=== c5c3-operator logs (last 100 lines) ==="
           OPERATOR_NS="$(kubectl get pods -A -l app.kubernetes.io/name=c5c3-operator \
             -o 'jsonpath={.items[0].metadata.namespace}' 2>/dev/null || true)"
