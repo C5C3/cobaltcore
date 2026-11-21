@@ -62,6 +62,8 @@ const (
 // sessions, no database) so deletion loses no data — the preserve-by-default
 // posture mirrors the Keystone annotation purely for a consistent operator
 // UX: an accidental block drop never silently removes a running service.
+// Deleting a dashboard with cache sessions (services.horizon.session) leaves
+// its sessions in Memcached unused, where they expire.
 const horizonDeletionAllowedAnnotation = "c5c3.io/allow-horizon-deletion"
 
 // horizonName returns the deterministic name of the Horizon CR projected from
@@ -292,6 +294,12 @@ func (r *ControlPlaneReconciler) reconcileHorizon(ctx context.Context, cp *c5c3v
 		// convention: a nil/empty source clears the child's block rather than
 		// pinning the last projected value.
 		horizon.Spec.ExtraConfig = deepCopyHorizonExtraConfig(cp.Spec.Services.Horizon.ExtraConfig)
+
+		// Project the session block as written, deep-copied for the same
+		// aliasing reason. Assigned unconditionally like extraConfig: removing
+		// the block from the ControlPlane clears the child's, and a block set
+		// by hand on the child is overwritten on the next pass.
+		horizon.Spec.Session = cp.Spec.Services.Horizon.Session.DeepCopy()
 
 		// Project the federated-login surface from the Ready backends.
 		// Detaching the last backend clears the block so the login page reverts

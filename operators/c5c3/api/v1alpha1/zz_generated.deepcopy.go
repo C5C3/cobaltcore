@@ -3176,6 +3176,11 @@ func (in *ServiceHorizonSpec) DeepCopyInto(out *ServiceHorizonSpec) {
 		*out = new(apiv1alpha1.MultiDomainSpec)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.Session != nil {
+		in, out := &in.Session, &out.Session
+		*out = new(apiv1alpha1.SessionSpec)
+		**out = **in
+	}
 	if in.DedicatedBackingServices != nil {
 		in, out := &in.DedicatedBackingServices, &out.DedicatedBackingServices
 		*out = new(HorizonDedicatedBackingServicesSpec)

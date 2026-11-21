@@ -3893,6 +3893,35 @@ spec:
                         required:
                         - name
                         type: object
+                      session:
+                        description: |-
+                          Session selects the store of the dashboard's Django sessions. The
+                          reconciler projects the block as written onto the Horizon child's
+                          spec.session, and removing it reverts the child to signed-cookie
+                          sessions. Backend Cache keeps the sessions in the dashboard's cache, the
+                          shared one or the one of dedicatedBackingServices.cache. Moving between
+                          signed cookies and Cache, in either direction, logs every user out,
+                          repeatedly while old and new dashboard pods serve side by side, until
+                          the rollout completes.
+
+                          The schema is copied from the horizon-operator's CRD, so roll the
+                          c5c3-operator and horizon-operator charts together.
+                        properties:
+                          backend:
+                            description: |-
+                              Backend selects the session store: SignedCookies keeps the session in a
+                              cookie the browser drops above about 4096 bytes, and Cache keeps it in
+                              the Memcached of spec.cache, which must use the PyMemcacheCache backend.
+                              With Cache a failed Memcached read is a logout. Switching the store in
+                              either direction logs every user out, repeatedly while old and new pods
+                              serve side by side, until the rollout completes.
+                            enum:
+                            - SignedCookies
+                            - Cache
+                            type: string
+                        required:
+                        - backend
+                        type: object
                       targetClusterRef:
                         description: |-
                           TargetClusterRef names the registered target cluster the dashboard is placed
