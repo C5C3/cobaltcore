@@ -524,7 +524,7 @@ func databaseSizing(s c5c3v1alpha1.SizingSpec) *c5c3v1alpha1.DatabaseSizingSpec 
 }
 
 // messagingSizing is databaseSizing for the message bus.
-func messagingSizing(s c5c3v1alpha1.SizingSpec) *c5c3v1alpha1.ScaledSizingSpec {
+func messagingSizing(s c5c3v1alpha1.SizingSpec) *c5c3v1alpha1.MessagingSizingSpec {
 	if s.Messaging == nil {
 		return nil
 	}
@@ -1133,7 +1133,7 @@ func unstructuredMemcachedSecurityMatches(u *unstructured.Unstructured) (bool, e
 // running at its current size.
 func (r *ControlPlaneReconciler) ensureRabbitMQ(
 	ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane,
-	m *commonv1.MessagingSpec, sizing *c5c3v1alpha1.ScaledSizingSpec, namespace string,
+	m *commonv1.MessagingSpec, sizing *c5c3v1alpha1.MessagingSizingSpec, namespace string,
 ) (bool, error) {
 	// An unset count follows the sizing on every pass, so a profile change grows
 	// an owned bus (a shrink stays gated below). Zero falls back to the default
@@ -1287,7 +1287,7 @@ type rabbitMQPod struct {
 	podSpec map[string]interface{}
 }
 
-func rabbitMQPodSizing(s *c5c3v1alpha1.ScaledSizingSpec) rabbitMQPod {
+func rabbitMQPodSizing(s *c5c3v1alpha1.MessagingSizingSpec) rabbitMQPod {
 	if s == nil {
 		return rabbitMQPod{}
 	}

@@ -7090,6 +7090,33 @@ spec:
                   cache:
                     description: Cache sizes every managed Memcached.
                     properties:
+                      antiAffinity:
+                        description: |-
+                          AntiAffinity sets the hostname anti-affinity of a multi-replica instance.
+                          Unset takes the class default: Required for database and messaging,
+                          Preferred for cache. A single-replica instance gets none.
+                        enum:
+                        - Required
+                        - Preferred
+                        - "Off"
+                        type: string
+                      podDisruptionBudget:
+                        description: |-
+                          PodDisruptionBudget bounds the pods of a multi-replica instance a drain
+                          evicts at once; it merges one value at a time.
+                        properties:
+                          enabled:
+                            description: |-
+                              Enabled false removes the budget and wins over a MaxUnavailable beside
+                              it. Unset or true keeps the budget.
+                            type: boolean
+                          maxUnavailable:
+                            description: MaxUnavailable is the pod count a drain may
+                              evict at once. Unset means 1.
+                            format: int32
+                            minimum: 1
+                            type: integer
+                        type: object
                       replicas:
                         description: Replicas is the Memcached replica count.
                         format: int32
@@ -8262,6 +8289,16 @@ spec:
                   database:
                     description: Database sizes every managed MariaDB.
                     properties:
+                      antiAffinity:
+                        description: |-
+                          AntiAffinity sets the hostname anti-affinity of a multi-replica instance.
+                          Unset takes the class default: Required for database and messaging,
+                          Preferred for cache. A single-replica instance gets none.
+                        enum:
+                        - Required
+                        - Preferred
+                        - "Off"
+                        type: string
                       applierThreads:
                         description: |-
                           ApplierThreads is the Galera applier thread count per member. Unset takes
@@ -8277,6 +8314,23 @@ spec:
                           type: string
                         description: NodeSelector restricts the pods to nodes carrying
                           every listed label.
+                        type: object
+                      podDisruptionBudget:
+                        description: |-
+                          PodDisruptionBudget bounds the pods of a multi-replica instance a drain
+                          evicts at once; it merges one value at a time.
+                        properties:
+                          enabled:
+                            description: |-
+                              Enabled false removes the budget and wins over a MaxUnavailable beside
+                              it. Unset or true keeps the budget.
+                            type: boolean
+                          maxUnavailable:
+                            description: MaxUnavailable is the pod count a drain may
+                              evict at once. Unset means 1.
+                            format: int32
+                            minimum: 1
+                            type: integer
                         type: object
                       priorityClassName:
                         description: PriorityClassName sets the pods' priority class;
@@ -9996,13 +10050,40 @@ spec:
                         type: object
                     type: object
                   messaging:
-                    description: Messaging sizes the managed RabbitmqCluster.
+                    description: Messaging sizes, places and spreads the managed RabbitmqCluster.
                     properties:
+                      antiAffinity:
+                        description: |-
+                          AntiAffinity sets the hostname anti-affinity of a multi-replica instance.
+                          Unset takes the class default: Required for database and messaging,
+                          Preferred for cache. A single-replica instance gets none.
+                        enum:
+                        - Required
+                        - Preferred
+                        - "Off"
+                        type: string
                       nodeSelector:
                         additionalProperties:
                           type: string
                         description: NodeSelector restricts the pods to nodes carrying
                           every listed label.
+                        type: object
+                      podDisruptionBudget:
+                        description: |-
+                          PodDisruptionBudget bounds the pods of a multi-replica instance a drain
+                          evicts at once; it merges one value at a time.
+                        properties:
+                          enabled:
+                            description: |-
+                              Enabled false removes the budget and wins over a MaxUnavailable beside
+                              it. Unset or true keeps the budget.
+                            type: boolean
+                          maxUnavailable:
+                            description: MaxUnavailable is the pod count a drain may
+                              evict at once. Unset means 1.
+                            format: int32
+                            minimum: 1
+                            type: integer
                         type: object
                       priorityClassName:
                         description: PriorityClassName sets the pods' priority class;
