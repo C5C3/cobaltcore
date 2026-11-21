@@ -14,6 +14,8 @@
 #     a live Keystone
 #   - The login page and the splash logo answer on one connection, which
 #     uWSGI keeps open with --http-keepalive
+#   - The login page answers a request with a 6000-byte cookie and one with
+#     a 60000-byte cookie, which uWSGI accepts only with --buffer-size 65535
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -147,6 +149,13 @@ spec:
   # with --http-keepalive (#1753). The check waits one second between the
   # two, so the FIN uWSGI sends without the flag has arrived and the second
   # request fails with RemoteDisconnected every time.
+  # Two last requests send the login page a 6000-byte and a 60000-byte
+  # cookie, each on a new connection. Under its default of 4096 bytes for a
+  # request's line and headers, uWSGI closes such a connection without a
+  # response, and a gateway in front answers 503 to every request after the
+  # login; uWSGI answers both only with --buffer-size 65535 (#1843). The
+  # login page is the target because the request then passes the HTTP
+  # router, the uWSGI packet and Django, the path a session cookie takes.
   - try:
     - script:
         timeout: 90s
@@ -195,6 +204,19 @@ spec:
           assert r.status == 200, 'keep-alive: GET %s -> HTTP %d' % (logo, r.status)
           assert conn.sock is sock, 'keep-alive: the second response ends the connection (HTTP/%d.%d, Connection: %r, Content-Length: %r)' % (r.version // 10, r.version % 10, r.getheader('Connection'), r.getheader('Content-Length'))
           print('keep-alive OK, two requests on one connection')
+          for n in (6000, 60000):
+              conn = http.client.HTTPConnection('horizon-basic-2026-2.openstack.svc', 8080, timeout=10)
+              try:
+                  conn.request('GET', '/auth/login/', headers={'Cookie': 'pad=' + 'x' * n})
+                  r = conn.getresponse()
+                  r.read()
+              except (http.client.HTTPException, OSError) as exc:
+                  raise SystemExit('request buffer: GET /auth/login/ with a %d-byte cookie got no response: %r' % (n, exc)) from exc
+              finally:
+                  conn.close()
+              if r.status != 200:
+                  raise SystemExit('request buffer: GET /auth/login/ with a %d-byte cookie -> HTTP %d' % (n, r.status))
+          print('request buffer OK, cookies of 6000 and 60000 bytes answered')
           "
     catch:
     - script:
