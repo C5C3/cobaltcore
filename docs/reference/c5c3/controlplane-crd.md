@@ -1800,9 +1800,11 @@ overlaid by its own `spec.sizing` values, one value at a time
 
 A ControlPlane that sets no `spec.sizing` resolves to `Standard`, which repeats
 the replica counts and the database volume size the ControlPlane has always
-projected, sets `database.applierThreads` to 4, and sets nothing else, so every
-other value stays with the child operators' render-time defaults and the
-backing-service operators' defaults.
+projected, sets `database.applierThreads` to 4, and sets nothing else. The
+service values stay with the child operators' render-time defaults. A backing
+service of more than one replica takes its anti-affinity and disruption budget
+from the ControlPlane ([Backing-service availability](#backing-service-availability)),
+and its other values stay with the backing-service operators' defaults.
 `spec.sizing` is **forbidden in External mode**, where no workload is deployed.
 
 The resolved sizing is reported by the [`SizingReady`](#sizingready) condition.
@@ -1814,9 +1816,9 @@ the controller watches the kind; a built-in profile needs no read at all.
 | `profile` | `string` (`Minimal` \| `Standard`) | `""` (Standard, unless `profileRef` is set) | Selects a built-in profile as the base. Mutually exclusive with `profileRef` (CEL: `profile and profileRef are mutually exclusive`). |
 | `profileRef.name` | `string` | — | Names a cluster-scoped [`SizingProfile`](#sizingprofile), whose `base` then becomes the base. MinLength 1, MaxLength 253. Admission rejects a name no `SizingProfile` answers to, on create and when the name changes. |
 | `nodeSelector`, `tolerations`, `priorityClassName` | map, list, `*string` | — | The fallback placement of every component that sets none of its own. They are not merged into the components; the projection reads them when a component leaves the field unset. |
-| `database` | `DatabaseSizingSpec` | — | Every managed MariaDB: `replicas` (Minimum 1), `storageSize` (Pattern `^[0-9]+(Mi\|Gi\|Ti)$`), `applierThreads` (Minimum 1, Maximum 512; unset takes the base profile's count, 4 under `Standard`, and 1 when the resolved sizing names none, see [Built-in profiles](#built-in-profiles)), `resources`, and placement. |
-| `cache` | `CacheSizingSpec` | — | Every managed Memcached: `replicas` (Minimum 1) and `resources`. |
-| `messaging` | `ScaledSizingSpec` | — | The managed RabbitmqCluster: `replicas` (Minimum 1), `resources`, and placement. |
+| `database` | `DatabaseSizingSpec` | — | Every managed MariaDB: `replicas` (Minimum 1), `storageSize` (Pattern `^[0-9]+(Mi\|Gi\|Ti)$`), `applierThreads` (Minimum 1, Maximum 512; unset takes the base profile's count, 4 under `Standard`, and 1 when the resolved sizing names none, see [Built-in profiles](#built-in-profiles)), `resources`, placement, `antiAffinity`, and `podDisruptionBudget`. |
+| `cache` | `CacheSizingSpec` | — | Every managed Memcached: `replicas` (Minimum 1), `resources`, `antiAffinity`, and `podDisruptionBudget`. |
+| `messaging` | `MessagingSizingSpec` | — | The managed RabbitmqCluster: `replicas` (Minimum 1), `resources`, placement, `antiAffinity`, and `podDisruptionBudget`. |
 | `secretStore` | `ContainerSizingSpec` | — | The voters of Barbican's dedicated OpenBao: `resources`. |
 | `keystone` | `api`, `jobs`, `federationProxy` | — | The Keystone API Deployment, its Job pods, and the federation proxy sidecar (`resources`). |
 | `horizon` | `api` | — | The dashboard Deployment. |
@@ -1864,14 +1866,95 @@ A non-empty `spreadConstraints` list becomes the child's
 zone constraint and the hostname anti-affinity term. Every key the list names
 must sit on every node the pods may run on; see
 [What the spread needs from the cluster](../keystone/keystone-crd.md#what-the-spread-needs-from-the-cluster).
-Neither the ControlPlane nor a `SizingProfile` exposes node or pod affinity.
+Neither the ControlPlane nor a `SizingProfile` exposes an affinity block.
+`antiAffinity` only picks the strength of the hostname rule of a backing
+service.
+
+### Backing-service availability
+
+`database`, `cache` and `messaging` each carry two fields:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `antiAffinity` | `string` (`Required` \| `Preferred` \| `Off`) | The hostname anti-affinity of a multi-replica instance. Unset takes the class default. |
+| `podDisruptionBudget.enabled` | `*bool` | `false` removes the budget and wins over a `maxUnavailable` beside it. Unset or `true` keeps it. |
+| `podDisruptionBudget.maxUnavailable` | `*int32` | The pods a drain may evict at once. Minimum 1; unset means 1. |
+
+The ControlPlane resolves both per instance, on the replica count the instance
+runs, so a dedicated instance with a `replicas` of its own is judged on that
+count. An instance of one replica gets no anti-affinity and no budget, whatever
+the block sets. An instance of more replicas gets the block's `antiAffinity`, or
+the class default when it is unset, and a budget of `maxUnavailable` pods, 1
+when unset, unless `enabled` is `false`. The defaults are `Required` for the
+database and the message bus, because two Galera members or two brokers on one
+node lose quorum with that node, and `Preferred` for the cache, where a second
+pod on a node costs nothing. They live in the projection and not in the
+built-in profiles, so a `Minimal` ControlPlane that raises `cache.replicas` to
+3 gets them too. The topology key is `kubernetes.io/hostname` and a preferred
+term has weight 100; neither is configurable. `Required` needs as many
+schedulable nodes as replicas: on fewer, a member stays `Pending` and the
+ControlPlane reports `InfrastructureReady=False`.
+
+| Class | Anti-affinity written | Budget written |
+| --- | --- | --- |
+| MariaDB | `spec.affinity.podAntiAffinity`, one term on `app.kubernetes.io/instance In [<name>]` | `spec.podDisruptionBudget.maxUnavailable` |
+| Memcached | `spec.highAvailability.antiAffinityPreset`, `hard` for `Required` and `soft` for `Preferred` | `spec.highAvailability.podDisruptionBudget` with `enabled: true` and `maxUnavailable` |
+| RabbitmqCluster | `spec.affinity.podAntiAffinity`, one term on `app.kubernetes.io/name: <name>` | a PodDisruptionBudget named like the bus, which the ControlPlane owns |
+
+Each class has an exception:
+
+- The mariadb-operator creates its PodDisruptionBudget from
+  `spec.podDisruptionBudget` once and never updates it. The ControlPlane keeps
+  the field current and never touches the object, so a changed budget reaches
+  an existing database only after
+  `kubectl delete pdb <clusterRef.name> -n <namespace>`; the mariadb-operator
+  then creates it again from the field. A disabled budget on a Galera cluster is
+  written as `maxUnavailable: "100%"`, because an unset field gives every Galera
+  cluster `minAvailable: 50%`. The ControlPlane writes the anti-affinity term
+  itself and never sets `spec.affinity.antiAffinityEnabled`, which the
+  mariadb-operator webhook refuses to change while `spec.affinity` is set.
+- The memcached-operator defaults `antiAffinityPreset` to `soft` whenever
+  `spec.highAvailability` exists, and a budget lives there. `Off` therefore
+  removes the cache's anti-affinity only beside `podDisruptionBudget.enabled:
+  false`; beside a budget the ControlPlane writes `soft`, and admission warns.
+- The RabbitmqCluster has no budget field. The ControlPlane creates a policy/v1
+  PodDisruptionBudget named like the bus in the ControlPlane's namespace, with a
+  controller owner reference, `maxUnavailable` and the selector
+  `app.kubernetes.io/name: <name>`. It restores a deleted or edited one, deletes
+  it when the bus runs one broker or the budget is disabled, and is
+  garbage-collected with the ControlPlane. A PodDisruptionBudget of that name the
+  ControlPlane does not control is left as it is, and none is created beside it.
+
+This `podDisruptionBudget` is not the
+[`PodDisruptionBudgetSpec`](../keystone/keystone-crd.md#poddisruptionbudgetspec)
+of the API components: it takes an integer `maxUnavailable` and no
+`minAvailable`, so no value can block every drain, and a `maxUnavailable: "25%"`
+copied from an API block fails the integer schema. Quote `Off` in YAML, since
+YAML 1.1 reads a bare `Off` as a boolean:
+
+```yaml
+spec:
+  sizing:
+    database:
+      antiAffinity: Preferred
+    cache:
+      antiAffinity: "Off"
+      podDisruptionBudget:
+        enabled: false
+    messaging:
+      replicas: 5
+      podDisruptionBudget:
+        maxUnavailable: 2
+```
+
+An adopted instance, one the ControlPlane did not create, gets neither field.
 
 ### Built-in profiles
 
 `BuiltinSizing` returns a fresh copy of a profile on every call; an empty or
 unknown name returns `Standard`. "none" means the profile sets nothing, so the
 child operator's own default applies. Neither profile sets placement, spread,
-autoscaling, vertical autoscaling, a disruption budget, or a priority class. The `Minimal` figures are measured: they come
+anti-affinity, autoscaling, vertical autoscaling, a disruption budget, or a priority class. The `Minimal` figures are measured: they come
 from the VPA recommendations of a CI run, by the rules
 [Sizing Calibration](../testing/sizing-calibration.md) records. They keep the
 full stack within one 4 vCPU / 16 GiB node, which the
@@ -1976,19 +2059,23 @@ in a `SizingProfile` with `base: Minimal`.
 and returns a new value that aliases neither input:
 
 - `replicas`, `processes`, `threads`, `workers`, `priorityClassName`,
-  `storageSize`, and `applierThreads`: a set override wins.
+  `storageSize`, `applierThreads`, and `antiAffinity`: a set override wins.
 - `resources`: every request and every limit the override names replaces or adds
   the base entry of that resource name; the override's `claims` replace the
   base's when set.
 - `nodeSelector`, `tolerations`, and `spreadConstraints`: a non-empty override
   replaces the base, and an empty one inherits. The defaulting webhook's JSON
   round trip drops an empty map or list, so an empty value cannot mean "clear".
-- `autoscaling`, `verticalAutoscaling` and `podDisruptionBudget`: a set
-  override replaces the whole block, since its bounds and targets only make
-  sense together. For `podDisruptionBudget` it also keeps a profile's
-  `minAvailable` from meeting a ControlPlane's `maxUnavailable` in one block.
-  A nil block inherits, so a ControlPlane cannot clear a budget its profile
-  sets; it can write out the default budget instead.
+- `autoscaling`, `verticalAutoscaling` and the `podDisruptionBudget` of an API
+  component: a set override replaces the whole block, since its bounds and
+  targets only make sense together. For `podDisruptionBudget` it also keeps a
+  profile's `minAvailable` from meeting a ControlPlane's `maxUnavailable` in one
+  block. A nil block inherits, so a ControlPlane cannot clear a budget its
+  profile sets; it can write out the default budget instead.
+- The `podDisruptionBudget` of `database`, `cache` and `messaging`: `enabled`
+  and `maxUnavailable` merge one value at a time, so a profile can set the count
+  and a ControlPlane the switch. No pair contradicts itself, since
+  `enabled: false` wins over a `maxUnavailable` beside it.
 - A component block: a nil override keeps the base, a nil base takes the
   override, and two set blocks merge recursively.
 
@@ -2015,8 +2102,8 @@ is how a component opts out of the top-level class. Spread entries are completed
 with the child's pod selector. A component's `verticalAutoscaling` reaches the
 `verticalAutoscaling` of the deployment block it sizes (`spec.deployment.*`
 below includes it). Every field is assigned on every pass, so clearing a value
-on the ControlPlane clears it on the child. Affinity, the rollout strategy, and
-the graceful-termination timings are never written.
+on the ControlPlane clears it on the child. A Deployment component's affinity,
+the rollout strategy, and the graceful-termination timings are never written.
 
 | `spec.sizing.` component | Child fields written |
 | --- | --- |
@@ -2032,9 +2119,9 @@ the graceful-termination timings are never written.
 | `nova.scheduler`, `nova.conductor` | `spec.<component>.deployment.*`, `spec.<component>.workers` |
 | `nova.consoleProxy` | `spec.consoleProxy.deployment.*` whenever the proxy is enabled, including the default of an absent `services.nova.consoleProxy` |
 | `<service>.jobs` | `spec.jobs` (resources and priority class; the child falls back to its API Deployment for the rest) |
-| `database` | every managed MariaDB: `spec.replicas` and `spec.storage.size` when the block leaves them unset, `spec.resources`, `spec.nodeSelector`, `spec.tolerations`, `spec.priorityClassName`, and on a Galera cluster `spec.galera.replicaThreads` (1 when `applierThreads` is unset) |
-| `cache` | every managed Memcached: `spec.replicas` when the block leaves it unset, `spec.resources` (removed when unset). The Memcached CRD has no placement. |
-| `messaging` | the managed RabbitmqCluster: `spec.replicas` when the block leaves it unset, `spec.resources`, `spec.tolerations`, and the node selector and priority class through `spec.override.statefulSet.spec.template.spec`. Unset resources leave the operator's default (1 CPU and 2Gi requested, 2 CPU and 2Gi limit). |
+| `database` | every managed MariaDB: `spec.replicas` and `spec.storage.size` when the block leaves them unset, `spec.resources`, `spec.nodeSelector`, `spec.tolerations`, `spec.priorityClassName`, `spec.affinity` and `spec.podDisruptionBudget` (both removed on a single instance), and on a Galera cluster `spec.galera.replicaThreads` (1 when `applierThreads` is unset) |
+| `cache` | every managed Memcached: `spec.replicas` when the block leaves it unset, `spec.resources` (removed when unset), `spec.highAvailability.antiAffinityPreset` and `spec.highAvailability.podDisruptionBudget`. The Memcached CRD has no placement. |
+| `messaging` | the managed RabbitmqCluster: `spec.replicas` when the block leaves it unset, `spec.resources`, `spec.tolerations`, `spec.affinity`, and the node selector and priority class through `spec.override.statefulSet.spec.template.spec`; beside it, the PodDisruptionBudget of a bus of several brokers. Unset resources leave the operator's default (1 CPU and 2Gi requested, 2 CPU and 2Gi limit). |
 | `secretStore` | the dedicated OpenBaoCluster's `spec.resources`; the replica count stays 1 |
 
 The managed database's replica count and volume size cannot change after
@@ -2049,9 +2136,33 @@ bus grows in place, and a bus shrink still needs the
 
 ### Upgrade behavior
 
-- A ControlPlane that names no profile renders identical children, and its
+- A ControlPlane that names no profile renders identical service children. Its
   backing services keep their operators' defaults, apart from the Galera
-  applier threads.
+  applier threads and the anti-affinity and disruption budget of every
+  multi-replica instance.
+- Every owned MariaDB, RabbitmqCluster and Memcached of more than one replica
+  takes the anti-affinity and budget of
+  [Backing-service availability](#backing-service-availability) and restarts
+  once, pod by pod.
+- The ControlPlane owns the whole `spec.affinity` of every owned MariaDB and
+  RabbitmqCluster, a single instance included. On the first pass it replaces a
+  value set there by hand, `nodeAffinity` included, with the anti-affinity term,
+  or removes it for `Off` and a single instance, and the pods restart. A MariaDB
+  keeps only `antiAffinityEnabled`, and only beside a term.
+- `Required`, the default of the database and the bus, leaves a member
+  `Pending`, with `InfrastructureReady=False`, on a cluster with fewer
+  schedulable nodes than replicas, or where the volumes of two members are bound
+  to one node. `antiAffinity: Preferred`, set under the new CRDs before the
+  operator upgrade, avoids it.
+- An existing Galera cluster keeps the `minAvailable: 50%` budget the
+  mariadb-operator created until that PodDisruptionBudget is deleted:
+  `kubectl delete pdb <clusterRef.name> -n <namespace>` lets the mariadb-operator
+  create it again from the projected `spec.podDisruptionBudget`.
+- Kubernetes refuses to evict a pod that two budgets select. Remove a hand-made
+  PodDisruptionBudget that selects the pods of an owned bus or cache, or disable
+  the ControlPlane's budget with `podDisruptionBudget.enabled: false`.
+- An operator rolled back to an earlier version leaves the projected fields and
+  the bus PodDisruptionBudget in place and no longer restores a deleted one.
 - Every owned Galera MariaDB whose resolved sizing carries 4 applier threads
   (`Standard`, or a `SizingProfile` with `base: Standard`) is updated once and
   rolls. `applierThreads: 1`, set under the new CRDs before the operator
@@ -2140,7 +2251,8 @@ uncached API reader:
   limits, label keys of node selectors and tolerations, the Galera quorum, the
   applier thread bounds, the 96Mi Memcached floor, the spread-entry markers,
   the `verticalAutoscaling` rules, the `podDisruptionBudget` one-field and value
-  rules), the `base` enum, and that
+  rules, the `antiAffinity` values and the backing-service `maxUnavailable`
+  minimum), the `base` enum, and that
   every named PriorityClass exists. It then resolves the sizing of every
   ControlPlane that already references the profile against its values, as an
   update does: a restored profile meets ControlPlanes whose `spec.sizing` edits
@@ -2154,6 +2266,9 @@ uncached API reader:
   replica bound) rejects the create or edit with an error naming
   `ControlPlane <namespace>/<name>`. A failed List of ControlPlanes rejects it
   with an internal error (`listing ControlPlanes`).
+- Create and update warn when `cache.antiAffinity` is `Off` beside a budget
+  that is not disabled (`spec.cache.antiAffinity: Off takes effect only when
+  spec.cache.podDisruptionBudget.enabled is false; ...`), as `spec.sizing` does.
 - Delete is not validated. A referenced profile can be deleted; the ControlPlanes
   that reference it report `SizingReady=False` with reason
   `SizingProfileNotFound`, stop their pass, and keep their children as last
@@ -3109,6 +3224,8 @@ Keystone discipline:
 | `spec.sizing` and `SizingProfile spec`: every `replicas`, `processes`, `threads`, `workers` | Minimum: 1 |
 | `spec.sizing.database.storageSize`, `SizingProfile spec.database.storageSize` | Pattern `^[0-9]+(Mi\|Gi\|Ti)$` |
 | `spec.sizing.database.applierThreads`, `SizingProfile spec.database.applierThreads` | Minimum: 1; Maximum: 512 |
+| `spec.sizing.{database,cache,messaging}.antiAffinity`, `SizingProfile spec.{database,cache,messaging}.antiAffinity` | Enum: `Required`, `Preferred`, `Off` |
+| `spec.sizing.{database,cache,messaging}.podDisruptionBudget.maxUnavailable`, `SizingProfile spec.{database,cache,messaging}.podDisruptionBudget.maxUnavailable` | Minimum: 1 |
 | `spec.sizing` and `SizingProfile spec`: every `spreadConstraints[]` | `maxSkew` Minimum 1; `topologyKey` MinLength 1; `whenUnsatisfiable` Enum `DoNotSchedule`, `ScheduleAnyway` |
 | `spec.sizing` and `SizingProfile spec`: every `api` and `horizon.api` (CEL) | `!(has(self.autoscaling) && has(self.verticalAutoscaling))` → "autoscaling and verticalAutoscaling cannot both be set on one component" |
 | `spec.sizing` and `SizingProfile spec`: every `api.podDisruptionBudget` and `horizon.api.podDisruptionBudget` (CEL) | `has(self.minAvailable) != has(self.maxUnavailable)` → "exactly one of minAvailable or maxUnavailable must be set" |
@@ -3196,6 +3313,8 @@ short-circuit on the first error.
 | Sizing database quorum | `spec.sizing.database.replicas` | `field.Invalid` | Value is exactly `2`, with the message of the database quorum rule above. **Webhook-only.** |
 | Sizing storage size | `spec.sizing.database.storageSize` | `field.Invalid` | Value does not match `^[0-9]+(Mi\|Gi\|Ti)$`. Twin of the CRD pattern. |
 | Sizing applier threads | `spec.sizing.database.applierThreads` | `field.Invalid` | Value below 1 or above 512, the range MariaDB 12.3.3 reports for `wsrep_slave_threads`. Message: `must be between 1 and 512`. Twin of the CRD markers. |
+| Sizing backing-service anti-affinity | `spec.sizing.{database,cache,messaging}.antiAffinity`, and `spec.{database,cache,messaging}.antiAffinity` on a SizingProfile | `field.NotSupported` | A non-empty value outside `Required`, `Preferred`, `Off`. Twin of the CRD enum. |
+| Sizing backing-service budget count | `spec.sizing.{database,cache,messaging}.podDisruptionBudget.maxUnavailable`, and `spec.{database,cache,messaging}.podDisruptionBudget.maxUnavailable` on a SizingProfile | `field.Invalid` | A value below 1. Message: `must be at least 1`. Twin of the CRD minimum. |
 | Sizing cache memory floor | `spec.sizing.cache.resources.limits.memory` | `field.Invalid` | A limit below `96Mi`. Message: `memory limit must be at least 96Mi: the Memcached operator requires maxMemoryMB (64) plus 32Mi`. **Webhook-only.** |
 | Sizing spread entries | `spec.sizing.<component>.spreadConstraints[i].{maxSkew,topologyKey,whenUnsatisfiable}` | `field.Invalid` / `field.Required` / `field.NotSupported` | `maxSkew` below 1, an empty `topologyKey`, or a `whenUnsatisfiable` outside `DoNotSchedule`, `ScheduleAnyway`. Twins of the CRD markers. |
 | Sizing vertical autoscaling beside autoscaling | `spec.sizing.<service>.api.verticalAutoscaling`, `spec.sizing.horizon.api.verticalAutoscaling` | `field.Forbidden` | The component sets both `autoscaling` and `verticalAutoscaling`, as written and on the merged sizing, so a profile's VPA meets a ControlPlane's HPA on the same component, and the reverse. Message: `autoscaling and verticalAutoscaling cannot both be set on one component`. Twin of the CEL rule on the API sizing types. |
@@ -3832,7 +3951,11 @@ func (w *ControlPlaneWebhook) ValidateDelete(_ context.Context, _ *ControlPlane)
   [Validating-webhook rules](#validating-webhook-rules)), and both return one
   warning per `spec.sizing.<service>` block whose `spec.services.<service>` is
   unset: `spec.sizing.<service> is set but spec.services.<service> is not; the
-  values are inert`.
+  values are inert`. Both also warn when `spec.sizing.cache.antiAffinity` is
+  `Off` and the same block does not set `podDisruptionBudget.enabled: false`:
+  `spec.sizing.cache.antiAffinity: Off takes effect only when
+  spec.sizing.cache.podDisruptionBudget.enabled is false; the memcached-operator
+  applies soft anti-affinity whenever a budget is set`.
 - `ValidateDelete` always returns `nil, nil`. It exists only to satisfy the
   `admission.Validator` interface and is **never invoked** — the validating
   webhook does not register the `delete` verb, so **deletion is unconditionally

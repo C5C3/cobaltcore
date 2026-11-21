@@ -58,6 +58,10 @@ export KIND_EXPERIMENTAL_PROVIDER=podman
 - On a bigger box, set `CONTROLPLANE_DB_REPLICAS=3` and/or
   `CONTROLPLANE_CACHE_REPLICAS=N` for Step 2 to pin those fields over the
   profile. `2` is rejected for the database: Galera needs a quorum.
+- A database count above `1` also sets
+  `spec.sizing.database.antiAffinity: Preferred`. The kind cluster has fewer
+  schedulable nodes than Galera members, and the default `Required` would leave
+  a member `Pending`.
 - To mirror the production volume, set `CONTROLPLANE_DB_STORAGE=100Gi` for
   Step 2. Any Kubernetes quantity in `Mi`/`Gi`/`Ti` is accepted.
 - `database.replicas` and `database.storageSize` are immutable after the CR is

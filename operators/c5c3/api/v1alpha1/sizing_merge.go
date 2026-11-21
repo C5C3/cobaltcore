@@ -11,17 +11,21 @@ import (
 // MergeSizing overlays override on base, one value at a time, and returns a
 // new value that aliases neither input:
 //
-//   - replicas, processes, threads, workers, priorityClassName, storageSize
-//     and applierThreads: a set override wins.
+//   - replicas, processes, threads, workers, priorityClassName, storageSize,
+//     applierThreads and antiAffinity: a set override wins.
 //   - resources: every request and limit the override names replaces or adds
 //     the base entry of that resource; override claims replace when non-nil.
 //   - nodeSelector, tolerations and spreadConstraints: a non-empty override
 //     replaces the base. An empty one inherits, because the defaulting
 //     webhook's JSON round trip drops an empty map or list, so "empty" cannot
 //     mean "clear".
-//   - autoscaling, verticalAutoscaling and podDisruptionBudget: a set
-//     override replaces the whole block, since its bounds and targets only
-//     make sense together, and a budget sets one of its two fields.
+//   - autoscaling, verticalAutoscaling and the podDisruptionBudget of an API
+//     component: a set override replaces the whole block, since its bounds
+//     and targets only make sense together, and a budget sets one of its two
+//     fields.
+//   - the podDisruptionBudget of a backing service (database, cache,
+//     messaging): enabled and maxUnavailable merge one value at a time, and
+//     enabled: false wins over a maxUnavailable beside it.
 //   - blocks: a nil override keeps the base, a nil base takes the override,
 //     and two set blocks merge recursively.
 func MergeSizing(base, override SizingSpec) SizingSpec {
@@ -30,7 +34,7 @@ func MergeSizing(base, override SizingSpec) SizingSpec {
 	mergePlacement(&out.PodPlacementSpec, &o.PodPlacementSpec)
 	out.Database = mergeBlock(out.Database, o.Database, mergeDatabase)
 	out.Cache = mergeBlock(out.Cache, o.Cache, mergeCache)
-	out.Messaging = mergeBlock(out.Messaging, o.Messaging, mergeScaled)
+	out.Messaging = mergeBlock(out.Messaging, o.Messaging, mergeMessaging)
 	out.SecretStore = mergeBlock(out.SecretStore, o.SecretStore, mergeContainer)
 	out.Keystone = mergeBlock(out.Keystone, o.Keystone, mergeKeystone)
 	out.Horizon = mergeBlock(out.Horizon, o.Horizon, mergeHorizon)
@@ -192,6 +196,17 @@ func mergeJob(b, o *JobSizingSpec) {
 	b.PriorityClassName = mergeValue(b.PriorityClassName, o.PriorityClassName)
 }
 
+func mergeAvailability(b, o *AvailabilitySizingSpec) {
+	if o.AntiAffinity != "" {
+		b.AntiAffinity = o.AntiAffinity
+	}
+	b.PodDisruptionBudget = mergeBlock(b.PodDisruptionBudget, o.PodDisruptionBudget,
+		func(b, o *BackingPodDisruptionBudgetSpec) {
+			b.Enabled = mergeValue(b.Enabled, o.Enabled)
+			b.MaxUnavailable = mergeValue(b.MaxUnavailable, o.MaxUnavailable)
+		})
+}
+
 func mergeDatabase(b, o *DatabaseSizingSpec) {
 	b.Replicas = mergeValue(b.Replicas, o.Replicas)
 	b.ApplierThreads = mergeValue(b.ApplierThreads, o.ApplierThreads)
@@ -199,11 +214,18 @@ func mergeDatabase(b, o *DatabaseSizingSpec) {
 		b.StorageSize = o.StorageSize
 	}
 	mergePinned(&b.PinnedSizingSpec, &o.PinnedSizingSpec)
+	mergeAvailability(&b.AvailabilitySizingSpec, &o.AvailabilitySizingSpec)
 }
 
 func mergeCache(b, o *CacheSizingSpec) {
 	b.Replicas = mergeValue(b.Replicas, o.Replicas)
 	mergeContainer(&b.ContainerSizingSpec, &o.ContainerSizingSpec)
+	mergeAvailability(&b.AvailabilitySizingSpec, &o.AvailabilitySizingSpec)
+}
+
+func mergeMessaging(b, o *MessagingSizingSpec) {
+	mergeScaled(&b.ScaledSizingSpec, &o.ScaledSizingSpec)
+	mergeAvailability(&b.AvailabilitySizingSpec, &o.AvailabilitySizingSpec)
 }
 
 func mergeKeystone(b, o *KeystoneSizingSpec) {

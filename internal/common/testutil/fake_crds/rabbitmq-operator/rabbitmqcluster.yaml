@@ -50,6 +50,11 @@ spec:
                           type: string
                         cpu:
                           type: string
+                # affinity carries the hostname anti-affinity the ControlPlane
+                # projects onto a multi-replica bus.
+                affinity:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
             status:
               type: object
               properties:

@@ -187,6 +187,26 @@ tests:
               - list
               - watch
 
+  # A managed bus of several brokers gets a PodDisruptionBudget the ControlPlane
+  # creates, updates and deletes beside the RabbitmqCluster and watches to
+  # restore it.
+  - it: should grant the managed bus budget on poddisruptionbudgets
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - policy
+            resources:
+              - poddisruptionbudgets
+            verbs:
+              - create
+              - delete
+              - get
+              - list
+              - update
+              - watch
+
   # The ControlPlane projects the RabbitmqCluster of a managed bus, and the
   # RabbitMQVhost controller writes the topology operator's Vhost, User and
   # Permission children; those write verbs are the order's only new reach.

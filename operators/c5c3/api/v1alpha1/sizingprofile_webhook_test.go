@@ -85,12 +85,12 @@ func TestSizingProfileValidateCreate(t *testing.T) {
 		{name: "an unknown base", base: "Large", want: `spec.base: Unsupported value: "Large"`},
 		{
 			name: "a request above its limit",
-			spec: SizingSpec{Messaging: &ScaledSizingSpec{PinnedSizingSpec: PinnedSizingSpec{
+			spec: SizingSpec{Messaging: &MessagingSizingSpec{ScaledSizingSpec: ScaledSizingSpec{PinnedSizingSpec: PinnedSizingSpec{
 				ContainerSizingSpec: ContainerSizingSpec{Resources: resources(
 					corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("2Gi")},
 					corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")},
 				)},
-			}}},
+			}}}},
 			want: "spec.messaging.resources.requests.memory: Invalid value",
 		},
 		{
@@ -114,6 +114,18 @@ func TestSizingProfileValidateCreate(t *testing.T) {
 				Resources: resources(nil, corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("64Mi")}),
 			}}},
 			want: "memory limit must be at least 96Mi",
+		},
+		{
+			name: "a cache antiAffinity Strict",
+			spec: SizingSpec{Cache: &CacheSizingSpec{AvailabilitySizingSpec: AvailabilitySizingSpec{AntiAffinity: "Strict"}}},
+			want: `spec.cache.antiAffinity: Unsupported value: "Strict"`,
+		},
+		{
+			name: "a database podDisruptionBudget maxUnavailable 0",
+			spec: SizingSpec{Database: &DatabaseSizingSpec{AvailabilitySizingSpec: AvailabilitySizingSpec{
+				PodDisruptionBudget: &BackingPodDisruptionBudgetSpec{MaxUnavailable: ptr.To[int32](0)},
+			}}},
+			want: "spec.database.podDisruptionBudget.maxUnavailable: Invalid value: 0: must be at least 1",
 		},
 		{
 			name: "a spread entry with maxSkew 0",
@@ -166,6 +178,31 @@ func TestSizingProfileValidateCreate(t *testing.T) {
 			SizingSpec{Database: &DatabaseSizingSpec{ApplierThreads: ptr.To[int32](8)}}))
 		g.Expect(err).NotTo(HaveOccurred())
 	})
+}
+
+func TestSizingProfileValidate_AvailabilityWarning(t *testing.T) {
+	const want = "spec.cache.antiAffinity: Off takes effect only when " +
+		"spec.cache.podDisruptionBudget.enabled is false; " +
+		"the memcached-operator applies soft anti-affinity whenever a budget is set"
+	g := NewWithT(t)
+	w := &SizingProfileWebhook{Client: fake.NewClientBuilder().WithScheme(sizingScheme(t)).Build()}
+	p := sizingProfile("site", SizingProfileStandard, SizingSpec{
+		Cache: &CacheSizingSpec{AvailabilitySizingSpec: AvailabilitySizingSpec{AntiAffinity: AntiAffinityOff}},
+	})
+
+	warnings, err := w.ValidateCreate(context.Background(), p)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect([]string(warnings)).To(Equal([]string{want}))
+
+	warnings, err = w.ValidateUpdate(context.Background(), p.DeepCopy(), p)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect([]string(warnings)).To(Equal([]string{want}))
+
+	// enabled: false beside Off takes the budget away, so Off holds.
+	p.Spec.Cache.PodDisruptionBudget = &BackingPodDisruptionBudgetSpec{Enabled: ptr.To(false)}
+	warnings, err = w.ValidateCreate(context.Background(), p)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(warnings).To(BeEmpty())
 }
 
 // referencingControlPlane returns a ControlPlane in ns that sizes itself from

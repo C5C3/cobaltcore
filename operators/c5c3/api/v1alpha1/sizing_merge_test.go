@@ -289,6 +289,51 @@ func TestMergeSizing(t *testing.T) {
 			g.Expect(equality.Semantic.DeepEqual(got, tc.want)).To(BeTrue(), "got %+v", got)
 		})
 	}
+
+	budget := func(enabled *bool, maxUnavailable *int32) *BackingPodDisruptionBudgetSpec {
+		return &BackingPodDisruptionBudgetSpec{Enabled: enabled, MaxUnavailable: maxUnavailable}
+	}
+	for _, block := range []string{"database", "cache", "messaging"} {
+		for _, tc := range []struct {
+			name                 string
+			base, override, want AvailabilitySizingSpec
+		}{
+			{
+				name:     "a set antiAffinity override wins",
+				base:     AvailabilitySizingSpec{AntiAffinity: AntiAffinityRequired},
+				override: AvailabilitySizingSpec{AntiAffinity: AntiAffinityPreferred},
+				want:     AvailabilitySizingSpec{AntiAffinity: AntiAffinityPreferred},
+			},
+			{
+				name: "an empty antiAffinity override inherits",
+				base: AvailabilitySizingSpec{AntiAffinity: AntiAffinityRequired},
+				want: AvailabilitySizingSpec{AntiAffinity: AntiAffinityRequired},
+			},
+			{
+				name:     "enabled: false over a base maxUnavailable keeps both values",
+				base:     AvailabilitySizingSpec{PodDisruptionBudget: budget(nil, ptr.To[int32](2))},
+				override: AvailabilitySizingSpec{PodDisruptionBudget: budget(ptr.To(false), nil)},
+				want:     AvailabilitySizingSpec{PodDisruptionBudget: budget(ptr.To(false), ptr.To[int32](2))},
+			},
+			{
+				name:     "a nil podDisruptionBudget override keeps the base budget",
+				base:     AvailabilitySizingSpec{PodDisruptionBudget: budget(nil, ptr.To[int32](2))},
+				override: AvailabilitySizingSpec{AntiAffinity: AntiAffinityOff},
+				want:     AvailabilitySizingSpec{AntiAffinity: AntiAffinityOff, PodDisruptionBudget: budget(nil, ptr.To[int32](2))},
+			},
+			{
+				name:     "a nil base podDisruptionBudget takes the override",
+				override: AvailabilitySizingSpec{PodDisruptionBudget: budget(ptr.To(true), ptr.To[int32](1))},
+				want:     AvailabilitySizingSpec{PodDisruptionBudget: budget(ptr.To(true), ptr.To[int32](1))},
+			},
+		} {
+			t.Run(block+": "+tc.name, func(t *testing.T) {
+				g := NewWithT(t)
+				got := MergeSizing(backingSizing(block, tc.base), backingSizing(block, tc.override))
+				g.Expect(equality.Semantic.DeepEqual(got, backingSizing(block, tc.want))).To(BeTrue(), "got %+v", got)
+			})
+		}
+	}
 }
 
 func TestMergeSizing_DoesNotAliasInputs(t *testing.T) {
@@ -312,6 +357,10 @@ func TestMergeSizing_DoesNotAliasInputs(t *testing.T) {
 		}},
 	}
 	base.Keystone.API.PodDisruptionBudget = &commonv1.PodDisruptionBudgetSpec{MinAvailable: ptr.To(intstr.FromInt32(2))}
+	base.Database.PodDisruptionBudget = &BackingPodDisruptionBudgetSpec{MaxUnavailable: ptr.To[int32](2)}
+	override.Messaging = &MessagingSizingSpec{AvailabilitySizingSpec: AvailabilitySizingSpec{
+		PodDisruptionBudget: &BackingPodDisruptionBudgetSpec{Enabled: ptr.To(false)},
+	}}
 	baseBefore := base.DeepCopy()
 	overrideBefore := override.DeepCopy()
 
@@ -329,6 +378,8 @@ func TestMergeSizing_DoesNotAliasInputs(t *testing.T) {
 	*got.Keystone.API.PodDisruptionBudget.MinAvailable = intstr.FromInt32(1)
 	got.NodeSelector["b"] = "2"
 	*got.Database.Replicas = 9
+	*got.Database.PodDisruptionBudget.MaxUnavailable = 9
+	*got.Messaging.PodDisruptionBudget.Enabled = true
 	g.Expect(equality.Semantic.DeepEqual(base, *baseBefore)).To(BeTrue())
 	g.Expect(equality.Semantic.DeepEqual(override, *overrideBefore)).To(BeTrue())
 }

@@ -192,3 +192,24 @@ spec:
             ($error != null): true
             (contains($error, 'spec.keystone.api.podDisruptionBudget.maxUnavailable')): true
             (contains($error, 'must be a non-negative integer or a percentage')): true
+  # A cache antiAffinity outside Required, Preferred and Off must be rejected by
+  # the Enum marker on AntiAffinityMode, which answers before the webhook twin.
+  - try:
+    - apply:
+        file: 16-anti-affinity-unsupported.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.cache.antiAffinity')): true
+            (contains($error, 'Unsupported value')): true
+  # A database podDisruptionBudget.maxUnavailable of 0 must be rejected by the
+  # Minimum marker on BackingPodDisruptionBudgetSpec, which answers before the
+  # webhook twin.
+  - try:
+    - apply:
+        file: 17-backing-pdb-max-unavailable-zero.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.database.podDisruptionBudget.maxUnavailable')): true
+            (contains($error, 'should be greater than or equal to 1')): true

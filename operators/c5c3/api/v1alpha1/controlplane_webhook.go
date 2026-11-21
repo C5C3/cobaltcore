@@ -3209,6 +3209,7 @@ func (w *ControlPlaneWebhook) ValidateCreate(ctx context.Context, obj *ControlPl
 	warnings = append(warnings, glanceImportFilteringWarnings(obj)...)
 	warnings = append(warnings, warnDevelopmentBarbicanSecretStore(obj)...)
 	warnings = append(warnings, sizingInertWarnings(obj)...)
+	warnings = append(warnings, sizingAvailabilityWarnings(field.NewPath("spec", "sizing"), controlPlaneSizingSpec(obj))...)
 
 	// extraConfig admission checks: the un-gated shape/ownership family (A) and
 	// the option-catalog family (B). Both fold their errors into the single
@@ -3273,6 +3274,7 @@ func (w *ControlPlaneWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj
 	warnings = append(warnings, warnBarbicanDBCleanRetention(oldObj, newObj)...)
 	warnings = append(warnings, warnCinderBackupDriverSwitch(oldObj, newObj)...)
 	warnings = append(warnings, sizingInertWarnings(newObj)...)
+	warnings = append(warnings, sizingAvailabilityWarnings(field.NewPath("spec", "sizing"), controlPlaneSizingSpec(newObj))...)
 
 	allErrs := w.validate(newObj)
 	allErrs = append(allErrs, validateImmutable(oldObj, newObj)...)
@@ -3587,6 +3589,15 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 	allErrs = append(allErrs, validateSizing(cp)...)
 
 	return allErrs
+}
+
+// controlPlaneSizingSpec returns the values of cp's spec.sizing, or nil when
+// spec.sizing is unset.
+func controlPlaneSizingSpec(cp *ControlPlane) *SizingSpec {
+	if cp.Spec.Sizing == nil {
+		return nil
+	}
+	return &cp.Spec.Sizing.SizingSpec
 }
 
 // validateSizing checks spec.sizing as written: the values themselves

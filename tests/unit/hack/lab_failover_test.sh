@@ -89,8 +89,9 @@ ELEVEN="galera-member-loss galera-primary-loss rabbitmq-node-loss rabbitmq-minor
 #   KUBECTL_SHOOT           the shootName (newforge)
 #   KUBECTL_MISSING         the `get` arguments of the one object that is
 #                           missing, such as "crd podchaos.chaos-mesh.org"
-#   KUBECTL_REQUESTED       the memory one pod requests (40Gi); the three Ready
+#   KUBECTL_REQUESTED       the memory one pod requests (40Gi); the Ready
 #                           nodes offer 30Gi each, a NotReady one 100Gi
+#   KUBECTL_READY_NODES     the number of Ready nodes, 0 to 3 (default 3)
 #   KUBECTL_NS              absent, labelled or unlabelled: openstack-ha
 #                           (default absent)
 #   KUBECTL_NS_STAYS        non-empty: the namespace delete times out
@@ -148,7 +149,14 @@ case "$*" in
     ;;
   "get nodes -o json")
     node() { printf '{"status":{"allocatable":{"memory":"%s"},"conditions":[{"type":"Ready","status":"%s"}]}}' "$1" "$2"; }
-    echo "{\"items\":[$(node 30Gi True),$(node 31457280Ki True),$(node 30720Mi True),$(node 100Gi False)]}"
+    # The Ready nodes spell 30Gi three ways, in this order.
+    ready="${KUBECTL_READY_NODES:-3}" items=""
+    for memory in 30Gi 31457280Ki 30720Mi; do
+      [ "$ready" -gt 0 ] || break
+      items="${items}$(node "$memory" True),"
+      ready=$((ready - 1))
+    done
+    echo "{\"items\":[${items}$(node 100Gi False)]}"
     ;;
   "get pods -A --field-selector=status.phase!=Succeeded,status.phase!=Failed -o json")
     # 40Gi, an init container of 512Mi, and 2.25Gi: an app container and a
@@ -382,6 +390,11 @@ test_preflight_refusals() {
   fails "$tmp" "a floor above the free figure" 1 \
     "FAIL: free memory requests 47.2 GiB are below the floor LAB_FAILOVER_MIN_FREE_MEMORY=60Gi" \
     preflight LAB_FAILOVER_MIN_FREE_MEMORY=60Gi
+  # Two Ready nodes leave 17.2 GiB free, below the default floor, so the
+  # floor is lowered to reach the node check.
+  fails "$tmp" "two Ready nodes" 1 \
+    "FAIL: the Standard plane needs 3 Ready nodes, one per Galera member and broker (found 2)" \
+    preflight KUBECTL_READY_NODES=2 LAB_FAILOVER_MIN_FREE_MEMORY=10Gi
 
   if [[ ! -x /usr/bin/chainsaw && ! -x /bin/chainsaw ]]; then
     new_case "$tmp"
@@ -405,13 +418,15 @@ test_preflight_passes() {
   rc=$?
   out="$(cat "$tmp/stdout")"
   assert_eq "preflight exits 0" "0" "$rc"
-  assert_eq "seventeen OK lines, one per check" "17" "$(grep -c '^OK: ' "$tmp/stdout")"
+  assert_eq "eighteen OK lines, one per check" "18" "$(grep -c '^OK: ' "$tmp/stdout")"
   assert_eq "no FAIL line" "" "$(grep '^FAIL: ' "$tmp/stdout" || true)"
   assert_contains "it names the shoot" "$out" "shoot: newforge"
   assert_contains "it names the server" "$out" "server: https://api.lab.example:443"
   assert_contains "the NotReady node does not count; init containers, sidecars and the overhead do" "$out" \
     "free memory requests: 47.2 GiB"
   assert_contains "it names the figures" "$out" "(allocatable 90 GiB on 3 Ready nodes, requested 42.7 GiB)"
+  assert_contains "three Ready nodes pass the node check" "$out" \
+    "OK: 3 Ready nodes, one per Galera member and broker of the Standard plane"
   assert_eq "it makes no mutating call" "" "$(mutations)"
   assert_eq "the temporary kubeconfig is gone" "" "$(ls "$tmp/tmpdir")"
 }

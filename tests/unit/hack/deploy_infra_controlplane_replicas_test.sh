@@ -6,9 +6,9 @@
 # Verify hack/deploy-infra.sh `render_controlplane_replicas` pins only the
 # backing-service fields whose knob is set (CONTROLPLANE_DB_REPLICAS /
 # CONTROLPLANE_CACHE_REPLICAS / CONTROLPLANE_DB_STORAGE), leaves the manifest
-# byte-identical when none is, and rejects an invalid footprint (non-numeric or < 1
-# replicas, the quorum-unsafe DB=2, or a malformed storage quantity) before the CR
-# is applied. Also guards that the checked-in bundled kind CR names
+# byte-identical when none is, sets Preferred database anti-affinity beside a
+# Galera count, and rejects an invalid footprint (non-numeric or < 1 replicas, the
+# quorum-unsafe DB=2, or a malformed storage quantity) before the CR is applied. Also guards that the checked-in bundled kind CR names
 # spec.sizing.profile: Minimal and pins none of the three fields, so the profile
 # gives a laptop-sized single-node kind one non-Galera MariaDB on a 512Mi volume
 # and one Memcached pod.
@@ -202,6 +202,43 @@ test_ha_override() {
 }
 
 # ---------------------------------------------------------------------------
+# Test 3b: a Galera count also sets Preferred anti-affinity, since kind has
+# fewer schedulable nodes than members; a standalone database and the other
+# knobs leave the field to the default.
+# ---------------------------------------------------------------------------
+test_galera_preferred_anti_affinity() {
+  echo "Test: a database count above 1 sets spec.sizing.database.antiAffinity to Preferred"
+
+  if ! command -v yq >/dev/null 2>&1; then
+    echo "  SKIP: yq not installed (4 checks skipped)"
+    SKIP=$((SKIP + 4))
+    return
+  fi
+
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  local out="$tmp/cr.yaml"
+
+  # db|cache|the antiAffinity the render leaves
+  local row db cache want
+  for row in "3||Preferred" "1||null" "|2|null"; do
+    IFS='|' read -r db cache want <<<"$row"
+    cp "$BUNDLED_CR" "$out"
+    run_render "$out" "$db" "$cache" >/dev/null
+    assert_eq "DB='${db}' cache='${cache}': sizing.database.antiAffinity is ${want}" \
+      "$want" \
+      "$(yq -r 'select(.kind == "ControlPlane") | .spec.sizing.database.antiAffinity' "$out")"
+  done
+
+  cp "$BUNDLED_CR" "$out"
+  run_render "$out" "3" >/dev/null
+  assert_eq "DB=3 keeps spec.sizing.profile Minimal" \
+    "Minimal" \
+    "$(yq -r 'select(.kind == "ControlPlane") | .spec.sizing.profile' "$out")"
+}
+
+# ---------------------------------------------------------------------------
 # Test 4: invalid footprints fail fast (before kubectl apply).
 # ---------------------------------------------------------------------------
 test_invalid_footprint_rejected() {
@@ -280,6 +317,7 @@ test_bundled_cr_is_single_node
 test_default_footprint
 test_single_knob_pins_only_its_field
 test_ha_override
+test_galera_preferred_anti_affinity
 test_invalid_footprint_rejected
 test_main_wires_knobs
 

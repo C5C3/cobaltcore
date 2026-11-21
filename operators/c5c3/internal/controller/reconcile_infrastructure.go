@@ -524,7 +524,7 @@ func databaseSizing(s c5c3v1alpha1.SizingSpec) *c5c3v1alpha1.DatabaseSizingSpec 
 }
 
 // messagingSizing is databaseSizing for the message bus.
-func messagingSizing(s c5c3v1alpha1.SizingSpec) *c5c3v1alpha1.ScaledSizingSpec {
+func messagingSizing(s c5c3v1alpha1.SizingSpec) *c5c3v1alpha1.MessagingSizingSpec {
 	if s.Messaging == nil {
 		return nil
 	}
@@ -672,6 +672,15 @@ func novaCacheDeclaredAt(cp *c5c3v1alpha1.ControlPlane) string {
 // applyMariaDBSecurity, so its pods are admitted in a namespace that enforces
 // the restricted Pod Security profile.
 //
+// It projects spec.affinity and spec.podDisruptionBudget from the
+// availability of sizing, resolved for the instance's own replica count with
+// Required as the default (applyMariaDBAvailability): a Galera cluster gets
+// hostname anti-affinity and a budget of one pod at a time, a single instance
+// neither. It never touches the PodDisruptionBudget object, which the
+// mariadb-operator creates from spec.podDisruptionBudget once and does not
+// update: a changed budget reaches an existing database only after
+// kubectl delete pdb <clusterRef.name>.
+//
 // It stays read-modify-write (not Server-Side Apply): the write is gated on the
 // LIVE object's ownership — an owned CR has its topology, sizing and security
 // contexts re-projected, while an externally-provisioned CR sharing the name is
@@ -714,9 +723,12 @@ func (r *ControlPlaneReconciler) ensureMariaDB(
 		storageSize = infraMariaDBStorageSizeDefault
 	}
 	var pod c5c3v1alpha1.PinnedSizingSpec
+	var availability c5c3v1alpha1.AvailabilitySizingSpec
 	if sizing != nil {
 		pod = sizing.PinnedSizingSpec
+		availability = sizing.AvailabilitySizingSpec
 	}
+	av := resolveBackingAvailability(availability, replicas, c5c3v1alpha1.AntiAffinityRequired)
 
 	mariadb := &mariadbv1alpha1.MariaDB{}
 	err := c.Get(ctx, key, mariadb)
@@ -737,6 +749,7 @@ func (r *ControlPlaneReconciler) ensureMariaDB(
 		mariadb.Spec.Storage = mariadbv1alpha1.Storage{Size: &size}
 		applyMariaDBPod(mariadb, pod)
 		applyMariaDBSecurity(mariadb, galeraEnabled)
+		applyMariaDBAvailability(mariadb, av)
 		if serr := claimChildOwnership(c, cp, mariadb, r.Scheme); serr != nil {
 			return false, fmt.Errorf("claiming ownership of MariaDB %q: %w", key.Name, serr)
 		}
@@ -751,7 +764,8 @@ func (r *ControlPlaneReconciler) ensureMariaDB(
 		//  1. It is OWNED by this ControlPlane (we created it on an earlier pass):
 		//     re-assert the spec-derived projection — spec.replicas, the derived
 		//     Galera topology and applier thread count, the resources and
-		//     placement of the sizing, and the restricted security contexts — so
+		//     placement of the sizing, the restricted security contexts, and the
+		//     anti-affinity and disruption budget — so
 		//     external drift on the owned cluster is corrected back to the
 		//     declared state, and a sizing change reaches the running database.
 		//     spec.infrastructure.database.replicas is itself immutable after
@@ -775,7 +789,8 @@ func (r *ControlPlaneReconciler) ensureMariaDB(
 			currentGalera := mariadb.Spec.Galera != nil && mariadb.Spec.Galera.Enabled
 			if mariadb.Spec.Replicas != replicas || currentGalera != galeraEnabled ||
 				!mariaDBApplierThreadsMatch(mariadb, galeraEnabled, threads) ||
-				!mariaDBPodMatches(mariadb, pod) || !mariaDBSecurityMatches(mariadb, galeraEnabled) {
+				!mariaDBPodMatches(mariadb, pod) || !mariaDBSecurityMatches(mariadb, galeraEnabled) ||
+				!mariaDBAvailabilityMatches(mariadb, av) {
 				mariadb.Spec.Replicas = replicas
 				// spec.galera is updated in place, keeping every live field the
 				// mariadb-operator defaulted. Replacing it wholesale would drop the
@@ -791,6 +806,7 @@ func (r *ControlPlaneReconciler) ensureMariaDB(
 				}
 				applyMariaDBPod(mariadb, pod)
 				applyMariaDBSecurity(mariadb, galeraEnabled)
+				applyMariaDBAvailability(mariadb, av)
 				if uerr := c.Update(ctx, mariadb); uerr != nil {
 					return false, fmt.Errorf("updating owned MariaDB %q: %w", key.Name, uerr)
 				}
@@ -945,6 +961,14 @@ func mariaDBSecurityMatches(m *mariadbv1alpha1.MariaDB, galeraEnabled bool) bool
 // supplies the replica count cache leaves unset, and spec.resources, which is
 // removed when the sizing sets none. The Memcached CRD has no node selector,
 // tolerations or priority class, so the cache takes no placement.
+//
+// Its availability, resolved for the instance's own replica count with
+// Preferred as the default, owns two keys under spec.highAvailability
+// (applyMemcachedAvailability): antiAffinityPreset and podDisruptionBudget.
+// A cache of several replicas gets soft anti-affinity and a budget of one pod,
+// a single replica neither. Off yields no anti-affinity only beside a disabled
+// budget, because the memcached-operator defaults the preset to soft whenever
+// spec.highAvailability exists.
 func (r *ControlPlaneReconciler) ensureMemcached(
 	ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane,
 	cache *commonv1.CacheSpec, sizing *c5c3v1alpha1.CacheSizingSpec, namespace string,
@@ -965,9 +989,12 @@ func (r *ControlPlaneReconciler) ensureMemcached(
 		replicas = infraMemcachedReplicasDefault
 	}
 	var resources *corev1.ResourceRequirements
+	var availability c5c3v1alpha1.AvailabilitySizingSpec
 	if sizing != nil {
 		resources = sizing.Resources
+		availability = sizing.AvailabilitySizingSpec
 	}
+	av := resolveBackingAvailability(availability, replicas, c5c3v1alpha1.AntiAffinityPreferred)
 	project := func(u *unstructured.Unstructured) error {
 		// int32 must be widened to int64 for unstructured nested-field storage.
 		if serr := unstructured.SetNestedField(u.Object, int64(replicas), "spec", "replicas"); serr != nil {
@@ -984,7 +1011,7 @@ func (r *ControlPlaneReconciler) ensureMemcached(
 				return fmt.Errorf("setting Memcached %q spec.security.%s: %w", key.Name, field, serr)
 			}
 		}
-		return nil
+		return applyMemcachedAvailability(u, av)
 	}
 
 	u := commoncache.NewMemcached()
@@ -1006,8 +1033,9 @@ func (r *ControlPlaneReconciler) ensureMemcached(
 		return false, fmt.Errorf("getting Memcached %q: %w", key.Name, err)
 	default:
 		// An existing Memcached. If this ControlPlane OWNS it (we created it on an
-		// earlier pass), reconcile spec.replicas, spec.resources and the two
-		// spec.security contexts so a ControlPlane spec or sizing change actually
+		// earlier pass), reconcile spec.replicas, spec.resources, the two
+		// spec.security contexts and the two spec.highAvailability keys so a
+		// ControlPlane spec or sizing change actually
 		// resizes the cache we own instead of being ignored after first creation,
 		// and drift off the restricted contexts is corrected. The re-projection
 		// runs in both directions and needs no opt-in: scaling a cache drops cached
@@ -1031,7 +1059,11 @@ func (r *ControlPlaneReconciler) ensureMemcached(
 			if serr != nil {
 				return false, fmt.Errorf("reading Memcached %q spec.security: %w", key.Name, serr)
 			}
-			if !found || current != int64(replicas) || !resourcesMatch || !securityMatches {
+			availabilityMatches, aerr := memcachedAvailabilityMatches(u, av)
+			if aerr != nil {
+				return false, aerr
+			}
+			if !found || current != int64(replicas) || !resourcesMatch || !securityMatches || !availabilityMatches {
 				if perr := project(u); perr != nil {
 					return false, perr
 				}
@@ -1100,7 +1132,16 @@ func unstructuredMemcachedSecurityMatches(u *unstructured.Unstructured) (bool, e
 // priority class of its own, so both go through the StatefulSet override at
 // spec.override.statefulSet.spec.template.spec, which is removed when neither
 // resolves. Unset resources leave the operator's default (1 CPU and 2Gi
-// requested, 2 CPU and 2Gi limit). Image, persistence and tls stay at the
+// requested, 2 CPU and 2Gi limit). spec.affinity carries the hostname
+// anti-affinity of the messaging availability, resolved for the bus's
+// replica count with Required as the default (rabbitMQAffinity), because two
+// brokers on one node lose quorum with that node; a single broker gets none,
+// and the operator's own zone spread stays. The RabbitmqCluster has no budget
+// field, so the disruption budget of a bus of several brokers is a
+// PodDisruptionBudget the ControlPlane owns (ensureRabbitMQBudget), kept in
+// line after a create and on every pass over a controlled bus that is not
+// terminating or shrinking. It outlives a delete-and-recreate of the bus and
+// is garbage-collected with the ControlPlane. Image, persistence and tls stay at the
 // RabbitMQ Cluster Operator's defaults, or at whatever the platform set on an
 // adopted CR: they are site-specific hardening outside the aggregate's
 // knowledge, the posture ensureMariaDB already takes on TLS and issuerRefs.
@@ -1133,7 +1174,7 @@ func unstructuredMemcachedSecurityMatches(u *unstructured.Unstructured) (bool, e
 // running at its current size.
 func (r *ControlPlaneReconciler) ensureRabbitMQ(
 	ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane,
-	m *commonv1.MessagingSpec, sizing *c5c3v1alpha1.ScaledSizingSpec, namespace string,
+	m *commonv1.MessagingSpec, sizing *c5c3v1alpha1.MessagingSizingSpec, namespace string,
 ) (bool, error) {
 	// An unset count follows the sizing on every pass, so a profile change grows
 	// an owned bus (a shrink stays gated below). Zero falls back to the default
@@ -1146,11 +1187,17 @@ func (r *ControlPlaneReconciler) ensureRabbitMQ(
 		replicas = infraRabbitMQReplicasDefault
 	}
 
+	var availability c5c3v1alpha1.AvailabilitySizingSpec
+	if sizing != nil {
+		availability = sizing.AvailabilitySizingSpec
+	}
+	av := resolveBackingAvailability(availability, replicas, c5c3v1alpha1.AntiAffinityRequired)
+
 	key := types.NamespacedName{
 		Name:      m.ClusterRef.Name,
 		Namespace: namespace,
 	}
-	pod := rabbitMQPodSizing(sizing)
+	pod := rabbitMQPodSizing(sizing, key.Name, av)
 	project := func(u *unstructured.Unstructured) error {
 		// int32 must be widened to int64 for unstructured nested-field storage.
 		if serr := unstructured.SetNestedField(u.Object, int64(replicas), "spec", "replicas"); serr != nil {
@@ -1174,6 +1221,9 @@ func (r *ControlPlaneReconciler) ensureRabbitMQ(
 		}
 		if cerr := c.Create(ctx, u); cerr != nil {
 			return false, fmt.Errorf("creating RabbitmqCluster %q: %w", key.Name, cerr)
+		}
+		if berr := r.ensureRabbitMQBudget(ctx, c, cp, key, av); berr != nil {
+			return false, berr
 		}
 	case err != nil:
 		return false, fmt.Errorf("getting RabbitmqCluster %q: %w", key.Name, err)
@@ -1250,6 +1300,9 @@ func (r *ControlPlaneReconciler) ensureRabbitMQ(
 					return false, fmt.Errorf("updating owned RabbitmqCluster %q: %w", key.Name, uerr)
 				}
 			}
+			if berr := r.ensureRabbitMQBudget(ctx, c, cp, key, av); berr != nil {
+				return false, berr
+			}
 		}
 	}
 
@@ -1285,13 +1338,19 @@ type rabbitMQPod struct {
 	// neither a node selector nor a priority class resolves. The upstream schema
 	// requires containers there, so it always carries an empty list.
 	podSpec map[string]interface{}
+	// affinity is the whole of spec.affinity, or nil when the bus gets no
+	// anti-affinity.
+	affinity map[string]interface{}
 }
 
-func rabbitMQPodSizing(s *c5c3v1alpha1.ScaledSizingSpec) rabbitMQPod {
+// rabbitMQPodSizing returns the pod-level sizing of the RabbitmqCluster name
+// from s and av. A nil s still yields the affinity of av.
+func rabbitMQPodSizing(s *c5c3v1alpha1.MessagingSizingSpec, name string, av backingAvailability) rabbitMQPod {
+	p := rabbitMQPod{affinity: rabbitMQAffinity(name, av.antiAffinity)}
 	if s == nil {
-		return rabbitMQPod{}
+		return p
 	}
-	p := rabbitMQPod{resources: s.Resources, tolerations: s.Tolerations}
+	p.resources, p.tolerations = s.Resources, s.Tolerations
 	if len(s.NodeSelector) > 0 || s.PriorityClassName != nil {
 		p.podSpec = map[string]interface{}{"containers": []interface{}{}}
 		if len(s.NodeSelector) > 0 {
@@ -1328,6 +1387,11 @@ func (p rabbitMQPod) applyTo(u *unstructured.Unstructured) error {
 			return fmt.Errorf("setting spec.tolerations: %w", err)
 		}
 	}
+	if p.affinity == nil {
+		unstructured.RemoveNestedField(u.Object, "spec", "affinity")
+	} else if err := unstructured.SetNestedMap(u.Object, p.affinity, "spec", "affinity"); err != nil {
+		return fmt.Errorf("setting spec.affinity: %w", err)
+	}
 	if p.podSpec == nil {
 		unstructured.RemoveNestedField(u.Object, "spec", "override", "statefulSet")
 		return nil
@@ -1342,6 +1406,13 @@ func (p rabbitMQPod) applyTo(u *unstructured.Unstructured) error {
 // matches reports whether u already carries p. Unset resources match the
 // operator's default as well as an absent field.
 func (p rabbitMQPod) matches(u *unstructured.Unstructured) (bool, error) {
+	// spec.affinity is read before the comparisons that return early, so a
+	// value that is not a map fails the pass whatever else differs and applyTo
+	// never overwrites it.
+	affinity, _, err := unstructured.NestedMap(u.Object, "spec", "affinity")
+	if err != nil {
+		return false, err
+	}
 	resourcesMatch, err := unstructuredResourcesMatch(u, p.resources, rabbitMQDefaultResources())
 	if err != nil || !resourcesMatch {
 		return false, err
@@ -1370,7 +1441,10 @@ func (p rabbitMQPod) matches(u *unstructured.Unstructured) (bool, error) {
 	if !found {
 		podSpec = nil
 	}
-	return equality.Semantic.DeepEqual(podSpec, p.podSpec), nil
+	if !equality.Semantic.DeepEqual(podSpec, p.podSpec) {
+		return false, nil
+	}
+	return equality.Semantic.DeepEqual(affinity, p.affinity), nil
 }
 
 // setUnstructuredResources writes rr at spec.resources on u, or removes the

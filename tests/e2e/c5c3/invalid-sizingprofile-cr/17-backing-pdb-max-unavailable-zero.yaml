@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# database.podDisruptionBudget.maxUnavailable of 0 violates the Minimum=1
+# marker on BackingPodDisruptionBudgetSpec; the webhook mirrors it.
+apiVersion: c5c3.io/v1alpha1
+kind: SizingProfile
+metadata:
+  name: c5c3-e2e-sizing-backing-pdb-max-unavailable-zero
+spec:
+  base: Minimal
+  database:
+    podDisruptionBudget:
+      maxUnavailable: 0
