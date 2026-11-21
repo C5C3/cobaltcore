@@ -161,6 +161,32 @@ func TestUWSGICommand_HTTPKeepAlive(t *testing.T) {
 	g.Expect(cmd).NotTo(ContainElement(HavePrefix("--http-keepalive=")))
 }
 
+// Under uWSGI's default of 4096 bytes for a request's line and headers, a
+// logged-in request whose signed-cookie session carries a grown catalog is
+// dropped: uWSGI logs "invalid request block size: <n> (max 4096)...skip",
+// closes the connection without a response, and the gateway answers 503 to
+// every request after the login. uWSGI reads the flag wherever it sits in the
+// command, so the test checks its value; TestPinHorizonDeployment pins the
+// order of the whole command.
+func TestUWSGICommand_BufferSize(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cmd := uwsgiCommand()
+
+	j := slices.Index(cmd, "--buffer-size")
+	g.Expect(j).To(BeNumerically(">=", 0), "the command must carry --buffer-size")
+	g.Expect(len(cmd)).To(BeNumerically(">", j+1))
+	g.Expect(cmd[j+1]).To(Equal("65535"))
+	count := 0
+	for _, arg := range cmd {
+		if arg == "--buffer-size" {
+			count++
+		}
+	}
+	g.Expect(count).To(Equal(1), "--buffer-size must occur once")
+	g.Expect(cmd).NotTo(ContainElement(HavePrefix("--buffer-size=")))
+}
+
 func TestBuildHorizonDeployment_NoHashAnnotationWhenDigestEmpty(t *testing.T) {
 	g := NewGomegaWithT(t)
 	h := testHorizon()

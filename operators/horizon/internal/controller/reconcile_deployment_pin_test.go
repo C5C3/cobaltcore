@@ -65,6 +65,8 @@ spec:
         - --http
         - :8080
         - --http-keepalive
+        - --buffer-size
+        - "65535"
         - --module
         - openstack_dashboard.wsgi
         - --master
@@ -210,6 +212,8 @@ spec:
         - --http
         - :8080
         - --http-keepalive
+        - --buffer-size
+        - "65535"
         - --module
         - openstack_dashboard.wsgi
         - --master
