@@ -21,10 +21,10 @@ A downstream patch changes the upstream source **before** it is installed
 into the service image. It is the last resort: a fix in the operator, a
 config option, or a newer upstream tag is always preferable, because every
 patch has to be carried through every Renovate tag bump until upstream ships
-it. The repository carries fifty-eight today
+it. The repository carries sixty today
 (barbican 0001–0007 for 2026.1 and 0001–0006 for 2026.2,
 cinder 0001–0009 for 2026.1 and 0001–0008 for 2026.2,
-glance 0001, horizon 0001–0002, keystone 0001–0006 and nova 0001–0005 per release);
+glance 0001, horizon 0001–0003, keystone 0001–0006 and nova 0001–0005 per release);
 `check-image-patches.sh` lists them.
 
 ## How a patch reaches an image
