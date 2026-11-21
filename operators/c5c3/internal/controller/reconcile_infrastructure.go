@@ -672,6 +672,15 @@ func novaCacheDeclaredAt(cp *c5c3v1alpha1.ControlPlane) string {
 // applyMariaDBSecurity, so its pods are admitted in a namespace that enforces
 // the restricted Pod Security profile.
 //
+// It projects spec.affinity and spec.podDisruptionBudget from the
+// availability of sizing, resolved for the instance's own replica count with
+// Required as the default (applyMariaDBAvailability): a Galera cluster gets
+// hostname anti-affinity and a budget of one pod at a time, a single instance
+// neither. It never touches the PodDisruptionBudget object, which the
+// mariadb-operator creates from spec.podDisruptionBudget once and does not
+// update: a changed budget reaches an existing database only after
+// kubectl delete pdb <clusterRef.name>.
+//
 // It stays read-modify-write (not Server-Side Apply): the write is gated on the
 // LIVE object's ownership — an owned CR has its topology, sizing and security
 // contexts re-projected, while an externally-provisioned CR sharing the name is
@@ -714,9 +723,12 @@ func (r *ControlPlaneReconciler) ensureMariaDB(
 		storageSize = infraMariaDBStorageSizeDefault
 	}
 	var pod c5c3v1alpha1.PinnedSizingSpec
+	var availability c5c3v1alpha1.AvailabilitySizingSpec
 	if sizing != nil {
 		pod = sizing.PinnedSizingSpec
+		availability = sizing.AvailabilitySizingSpec
 	}
+	av := resolveBackingAvailability(availability, replicas, c5c3v1alpha1.AntiAffinityRequired)
 
 	mariadb := &mariadbv1alpha1.MariaDB{}
 	err := c.Get(ctx, key, mariadb)
@@ -737,6 +749,7 @@ func (r *ControlPlaneReconciler) ensureMariaDB(
 		mariadb.Spec.Storage = mariadbv1alpha1.Storage{Size: &size}
 		applyMariaDBPod(mariadb, pod)
 		applyMariaDBSecurity(mariadb, galeraEnabled)
+		applyMariaDBAvailability(mariadb, av)
 		if serr := claimChildOwnership(c, cp, mariadb, r.Scheme); serr != nil {
 			return false, fmt.Errorf("claiming ownership of MariaDB %q: %w", key.Name, serr)
 		}
@@ -751,7 +764,8 @@ func (r *ControlPlaneReconciler) ensureMariaDB(
 		//  1. It is OWNED by this ControlPlane (we created it on an earlier pass):
 		//     re-assert the spec-derived projection — spec.replicas, the derived
 		//     Galera topology and applier thread count, the resources and
-		//     placement of the sizing, and the restricted security contexts — so
+		//     placement of the sizing, the restricted security contexts, and the
+		//     anti-affinity and disruption budget — so
 		//     external drift on the owned cluster is corrected back to the
 		//     declared state, and a sizing change reaches the running database.
 		//     spec.infrastructure.database.replicas is itself immutable after
@@ -775,7 +789,8 @@ func (r *ControlPlaneReconciler) ensureMariaDB(
 			currentGalera := mariadb.Spec.Galera != nil && mariadb.Spec.Galera.Enabled
 			if mariadb.Spec.Replicas != replicas || currentGalera != galeraEnabled ||
 				!mariaDBApplierThreadsMatch(mariadb, galeraEnabled, threads) ||
-				!mariaDBPodMatches(mariadb, pod) || !mariaDBSecurityMatches(mariadb, galeraEnabled) {
+				!mariaDBPodMatches(mariadb, pod) || !mariaDBSecurityMatches(mariadb, galeraEnabled) ||
+				!mariaDBAvailabilityMatches(mariadb, av) {
 				mariadb.Spec.Replicas = replicas
 				// spec.galera is updated in place, keeping every live field the
 				// mariadb-operator defaulted. Replacing it wholesale would drop the
@@ -791,6 +806,7 @@ func (r *ControlPlaneReconciler) ensureMariaDB(
 				}
 				applyMariaDBPod(mariadb, pod)
 				applyMariaDBSecurity(mariadb, galeraEnabled)
+				applyMariaDBAvailability(mariadb, av)
 				if uerr := c.Update(ctx, mariadb); uerr != nil {
 					return false, fmt.Errorf("updating owned MariaDB %q: %w", key.Name, uerr)
 				}

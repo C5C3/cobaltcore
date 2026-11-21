@@ -23,6 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -3042,7 +3043,8 @@ func wantMariaDBContainerSecurityContext() *mariadbv1alpha1.SecurityContext {
 
 // ownedGaleraMariaDB is a live 3-replica Galera MariaDB that carries the pod,
 // mariadb and agent contexts, a defaulted agent port, SST method and applier
-// thread count, and the given init image without an init context.
+// thread count, the required hostname anti-affinity and a budget of one pod,
+// and the given init image without an init context.
 func ownedGaleraMariaDB(initImage string) *mariadbv1alpha1.MariaDB {
 	size := resource.MustParse("512Mi")
 	m := &mariadbv1alpha1.MariaDB{
@@ -3068,6 +3070,8 @@ func ownedGaleraMariaDB(initImage string) *mariadbv1alpha1.MariaDB {
 	}
 	m.Spec.PodSecurityContext = wantMariaDBPodSecurityContext()
 	m.Spec.SecurityContext = wantMariaDBContainerSecurityContext()
+	m.Spec.Affinity = wantMariaDBAffinity(m.Name, c5c3v1alpha1.AntiAffinityRequired)
+	m.Spec.PodDisruptionBudget = wantMariaDBBudget(intstr.FromInt32(1))
 	return m
 }
 

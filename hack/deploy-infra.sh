@@ -341,6 +341,10 @@ CONTROLPLANE_OPERATORS="${CONTROLPLANE_OPERATORS:-flux}"
 # applied (WITH_CONTROLPLANE_CR=true); unset leaves the field to the profile.
 #   CONTROLPLANE_DB_REPLICAS=3     — Galera HA cluster (2 is rejected by the c5c3
 #                                    validating webhook: Galera needs a quorum).
+#                                    A count above 1 also sets
+#                                    spec.sizing.database.antiAffinity: Preferred,
+#                                    since kind has fewer schedulable nodes than
+#                                    members and Required leaves the rest Pending.
 #   CONTROLPLANE_CACHE_REPLICAS=N  — N Memcached pods.
 #   CONTROLPLANE_DB_STORAGE=100Gi  — per-replica MariaDB volume size. Must be a
 #                                    Kubernetes quantity in Mi/Gi/Ti.
@@ -3146,9 +3150,12 @@ render_kind_config() {
 # than by the c5c3 validating webhook after the CR is sent: the replica counts
 # must be a positive integer, the database count may not be 2 (a two-node Galera
 # cluster cannot hold a quorum — the webhook rejects it), and the storage size
-# must match the CRD quantity pattern (digits + Mi/Gi/Ti). Returns non-zero on an
-# invalid footprint instead of exiting, so the caller decides how to handle it;
-# main() runs under `set -e`, so the bare call there still fails the deploy fast.
+# must match the CRD quantity pattern (digits + Mi/Gi/Ti). A database count above
+# 1 also sets spec.sizing.database.antiAffinity to Preferred: the kind clusters
+# have fewer schedulable nodes than Galera members, and the default Required
+# would leave a member Pending. Returns non-zero on an invalid footprint instead
+# of exiting, so the caller decides how to handle it; main() runs under `set -e`,
+# so the bare call there still fails the deploy fast.
 # Name-scoped to the CR we just (possibly) renamed so a growing overlay is not
 # silently rewritten; tonumber keeps the replica values integers (the CRD schema
 # types replicas as integer) while storageSize stays a string.
@@ -3192,6 +3199,9 @@ render_controlplane_replicas() {
   local updates=()
   if [[ -n "${CONTROLPLANE_DB_REPLICAS}" ]]; then
     updates+=('.spec.infrastructure.database.replicas = (strenv(CONTROLPLANE_DB_REPLICAS) | tonumber)')
+    if (( CONTROLPLANE_DB_REPLICAS > 1 )); then
+      updates+=('.spec.sizing.database.antiAffinity = "Preferred"')
+    fi
   fi
   if [[ -n "${CONTROLPLANE_CACHE_REPLICAS}" ]]; then
     updates+=('.spec.infrastructure.cache.replicas = (strenv(CONTROLPLANE_CACHE_REPLICAS) | tonumber)')
