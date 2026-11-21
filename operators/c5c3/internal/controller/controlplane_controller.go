@@ -27,6 +27,7 @@ import (
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v3/api/v1alpha1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/v26/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -314,7 +315,7 @@ var controlPlaneRemoteChildKinds = []schema.GroupVersionKind{
 // +kubebuilder:rbac:groups=c5c3.io,resources=keystoneservices,verbs=create;update;patch;delete
 // Projected and Owned by reconcileInfrastructure.
 // Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_delete.go:1573 (sweepExternalNamespaceResidue) to delete mariadbs.
-// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_infrastructure.go:771 (ensureMariaDB) to update mariadbs.
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_infrastructure.go:810 (ensureMariaDB) to update mariadbs.
 // +kubebuilder:rbac:groups=k8s.mariadb.com,resources=mariadbs,verbs=get;list;watch;create;update;delete
 // Read by mariaDBDatabaseEndpoint (database.ResolveEndpoint) through the
 // cached client: a MariaDBDatabase order on the database's cluster receives
@@ -328,8 +329,16 @@ var controlPlaneRemoteChildKinds = []schema.GroupVersionKind{
 // Projected and Owned by reconcileInfrastructure for spec.infrastructure.messaging
 // (resolved via the cluster RESTMapper at runtime; no Go scheme registration
 // required). The watch is registered only when the CRD is served.
-// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_infrastructure.go:1077 (ensureRabbitMQ) to update rabbitmqclusters.
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_infrastructure.go:1299 (ensureRabbitMQ) to update rabbitmqclusters.
 // +kubebuilder:rbac:groups=rabbitmq.com,resources=rabbitmqclusters,verbs=get;list;watch;create;update;delete
+// The disruption budget of a managed bus of several brokers, which
+// ensureRabbitMQBudget creates, updates and deletes beside the
+// RabbitmqCluster, and the Owns leg that restores a deleted or edited one.
+// Every bus of the e2e suites runs one broker, so no suite writes one.
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/infra_availability.go:265 (ensureRabbitMQBudget) to create poddisruptionbudgets.
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/infra_availability.go:288 (ensureRabbitMQBudget) to update poddisruptionbudgets.
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/infra_availability.go:276 (ensureRabbitMQBudget) to delete poddisruptionbudgets.
+// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;delete
 // The ControlPlane reconciler projects and Owns a Keystone child.
 // +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystones,verbs=get;list;watch;create;patch;delete
 // READ-ONLY: the ControlPlane reconciler watches the federation/domain backends
@@ -1586,6 +1595,9 @@ func (r *ControlPlaneReconciler) buildControlPlaneController(mgr mcmanager.Manag
 		Owns(&orcv1alpha1.RoleAssignment{}, engageLocal, engageNoProviders).
 		Owns(&orcv1alpha1.Region{}, engageLocal, engageNoProviders).
 		Owns(memcached, engageLocal, engageNoProviders).
+		// The budget of a managed bus of several brokers, so a deleted or edited
+		// budget is restored (ensureRabbitMQBudget).
+		Owns(&policyv1.PodDisruptionBudget{}, engageLocal, engageNoProviders).
 		Owns(certificate, engageLocal, engageNoProviders).
 		Owns(&esov1.ExternalSecret{}, engageLocal, engageNoProviders).
 		Owns(&esov1alpha1.PushSecret{}, engageLocal, engageNoProviders).

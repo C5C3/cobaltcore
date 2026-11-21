@@ -5,15 +5,21 @@
 package controller
 
 import (
+	"context"
 	"fmt"
 
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/v26/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
 )
@@ -229,4 +235,67 @@ func rabbitMQAffinity(name string, mode c5c3v1alpha1.AntiAffinityMode) map[strin
 	case c5c3v1alpha1.AntiAffinityOff:
 	}
 	return nil
+}
+
+// ensureRabbitMQBudget keeps the policy/v1 PodDisruptionBudget of the managed
+// bus at key, the name and namespace of its RabbitmqCluster, in line with av.
+// The RabbitmqCluster has no budget field, so the ControlPlane owns the
+// object: a wanted budget is created with a controller owner reference, a
+// controlled one whose count or selector drifted, or which carries
+// minAvailable, is updated, and a controlled one is deleted when av wants
+// none. A budget of that name the ControlPlane does not control is left as it
+// is, with an Info line, and none is created beside it. The selector is the
+// one the RabbitMQ Cluster Operator gives the broker StatefulSet.
+func (r *ControlPlaneReconciler) ensureRabbitMQBudget(
+	ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane,
+	key types.NamespacedName, av backingAvailability,
+) error {
+	pdb := &policyv1.PodDisruptionBudget{}
+	err := c.Get(ctx, key, pdb)
+	switch {
+	case apierrors.IsNotFound(err):
+		if av.maxUnavailable == nil {
+			return nil
+		}
+		pdb = &policyv1.PodDisruptionBudget{ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace}}
+		pdb.Spec = rabbitMQBudgetSpec(key.Name, *av.maxUnavailable)
+		if serr := claimChildOwnership(c, cp, pdb, r.Scheme); serr != nil {
+			return fmt.Errorf("claiming ownership of PodDisruptionBudget %q: %w", key.Name, serr)
+		}
+		if cerr := c.Create(ctx, pdb); cerr != nil {
+			return fmt.Errorf("creating PodDisruptionBudget %q: %w", key.Name, cerr)
+		}
+		return nil
+	case err != nil:
+		return fmt.Errorf("getting PodDisruptionBudget %q: %w", key.Name, err)
+	case !metav1.IsControlledBy(pdb, cp):
+		log.FromContext(ctx).Info("leaving a PodDisruptionBudget this ControlPlane does not control unchanged",
+			"podDisruptionBudget", key.Name, "namespace", key.Namespace)
+		return nil
+	case av.maxUnavailable == nil:
+		if derr := c.Delete(ctx, pdb); client.IgnoreNotFound(derr) != nil {
+			return fmt.Errorf("deleting PodDisruptionBudget %q: %w", key.Name, derr)
+		}
+		return nil
+	}
+	want := rabbitMQBudgetSpec(key.Name, *av.maxUnavailable)
+	if pdb.Spec.MinAvailable == nil &&
+		equality.Semantic.DeepEqual(pdb.Spec.MaxUnavailable, want.MaxUnavailable) &&
+		equality.Semantic.DeepEqual(pdb.Spec.Selector, want.Selector) {
+		return nil
+	}
+	pdb.Spec.MinAvailable, pdb.Spec.MaxUnavailable, pdb.Spec.Selector = nil, want.MaxUnavailable, want.Selector
+	if uerr := c.Update(ctx, pdb); uerr != nil {
+		return fmt.Errorf("updating PodDisruptionBudget %q: %w", key.Name, uerr)
+	}
+	return nil
+}
+
+// rabbitMQBudgetSpec is the budget spec of the bus name: maxUnavailable pods
+// at a time, over the broker pods of that RabbitmqCluster.
+func rabbitMQBudgetSpec(name string, maxUnavailable int32) policyv1.PodDisruptionBudgetSpec {
+	return policyv1.PodDisruptionBudgetSpec{
+		MaxUnavailable: ptr.To(intstr.FromInt32(maxUnavailable)),
+		Selector:       &metav1.LabelSelector{MatchLabels: map[string]string{rabbitMQNameLabel: name}},
+	}
 }

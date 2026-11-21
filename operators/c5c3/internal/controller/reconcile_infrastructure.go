@@ -1136,7 +1136,12 @@ func unstructuredMemcachedSecurityMatches(u *unstructured.Unstructured) (bool, e
 // anti-affinity of the messaging availability, resolved for the bus's
 // replica count with Required as the default (rabbitMQAffinity), because two
 // brokers on one node lose quorum with that node; a single broker gets none,
-// and the operator's own zone spread stays. Image, persistence and tls stay at the
+// and the operator's own zone spread stays. The RabbitmqCluster has no budget
+// field, so the disruption budget of a bus of several brokers is a
+// PodDisruptionBudget the ControlPlane owns (ensureRabbitMQBudget), kept in
+// line after a create and on every pass over a controlled bus that is not
+// terminating or shrinking. It outlives a delete-and-recreate of the bus and
+// is garbage-collected with the ControlPlane. Image, persistence and tls stay at the
 // RabbitMQ Cluster Operator's defaults, or at whatever the platform set on an
 // adopted CR: they are site-specific hardening outside the aggregate's
 // knowledge, the posture ensureMariaDB already takes on TLS and issuerRefs.
@@ -1217,6 +1222,9 @@ func (r *ControlPlaneReconciler) ensureRabbitMQ(
 		if cerr := c.Create(ctx, u); cerr != nil {
 			return false, fmt.Errorf("creating RabbitmqCluster %q: %w", key.Name, cerr)
 		}
+		if berr := r.ensureRabbitMQBudget(ctx, c, cp, key, av); berr != nil {
+			return false, berr
+		}
 	case err != nil:
 		return false, fmt.Errorf("getting RabbitmqCluster %q: %w", key.Name, err)
 	default:
@@ -1291,6 +1299,9 @@ func (r *ControlPlaneReconciler) ensureRabbitMQ(
 				if uerr := c.Update(ctx, u); uerr != nil {
 					return false, fmt.Errorf("updating owned RabbitmqCluster %q: %w", key.Name, uerr)
 				}
+			}
+			if berr := r.ensureRabbitMQBudget(ctx, c, cp, key, av); berr != nil {
+				return false, berr
 			}
 		}
 	}
