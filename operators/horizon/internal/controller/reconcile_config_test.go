@@ -865,6 +865,41 @@ func TestRenderLocalSettings_OtherCacheBackendRendersNoOptions(t *testing.T) {
 	g.Expect(rendered).NotTo(ContainSubstring(`"OPTIONS"`))
 }
 
+// sessionUnsetLocalSettings is the complete local_settings.py of testHorizon(),
+// captured from the renderer before spec.session existed. A CR without the
+// block must keep rendering it byte for byte, so the operator upgrade creates
+// no ConfigMap and rolls no dashboard.
+const sessionUnsetLocalSettings = `import os
+
+# Rendered by the horizon-operator; edits are overwritten on the next reconcile.
+# SECRET_KEY is injected via the pod environment (spec.secretKeyRef) so the
+# key material never enters this ConfigMap.
+SECRET_KEY = os.environ["HORIZON_SECRET_KEY"]
+
+ALLOWED_HOSTS = ["localhost", "test-horizon", "test-horizon.default", "test-horizon.default.svc", "test-horizon.default.svc.cluster.local"]
+CACHES = {"default": {"BACKEND": "django.core.cache.backends.memcached.PyMemcacheCache", "KEY_PREFIX": "horizon-e3b48cc65c6f", "LOCATION": ["memcached:11211"], "OPTIONS": {"connect_timeout": 1, "ignore_exc": True, "timeout": 1}}}
+COMPRESS_OFFLINE = True
+DEBUG = False
+LOGGING = {"disable_existing_loggers": False, "filters": {"require_debug_false": {"()": "django.utils.log.RequireDebugFalse"}}, "formatters": {"text": {"datefmt": "%Y-%m-%d %H:%M:%S", "format": "%(asctime)s.%(msecs)03d %(process)d %(levelname)s %(name)s [-] %(message)s"}}, "handlers": {"console": {"class": "logging.StreamHandler", "formatter": "text", "stream": "ext://sys.stderr"}, "mail_admins": {"class": "django.utils.log.AdminEmailHandler", "filters": ["require_debug_false"], "level": "ERROR"}}, "loggers": {"django": {"handlers": ["mail_admins"], "level": "INFO"}}, "root": {"handlers": ["console"], "level": "INFO"}, "version": 1}
+OPENSTACK_ENDPOINT_TYPE = "internalURL"
+OPENSTACK_KEYSTONE_URL = "http://keystone.default.svc.cluster.local:5000/v3"
+OPENSTACK_REQUEST_TIMEOUT = 30
+SESSION_ENGINE = "django.contrib.sessions.backends.signed_cookies"
+STATIC_ROOT = "/var/lib/openstack/horizon-static"
+WEBROOT = "/"
+`
+
+// TestRenderLocalSettings_SessionUnsetIsUnchanged pins the whole module of a
+// Horizon without spec.session. Expected output is a literal, never a second
+// render, so any new default setting or changed literal fails here.
+func TestRenderLocalSettings_SessionUnsetIsUnchanged(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	rendered, err := renderLocalSettingsWithoutList(testHorizon())
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(rendered).To(Equal(sessionUnsetLocalSettings))
+}
+
 // renderLocalSettingsWithoutList renders local_settings.py with the server
 // list cache.ResolveServers returns while no Memcached publishes one.
 func renderLocalSettingsWithoutList(h *horizonv1alpha1.Horizon) (string, error) {
