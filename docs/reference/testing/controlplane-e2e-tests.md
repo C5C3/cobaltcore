@@ -497,6 +497,17 @@ paths any other chassis or metadata agent would share.
    authenticates after the Keystone migration, and the server boot goes through
    the upgraded APIs. The hypervisor operator's Job of Link 7d is not rerun.
 
+8f. **Cache sessions** — a merge patch sets
+   `services.horizon.session.backend: Cache` on the ControlPlane. Within 300
+   seconds the Horizon child carries the block, is `Ready` at its new
+   generation and has finished its rollout with no pod left terminating. The
+   ConfigMap it mounts carries the cache session engine,
+   `SESSION_CACHE_ALIAS = "sessions"` and `"KEY_PREFIX":
+   "horizon-sessions-e7c8fa627bdb"`. The login of Link 2c then runs once
+   more: it answers 302, `/project/api_access/` answers 200, and the
+   `sessionid` value has 32 characters. The link runs last, so Link 2c and 8e
+   bound the signed-cookie session of the full catalog first.
+
 The data plane stays at the start release: the fake compute and the metadata
 agent are not ControlPlane children, and nova renders `[upgrade_levels]
 compute = auto`, which lets a compute of the start release serve the upgraded
@@ -1712,7 +1723,7 @@ tests/e2e/c5c3/
 │   ├── 08-patch-upgrade.yaml           Link 8's merge patch (the target release)
 │   ├── extraconfig-edit.sh             Link 7e, sourced by the step 1 script (inline, it passes the 128 KiB argument cap)
 │   ├── secret-store-checks.sh          The verify Job's vault_index and OpenBao sizing checks, sourced for the same cap
-│   └── horizon-login.sh                Link 2c's dashboard login, sourced for the same cap
+│   └── horizon-login.sh                Link 2c's dashboard login and Link 8f's cache-session switch, sourced for the same cap
 ├── healthcheck/
 │   ├── chainsaw-test.yaml              KeystoneReady and Ready wait for the Keystone API
 │   └── 00-controlplane-cr.yaml         Keystone-only ControlPlane (cp; ephemeral namespace)
@@ -1883,7 +1894,7 @@ keeps the per-CR `e2e-operator` job and `make e2e` from sweeping it up.
 | 4. `rendered-settings` | The rendered `local_settings.py` carries `WEBSSO_ENABLED`, `WEBSSO_USE_HTTP_REFERER = False`, `SECURE_PROXY_SSL_HEADER`, and multi-domain support — but neither `OPENSTACK_KEYSTONE_DOMAIN_DROPDOWN` nor `OPENSTACK_KEYSTONE_DOMAIN_CHOICES`, which would bound the domain field to the domains the operator can enumerate |
 | 5. `browser-sso-round-trip` | Waits for the Horizon **and** the Keystone child to observe their final spec and for both Deployments' rollouts to land, then one in-cluster browser, one cookie jar, three flows: (a) the login page offers the SSO choice and a free-text domain field; (b) the websso round trip completes through the gateway against the origin Keystone matches verbatim; (c) an LDAP-domain user logs in through that field |
 | 6. `detach` | Deleting both backends clears `spec.websso` and `spec.multiDomain`; `trustedDashboards` survives, since it is derived from `services.horizon`, not from the backends |
-| 7. `controlplane-multi-domain` | With no backend attached, a patched `services.horizon.multiDomain` dropdown over `Default` and `cobaltcore-local` reaches the Horizon child as written, with `defaultDomain: Default` resolved and no websso block. Once both rollouts finish, the rendered `local_settings.py` carries `OPENSTACK_KEYSTONE_DOMAIN_DROPDOWN` and `OPENSTACK_KEYSTONE_DOMAIN_CHOICES`, the login page offers the domain select, and `leela` of the SQL-backed domain `cobaltcore-local` gets a `sessionid` cookie through it |
+| 7. `controlplane-multi-domain` | With no backend attached, a patched `services.horizon.multiDomain` dropdown over `Default` and `cobaltcore-local` reaches the Horizon child as written, with `defaultDomain: Default` resolved and no websso block, together with `services.horizon.session.backend: Cache`. Once both rollouts finish, the rendered `local_settings.py` carries `OPENSTACK_KEYSTONE_DOMAIN_DROPDOWN`, `OPENSTACK_KEYSTONE_DOMAIN_CHOICES`, the cache session engine and the sessions prefix `horizon-sessions-c434a8949d7f`, the login page offers the domain select, and `leela` of the SQL-backed domain `cobaltcore-local` gets a 32-character `sessionid` through it. Her session, loaded in a dashboard pod, holds `domain_token`, and no current dashboard pod logs `Using signed cookies as SESSION_ENGINE` |
 
 **The browser runs in-cluster.** Unlike the gateway quick-start smokes (which
 curl from the CI host through the kind `:443` → NodePort bridge), this suite
