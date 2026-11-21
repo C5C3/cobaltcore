@@ -269,8 +269,12 @@ ControlPlane projects those dynamically from the attached identity backends), an
 Keystone's `[federation] trusted_dashboard` only when the ControlPlane derives a
 dashboard endpoint from `services.horizon`. With no Horizon block that Keystone
 key is admitted with a warning, so an externally-run dashboard can still do WebSSO
-against the managed Keystone. Any other operator-owned key is honored but draws an
-admission warning naming the key, its owner, its impact, and the block that set it.
+against the managed Keystone. While `services.horizon.session` is set, the webhook
+also rejects the Horizon `SESSION_ENGINE`, and with backend `Cache` the Horizon
+`SESSION_CACHE_ALIAS` and `CACHES` (see
+[Cache sessions](../reference/horizon/index.md#cache-sessions)). Any other
+operator-owned key is honored but draws an admission warning naming the key, its
+owner, its impact, and the block that set it.
 
 **Option-catalog** validation runs on every create. Updates rerun it only when a
 catalog input changes: either INI block, `spec.openStackRelease`,
