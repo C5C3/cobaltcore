@@ -4123,6 +4123,12 @@ OVN comparison of `verify`.
 The plane requests about 36 GiB of memory. A worker of `newforge` has 29.9 GiB
 allocatable, and on 2026-10-19 the three workers had about 41.4 GiB free, so
 `preflight` refuses a lab with less than 38 GiB of free memory requests. The
+plane also needs three Ready nodes, one per Galera member and broker: under the
+`Standard` profile the ControlPlane gives its three-replica MariaDB and
+RabbitmqCluster required hostname anti-affinity, so on fewer nodes a member stays
+`Pending`. `preflight` fails with fewer than three Ready nodes and prints
+`OK: <n> Ready nodes, one per Galera member and broker of the Standard plane`
+otherwise. The
 volumes are about 300 GiB for Galera, 30 GiB for the broker and 6 GiB for OVN
 on the default class, for the length of the session. A session runs about five
 hours: `up` takes up to two, and each suite about twenty minutes.
