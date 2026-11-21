@@ -11,6 +11,7 @@ import (
 	"regexp"
 
 	appsv1 "k8s.io/api/apps/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -284,6 +285,8 @@ func (w *HorizonWebhook) validate(ctx context.Context, h *Horizon, extra field.E
 
 	allErrs = append(allErrs, validateWebSSO(specPath, h)...)
 	allErrs = append(allErrs, validateMultiDomain(specPath, h)...)
+	allErrs = append(allErrs, ValidateSession(specPath.Child("session"), specPath.Child("extraConfig"),
+		h.Spec.Session, h.Spec.Cache.Backend, h.Spec.ExtraConfig)...)
 
 	// Defense-in-depth logging validation alongside the CRD enum markers on
 	// LoggingSpec.Format / .Level. Map values cannot be expressed as a CRD
@@ -617,7 +620,8 @@ func validateWebSSO(specPath *field.Path, h *Horizon) field.ErrorList {
 		}
 	}
 
-	errs = append(errs, validateExtraConfigCollision(specPath, h, WebSSOSettingNames, "spec.websso")...)
+	errs = append(errs, validateExtraConfigCollision(specPath.Child("extraConfig"), h.Spec.ExtraConfig,
+		WebSSOSettingNames, "spec.websso")...)
 	return errs
 }
 
@@ -628,7 +632,8 @@ func validateMultiDomain(specPath *field.Path, h *Horizon) field.ErrorList {
 		return nil
 	}
 	errs := ValidateMultiDomain(specPath.Child("multiDomain"), h.Spec.MultiDomain)
-	errs = append(errs, validateExtraConfigCollision(specPath, h, MultiDomainSettingNames, "spec.multiDomain")...)
+	errs = append(errs, validateExtraConfigCollision(specPath.Child("extraConfig"), h.Spec.ExtraConfig,
+		MultiDomainSettingNames, "spec.multiDomain")...)
 	return errs
 }
 
@@ -673,16 +678,83 @@ func ValidateMultiDomain(fldPath *field.Path, md *MultiDomainSpec) field.ErrorLi
 	return errs
 }
 
+// ValidateSession checks a session block against the extraConfig and the cache
+// backend it depends on. It is nil-safe: an unset block keeps signed-cookie
+// sessions, and an extraConfig SESSION_ENGINE beside it stays admitted, so no
+// stored CR and no existing manifest is rejected. Every violation is
+// accumulated:
+//
+//   - a backend outside SignedCookies and Cache, the twin of the Enum marker;
+//   - an extraConfig SESSION_ENGINE with either backend, and an extraConfig
+//     SESSION_CACHE_ALIAS with Cache: extraConfig wins the render-time merge,
+//     so either override would silently drop the typed block;
+//   - an extraConfig CACHES with Cache: it replaces the operator's CACHES
+//     whole and drops the "sessions" alias, and Django then raises on every
+//     request;
+//   - Cache on a cache backend other than PyMemcacheCache (an empty value
+//     resolves to it), the one shared backend the shipped images can import:
+//     a per-process cache holds a session for one uWSGI process only.
+//
+// It is exported for the ControlPlane webhook, which carries this type on
+// services.horizon.session and must admit exactly what the Horizon CRD
+// admits, and for the renderer's backstop against a CR that bypassed this
+// webhook. The caller supplies both field paths, so the errors name the CR
+// under admission.
+func ValidateSession(sessionPath, extraConfigPath *field.Path, session *SessionSpec,
+	cacheBackend string, extraConfig map[string]apiextensionsv1.JSON,
+) field.ErrorList {
+	if session == nil {
+		return nil
+	}
+
+	var errs field.ErrorList
+	switch session.Backend {
+	case SessionBackendSignedCookies, SessionBackendCache:
+	default:
+		errs = append(errs, field.NotSupported(sessionPath.Child("backend"), string(session.Backend),
+			[]SessionBackend{SessionBackendSignedCookies, SessionBackendCache}))
+	}
+
+	owned := []string{SettingSessionEngine}
+	if session.Backend == SessionBackendCache {
+		owned = append(owned, SettingSessionCacheAlias)
+	}
+	errs = append(errs, validateExtraConfigCollision(extraConfigPath, extraConfig, owned, sessionPath.String())...)
+	if session.Backend != SessionBackendCache {
+		return errs
+	}
+
+	if _, ok := extraConfig[SettingCaches]; ok {
+		errs = append(errs, field.Forbidden(
+			extraConfigPath.Key(SettingCaches),
+			fmt.Sprintf("CACHES must not be set in extraConfig while %s.backend is Cache "+
+				"(the override would drop the %q cache alias that holds the sessions)", sessionPath, SessionCacheAlias),
+		))
+	}
+	if cacheBackend != "" && cacheBackend != DefaultCacheBackend {
+		errs = append(errs, field.Invalid(
+			sessionPath.Child("backend"),
+			string(session.Backend),
+			fmt.Sprintf("requires the cache backend %s, got %q "+
+				"(a per-process cache cannot hold a session across uWSGI processes and replicas)",
+				DefaultCacheBackend, cacheBackend),
+		))
+	}
+	return errs
+}
+
 // validateExtraConfigCollision rejects an extraConfig entry that names a Django
 // setting the given typed block already owns. extraConfig wins the render-time
 // merge, so the override would silently take effect and the typed block would
 // be dropped from the rendered local_settings.py without any signal.
-func validateExtraConfigCollision(specPath *field.Path, h *Horizon, owned []string, blockPath string) field.ErrorList {
+func validateExtraConfigCollision(extraConfigPath *field.Path, extraConfig map[string]apiextensionsv1.JSON,
+	owned []string, blockPath string,
+) field.ErrorList {
 	var errs field.ErrorList
 	for _, name := range owned {
-		if _, ok := h.Spec.ExtraConfig[name]; ok {
+		if _, ok := extraConfig[name]; ok {
 			errs = append(errs, field.Forbidden(
-				specPath.Child("extraConfig").Key(name),
+				extraConfigPath.Key(name),
 				fmt.Sprintf("%s is managed via %s and must not also be set in extraConfig "+
 					"(extraConfig wins the merge, which would silently drop the typed block)", name, blockPath),
 			))
