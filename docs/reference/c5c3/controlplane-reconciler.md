@@ -152,6 +152,7 @@ kinds (`ClusterSecretStore` and `SecretStore`):
 | `NovaCompute` | `Watches()` | Per-CR fan-out via `novaComputeToControlPlaneMapper`, matching the Nova namespace and the Nova name a pool's `spec.novaRef` names. Pools are user-authored and only read, for the clusters the compute contract is mirrored to, so they carry no owner reference. The predicate admits a pool being created, deleted or starting to be deleted, the events that change the mirror targets. The leg sits behind the discovery probe with the other nova-operator kinds |
 | `NeutronMetadataAgent` | `Watches()` | Per-CR fan-out via `neutronMetadataAgentToControlPlaneMapper`, waking every ControlPlane with `services.nova` and `services.neutron` whose OVN central namespace is the agent's namespace. Agents are user-authored and only read, for the clusters the metadata shared secret is copied to, so they carry no owner reference. `neutronMetadataAgentDeliveryPredicate` admits an agent being created, deleted or starting to be deleted, and a change of `spec.novaMetadata.sharedSecretRef.name`; status writes and generic events are dropped. The leg sits behind the discovery probe with the other neutron-operator kinds |
 | `OVNCentral` | `Watches()` | Per-CR fan-out via `ovnCentralToControlPlaneMapper`. The central is deployed outside the plane and only named by `spec.services.neutron.ovn.centralRef`, so it carries no owner reference an `Owns()` could match; the leg re-runs `reconcileOVN` when the central's status moves instead of waiting for the periodic requeue. The ovn-operator is installed only for a plane that runs a network service, so the leg sits behind the discovery probe with the other sibling-operator kinds |
+| `PodDisruptionBudget` | `Owns()` | Restores the budget of a managed bus of several brokers (`ensureRabbitMQBudget`) when it is deleted or edited. The watch is unconditional: every cluster serves `policy/v1` |
 | `SizingProfile` | `Watches()` | Per-CR fan-out via `sizingProfileToControlPlaneMapper`, which lists every ControlPlane and enqueues those whose `spec.sizing.profileRef.name` names the event's profile. The kind is cluster-scoped and only referenced, so it carries no owner reference an `Owns()` could match. The watch is unconditional, because the CRD ships in the c5c3 chart; a List error is logged and drops the event. |
 | K-ORC `ApplicationCredential` | `Owns()` | Re-reconciles when the minted admin credential's `Available` condition or `status.id` changes |
 | K-ORC `Service` | `Owns()` | Re-reconciles when the identity catalog Service changes |
@@ -286,6 +287,7 @@ RBAC markers on the two reconcilers generate the required ClusterRole. The
 | `k8s.mariadb.com` | `maxscales` | get, list, watch |
 | `memcached.c5c3.io` | `memcacheds` | get, list, watch, create, update, patch, delete |
 | `rabbitmq.com` | `rabbitmqclusters` | get, list, watch, create, update, patch, delete |
+| `policy` | `poddisruptionbudgets` | get, list, watch, create, update, delete |
 | `keystone.openstack.c5c3.io` | `keystones` | get, list, watch, create, update, patch, delete |
 | `placement.openstack.c5c3.io` | `placements` | get, list, watch, create, update, patch, delete |
 | `barbican.openstack.c5c3.io` | `barbicans`, `barbicansecretstores` | get, list, watch, create, update, patch, delete |
@@ -989,7 +991,7 @@ creates nothing on either side.
 | File | `reconcile_infrastructure.go` |
 | Condition | `InfrastructureReady` |
 | Gate | none |
-| Projects / Owns | Managed-mode `MariaDB` (`k8s.mariadb.com`) and `Memcached` (unstructured `memcached.c5c3.io/v1beta1`) children, each named after its `clusterRef` and created in **the namespace of the service that resolves to it** (`cp.KeystoneNamespace()` / `cp.HorizonNamespace()`, the ControlPlane's own unless a `namespace` assignment places the service elsewhere), **on the cluster that namespace lives on**; plus the managed-mode `RabbitmqCluster` (unstructured `rabbitmq.com/v1beta1`), always in **the ControlPlane's own namespace** on the local cluster |
+| Projects / Owns | Managed-mode `MariaDB` (`k8s.mariadb.com`) and `Memcached` (unstructured `memcached.c5c3.io/v1beta1`) children, each named after its `clusterRef` and created in **the namespace of the service that resolves to it** (`cp.KeystoneNamespace()` / `cp.HorizonNamespace()`, the ControlPlane's own unless a `namespace` assignment places the service elsewhere), **on the cluster that namespace lives on**; plus the managed-mode `RabbitmqCluster` (unstructured `rabbitmq.com/v1beta1`) and, for a bus of several brokers, its `PodDisruptionBudget`, always in **the ControlPlane's own namespace** on the local cluster |
 | Requeue | `infraRequeueAfter` = **15s** while a managed child is not yet Ready |
 
 **Backing services follow the service.** `managedInfraInstances` adds each
@@ -1026,6 +1028,52 @@ the upstream schema requires); unset resources that equal the operator's
 default count as matching, so a `Standard` bus is not rewritten on every pass.
 The shrink gate on `c5c3.io/allow-messaging-recreate` is unchanged. The teardown
 enumerates the instances with the zero sizing, since it only reads their names.
+
+**Availability.** Each ensure function resolves the `antiAffinity` and
+`podDisruptionBudget` of its class block for the replica count it already
+computed (`resolveBackingAvailability` in `infra_availability.go`), so a
+dedicated instance with its own count is judged on that count, and a nil block
+counts as empty. One replica resolves to `Off` and no budget. More replicas take
+the block's mode when it is `Required`, `Preferred` or `Off` and the class
+default otherwise (`Required` for MariaDB and RabbitMQ, `Preferred` for
+Memcached), and a budget of the block's `maxUnavailable`, or 1, unless `enabled`
+is `false`. The class writers are these:
+
+- `applyMariaDBAvailability` writes `spec.affinity` with one hostname term on
+  `app.kubernetes.io/instance In [<name>]`, required or preferred with weight
+  100, or removes it for `Off`. It keeps a live `antiAffinityEnabled` and never
+  sets one, since the mariadb-operator webhook refuses to change it while
+  `spec.affinity` is set, and replaces every other key, `nodeAffinity` included.
+  It writes `spec.podDisruptionBudget.maxUnavailable` on a Galera cluster
+  (`"100%"` without a budget, since an unset field gives `minAvailable: 50%`)
+  and removes it on a single instance. `mariaDBAvailabilityMatches` joins the
+  owned re-assert, and the PodDisruptionBudget object stays the
+  mariadb-operator's: it is created once, so a changed budget needs
+  `kubectl delete pdb <clusterRef.name>`.
+- `applyMemcachedAvailability` owns `spec.highAvailability.antiAffinityPreset`
+  (`hard`, `soft`) and `spec.highAvailability.podDisruptionBudget`
+  (`enabled: true` and `maxUnavailable`) and leaves every other key there.
+  `Off` removes the preset, but writes `soft` while the block holds another key,
+  because the memcached-operator defaults it whenever `spec.highAvailability`
+  exists; an empty block is removed. `memcachedAvailabilityMatches` applies it
+  to a copy of that block and joins the owned re-assert. A
+  `spec.highAvailability` that is not a map fails the pass
+  (`reading Memcached "<name>" spec.highAvailability`).
+- `rabbitMQPodSizing` adds the whole of `spec.affinity` to the bus, one hostname
+  term on `app.kubernetes.io/name: <name>`, and `matches` compares it too. A
+  live `spec.affinity` that is not a map fails the pass (`reading RabbitmqCluster
+  "<name>" sizing`). `ensureRabbitMQBudget` then keeps the policy/v1
+  PodDisruptionBudget named like the bus: it creates a wanted one after
+  `claimChildOwnership` (a controller owner reference), updates a controlled one
+  whose `maxUnavailable` or selector drifted or that sets `minAvailable`, and
+  deletes a controlled one when no budget is wanted. A budget of that name it
+  does not control is left alone, with an Info line naming it.
+  `ensureRabbitMQ` calls it after a create and on every pass over a controlled
+  bus, never for a terminating bus, on the shrink paths, or for an adopted one.
+
+An owned instance converges with one `Update`, and a second pass writes nothing.
+On the operator upgrade every owned multi-replica MariaDB, Memcached and
+RabbitmqCluster restarts once, pod by pod.
 
 **Pod Security.** Every MariaDB and Memcached the ControlPlane owns carries
 security contexts the restricted Pod Security profile admits, so a managed
@@ -1260,6 +1308,7 @@ pointer.
 | Memcached create/update fails | False | `MemcachedError` | returns the error |
 | MariaDB not yet Ready | False | `WaitingForDatabase` | requeue 15s |
 | Memcached not yet Ready | False | `WaitingForCache` | requeue 15s |
+| Managed-bus PodDisruptionBudget get, claim, create, update or delete fails | False | `RabbitMQError` | returns the error (`getting`, `claiming ownership of`, `creating`, `updating` or `deleting PodDisruptionBudget "<name>"`); the next pass retries |
 | RabbitmqCluster create/update fails | False | `RabbitMQError` | returns the error; a cluster that does not serve `rabbitmqclusters.rabbitmq.com` lands here with the `RESTMapper`'s `no matches for kind` |
 | Declared `messaging.replicas` below the owned cluster's, `c5c3.io/allow-messaging-recreate` unset | False | `RabbitMQError` | returns the error; the destructive delete-and-recreate is refused and the broker keeps running at its current size |
 | RabbitmqCluster not yet `AllReplicasReady` | False | `WaitingForMessaging` | requeue 15s |
@@ -4717,6 +4766,7 @@ cross-namespace teardown assertions.
 | `reconcile_sizing_test.go` | `reconcileSizing` for a built-in profile (no read), an existing, a missing and an unreadable `SizingProfile`; the pipeline stop; `sizingProfileToControlPlaneMapper` |
 | `sizing_projection_test.go` | The shared projection helpers: spread completion against the child's selector, the placement fallback, the replica default, uWSGI, Jobs, and the Glance `apiServer` block |
 | `reconcile_infrastructure_test.go` | Managed/brownfield MariaDB + Memcached, unstructured readiness, condition contract, `ObservedGeneration`, the backing-service sizing of `ensureMariaDB` / `ensureMemcached` / `ensureRabbitMQ` |
+| `infra_availability_test.go` | `resolveBackingAvailability`, and the anti-affinity and budget of `ensureMariaDB`, `ensureMemcached` and `ensureRabbitMQ`: create, owned convergence, adoption, the malformed live field, and the wrapped budget errors |
 | `reconcile_dbcredentials_test.go` | Managed ExternalSecret projection (name/store/data/owner-ref), brownfield no-op `Ready=True`, not-ready requeue + condition contract, distinct per-CP remote key/secret name |
 | `reconcile_adminpassword_test.go` | Managed ExternalSecret projection (name/store/data/owner-ref), brownfield no-op `Ready=True`, not-ready requeue + condition contract, distinct per-CP remote key/secret name |
 | `reconcile_keystone_test.go` | Keystone projection, infra gate, image/rotation/policy projection, condition contract, `ObservedGeneration` |
@@ -4780,6 +4830,8 @@ operators/c5c3/
     │   ├── korc_unlatch.go                     clears latched K-ORC transport errors from child status
     │   ├── reconcile_infrastructure.go         reconcileInfrastructure (MariaDB + Memcached),
     │   │                                        childNamespace, memcachedGVK
+    │   ├── infra_availability.go               backing-service anti-affinity and budget,
+    │   │                                        ensureRabbitMQBudget
     │   ├── reconcile_namespaces.go             reconcileNamespaces (dedicated service namespaces),
     │   │                                        child ownership labels + claim
     │   ├── reconcile_esotenant.go              reconcileESOTenantStore (per-tenant SecretStore + SA +
@@ -4850,6 +4902,7 @@ operators/c5c3/
     │   ├── korc_cloudsyaml_test.go             clouds.yaml builder tests
     │   ├── korc_unlatch_test.go                transport-error unlatch tests
     │   ├── reconcile_infrastructure_test.go    Infrastructure tests
+    │   ├── infra_availability_test.go          Backing-service availability tests
     │   ├── reconcile_namespaces_test.go        Namespaces tests
     │   ├── reconcile_esotenant_test.go         ESO-tenant-store tests
     │   ├── reconcile_dbcredentials_test.go     DBCredentials tests
