@@ -1485,6 +1485,41 @@ spec:
             ($error != null): true
             (contains($error, 'spec.sizing.messaging.podDisruptionBudget.maxUnavailable')): true
             (contains($error, 'should be greater than or equal to 1')): true
+  # services.horizon.session.backend outside SignedCookies and Cache must be
+  # rejected by the Enum marker the embedded SessionSpec carries into the
+  # ControlPlane CRD (schema), before the webhook's delegated mirror runs.
+  - try:
+    - apply:
+        file: 169-horizon-session-backend-unknown.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.services.horizon.session.backend')): true
+            (contains($error, 'Unsupported value')): true
+            (contains($error, 'admission webhook')): false
+            (contains($error, 'vcontrolplane.kb.io')): false
+  # services.horizon.extraConfig.SESSION_ENGINE beside a session block must be
+  # rejected by the webhook's delegated ValidateSession (webhook-only).
+  - try:
+    - apply:
+        file: 170-horizon-session-extraconfig-session-engine.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.services.horizon.extraConfig[SESSION_ENGINE]')): true
+            (contains($error, 'SESSION_ENGINE is managed via')): true
+            (contains($error, 'spec.services.horizon.session')): true
+  # services.horizon.extraConfig.CACHES while the session backend is Cache must
+  # be rejected by the webhook's delegated ValidateSession (webhook-only).
+  - try:
+    - apply:
+        file: 171-horizon-session-cache-extraconfig-caches.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.services.horizon.extraConfig[CACHES]')): true
+            (contains($error, 'CACHES must not be set in extraConfig while')): true
+            (contains($error, 'spec.services.horizon.session.backend')): true
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test

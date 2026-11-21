@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# services.horizon.extraConfig.CACHES while services.horizon.session.backend is
+# Cache would replace the child's CACHES whole and drop the "sessions" alias.
+# The webhook's delegated ValidateSession rejects it (webhook-only).
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-horizon-session-extraconfig-caches
+spec:
+  openStackRelease: "2026.1"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+  services:
+    keystone:
+      mode: Managed
+    horizon:
+      session:
+        backend: Cache
+      extraConfig:
+        CACHES:
+          default:
+            BACKEND: django.core.cache.backends.locmem.LocMemCache
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password
