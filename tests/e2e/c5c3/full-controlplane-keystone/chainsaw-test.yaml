@@ -197,6 +197,10 @@
 #                        Link 7c and the dashboard login of Link 2c run again
 #                        against the new release. The data plane (fake
 #                        compute, metadata agent) stays at the start release.
+#   8f. Cache sessions — services.horizon.session moves the dashboard to
+#                        cache sessions; the Horizon child settles on them
+#                        and the login of Link 2c passes with a
+#                        32-character sessionid.
 #
 # ── DECISION: belt-and-braces presence guard + single consolidated script ────
 # Ambiguity: the task says "follow tests/e2e/keystone/basic-deployment
@@ -278,9 +282,9 @@ spec:
     - script:
         # About 13 minutes of a green pass come before Link 7e. Link 7e waits
         # at most 10 + 10 minutes (the edit, the revert) and a pass needs about
-        # 4. Link 8 waits at most 2 + 30 + 10 + 5 + 5 + 25 minutes (patch,
-        # children, rollouts, Ready, status.services, verify Job) and a pass
-        # needs about 20. 13 + 20 + 77 = 110.
+        # 4. Link 8 waits at most 2 + 30 + 10 + 5 + 5 + 25 + 5 minutes (patch,
+        # children, rollouts, Ready, status.services, verify Job, cache
+        # sessions) and a pass needs about 20. 13 + 20 + 82 = 115.
         timeout: 120m
         # Chainsaw defaults to `sh`, which rejects `set -o pipefail`; every
         # infra/keystone e2e script pins bash for the same reason.
@@ -576,8 +580,8 @@ spec:
           . ./secret-store-checks.sh
 
           # horizon_login_round_trip, the dashboard login of Link 2c and Link
-          # 8e, lives in horizon-login.sh beside this file for the same 128 KiB
-          # cap. Its client pod runs LOGIN_CLIENT_IMAGE, which this script pins.
+          # 8e, and Link 8f's horizon_cache_sessions_link live in
+          # horizon-login.sh beside this file for the same 128 KiB cap. Its client pod runs LOGIN_CLIENT_IMAGE, which this script pins.
           LOGIN_CLIENT_IMAGE="ghcr.io/c5c3/keystone:2026.1"
           . ./horizon-login.sh
 
@@ -2289,6 +2293,10 @@ spec:
           run_openstack_verify
           assert_port_events
           horizon_login_round_trip
+
+          # ── Link 8f: the dashboard logs in on cache sessions ──────────────
+          # Last, so Link 2c and 8e bound the signed cookie first.
+          horizon_cache_sessions_link
           echo "OK: token issued, identity + image + placement + key-manager + network + block-storage + compute services catalogued, the image, placement, secret, network, volume, backup, encryption, cache and compute round-trips passed, and the hypervisor operator's account reaches what it needs; the plane moved from ${FROM_RELEASE} to ${TO_RELEASE}, every child installed it, every Deployment runs it, and the verify Job, the port events and the dashboard login pass against it — full chain verified."
     catch:
     - script:
