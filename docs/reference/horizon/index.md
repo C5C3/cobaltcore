@@ -136,7 +136,9 @@ The operator cannot raise the browser's limit. A browser keeps about 4096
 bytes per cookie
 ([RFC 6265, section 6.1](https://www.rfc-editor.org/rfc/rfc6265#section-6.1))
 and discards a larger `sessionid` cookie. The next request arrives without a
-session, the user is on the login page again, and Horizon logs nothing.
+session, and the user is on the login page again. With horizon patch 0003 the
+login page then names the cause and the dashboard logs a line, as described
+below.
 
 The cookie grows with the service catalog. The table gives the value of the
 `sessionid` cookie a login sets, measured in the 2026.1 image (Horizon
@@ -172,10 +174,31 @@ request that is not AJAX, once the names and values of the cookies the
 request sends sum to 4093 bytes (`SESSION_COOKIE_MAX_SIZE`). The line needs
 a request that reaches Django: under the default buffer, uWSGI drops such a
 request before Django sees it. Since Horizon reads the cookies a
-request sends, the line warns between 4093 bytes and the browser's limit and
-stays silent once the browser has discarded the cookie. When it appears,
-delete the services the cloud does not need from the Keystone catalog, the
-ones without endpoints first.
+request sends, the line warns between 4093 bytes and the browser's limit.
+Once the browser has discarded the cookie, the request carries none, and this
+line cannot appear.
+
+Horizon patch 0003 ([Container Images](../ci-cd/container-images.md#horizon))
+adds a check on the response side. It reads the `sessionid` cookie a response
+sets and fires once the cookie's name and value reach 4093 bytes. It logs this
+line at ERROR, from the logger `horizon.middleware.session_cookie_size`, to
+stderr through the same console handler:
+
+```text
+Session cookie for user_id: <id> is <n>B >= 4093B. A browser discards a cookie of this size, so the session is lost. You need to configure server-side sessions instead of cookie-based sessions: https://docs.openstack.org/horizon/latest/admin/sessions.html
+```
+
+The same response sets the `logout_reason` and `logout_status` cookies. The
+login page then shows
+`Your session is too large for a browser cookie and the login cannot complete. Contact your administrator.`
+in its red alert box. The message is English in every locale. The response is
+otherwise unchanged, so a client without a cookie limit stays logged in and
+gets the line for every response that sets the cookie. A deployment that sets
+`WEBSSO_DEFAULT_REDIRECT` through `spec.extraConfig` never renders the login
+page, so only the log line appears there.
+
+When either line appears, delete the services the cloud does not need from
+the Keystone catalog, the ones without endpoints first.
 
 `tests/e2e/horizon/basic-deployment/` and its 2026.2 twin send the login page
 a 6000-byte and a 60000-byte cookie and expect HTTP 200 for both. Link 2c and
