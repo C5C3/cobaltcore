@@ -70,6 +70,18 @@ spec:
                       type: string
                     namespace:
                       type: string
+                # affinity and podDisruptionBudget carry the anti-affinity and
+                # budget the ControlPlane projects onto a Galera cluster.
+                affinity:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                podDisruptionBudget:
+                  type: object
+                  properties:
+                    maxUnavailable:
+                      x-kubernetes-int-or-string: true
+                    minAvailable:
+                      x-kubernetes-int-or-string: true
             status:
               type: object
               properties:
