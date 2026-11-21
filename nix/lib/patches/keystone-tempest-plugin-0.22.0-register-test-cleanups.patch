@@ -1,0 +1,268 @@
+SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+SPDX-License-Identifier: Apache-2.0
+
+Register cleanups for the objects the RBAC and federation tests create
+
+Many test_identity_delete_* tests of keystone-tempest-plugin 0.22.0
+create an object with the system-admin client, check that the persona
+under test may not delete it, and register no cleanup, so the object
+stays in Keystone. One run of the keystone include list of
+tests/tempest/keystone-2026-1 (2070 tests, 4 workers, 0 failures) left
+78 objects in a Keystone that nothing else wrote to: 9 catalog services
+without an endpoint, 9 policies, 9 OAuth1 consumers, 9 regions, 9
+global roles, 9 domain roles, 5 groups, 3 projects, 15 domains and 1
+federation mapping. The 2026.2 list leaves the same 78. `tempest
+cleanup` removes none of the services, policies, consumers and groups,
+so a cloud that runs Tempest every night gathers them, and the leaked
+services grow the catalog of every token (#1841).
+
+The patch registers the missing cleanup at 17 places in 12 files,
+directly after the create call and before the first request of the
+persona, and keeps every check the tests make. Each method runs in
+every persona class that inherits it, which is why one place accounts
+for up to 9 objects.
+
+Two Keystone behaviours turn a missing cleanup into a lasting object.
+Keystone creates a domain for an identity provider that names none and
+keeps it when the identity provider is deleted.
+IdentityV3RbacProtocolTests.setUpClass creates such a provider for each
+of its 11 persona classes, so the patch also disables and deletes the
+provider's domain; cleanups run last in, first out, and the domain goes
+after the provider. Deleting a domain leaves its domain roles, so
+test_identity_delete_domain_role deletes its role itself. A domain is
+disabled before it is deleted, the order IdentityV3RbacGroupTest.setUp
+uses.
+
+Four places left no object on the measured run. The group of
+DomainMemberTests.test_identity_delete_group and the user of
+DomainMemberTests.test_identity_delete_user live in the persona's own
+domain, which Tempest's dynamic credentials delete with its contents.
+The domain config of test_identity_delete_domain_config goes with the
+domain its class deletes. Keystone deletes an endpoint with its
+service, and tests/tempest/keystone-2026-1 excludes
+test_identity_delete_endpoint. They carry the same defect, and the
+domain roles show that deleting a domain does not remove everything in
+it, so the patch covers them too.
+
+`test_keystone_plugin_registers_cleanups` in
+tests/container-images/verify_tempest.sh checks the patched files in
+the built image.
+
+nix/lib/python-env.nix applies the patch to the installed wheel of the
+two tempest locks with `patch --fuzz=0`. A plugin release that moves
+these lines fails the build there with "Hunk #N FAILED", and a release
+that carries the fix fails it with "Reversed (or previously applied)
+patch detected".
+
+Applies to keystone-tempest-plugin 0.22.0 (releases/2026.1/test-refs.yaml, releases/2026.2/test-refs.yaml).
+
+Upstream status: not submitted; tracked in #1840.
+
+diff --git a/keystone_tempest_plugin/tests/api/identity/v3/test_identity_providers.py b/keystone_tempest_plugin/tests/api/identity/v3/test_identity_providers.py
+index 77060e0..2c42c49 100644
+--- a/keystone_tempest_plugin/tests/api/identity/v3/test_identity_providers.py
++++ b/keystone_tempest_plugin/tests/api/identity/v3/test_identity_providers.py
+@@ -208,6 +208,8 @@ class IndentityProvidersTest(base.BaseIdentityTest):
+         new_mapping_id = data_utils.rand_uuid_hex()
+         self.mappings_client.create_mapping_rule(
+             new_mapping_id, fixtures.mapping_ref())
++        self.addCleanup(self.mappings_client.delete_mapping_rule,
++                        new_mapping_id)
+ 
+         # Update the identity provider protocol
+         protocol = self.idps_client.update_protocol_mapping(
+diff --git a/keystone_tempest_plugin/tests/rbac/v3/test_consumer.py b/keystone_tempest_plugin/tests/rbac/v3/test_consumer.py
+index 8193da8..d89a098 100644
+--- a/keystone_tempest_plugin/tests/rbac/v3/test_consumer.py
++++ b/keystone_tempest_plugin/tests/rbac/v3/test_consumer.py
+@@ -141,6 +141,7 @@ class SystemMemberTests(SystemAdminTests):
+     def test_identity_delete_consumer(self):
+         consumer = self.admin_client.create_consumer(
+             **self.consumer())['consumer']
++        self.addCleanup(self.admin_client.delete_consumer, consumer['id'])
+         self.do_request('delete_consumer',
+                         expected_status=exceptions.Forbidden,
+                         consumer_id=consumer['id'])
+diff --git a/keystone_tempest_plugin/tests/rbac/v3/test_domain_config.py b/keystone_tempest_plugin/tests/rbac/v3/test_domain_config.py
+index ce900d3..83ceea4 100644
+--- a/keystone_tempest_plugin/tests/rbac/v3/test_domain_config.py
++++ b/keystone_tempest_plugin/tests/rbac/v3/test_domain_config.py
+@@ -279,6 +279,9 @@ class SystemMemberTests(SystemAdminTests):
+     def test_identity_delete_domain_config(self):
+         self.admin_domain_config_client.create_domain_config(
+             self.domain_id, **self.domain_config())
++        self.addCleanup(
++            self.admin_domain_config_client.delete_domain_config,
++            self.domain_id)
+         self.do_request(
+             'delete_domain_group_option_config',
+             expected_status=exceptions.Forbidden,
+diff --git a/keystone_tempest_plugin/tests/rbac/v3/test_endpoint.py b/keystone_tempest_plugin/tests/rbac/v3/test_endpoint.py
+index a7cc987..ad3a50a 100644
+--- a/keystone_tempest_plugin/tests/rbac/v3/test_endpoint.py
++++ b/keystone_tempest_plugin/tests/rbac/v3/test_endpoint.py
+@@ -183,6 +183,9 @@ class SystemMemberTests(SystemAdminTests, base.BaseIdentityTest):
+     def test_identity_delete_endpoint(self):
+         endpoint_id = self.admin_endpoints_client.create_endpoint(
+             **self.endpoint())['endpoint']['id']
++        self.addCleanup(
++            self.admin_endpoints_client.delete_endpoint,
++            endpoint_id=endpoint_id)
+         self.do_request('delete_endpoint',
+                         expected_status=exceptions.Forbidden,
+                         endpoint_id=endpoint_id)
+diff --git a/keystone_tempest_plugin/tests/rbac/v3/test_group.py b/keystone_tempest_plugin/tests/rbac/v3/test_group.py
+index d3ca20a..b17526e 100644
+--- a/keystone_tempest_plugin/tests/rbac/v3/test_group.py
++++ b/keystone_tempest_plugin/tests/rbac/v3/test_group.py
+@@ -371,6 +371,7 @@ class SystemMemberTests(SystemAdminTests):
+ 
+     def test_identity_delete_group(self):
+         group = self.admin_groups_client.create_group(**self.group())['group']
++        self.addCleanup(self.admin_groups_client.delete_group, group['id'])
+         # user cannot delete an arbitrary group
+         self.do_request('delete_group', expected_status=exceptions.Forbidden,
+                         group_id=group['id'])
+@@ -877,6 +878,7 @@ class DomainMemberTests(IdentityV3RbacGroupTest, base.BaseIdentityTest):
+     def test_identity_delete_group(self):
+         group1 = self.admin_groups_client.create_group(
+             **self.group(domain_id=self.own_domain))['group']
++        self.addCleanup(self.admin_groups_client.delete_group, group1['id'])
+         group2 = self.admin_groups_client.create_group(
+             **self.group(domain_id=self.other_domain))['group']
+         self.addCleanup(self.admin_groups_client.delete_group, group2['id'])
+@@ -1170,6 +1172,7 @@ class ProjectManagerTests(IdentityV3RbacGroupTest, base.BaseIdentityTest):
+     def test_identity_delete_group(self):
+         group1 = self.admin_groups_client.create_group(
+             **self.group(domain_id=self.own_domain))['group']
++        self.addCleanup(self.admin_groups_client.delete_group, group1['id'])
+         group2 = self.admin_groups_client.create_group(
+             **self.group(domain_id=self.other_domain))['group']
+         self.addCleanup(self.admin_groups_client.delete_group, group2['id'])
+diff --git a/keystone_tempest_plugin/tests/rbac/v3/test_policy.py b/keystone_tempest_plugin/tests/rbac/v3/test_policy.py
+index dddf084..a31367d 100644
+--- a/keystone_tempest_plugin/tests/rbac/v3/test_policy.py
++++ b/keystone_tempest_plugin/tests/rbac/v3/test_policy.py
+@@ -169,6 +169,9 @@ class SystemMemberTests(SystemAdminTests, base.BaseIdentityTest):
+     def test_identity_delete_policy(self):
+         policy_id = self.admin_policies_client.create_policy(
+             **self.policy())['policy']['id']
++        self.addCleanup(
++            self.admin_policies_client.delete_policy,
++            policy_id=policy_id)
+         self.do_request('delete_policy',
+                         expected_status=exceptions.Forbidden,
+                         policy_id=policy_id)
+diff --git a/keystone_tempest_plugin/tests/rbac/v3/test_project.py b/keystone_tempest_plugin/tests/rbac/v3/test_project.py
+index 2b00035..50490b6 100644
+--- a/keystone_tempest_plugin/tests/rbac/v3/test_project.py
++++ b/keystone_tempest_plugin/tests/rbac/v3/test_project.py
+@@ -561,6 +561,7 @@ class DomainMemberTests(DomainManagerTests):
+         project_id = self.admin_projects_client.create_project(
+             name=data_utils.rand_name(),
+             domain_id=self.own_domain)['project']['id']
++        self.addCleanup(self.admin_projects_client.delete_project, project_id)
+         self.do_request('delete_project', expected_status=exceptions.Forbidden,
+                         project_id=project_id)
+         # user cannot delete project in other domain
+diff --git a/keystone_tempest_plugin/tests/rbac/v3/test_protocol.py b/keystone_tempest_plugin/tests/rbac/v3/test_protocol.py
+index c438cff..493cf2e 100644
+--- a/keystone_tempest_plugin/tests/rbac/v3/test_protocol.py
++++ b/keystone_tempest_plugin/tests/rbac/v3/test_protocol.py
+@@ -40,8 +40,14 @@ class IdentityV3RbacProtocolTests(rbac_base.IdentityV3RbacBaseTests,
+     @classmethod
+     def setUpClass(cls):
+         super(IdentityV3RbacProtocolTests, cls).setUpClass()
+-        cls.idp_id = cls.admin_idp_client.create_identity_provider(
+-            idp_id=data_utils.rand_name())['identity_provider']['id']
++        idp = cls.admin_idp_client.create_identity_provider(
++            idp_id=data_utils.rand_name())['identity_provider']
++        cls.idp_id = idp['id']
++        admin_domains_client = cls.os_system_admin.domains_client
++        cls.addClassResourceCleanup(admin_domains_client.delete_domain,
++                                    idp['domain_id'])
++        cls.addClassResourceCleanup(admin_domains_client.update_domain,
++                                    idp['domain_id'], enabled=False)
+         cls.addClassResourceCleanup(
+             cls.admin_idp_client.delete_identity_provider, cls.idp_id)
+         rules = {
+diff --git a/keystone_tempest_plugin/tests/rbac/v3/test_region.py b/keystone_tempest_plugin/tests/rbac/v3/test_region.py
+index b22f586..0837650 100644
+--- a/keystone_tempest_plugin/tests/rbac/v3/test_region.py
++++ b/keystone_tempest_plugin/tests/rbac/v3/test_region.py
+@@ -166,6 +166,9 @@ class SystemMemberTests(SystemAdminTests, base.BaseIdentityTest):
+     def test_identity_delete_region(self):
+         region_id = self.admin_regions_client.create_region(
+             **self.region())['region']['id']
++        self.addCleanup(
++            self.admin_regions_client.delete_region,
++            region_id=region_id)
+         self.do_request('delete_region',
+                         expected_status=exceptions.Forbidden,
+                         region_id=region_id)
+diff --git a/keystone_tempest_plugin/tests/rbac/v3/test_role.py b/keystone_tempest_plugin/tests/rbac/v3/test_role.py
+index 1db157c..5302b3d 100644
+--- a/keystone_tempest_plugin/tests/rbac/v3/test_role.py
++++ b/keystone_tempest_plugin/tests/rbac/v3/test_role.py
+@@ -280,6 +280,7 @@ class SystemMemberTests(SystemAdminTests):
+         # user can delete role
+         role = self.admin_roles_client.create_role(
+             **self.role())['role']
++        self.addCleanup(self.admin_roles_client.delete_role, role['id'])
+         self.do_request('delete_role', expected_status=exceptions.Forbidden,
+                         role_id=role['id'])
+         # user gets a 404 for nonexistent domain role
+@@ -309,6 +310,7 @@ class SystemMemberTests(SystemAdminTests):
+         # user cannot delete domain role
+         role = self.admin_roles_client.create_role(
+             **self.role(domain_id=self.domain_id))['role']
++        self.addCleanup(self.admin_roles_client.delete_role, role['id'])
+         self.do_request('delete_role', expected_status=exceptions.Forbidden,
+                         role_id=role['id'])
+         # user gets a 404 for nonexistent domain role
+diff --git a/keystone_tempest_plugin/tests/rbac/v3/test_service.py b/keystone_tempest_plugin/tests/rbac/v3/test_service.py
+index 92d7a84..e6c72dd 100644
+--- a/keystone_tempest_plugin/tests/rbac/v3/test_service.py
++++ b/keystone_tempest_plugin/tests/rbac/v3/test_service.py
+@@ -170,6 +170,9 @@ class SystemMemberTests(SystemAdminTests, base.BaseIdentityTest):
+     def test_identity_delete_service(self):
+         service_id = self.admin_services_client.create_service(
+             **self.service())['service']['id']
++        self.addCleanup(
++            self.admin_services_client.delete_service,
++            service_id=service_id)
+         self.do_request('delete_service',
+                         expected_status=exceptions.Forbidden,
+                         service_id=service_id)
+diff --git a/keystone_tempest_plugin/tests/rbac/v3/test_user.py b/keystone_tempest_plugin/tests/rbac/v3/test_user.py
+index 08edfe6..0c8a334 100644
+--- a/keystone_tempest_plugin/tests/rbac/v3/test_user.py
++++ b/keystone_tempest_plugin/tests/rbac/v3/test_user.py
+@@ -139,6 +139,9 @@ class SystemAdminTests(IdentityV3RbacUserTest, base.BaseIdentityTest):
+     def test_identity_list_users(self):
+         domain = self.admin_domains_client.create_domain(
+             name=data_utils.rand_name())['domain']
++        self.addCleanup(self.admin_domains_client.delete_domain, domain['id'])
++        self.addCleanup(self.admin_domains_client.update_domain,
++                        domain_id=domain['id'], enabled=False)
+         user_create = self.user()
+         # create user in default domain
+         user1 = self.admin_users_client.create_user(**user_create)['user']
+@@ -202,6 +205,9 @@ class SystemMemberTests(IdentityV3RbacUserTest, base.BaseIdentityTest):
+     def test_identity_list_users(self):
+         domain = self.admin_domains_client.create_domain(
+             name=data_utils.rand_name())['domain']
++        self.addCleanup(self.admin_domains_client.delete_domain, domain['id'])
++        self.addCleanup(self.admin_domains_client.update_domain,
++                        domain_id=domain['id'], enabled=False)
+         user_create = self.user()
+         # create user in default domain
+         user1 = self.admin_users_client.create_user(**user_create)['user']
+@@ -477,6 +483,7 @@ class DomainMemberTests(DomainManagerTests):
+         # create user in own domain
+         user_create['domain_id'] = self.persona.credentials.domain_id
+         user = self.admin_users_client.create_user(**user_create)['user']
++        self.addCleanup(self.admin_users_client.delete_user, user['id'])
+         self.do_request('delete_user', expected_status=exceptions.Forbidden,
+                         user_id=user['id'])
+         # user gets a 403 for nonexistent user

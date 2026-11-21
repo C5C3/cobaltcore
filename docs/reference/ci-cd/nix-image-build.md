@@ -183,6 +183,13 @@ the build with `Hunk #N FAILED`; #1562 tracks that re-check. The `castellan`
 row edits the installed wheel with `substituteInPlace --replace-fail`:
 castellan's `[barbican] timeout` reaches the session it reads keys through
 (#1799). A castellan release that changes the edited line fails the build. The
+`keystone-tempest-plugin` row patches the installed wheel of the two tempest
+locks with
+`nix/lib/patches/keystone-tempest-plugin-0.22.0-register-test-cleanups.patch`,
+so the plugin's RBAC and federation tests delete the Keystone objects they
+create (#1840). It runs `patch --fuzz=0` as well: a plugin release that moves
+the patched lines fails the build with `Hunk #N FAILED`, and one that carries
+the fix fails it with `Reversed (or previously applied) patch detected`. The
 `uwsgi` row
 patches the source with
 `nix/lib/patches/uwsgi-2.0.31-retry-write-poll-on-eintr.patch` and

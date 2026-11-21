@@ -150,6 +150,110 @@ test_cirros_image_present() {
   assert_eq "the cirros image has the sha256 image.nix pins" "$want" "$digest"
 }
 
+# --- Test 13: keystone-tempest-plugin carries the cleanups of #1840 ---
+test_keystone_plugin_registers_cleanups() {
+  echo "Test: keystone-tempest-plugin registers the cleanups of its patch"
+  # nix/lib/patches/keystone-tempest-plugin-0.22.0-register-test-cleanups.patch
+  # registers cleanups at 17 places, one hunk each. For each hunk, the source
+  # of the class's method, with every run of whitespace collapsed to one space,
+  # must hold a text the unpatched method lacks: addCleanup( where the method
+  # registers none, otherwise the client call and the object of the new
+  # cleanup. Where the unpatched method already deletes another object that
+  # way, the text must occur twice. The files are parsed with ast; no test
+  # module is imported.
+  local program output hunks n line description result exit_code=0
+  hunks=$(grep -c '^@@ ' "$SCRIPT_DIR/../../nix/lib/patches/keystone-tempest-plugin-0.22.0-register-test-cleanups.patch")
+  program=$(cat <<'PY'
+import ast
+import importlib.util
+import os
+
+HUNKS = (
+    (1, "rbac/v3/test_service.py", "SystemMemberTests",
+     "test_identity_delete_service", "addCleanup(", 1),
+    (2, "rbac/v3/test_policy.py", "SystemMemberTests",
+     "test_identity_delete_policy", "addCleanup(", 1),
+    (3, "rbac/v3/test_consumer.py", "SystemMemberTests",
+     "test_identity_delete_consumer", "addCleanup(", 1),
+    (4, "rbac/v3/test_region.py", "SystemMemberTests",
+     "test_identity_delete_region", "addCleanup(", 1),
+    (5, "rbac/v3/test_role.py", "SystemMemberTests",
+     "test_identity_delete_role", "addCleanup(", 1),
+    (6, "rbac/v3/test_role.py", "SystemMemberTests",
+     "test_identity_delete_domain_role", "addCleanup(", 1),
+    (7, "rbac/v3/test_group.py", "SystemMemberTests",
+     "test_identity_delete_group", "addCleanup(", 1),
+    (8, "rbac/v3/test_group.py", "DomainMemberTests",
+     "test_identity_delete_group", "delete_group, group1['id']", 1),
+    (9, "rbac/v3/test_group.py", "ProjectManagerTests",
+     "test_identity_delete_group", "delete_group, group1['id']", 1),
+    (10, "rbac/v3/test_project.py", "DomainMemberTests",
+     "test_identity_delete_project", "delete_project, project_id", 2),
+    (11, "rbac/v3/test_user.py", "SystemAdminTests",
+     "test_identity_list_users", "delete_domain", 1),
+    (12, "rbac/v3/test_user.py", "SystemMemberTests",
+     "test_identity_list_users", "delete_domain", 1),
+    (13, "rbac/v3/test_user.py", "DomainMemberTests",
+     "test_identity_delete_user", "delete_user, user['id']", 2),
+    (14, "rbac/v3/test_protocol.py", "IdentityV3RbacProtocolTests",
+     "setUpClass", "delete_domain", 1),
+    (15, "api/identity/v3/test_identity_providers.py",
+     "IndentityProvidersTest",
+     "test_update_mapping_from_identity_provider_protocol",
+     "delete_mapping_rule, new_mapping_id", 1),
+    (16, "rbac/v3/test_domain_config.py", "SystemMemberTests",
+     "test_identity_delete_domain_config", "addCleanup(", 1),
+    (17, "rbac/v3/test_endpoint.py", "SystemMemberTests",
+     "test_identity_delete_endpoint", "addCleanup(", 1),
+)
+
+spec = importlib.util.find_spec("keystone_tempest_plugin")
+tests = os.path.join(spec.submodule_search_locations[0], "tests")
+for n, rel, cls, meth, needle, want in HUNKS:
+    name = f"hunk {n}: {rel} {cls}.{meth}"
+    with open(os.path.join(tests, rel), encoding="utf-8") as f:
+        source = f.read()
+    tree = ast.parse(source)
+    classes = [c for c in tree.body
+               if isinstance(c, ast.ClassDef) and c.name == cls]
+    if not classes:
+        print(f"{n}\t{name}\tclass {cls} missing")
+        continue
+    methods = [m for m in classes[0].body
+               if isinstance(m, ast.FunctionDef) and m.name == meth]
+    if not methods:
+        print(f"{n}\t{name}\tmethod {meth} missing")
+        continue
+    text = " ".join(ast.get_source_segment(source, methods[0]).split())
+    found = text.count(needle)
+    result = "ok" if found >= want else f"found {found} of {want} '{needle}'"
+    print(f"{n}\t{name}\t{result}")
+PY
+)
+  output=$(docker run --rm "$IMAGE" python3 -c "$program" 2>&1) || exit_code=$?
+  if [ "$exit_code" -ne 0 ]; then
+    echo "  python3 exited $exit_code:"
+    while IFS= read -r line; do
+      echo "    $line"
+    done <<<"$output"
+  fi
+
+  # One assertion per hunk of the patch; a hunk without a result line (python3
+  # stopped before it, or HUNKS lacks it) fails too, so a crash cannot pass with
+  # fewer assertions. A HUNKS entry beyond the patch's hunks fails the count.
+  assert_eq "HUNKS has one entry per hunk of the patch" "$hunks" \
+    "$(grep -c '^[0-9][0-9]*	' <<<"$output" || true)"
+  for n in $(seq 1 "$hunks"); do
+    line=$(grep -m 1 "^${n}	" <<<"$output" || true)
+    if [ -z "$line" ]; then
+      assert_eq "hunk $n: the check printed a result" "ok" "no result"
+      continue
+    fi
+    IFS=$'\t' read -r _ description result <<<"$line"
+    assert_eq "$description" "ok" "$result"
+  done
+}
+
 # --- Run all tests ---
 echo "=== tempest container verification tests ==="
 echo "Image: $IMAGE"
@@ -177,6 +281,8 @@ echo ""
 test_cinder_tempest_plugin_importable
 echo ""
 test_cirros_image_present
+echo ""
+test_keystone_plugin_registers_cleanups
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 
