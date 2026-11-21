@@ -502,12 +502,10 @@ spec:
           ctx.check_hostname = False
           ctx.verify_mode = ssl.CERT_NONE
 
-          # One jar per host, because that is what a browser does — and here it
-          # is load-bearing, not pedantry. Keycloak sets KEYCLOAK_IDENTITY and
-          # KEYCLOAK_SESSION (plus _LEGACY twins), several KB of JWT between
-          # them. Replayed onto the dashboard they push the websso callback past
-          # uWSGI buffer-size (4096), which drops the request without a response
-          # and surfaces as a bare 503 from Envoy.
+          # One jar per host, because a browser scopes its cookies per host.
+          # Keycloak sets KEYCLOAK_IDENTITY and KEYCLOAK_SESSION (plus _LEGACY
+          # twins), several KB of JWT between them, and those cookies do not
+          # belong on a request to the dashboard: no browser sends them there.
           jars = {}
 
           def jar(netloc):
