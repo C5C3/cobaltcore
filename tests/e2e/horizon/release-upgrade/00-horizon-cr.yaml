@@ -9,7 +9,8 @@
 # horizon-secret-key Secret (deploy/overlays/kind/infrastructure). keystoneEndpoint
 # points at the cluster-local convention URL: the login page renders without
 # a live Keystone. A single replica keeps the rollout observable when the
-# patch bumps the tag to 2026.2.
+# patch bumps the tag to 2026.2. spec.session selects cache sessions, so the
+# suite can write a session before the hop and read it after.
 apiVersion: horizon.openstack.c5c3.io/v1alpha1
 kind: Horizon
 metadata:
@@ -28,3 +29,5 @@ spec:
   secretKeyRef:
     name: horizon-secret-key
     key: secret-key
+  session:
+    backend: Cache
