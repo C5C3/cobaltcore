@@ -23,6 +23,11 @@ import (
 // (v26.10.2, api/v1alpha1/base_types.go, AffinityConfig.SetDefaults).
 const mariaDBInstanceLabel = "app.kubernetes.io/instance"
 
+// rabbitMQNameLabel is the pod label the RabbitMQ Cluster Operator selects
+// the broker pods of a RabbitmqCluster with, set to the cluster's name
+// (v2.23.3, internal/metadata/label.go, LabelSelector).
+const rabbitMQNameLabel = "app.kubernetes.io/name"
+
 // backingAntiAffinityWeight is the weight of a preferred hostname term.
 const backingAntiAffinityWeight int32 = 100
 
@@ -199,4 +204,29 @@ func memcachedAvailabilityMatches(u *unstructured.Unstructured, av backingAvaila
 	// The probe's spec is a map built here, so this read cannot fail.
 	want, _, _ := unstructured.NestedFieldNoCopy(probe.Object, "spec", "highAvailability")
 	return equality.Semantic.DeepEqual(live, want), nil
+}
+
+// rabbitMQAffinity returns the spec.affinity of the RabbitmqCluster name for
+// mode: one hostname term on the broker pods, required or preferred with
+// weight 100, or nil for Off. It is built from the types
+// unstructured.SetNestedMap can copy.
+func rabbitMQAffinity(name string, mode c5c3v1alpha1.AntiAffinityMode) map[string]interface{} {
+	term := map[string]interface{}{
+		"labelSelector": map[string]interface{}{"matchLabels": map[string]interface{}{rabbitMQNameLabel: name}},
+		"topologyKey":   corev1.LabelHostname,
+	}
+	switch mode {
+	case c5c3v1alpha1.AntiAffinityRequired:
+		return map[string]interface{}{"podAntiAffinity": map[string]interface{}{
+			"requiredDuringSchedulingIgnoredDuringExecution": []interface{}{term},
+		}}
+	case c5c3v1alpha1.AntiAffinityPreferred:
+		return map[string]interface{}{"podAntiAffinity": map[string]interface{}{
+			"preferredDuringSchedulingIgnoredDuringExecution": []interface{}{
+				map[string]interface{}{"weight": int64(backingAntiAffinityWeight), "podAffinityTerm": term},
+			},
+		}}
+	case c5c3v1alpha1.AntiAffinityOff:
+	}
+	return nil
 }

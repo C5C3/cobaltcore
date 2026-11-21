@@ -15,11 +15,14 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
+	"github.com/c5c3/cobaltcore/internal/common/messaging"
 	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
 )
 
@@ -468,5 +471,187 @@ func TestEnsureMemcached_Availability(t *testing.T) {
 		u, _, _ := getMemcached(g, c, "identity")
 		_, found := highAvailability(g, u)
 		g.Expect(found).To(BeFalse())
+	})
+}
+
+// wantBusAffinity is the spec.affinity of the RabbitmqCluster name for mode,
+// spelled out apart from the production helper: one hostname term on
+// app.kubernetes.io/name, required or preferred with weight 100.
+func wantBusAffinity(name string, mode c5c3v1alpha1.AntiAffinityMode) map[string]interface{} {
+	term := map[string]interface{}{
+		"labelSelector": map[string]interface{}{"matchLabels": map[string]interface{}{"app.kubernetes.io/name": name}},
+		"topologyKey":   "kubernetes.io/hostname",
+	}
+	if mode == c5c3v1alpha1.AntiAffinityPreferred {
+		return map[string]interface{}{"podAntiAffinity": map[string]interface{}{
+			"preferredDuringSchedulingIgnoredDuringExecution": []interface{}{
+				map[string]interface{}{"weight": int64(100), "podAffinityTerm": term},
+			},
+		}}
+	}
+	return map[string]interface{}{"podAntiAffinity": map[string]interface{}{
+		"requiredDuringSchedulingIgnoredDuringExecution": []interface{}{term},
+	}}
+}
+
+// messagingAvailability returns a messaging sizing that carries a alone.
+func messagingAvailability(a c5c3v1alpha1.AvailabilitySizingSpec) *c5c3v1alpha1.MessagingSizingSpec {
+	return &c5c3v1alpha1.MessagingSizingSpec{AvailabilitySizingSpec: a}
+}
+
+// messagingReplicas returns a messaging sizing that sets the replica count
+// alone.
+func messagingReplicas(n int32) *c5c3v1alpha1.MessagingSizingSpec {
+	return &c5c3v1alpha1.MessagingSizingSpec{ScaledSizingSpec: c5c3v1alpha1.ScaledSizingSpec{Replicas: ptr.To(n)}}
+}
+
+// ownedBus is a live RabbitmqCluster controlled by cp at replicas, carrying
+// affinity (unless nil) as spec.affinity.
+func ownedBus(
+	t *testing.T, g Gomega, cp *c5c3v1alpha1.ControlPlane, replicas int64, affinity interface{},
+) *unstructured.Unstructured {
+	t.Helper()
+	u := rabbitmqWithConditions("openstack-rabbitmq", cp.Namespace, nil)
+	g.Expect(unstructured.SetNestedField(u.Object, replicas, "spec", "replicas")).To(Succeed())
+	if affinity != nil {
+		g.Expect(unstructured.SetNestedField(u.Object, affinity, "spec", "affinity")).To(Succeed())
+	}
+	g.Expect(controllerutil.SetControllerReference(cp, u, infraTestScheme(t))).To(Succeed())
+	return u
+}
+
+// getBus reads the RabbitmqCluster openstack-rabbitmq of cp.
+func getBus(g Gomega, c client.Client, cp *c5c3v1alpha1.ControlPlane) *unstructured.Unstructured {
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(messaging.RabbitmqClusterGVK)
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: "openstack-rabbitmq", Namespace: cp.Namespace,
+	}, u)).To(Succeed())
+	return u
+}
+
+// busAffinity returns the spec.affinity of u and whether it is set.
+func busAffinity(g Gomega, u *unstructured.Unstructured) (map[string]interface{}, bool) {
+	affinity, found, err := unstructured.NestedMap(u.Object, "spec", "affinity")
+	g.Expect(err).NotTo(HaveOccurred())
+	return affinity, found
+}
+
+func TestEnsureRabbitMQ_Availability(t *testing.T) {
+	// pass builds a managed-messaging ControlPlane whose bus declares replicas
+	// and a fake client holding it and seed (if any), and runs one
+	// ensureRabbitMQ pass with sizing. It returns the client, the ControlPlane
+	// and the pass error; later passes go through the returned run func.
+	pass := func(
+		t *testing.T, g Gomega, replicas int32, seed func(*c5c3v1alpha1.ControlPlane) *unstructured.Unstructured,
+		sizing *c5c3v1alpha1.MessagingSizingSpec,
+	) (client.Client, *c5c3v1alpha1.ControlPlane, func() error) {
+		t.Helper()
+		s := infraTestScheme(t)
+		cp := managedMessagingControlPlane()
+		cp.Spec.Infrastructure.Messaging.Replicas = replicas
+		objs := []client.Object{cp}
+		if seed != nil {
+			objs = append(objs, seed(cp))
+		}
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(objs...).Build()
+		r := &ControlPlaneReconciler{Client: c, Scheme: s}
+		run := func() error {
+			_, err := r.ensureRabbitMQ(context.Background(), c, cp, cp.Spec.Infrastructure.Messaging, sizing, cp.Namespace)
+			return err
+		}
+		return c, cp, run
+	}
+
+	affinityTests := []struct {
+		name     string
+		replicas int32
+		sizing   *c5c3v1alpha1.MessagingSizingSpec
+		want     map[string]interface{}
+	}{
+		{
+			name: "three brokers get the required term", replicas: 3,
+			sizing: messagingAvailability(c5c3v1alpha1.AvailabilitySizingSpec{}),
+			want:   wantBusAffinity("openstack-rabbitmq", c5c3v1alpha1.AntiAffinityRequired),
+		},
+		{
+			name: "Preferred gets the weighted term", replicas: 3,
+			sizing: messagingAvailability(availabilitySizing(c5c3v1alpha1.AntiAffinityPreferred, nil, nil)),
+			want:   wantBusAffinity("openstack-rabbitmq", c5c3v1alpha1.AntiAffinityPreferred),
+		},
+		{
+			name: "a nil sizing at three brokers gets the required term", replicas: 3,
+			want: wantBusAffinity("openstack-rabbitmq", c5c3v1alpha1.AntiAffinityRequired),
+		},
+		{
+			name: "Off gets no affinity", replicas: 3,
+			sizing: messagingAvailability(availabilitySizing(c5c3v1alpha1.AntiAffinityOff, nil, nil)),
+		},
+		{
+			name: "a single broker gets no affinity", replicas: 1,
+			sizing: messagingAvailability(availabilitySizing(c5c3v1alpha1.AntiAffinityRequired, nil, nil)),
+		},
+		{
+			name: "a bus without a count of its own is judged on the sizing's 3", replicas: 0,
+			sizing: messagingReplicas(3), want: wantBusAffinity("openstack-rabbitmq", c5c3v1alpha1.AntiAffinityRequired),
+		},
+		{name: "a bus's own count of 1 wins over the sizing's 3", replicas: 1, sizing: messagingReplicas(3)},
+	}
+	for _, tc := range affinityTests {
+		t.Run("on create, "+tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			c, cp, run := pass(t, g, tc.replicas, nil, tc.sizing)
+			g.Expect(run()).To(Succeed())
+			affinity, found := busAffinity(g, getBus(g, c, cp))
+			if tc.want == nil {
+				g.Expect(found).To(BeFalse(), "spec.affinity must be absent, got %v", affinity)
+				return
+			}
+			g.Expect(affinity).To(Equal(tc.want))
+		})
+	}
+
+	t.Run("Off removes a live spec.affinity from an owned bus", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		seed := func(cp *c5c3v1alpha1.ControlPlane) *unstructured.Unstructured {
+			return ownedBus(t, g, cp, 3, wantBusAffinity("openstack-rabbitmq", c5c3v1alpha1.AntiAffinityRequired))
+		}
+		c, cp, run := pass(t, g, 3, seed, messagingAvailability(availabilitySizing(c5c3v1alpha1.AntiAffinityOff, nil, nil)))
+		g.Expect(run()).To(Succeed())
+		_, found := busAffinity(g, getBus(g, c, cp))
+		g.Expect(found).To(BeFalse())
+	})
+
+	t.Run("an owned bus without the term gets it", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		seed := func(cp *c5c3v1alpha1.ControlPlane) *unstructured.Unstructured { return ownedBus(t, g, cp, 3, nil) }
+		c, cp, run := pass(t, g, 3, seed, nil)
+		g.Expect(run()).To(Succeed())
+		affinity, _ := busAffinity(g, getBus(g, c, cp))
+		g.Expect(affinity).To(Equal(wantBusAffinity("openstack-rabbitmq", c5c3v1alpha1.AntiAffinityRequired)))
+	})
+
+	t.Run("a live spec.affinity that is not a map fails the pass", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		seed := func(cp *c5c3v1alpha1.ControlPlane) *unstructured.Unstructured {
+			return ownedBus(t, g, cp, 3, "hostname")
+		}
+		_, _, run := pass(t, g, 3, seed, nil)
+		g.Expect(run()).To(MatchError(ContainSubstring(`reading RabbitmqCluster "openstack-rabbitmq"`)))
+	})
+
+	t.Run("a live spec.affinity that is not a map fails the pass when the tolerations differ too", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		seed := func(cp *c5c3v1alpha1.ControlPlane) *unstructured.Unstructured {
+			return ownedBus(t, g, cp, 3, "hostname")
+		}
+		sizing := &c5c3v1alpha1.MessagingSizingSpec{
+			Tolerations: []corev1.Toleration{{Key: "dedicated", Operator: corev1.TolerationOpExists}},
+		}
+		c, cp, run := pass(t, g, 3, seed, sizing)
+		g.Expect(run()).To(MatchError(ContainSubstring(`reading RabbitmqCluster "openstack-rabbitmq"`)))
+		affinity, _, err := unstructured.NestedString(getBus(g, c, cp).Object, "spec", "affinity")
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(affinity).To(Equal("hostname"), "the bus must not be rewritten")
 	})
 }
