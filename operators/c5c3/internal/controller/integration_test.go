@@ -29,6 +29,7 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -37,6 +38,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -171,6 +173,9 @@ func startControlPlaneEnvTest(
 				Owns(&orcv1alpha1.Service{}).
 				Owns(&orcv1alpha1.Endpoint{}).
 				Owns(memcached).
+				// Mirror the managed bus budget leg SetupWithManager registers, so
+				// a deleted budget is restored at watch latency.
+				Owns(&policyv1.PodDisruptionBudget{}).
 				// The registration children of the built-in services: their
 				// AccountReady and aggregate Ready are what the Glance, Placement and
 				// Barbican gates consume, and a co-located child carries a controller
@@ -7892,6 +7897,116 @@ func TestIntegration_Messaging_ManagedProjectsRabbitmqCluster(t *testing.T) {
 
 	waitForControlPlaneCondition(t, ctx, c, cpKey,
 		conditionTypeInfrastructureReady, metav1.ConditionTrue, itEventuallyTimeout)
+}
+
+// TestIntegration_Messaging_ManagedBudget drives the disruption budget of a
+// managed bus of three brokers against a live API server: the RabbitmqCluster
+// carries the required hostname term, a PodDisruptionBudget the ControlPlane
+// controls lets one broker go at a time, the Owns leg puts back a budget
+// edited or deleted by hand faster than any timed requeue, and disabling the
+// budget in spec.sizing removes it.
+func TestIntegration_Messaging_ManagedBudget(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cp-messaging-budget-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create test namespace")
+
+	cp := integrationMessagingControlPlane("cp", ns.Name)
+	cp.Spec.Infrastructure.Messaging.Replicas = 3
+	g.Expect(c.Create(ctx, cp)).To(Succeed(), "create the messaging ControlPlane CR")
+	cpKey := types.NamespacedName{Name: cp.Name, Namespace: ns.Name}
+	busKey := client.ObjectKey{Name: "openstack-rabbitmq", Namespace: ns.Name}
+
+	bus := &unstructured.Unstructured{}
+	bus.SetGroupVersionKind(messaging.RabbitmqClusterGVK)
+	g.Eventually(func() error {
+		return c.Get(ctx, busKey, bus)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "the RabbitmqCluster child must be created")
+	affinity, found, err := unstructured.NestedMap(bus.Object, "spec", "affinity")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(found).To(BeTrue(), "spec.affinity must be projected")
+	g.Expect(affinity).To(Equal(wantBusAffinity("openstack-rabbitmq", c5c3v1alpha1.AntiAffinityRequired)))
+
+	live := &c5c3v1alpha1.ControlPlane{}
+	g.Expect(c.Get(ctx, cpKey, live)).To(Succeed(), "get the live ControlPlane")
+	pdb := &policyv1.PodDisruptionBudget{}
+	g.Eventually(func() error {
+		return c.Get(ctx, busKey, pdb)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "the bus budget must be created beside the bus")
+	g.Expect(metav1.IsControlledBy(pdb, live)).To(BeTrue(), "the budget must be collected with the ControlPlane")
+	g.Expect(pdb.Spec.MaxUnavailable).To(Equal(ptr.To(intstr.FromInt32(1))))
+	g.Expect(pdb.Spec.MinAvailable).To(BeNil())
+	g.Expect(pdb.Spec.Selector).To(Equal(&metav1.LabelSelector{
+		MatchLabels: map[string]string{"app.kubernetes.io/name": "openstack-rabbitmq"},
+	}))
+
+	// A budget deleted by hand comes back. The pass that recreates it may be a
+	// timed one: while the broker is not ready the ControlPlane requeues every
+	// infraRequeueAfter.
+	budgetUID := func() (types.UID, error) {
+		restored := &policyv1.PodDisruptionBudget{}
+		if err := c.Get(ctx, busKey, restored); err != nil {
+			return "", err
+		}
+		return restored.UID, nil
+	}
+	firstUID := pdb.UID
+	g.Expect(c.Delete(ctx, pdb)).To(Succeed())
+	g.Eventually(budgetUID, itEventuallyTimeout, itPollInterval).ShouldNot(Equal(firstUID),
+		"a deleted budget must be recreated")
+
+	// Without the Owns leg that recreation ran on a timed pass, so the next one
+	// is infraRequeueAfter away. A budget edited or deleted now and restored
+	// within ownsLegWindow was restored by the PodDisruptionBudget watch.
+	const ownsLegWindow = 5 * time.Second
+	g.Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &policyv1.PodDisruptionBudget{}
+		if err := c.Get(ctx, busKey, latest); err != nil {
+			return err
+		}
+		latest.Spec.MaxUnavailable = ptr.To(intstr.FromInt32(3))
+		return c.Update(ctx, latest)
+	})).To(Succeed(), "edit the bus budget")
+	g.Eventually(func() (*intstr.IntOrString, error) {
+		restored := &policyv1.PodDisruptionBudget{}
+		if err := c.Get(ctx, busKey, restored); err != nil {
+			return nil, err
+		}
+		return restored.Spec.MaxUnavailable, nil
+	}, ownsLegWindow, itPollInterval).Should(Equal(ptr.To(intstr.FromInt32(1))),
+		"the Owns leg must put an edited budget back before any timed requeue")
+
+	secondUID, err := budgetUID()
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(c.Delete(ctx, &policyv1.PodDisruptionBudget{
+		ObjectMeta: metav1.ObjectMeta{Name: busKey.Name, Namespace: busKey.Namespace},
+	})).To(Succeed())
+	g.Eventually(budgetUID, ownsLegWindow, itPollInterval).ShouldNot(Equal(secondUID),
+		"the Owns leg must recreate a deleted budget before any timed requeue")
+
+	// Disabling the budget removes it. Get-mutate-update under
+	// RetryOnConflict: the live controller writes to the CR concurrently.
+	g.Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &c5c3v1alpha1.ControlPlane{}
+		if err := c.Get(ctx, cpKey, latest); err != nil {
+			return err
+		}
+		if latest.Spec.Sizing == nil {
+			latest.Spec.Sizing = &c5c3v1alpha1.ControlPlaneSizingSpec{}
+		}
+		latest.Spec.Sizing.Messaging = &c5c3v1alpha1.MessagingSizingSpec{
+			AvailabilitySizingSpec: c5c3v1alpha1.AvailabilitySizingSpec{
+				PodDisruptionBudget: &c5c3v1alpha1.BackingPodDisruptionBudgetSpec{Enabled: ptr.To(false)},
+			},
+		}
+		return c.Update(ctx, latest)
+	})).To(Succeed(), "disable the bus budget")
+	g.Eventually(func() bool {
+		return apierrors.IsNotFound(c.Get(ctx, busKey, &policyv1.PodDisruptionBudget{}))
+	}, itEventuallyTimeout, itPollInterval).Should(BeTrue(), "a disabled budget must be deleted")
 }
 
 // TestIntegration_Messaging_Defaulting pins what admission does to a messaging
