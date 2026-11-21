@@ -3552,6 +3552,16 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 		allErrs = append(allErrs, horizonv1alpha1.ValidateMultiDomain(
 			specPath.Child("services", "horizon", "multiDomain"), hz.MultiDomain,
 		)...)
+
+		// services.horizon.session delegates the same way. Without this mirror
+		// the child's webhook would reject the projection of a session block
+		// beside a colliding extraConfig key, and HorizonReady would turn False
+		// with reason HorizonProjectionRejected. The projection always writes
+		// DefaultCacheBackend, so that is the cache backend the rules see.
+		allErrs = append(allErrs, horizonv1alpha1.ValidateSession(
+			specPath.Child("services", "horizon", "session"), specPath.Child("services", "horizon", "extraConfig"),
+			hz.Session, horizonv1alpha1.DefaultCacheBackend, hz.ExtraConfig,
+		)...)
 	}
 
 	// Reject empty policy rule names and values on both the global policy and the

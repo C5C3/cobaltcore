@@ -482,6 +482,84 @@ FIXTURES: tuple[Fixture, ...] = (
             "    minAvailable: 3\n"
         ),
     ),
+    Fixture(
+        filename="26-session-backend-unknown.yaml",
+        comment=(
+            "spec.session.backend of Database is outside the SessionBackend Enum marker,\n"
+            "so the schema answers with \"Unsupported value\" before the webhook twin\n"
+            "(ValidateSession)."
+        ),
+        name="horizon-invalid-session-backend-unknown",
+        extra=(
+            "  session:\n"
+            "    backend: Database\n"
+        ),
+    ),
+    Fixture(
+        filename="27-session-extraconfig-session-engine.yaml",
+        comment=(
+            "spec.extraConfig.SESSION_ENGINE beside a spec.session block would win the\n"
+            "render-time merge and silently drop the block, with either backend. CEL\n"
+            "cannot see extraConfig, so the validating webhook answers (webhook-only)."
+        ),
+        name="horizon-invalid-session-extraconfig-session-engine",
+        extra=(
+            "  session:\n"
+            "    backend: SignedCookies\n"
+            "  extraConfig:\n"
+            '    SESSION_ENGINE: "django.contrib.sessions.backends.cache"\n'
+        ),
+    ),
+    Fixture(
+        filename="28-session-cache-extraconfig-caches.yaml",
+        comment=(
+            "spec.extraConfig.CACHES while spec.session.backend is Cache would replace the\n"
+            "operator's CACHES whole and drop the \"sessions\" alias that holds the\n"
+            "sessions. The validating webhook answers (webhook-only)."
+        ),
+        name="horizon-invalid-session-cache-extraconfig-caches",
+        extra=(
+            "  session:\n"
+            "    backend: Cache\n"
+            "  extraConfig:\n"
+            "    CACHES:\n"
+            "      default:\n"
+            "        BACKEND: django.core.cache.backends.locmem.LocMemCache\n"
+        ),
+    ),
+    Fixture(
+        filename="29-session-cache-extraconfig-session-cache-alias.yaml",
+        comment=(
+            "spec.extraConfig.SESSION_CACHE_ALIAS while spec.session.backend is Cache would\n"
+            "win the render-time merge over the \"sessions\" alias the block renders. The\n"
+            "validating webhook answers (webhook-only)."
+        ),
+        name="horizon-invalid-session-extraconfig-cache-alias",
+        extra=(
+            "  session:\n"
+            "    backend: Cache\n"
+            "  extraConfig:\n"
+            '    SESSION_CACHE_ALIAS: "default"\n'
+        ),
+    ),
+    Fixture(
+        filename="30-session-cache-backend-not-shared.yaml",
+        comment=(
+            "spec.session.backend Cache on the per-process LocMemCache backend could not\n"
+            "hold a session across uWSGI processes and replicas. The validating webhook\n"
+            "answers (webhook-only) with \"requires the cache backend\"."
+        ),
+        name="horizon-invalid-session-cache-backend-not-shared",
+        cache=(
+            "    clusterRef:\n"
+            "      name: openstack-memcached\n"
+            "    backend: django.core.cache.backends.locmem.LocMemCache"
+        ),
+        extra=(
+            "  session:\n"
+            "    backend: Cache\n"
+        ),
+    ),
 )
 
 

@@ -18,6 +18,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -178,6 +179,34 @@ func TestReconcile_MemcachedReadErrorMarksConfigReadyFalse(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(conditionReasonConfigError))
+	var configMaps corev1.ConfigMapList
+	g.Expect(r.List(context.Background(), &configMaps)).To(Succeed())
+	g.Expect(configMaps.Items).To(BeEmpty())
+}
+
+// TestReconcile_SessionCollisionMarksConfigReadyFalse verifies that a CR which
+// bypassed the validating webhook with cache sessions beside an extraConfig
+// CACHES takes the config-failure path: ConfigReady=False with reason
+// ConfigError naming spec.session, and no config ConfigMap.
+func TestReconcile_SessionCollisionMarksConfigReadyFalse(t *testing.T) {
+	g := NewGomegaWithT(t)
+	h := testHorizon()
+	h.Spec.Session = &horizonv1alpha1.SessionSpec{Backend: horizonv1alpha1.SessionBackendCache}
+	h.Spec.ExtraConfig = map[string]apiextensionsv1.JSON{
+		horizonv1alpha1.SettingCaches: {Raw: []byte(`{"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}`)},
+	}
+	r := newTestReconciler(testScheme(), h,
+		readyClusterSecretStore(openBaoClusterStoreName),
+		secretKeySecret("horizon-secret-key", "default", "secret-key", "django-key"))
+
+	_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: horizonKey})
+	g.Expect(err).To(MatchError(ContainSubstring("rendering local_settings.py: spec.session")))
+
+	cond := conditions.GetCondition(getHorizon(t, r).Status.Conditions, conditionTypeConfigReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonConfigError))
+	g.Expect(cond.Message).To(ContainSubstring("spec.session"))
 	var configMaps corev1.ConfigMapList
 	g.Expect(r.List(context.Background(), &configMaps)).To(Succeed())
 	g.Expect(configMaps.Items).To(BeEmpty())

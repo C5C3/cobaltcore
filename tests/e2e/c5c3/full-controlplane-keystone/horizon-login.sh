@@ -4,7 +4,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # tests/e2e/c5c3/full-controlplane-keystone/horizon-login.sh: the dashboard
-# login of Link 2c, which Link 8e runs again after the release hop.
+# login of Link 2c, which Link 8e runs again after the release hop, and Link
+# 8f, which moves the dashboard to cache sessions and logs in a third time.
 #
 # The step 1 script of chainsaw-test.yaml sources this file among its
 # helpers:
@@ -14,7 +15,7 @@
 # Chainsaw hands a script's content to bash as one argument, and Linux caps
 # one argument at 128 KiB (MAX_ARG_STRLEN). With this check inline the step 1
 # script passes that cap and bash never starts. Sourced, the function runs in
-# the step's own shell: it reads KEYSTONE_CR, HORIZON_CR, CP_NS and
+# the step's own shell: it reads KEYSTONE_CR, HORIZON_CR, CP_NAME, CP_NS and
 # LOGIN_CLIENT_IMAGE from it, runs under its set -euo pipefail, and a failed
 # check ends the step.
 
@@ -44,14 +45,20 @@
 # trend in every run. The sizes are those of the cookies the login set:
 # the view replaces the service ids in the session's catalog with list
 # indexes, so the cookie its response sets is smaller.
+#
+# HORIZON_SESSION_BACKEND names the session store the dashboard runs,
+# SignedCookies unless set. With Cache the sessionid value must be the
+# 32-character key of Django's cache session engine; the cookie bound
+# stays, since the browser sends every other cookie too.
 horizon_login_round_trip() {
-  echo "== Horizon login POST (expect 302 + sessionid) =="
+  echo "== Horizon login POST with ${HORIZON_SESSION_BACKEND:-SignedCookies} sessions (expect 302 + sessionid) =="
   ADMIN_PW="$(kubectl get secret "${KEYSTONE_CR}-admin-credentials" -n "${CP_NS}" \
     -o 'jsonpath={.data.password}' | base64 -d)"
   kubectl run cp-horizon-login --image="${LOGIN_CLIENT_IMAGE}" --rm -i --restart=Never \
     -n "${CP_NS}" \
     --env "HORIZON_BASE=http://${HORIZON_CR}.${CP_NS}.svc:8080" \
     --env "OS_PASSWORD=${ADMIN_PW}" \
+    --env "HORIZON_SESSION_BACKEND=${HORIZON_SESSION_BACKEND:-SignedCookies}" \
     --command -- python3 - <<'PYEOF'
 import http.client
 import http.cookiejar
@@ -97,6 +104,13 @@ assert status == 302, (
     'not authenticate against Keystone' % status)
 assert any(c.name == 'sessionid' for c in jar), \
     'no sessionid cookie after the login redirect'
+if os.environ['HORIZON_SESSION_BACKEND'] == 'Cache':
+    session_key = next(c.value for c in jar if c.name == 'sessionid')
+    assert len(session_key) == 32, (
+        'sessionid value has %d characters, not the 32 of a cache session '
+        'key; the dashboard still keeps the session in the cookie'
+        % len(session_key))
+    print('OK: sessionid is a 32-character cache session key')
 print('OK: dashboard login round-trip succeeded (302 + sessionid)')
 
 # The cookies the page request sends, the sum Horizon's middleware takes.
@@ -133,4 +147,63 @@ print("OK: logged-in page %s served (HTTP 200); sessionid cookie %d bytes, "
       % (page, session_size, total, SESSION_COOKIE_MAX_SIZE))
 PYEOF
   echo "OK: Horizon authenticated against Keystone, served a logged-in page, and its cookies fit a browser"
+}
+
+# Link 8f: the dashboard moves to cache sessions, on the next release, and a
+# login works with them. The merge patch sets services.horizon.session on
+# the ControlPlane, which projects it onto the Horizon child. The child must
+# carry the block, report Ready at its new generation and finish the
+# rollout, and its old pods must be gone, so no login reaches a pod that
+# still signs its cookies. All of that shares one deadline, settle_seconds
+# from the patch on, which the step 1 timeout of chainsaw-test.yaml budgets
+# as 5 minutes. The mounted ConfigMap must carry the cache engine, the
+# "sessions" alias and its KEY_PREFIX horizon-sessions-e7c8fa627bdb, whose
+# hex characters are the start of the SHA-256 of the child's
+# "<namespace>/<name>". The login of Link 2c then runs against cache
+# sessions. The link runs last, so the signed-cookie bound of Link 2c and
+# Link 8e measures the full catalog first.
+horizon_cache_sessions_link() {
+  echo "== Link 8f: switch the dashboard to cache sessions =="
+  kubectl patch controlplane "${CP_NAME}" -n "${CP_NS}" --type merge \
+    -p '{"spec":{"services":{"horizon":{"session":{"backend":"Cache"}}}}}'
+  local settle_seconds=300
+  local deadline state backend gen obs ready terminating cm settings want
+  deadline=$(( $(date +%s) + settle_seconds ))
+  while :; do
+    state="$(kubectl get horizon "${HORIZON_CR}" -n "${CP_NS}" -o \
+      "jsonpath={.spec.session.backend}|{.metadata.generation}|{.status.observedGeneration}|{.status.conditions[?(@.type=='Ready')].status}" \
+      2>/dev/null || true)"
+    IFS='|' read -r backend gen obs ready <<<"${state}"
+    if [ "${backend}" = Cache ] && [ -n "${gen}" ] && [ "${gen}" = "${obs}" ] && [ "${ready}" = True ]; then
+      break
+    fi
+    if [ "$(date +%s)" -ge "${deadline}" ]; then
+      echo "FAIL: Horizon ${HORIZON_CR} did not settle on cache sessions within ${settle_seconds}s" \
+        "(backend|generation|observedGeneration|Ready: ${state})"
+      exit 1
+    fi
+    sleep 5
+  done
+  kubectl rollout status "deploy/${HORIZON_CR}" -n "${CP_NS}" \
+    --timeout="$(( deadline - $(date +%s) > 1 ? deadline - $(date +%s) : 1 ))s"
+  while :; do
+    terminating="$(kubectl get pods -n "${CP_NS}" -l "app.kubernetes.io/instance=${HORIZON_CR}" \
+      -o 'jsonpath={.items[*].metadata.deletionTimestamp}')"
+    [ -z "${terminating}" ] && break
+    if [ "$(date +%s)" -ge "${deadline}" ]; then
+      echo "FAIL: pods of ${HORIZON_CR} still terminating after ${settle_seconds}s"; exit 1
+    fi
+    sleep 2
+  done
+  cm="$(kubectl get deploy "${HORIZON_CR}" -n "${CP_NS}" \
+    -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="config")].configMap.name}')"
+  settings="$(kubectl get cm "${cm}" -n "${CP_NS}" -o 'jsonpath={.data.local_settings\.py}')"
+  for want in 'SESSION_ENGINE = "django.contrib.sessions.backends.cache"' \
+    'SESSION_CACHE_ALIAS = "sessions"' '"KEY_PREFIX": "horizon-sessions-e7c8fa627bdb"'; do
+    if ! grep -qF "${want}" <<<"${settings}"; then
+      echo "FAIL: ${cm} does not carry the cache session setting ${want}"; exit 1
+    fi
+  done
+  echo "OK: ${HORIZON_CR} runs cache sessions from ${cm}"
+  HORIZON_SESSION_BACKEND=Cache horizon_login_round_trip
 }

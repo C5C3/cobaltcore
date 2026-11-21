@@ -371,6 +371,49 @@ func TestValidateCreate_RejectionTable(t *testing.T) {
 			},
 			wantSub: `spec.podDisruptionBudget.minAvailable: Invalid value: "1": allows no voluntary eviction at a lower replica bound of 1`,
 		},
+		{
+			name:    "session backend outside the enum rejected",
+			mutate:  func(h *Horizon) { h.Spec.Session = &SessionSpec{Backend: "Database"} },
+			wantSub: `spec.session.backend: Unsupported value: "Database"`,
+		},
+		{
+			name: "session block with extraConfig SESSION_ENGINE rejected",
+			mutate: func(h *Horizon) {
+				h.Spec.Session = &SessionSpec{Backend: SessionBackendSignedCookies}
+				h.Spec.ExtraConfig = map[string]apiextensionsv1.JSON{
+					SettingSessionEngine: {Raw: []byte(`"django.contrib.sessions.backends.cache"`)},
+				}
+			},
+			wantSub: "spec.extraConfig[SESSION_ENGINE]: Forbidden: SESSION_ENGINE is managed via spec.session",
+		},
+		{
+			name: "cache sessions with extraConfig CACHES rejected",
+			mutate: func(h *Horizon) {
+				h.Spec.Session = &SessionSpec{Backend: SessionBackendCache}
+				h.Spec.ExtraConfig = map[string]apiextensionsv1.JSON{
+					SettingCaches: {Raw: []byte(`{"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}`)},
+				}
+			},
+			wantSub: "spec.extraConfig[CACHES]: Forbidden: CACHES must not be set in extraConfig while spec.session.backend is Cache",
+		},
+		{
+			name: "cache sessions with extraConfig SESSION_CACHE_ALIAS rejected",
+			mutate: func(h *Horizon) {
+				h.Spec.Session = &SessionSpec{Backend: SessionBackendCache}
+				h.Spec.ExtraConfig = map[string]apiextensionsv1.JSON{
+					SettingSessionCacheAlias: {Raw: []byte(`"default"`)},
+				}
+			},
+			wantSub: "spec.extraConfig[SESSION_CACHE_ALIAS]: Forbidden: SESSION_CACHE_ALIAS is managed via spec.session",
+		},
+		{
+			name: "cache sessions on a per-process cache backend rejected",
+			mutate: func(h *Horizon) {
+				h.Spec.Session = &SessionSpec{Backend: SessionBackendCache}
+				h.Spec.Cache.Backend = "django.core.cache.backends.locmem.LocMemCache"
+			},
+			wantSub: `spec.session.backend: Invalid value: "Cache": requires the cache backend`,
+		},
 	}
 
 	for _, tc := range tests {
@@ -784,6 +827,162 @@ func TestValidateMultiDomain(t *testing.T) {
 			g.Expect(errs[0].Field).To(gomega.Equal(tc.wantField))
 		})
 	}
+}
+
+// TestValidateSession pins the exported validator the ControlPlane webhook and
+// the renderer's backstop delegate to. The admitted rows cover every value the
+// rules must leave alone: a nil block, both backends, an empty or a nil
+// extraConfig, the overrides SignedCookies keeps admitting, and the
+// SESSION_ENGINE override of a CR without the block.
+func TestValidateSession(t *testing.T) {
+	sessionPath := field.NewPath("spec", "session")
+	extraConfigPath := field.NewPath("spec", "extraConfig")
+	const locMem = "django.core.cache.backends.locmem.LocMemCache"
+	extra := func(keys ...string) map[string]apiextensionsv1.JSON {
+		m := make(map[string]apiextensionsv1.JSON, len(keys))
+		for _, k := range keys {
+			m[k] = apiextensionsv1.JSON{Raw: []byte(`"x"`)}
+		}
+		return m
+	}
+	signed := &SessionSpec{Backend: SessionBackendSignedCookies}
+	cached := &SessionSpec{Backend: SessionBackendCache}
+
+	tests := []struct {
+		name         string
+		session      *SessionSpec
+		cacheBackend string
+		extraConfig  map[string]apiextensionsv1.JSON
+		wantType     field.ErrorType
+		wantField    string
+	}{
+		{name: "nil block", session: nil, cacheBackend: DefaultCacheBackend},
+		{name: "SignedCookies", session: signed, cacheBackend: DefaultCacheBackend},
+		{name: "Cache with the default cache backend", session: cached, cacheBackend: DefaultCacheBackend},
+		{name: "Cache with an empty cache backend", session: cached, cacheBackend: ""},
+		{name: "Cache with a nil extraConfig", session: cached, cacheBackend: DefaultCacheBackend, extraConfig: nil},
+		{name: "Cache with an empty extraConfig", session: cached, cacheBackend: DefaultCacheBackend, extraConfig: extra()},
+		{name: "SignedCookies with extraConfig CACHES", session: signed, cacheBackend: DefaultCacheBackend, extraConfig: extra(SettingCaches)},
+		{name: "SignedCookies with extraConfig SESSION_CACHE_ALIAS", session: signed, cacheBackend: DefaultCacheBackend, extraConfig: extra(SettingSessionCacheAlias)},
+		{name: "SignedCookies with the LocMemCache backend", session: signed, cacheBackend: locMem},
+		{name: "nil block with extraConfig SESSION_ENGINE", session: nil, cacheBackend: locMem, extraConfig: extra(SettingSessionEngine, SettingCaches)},
+		{
+			name:     "backend Database",
+			session:  &SessionSpec{Backend: "Database"},
+			wantType: field.ErrorTypeNotSupported, wantField: "spec.session.backend",
+		},
+		{
+			name:     "empty backend",
+			session:  &SessionSpec{},
+			wantType: field.ErrorTypeNotSupported, wantField: "spec.session.backend",
+		},
+		{
+			name: "SignedCookies with extraConfig SESSION_ENGINE", session: signed, extraConfig: extra(SettingSessionEngine),
+			wantType: field.ErrorTypeForbidden, wantField: "spec.extraConfig[SESSION_ENGINE]",
+		},
+		{
+			name: "Cache with extraConfig SESSION_ENGINE", session: cached, extraConfig: extra(SettingSessionEngine),
+			wantType: field.ErrorTypeForbidden, wantField: "spec.extraConfig[SESSION_ENGINE]",
+		},
+		{
+			name: "Cache with extraConfig SESSION_CACHE_ALIAS", session: cached, extraConfig: extra(SettingSessionCacheAlias),
+			wantType: field.ErrorTypeForbidden, wantField: "spec.extraConfig[SESSION_CACHE_ALIAS]",
+		},
+		{
+			name: "Cache with extraConfig CACHES", session: cached, extraConfig: extra(SettingCaches),
+			wantType: field.ErrorTypeForbidden, wantField: "spec.extraConfig[CACHES]",
+		},
+		{
+			name: "Cache with the LocMemCache backend", session: cached, cacheBackend: locMem,
+			wantType: field.ErrorTypeInvalid, wantField: "spec.session.backend",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+
+			errs := ValidateSession(sessionPath, extraConfigPath, tc.session, tc.cacheBackend, tc.extraConfig)
+
+			if tc.wantField == "" {
+				g.Expect(errs).To(gomega.BeEmpty())
+				return
+			}
+			g.Expect(errs).To(gomega.HaveLen(1))
+			g.Expect(errs[0].Type).To(gomega.Equal(tc.wantType))
+			g.Expect(errs[0].Field).To(gomega.Equal(tc.wantField))
+		})
+	}
+
+	t.Run("every Cache rule is reported in one call", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+
+		errs := ValidateSession(sessionPath, extraConfigPath, cached, locMem,
+			extra(SettingSessionEngine, SettingSessionCacheAlias, SettingCaches))
+
+		g.Expect(errs).To(gomega.HaveLen(4))
+		fields := make([]string, 0, len(errs))
+		for _, e := range errs {
+			fields = append(fields, e.Field)
+		}
+		g.Expect(fields).To(gomega.ConsistOf(
+			"spec.extraConfig[SESSION_ENGINE]",
+			"spec.extraConfig[SESSION_CACHE_ALIAS]",
+			"spec.extraConfig[CACHES]",
+			"spec.session.backend",
+		))
+	})
+
+	t.Run("the caller's paths name the errors", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		hz := field.NewPath("spec", "services", "horizon")
+
+		errs := ValidateSession(hz.Child("session"), hz.Child("extraConfig"), signed, DefaultCacheBackend,
+			extra(SettingSessionEngine))
+
+		g.Expect(errs).To(gomega.HaveLen(1))
+		g.Expect(errs[0].Field).To(gomega.Equal("spec.services.horizon.extraConfig[SESSION_ENGINE]"))
+		g.Expect(errs[0].Detail).To(gomega.ContainSubstring("is managed via spec.services.horizon.session"))
+	})
+}
+
+// TestValidateUpdate_SessionCollision covers a stored CR that predates the
+// session block: adding the block is rejected while its extraConfig still
+// carries SESSION_ENGINE, and admitted once the override is removed.
+func TestValidateUpdate_SessionCollision(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &HorizonWebhook{}
+	oldObj := validHorizon()
+	oldObj.Spec.ExtraConfig = map[string]apiextensionsv1.JSON{
+		SettingSessionEngine: {Raw: []byte(`"django.contrib.sessions.backends.cache"`)},
+	}
+
+	newObj := oldObj.DeepCopy()
+	newObj.Spec.Session = &SessionSpec{Backend: SessionBackendCache}
+	_, err := w.ValidateUpdate(context.Background(), oldObj, newObj)
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err.Error()).To(gomega.ContainSubstring("spec.extraConfig[SESSION_ENGINE]: Forbidden: SESSION_ENGINE is managed via spec.session"))
+
+	newObj.Spec.ExtraConfig = nil
+	_, err = w.ValidateUpdate(context.Background(), oldObj, newObj)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+}
+
+// TestDefault_SessionUntouched pins that the defaulter writes no session block:
+// a stored CR without one keeps none, so the renderer resolves it to signed
+// cookies and the operator upgrade rolls no dashboard.
+func TestDefault_SessionUntouched(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &HorizonWebhook{}
+
+	h := validHorizon()
+	g.Expect(w.Default(context.Background(), h)).To(gomega.Succeed())
+	g.Expect(h.Spec.Session).To(gomega.BeNil())
+
+	h = validHorizon()
+	h.Spec.Session = &SessionSpec{Backend: SessionBackendCache}
+	g.Expect(w.Default(context.Background(), h)).To(gomega.Succeed())
+	g.Expect(h.Spec.Session).To(gomega.Equal(&SessionSpec{Backend: SessionBackendCache}))
 }
 
 // TestValidate_WebSSOAcceptsFullyMappedBlock pins the happy path so the

@@ -80,6 +80,19 @@ const (
 	SettingMultiDomainDomainChoices  = "OPENSTACK_KEYSTONE_DOMAIN_CHOICES"
 )
 
+// SettingSessionEngine and SettingSessionCacheAlias are the Django settings
+// the spec.session block owns, SettingCaches is the CACHES setting that gains
+// the SessionCacheAlias alias while spec.session.backend is Cache. They are
+// exported so the settings renderer, the ownership registry and the validating
+// webhook (which rejects an extraConfig override the block would lose to)
+// share one source of truth rather than repeating the literals.
+const (
+	SettingSessionEngine     = "SESSION_ENGINE"
+	SettingSessionCacheAlias = "SESSION_CACHE_ALIAS"
+	SettingCaches            = "CACHES"
+	SessionCacheAlias        = "sessions"
+)
+
 // SettingSecureProxySSLHeader is the Django setting that tells the dashboard to
 // derive the request scheme from the X-Forwarded-Proto header a TLS-terminating
 // proxy sets. It is rendered when spec.gateway is configured — see
@@ -136,8 +149,9 @@ type HorizonList struct {
 // Horizon is deliberately the thin profile among the service operators:
 // a stateless Django/WSGI dashboard with no message bus, no service-catalog
 // endpoints of its own, and no db-sync/fernet/bootstrap/upgrade machinery.
-// Sessions use Django signed cookies; Memcached only backs the Django cache,
-// so losing it degrades cache hit-rate without logging users out.
+// Sessions use Django signed cookies unless spec.session selects the cache
+// backend; with signed cookies Memcached only backs the Django cache, so
+// losing it degrades cache hit-rate without logging users out.
 //
 // The targetClusterRef transition rules (evaluated only on UPDATE) freeze the
 // ref: adding it, removing it, or renaming it after creation is rejected at the
@@ -271,6 +285,16 @@ type HorizonSpec struct {
 	// login form authenticates against the default domain only.
 	// +optional
 	MultiDomain *MultiDomainSpec `json:"multiDomain,omitempty"`
+
+	// Session selects the store of the dashboard's Django sessions. When nil
+	// (the default) the operator renders signed-cookie sessions, the same
+	// module as backend SignedCookies. Backend Cache renders Django's cache
+	// session engine on the Memcached of spec.cache, through a "sessions"
+	// cache alias whose KEY_PREFIX is scoped to this CR's namespace and name,
+	// so an image change keeps the sessions. The c5c3 ControlPlane operator
+	// projects this block from spec.services.horizon.session.
+	// +optional
+	Session *SessionSpec `json:"session,omitempty"`
 
 	// ExtraConfig provides free-form Django settings rendered verbatim into
 	// local_settings.py after the operator defaults, so user values win.
@@ -439,6 +463,31 @@ type DomainChoice struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=128
 	Label string `json:"label"`
+}
+
+// SessionBackend names the store of the dashboard's Django sessions.
+// +kubebuilder:validation:Enum=SignedCookies;Cache
+type SessionBackend string
+
+const (
+	// SessionBackendSignedCookies keeps the whole session in a cookie signed
+	// with SECRET_KEY (Django's signed_cookies session engine).
+	SessionBackendSignedCookies SessionBackend = "SignedCookies"
+	// SessionBackendCache keeps the session in the Memcached of spec.cache,
+	// and the cookie carries the session key only (Django's cache session
+	// engine).
+	SessionBackendCache SessionBackend = "Cache"
+)
+
+// SessionSpec selects where the dashboard's Django sessions live.
+type SessionSpec struct {
+	// Backend selects the session store: SignedCookies keeps the session in a
+	// cookie the browser drops above about 4096 bytes, and Cache keeps it in
+	// the Memcached of spec.cache, which must use the PyMemcacheCache backend.
+	// With Cache a failed Memcached read is a logout. Switching the store in
+	// either direction logs every user out, repeatedly while old and new pods
+	// serve side by side, until the rollout completes.
+	Backend SessionBackend `json:"backend"`
 }
 
 // DeploymentSpec, AutoscalingSpec, VerticalAutoscalingSpec, NetworkPolicySpec,

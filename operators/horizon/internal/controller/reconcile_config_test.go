@@ -6,6 +6,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -653,12 +654,13 @@ func TestReconcileConfig_NoOwnedOverridesConditionTrue(t *testing.T) {
 // be rendered (reverse), so the registry and the renderer cannot drift apart.
 func TestDefaultSettings_RegistryDriftGuard(t *testing.T) {
 	// Exercise every conditional branch so all websso and multiDomain settings —
-	// plus SECURE_PROXY_SSL_HEADER — are emitted: a Gateway, a fully-populated
-	// websso block (choices, mapping, initialChoice, keystoneURL, all set by
-	// webssoTestHorizon), and a fully-populated multiDomain block (enabled,
-	// defaultDomain, dropdown, choices).
+	// plus SECURE_PROXY_SSL_HEADER and SESSION_CACHE_ALIAS — are emitted: a
+	// Gateway, a fully-populated websso block (choices, mapping, initialChoice,
+	// keystoneURL, all set by webssoTestHorizon), a fully-populated multiDomain
+	// block (enabled, defaultDomain, dropdown, choices), and cache sessions.
 	h := webssoTestHorizon()
 	h.Spec.Gateway = gatewaySpec()
+	h.Spec.Session = &horizonv1alpha1.SessionSpec{Backend: horizonv1alpha1.SessionBackendCache}
 	h.Spec.MultiDomain = &horizonv1alpha1.MultiDomainSpec{
 		Enabled:        true,
 		DefaultDomain:  horizonv1alpha1.DefaultMultiDomainDefaultDomain,
@@ -865,6 +867,41 @@ func TestRenderLocalSettings_OtherCacheBackendRendersNoOptions(t *testing.T) {
 	g.Expect(rendered).NotTo(ContainSubstring(`"OPTIONS"`))
 }
 
+// sessionUnsetLocalSettings is the complete local_settings.py of testHorizon(),
+// captured from the renderer before spec.session existed. A CR without the
+// block must keep rendering it byte for byte, so the operator upgrade creates
+// no ConfigMap and rolls no dashboard.
+const sessionUnsetLocalSettings = `import os
+
+# Rendered by the horizon-operator; edits are overwritten on the next reconcile.
+# SECRET_KEY is injected via the pod environment (spec.secretKeyRef) so the
+# key material never enters this ConfigMap.
+SECRET_KEY = os.environ["HORIZON_SECRET_KEY"]
+
+ALLOWED_HOSTS = ["localhost", "test-horizon", "test-horizon.default", "test-horizon.default.svc", "test-horizon.default.svc.cluster.local"]
+CACHES = {"default": {"BACKEND": "django.core.cache.backends.memcached.PyMemcacheCache", "KEY_PREFIX": "horizon-e3b48cc65c6f", "LOCATION": ["memcached:11211"], "OPTIONS": {"connect_timeout": 1, "ignore_exc": True, "timeout": 1}}}
+COMPRESS_OFFLINE = True
+DEBUG = False
+LOGGING = {"disable_existing_loggers": False, "filters": {"require_debug_false": {"()": "django.utils.log.RequireDebugFalse"}}, "formatters": {"text": {"datefmt": "%Y-%m-%d %H:%M:%S", "format": "%(asctime)s.%(msecs)03d %(process)d %(levelname)s %(name)s [-] %(message)s"}}, "handlers": {"console": {"class": "logging.StreamHandler", "formatter": "text", "stream": "ext://sys.stderr"}, "mail_admins": {"class": "django.utils.log.AdminEmailHandler", "filters": ["require_debug_false"], "level": "ERROR"}}, "loggers": {"django": {"handlers": ["mail_admins"], "level": "INFO"}}, "root": {"handlers": ["console"], "level": "INFO"}, "version": 1}
+OPENSTACK_ENDPOINT_TYPE = "internalURL"
+OPENSTACK_KEYSTONE_URL = "http://keystone.default.svc.cluster.local:5000/v3"
+OPENSTACK_REQUEST_TIMEOUT = 30
+SESSION_ENGINE = "django.contrib.sessions.backends.signed_cookies"
+STATIC_ROOT = "/var/lib/openstack/horizon-static"
+WEBROOT = "/"
+`
+
+// TestRenderLocalSettings_SessionUnsetIsUnchanged pins the whole module of a
+// Horizon without spec.session. Expected output is a literal, never a second
+// render, so any new default setting or changed literal fails here.
+func TestRenderLocalSettings_SessionUnsetIsUnchanged(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	rendered, err := renderLocalSettingsWithoutList(testHorizon())
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(rendered).To(Equal(sessionUnsetLocalSettings))
+}
+
 // renderLocalSettingsWithoutList renders local_settings.py with the server
 // list cache.ResolveServers returns while no Memcached publishes one.
 func renderLocalSettingsWithoutList(h *horizonv1alpha1.Horizon) (string, error) {
@@ -942,20 +979,290 @@ func TestReconcileConfig_CacheServers(t *testing.T) {
 			g.Expect(cm.Data["local_settings.py"]).To(ContainSubstring(tc.want))
 			g.Expect(gets.Load()).To(Equal(tc.wantGets))
 		})
+		// The "sessions" alias of cache sessions reaches the same Memcached as
+		// the "default" alias, so the list renders once per alias and the
+		// Memcached is still read once.
+		t.Run(tc.name+" in both aliases with cache sessions", func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			var gets atomic.Int32
+			h := tc.horizon.DeepCopy()
+			h.Spec.Session = &horizonv1alpha1.SessionSpec{Backend: horizonv1alpha1.SessionBackendCache}
+			r := newMemcachedTestReconciler(&gets, nil, append([]client.Object{h}, tc.objs...)...)
+
+			name, err := r.reconcileConfig(context.Background(), r.Client, h)
+			g.Expect(err).NotTo(HaveOccurred())
+
+			var cm corev1.ConfigMap
+			g.Expect(r.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: name}, &cm)).To(Succeed())
+			g.Expect(strings.Count(cm.Data["local_settings.py"], tc.want)).To(Equal(2))
+			g.Expect(gets.Load()).To(Equal(tc.wantGets))
+		})
 	}
 
-	t.Run("a failed Memcached read writes no ConfigMap", func(t *testing.T) {
-		g := NewGomegaWithT(t)
-		var gets atomic.Int32
+	for _, tc := range []struct {
+		name    string
+		session *horizonv1alpha1.SessionSpec
+	}{
+		{name: "a failed Memcached read writes no ConfigMap"},
+		{name: "a failed Memcached read writes no ConfigMap with cache sessions", session: &horizonv1alpha1.SessionSpec{Backend: horizonv1alpha1.SessionBackendCache}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			var gets atomic.Int32
+			h := testHorizon()
+			h.Spec.Session = tc.session
+			r := newMemcachedTestReconciler(&gets, context.DeadlineExceeded, h)
+
+			_, err := r.reconcileConfig(context.Background(), r.Client, h)
+			g.Expect(err).To(MatchError(context.DeadlineExceeded))
+			g.Expect(err.Error()).To(HavePrefix("resolving cache servers: getting Memcached default/memcached: "))
+
+			var cms corev1.ConfigMapList
+			g.Expect(r.List(context.Background(), &cms, client.InNamespace("default"))).To(Succeed())
+			g.Expect(cms.Items).To(BeEmpty())
+		})
+	}
+}
+
+// --- spec.session ---
+
+// renderedCaches decodes the CACHES default setting of h into its aliases.
+func renderedCaches(t *testing.T, h *horizonv1alpha1.Horizon) map[string]map[string]any {
+	t.Helper()
+	settings, err := defaultSettings(h, cache.ResolveServers(&h.Spec.Cache, nil))
+	if err != nil {
+		t.Fatalf("defaultSettings returned an error: %v", err)
+	}
+	var caches map[string]map[string]any
+	if err := json.Unmarshal(settings[horizonv1alpha1.SettingCaches].Raw, &caches); err != nil {
+		t.Fatalf("decoding CACHES: %v", err)
+	}
+	return caches
+}
+
+// TestRenderLocalSettings_SessionSignedCookiesMatchesUnset pins that backend
+// SignedCookies is the unset block spelled out: the same module, the
+// signed-cookie engine, no SESSION_CACHE_ALIAS and one CACHES alias.
+func TestRenderLocalSettings_SessionSignedCookiesMatchesUnset(t *testing.T) {
+	g := NewGomegaWithT(t)
+	unset := testHorizon()
+	signed := testHorizon()
+	signed.Spec.Session = &horizonv1alpha1.SessionSpec{Backend: horizonv1alpha1.SessionBackendSignedCookies}
+
+	want, err := renderLocalSettingsWithoutList(unset)
+	g.Expect(err).NotTo(HaveOccurred())
+	got, err := renderLocalSettingsWithoutList(signed)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(got).To(Equal(want))
+	g.Expect(got).To(ContainSubstring(`SESSION_ENGINE = "django.contrib.sessions.backends.signed_cookies"`))
+	g.Expect(got).NotTo(ContainSubstring("SESSION_CACHE_ALIAS"))
+	for _, h := range []*horizonv1alpha1.Horizon{unset, signed} {
+		g.Expect(renderedCaches(t, h)).To(HaveLen(1))
+		g.Expect(renderedCaches(t, h)).To(HaveKey("default"))
+	}
+}
+
+// TestRenderLocalSettings_CacheSessions pins the three settings backend Cache
+// renders. The "sessions" alias reaches the "default" alias's Memcached with
+// its options and differs from it in KEY_PREFIX only. Both prefixes are
+// literals: sha256("ghcr.io/c5c3/horizon:2026.1") and
+// sha256("default/test-horizon"), each cut to 12 hex characters.
+func TestRenderLocalSettings_CacheSessions(t *testing.T) {
+	g := NewGomegaWithT(t)
+	h := testHorizon()
+	h.Spec.Session = &horizonv1alpha1.SessionSpec{Backend: horizonv1alpha1.SessionBackendCache}
+
+	rendered, err := renderLocalSettingsWithoutList(h)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(rendered).To(MatchRegexp(`(?m)^SESSION_ENGINE = "django\.contrib\.sessions\.backends\.cache"$`))
+	g.Expect(rendered).To(MatchRegexp(`(?m)^SESSION_CACHE_ALIAS = "sessions"$`))
+	g.Expect(rendered).To(ContainSubstring(`CACHES = {"default": {"BACKEND": "django.core.cache.backends.memcached.PyMemcacheCache", ` +
+		`"KEY_PREFIX": "horizon-e3b48cc65c6f", "LOCATION": ["memcached:11211"], ` +
+		`"OPTIONS": {"connect_timeout": 1, "ignore_exc": True, "timeout": 1}}, ` +
+		`"sessions": {"BACKEND": "django.core.cache.backends.memcached.PyMemcacheCache", ` +
+		`"KEY_PREFIX": "horizon-sessions-29950a095e7f", "LOCATION": ["memcached:11211"], ` +
+		`"OPTIONS": {"connect_timeout": 1, "ignore_exc": True, "timeout": 1}}}`))
+
+	caches := renderedCaches(t, h)
+	g.Expect(caches).To(HaveLen(2))
+	g.Expect(caches["default"]["KEY_PREFIX"]).To(Equal("horizon-e3b48cc65c6f"))
+	g.Expect(caches["sessions"]["KEY_PREFIX"]).To(Equal("horizon-sessions-29950a095e7f"))
+	for _, key := range []string{"BACKEND", "LOCATION", "OPTIONS"} {
+		g.Expect(caches["sessions"]).To(HaveKeyWithValue(key, caches["default"][key]), "alias key %s", key)
+	}
+}
+
+// TestRenderLocalSettings_CacheSessionsEmptyCacheSpec covers cache sessions on a
+// CacheSpec with neither clusterRef nor servers (a CR that bypassed the
+// webhook): both aliases render LOCATION None and the render does not fail.
+func TestRenderLocalSettings_CacheSessionsEmptyCacheSpec(t *testing.T) {
+	g := NewGomegaWithT(t)
+	h := testHorizon()
+	h.Spec.Cache = commonv1.CacheSpec{Backend: horizonv1alpha1.DefaultCacheBackend}
+	h.Spec.Session = &horizonv1alpha1.SessionSpec{Backend: horizonv1alpha1.SessionBackendCache}
+
+	rendered, err := renderLocalSettingsWithoutList(h)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(strings.Count(rendered, `"LOCATION": None`)).To(Equal(2))
+}
+
+// TestSessionCacheKeyPrefix pins the name-scoped prefix of the "sessions"
+// alias. Expected values are literals, never a call to sessionCacheKeyPrefix:
+// the hash input is "<namespace>/<name>", so the image does not move it and a
+// different namespace or name does.
+func TestSessionCacheKeyPrefix(t *testing.T) {
+	withMeta := func(namespace, name string) *horizonv1alpha1.Horizon {
 		h := testHorizon()
-		r := newMemcachedTestReconciler(&gets, context.DeadlineExceeded, h)
+		h.Namespace, h.Name = namespace, name
+		return h
+	}
 
-		_, err := r.reconcileConfig(context.Background(), r.Client, h)
-		g.Expect(err).To(MatchError(context.DeadlineExceeded))
-		g.Expect(err.Error()).To(HavePrefix("resolving cache servers: getting Memcached default/memcached: "))
+	for _, tt := range []struct {
+		name    string
+		horizon *horizonv1alpha1.Horizon
+		want    string
+	}{
+		{name: "default/test-horizon", horizon: withMeta("default", "test-horizon"), want: "horizon-sessions-29950a095e7f"},
+		{name: "openstack/horizon-release-upgrade", horizon: withMeta("openstack", "horizon-release-upgrade"), want: "horizon-sessions-bf5308222bb5"},
+		// The hash of "/". The API server never stores such a CR; the
+		// renderer still answers without a panic.
+		{name: "empty namespace and name", horizon: withMeta("", ""), want: "horizon-sessions-8a5edab28263"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			var got string
+			g.Expect(func() { got = sessionCacheKeyPrefix(tt.horizon) }).NotTo(Panic())
+			g.Expect(got).To(Equal(tt.want))
+		})
+	}
 
-		var cms corev1.ConfigMapList
-		g.Expect(r.List(context.Background(), &cms, client.InNamespace("default"))).To(Succeed())
-		g.Expect(cms.Items).To(BeEmpty())
+	t.Run("an image change keeps the prefix", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		h := testHorizon()
+		for _, image := range []commonv1.ImageSpec{
+			{Repository: "ghcr.io/c5c3/horizon", Tag: "2026.1"},
+			{Repository: "ghcr.io/c5c3/horizon", Tag: "2026.2"},
+			{Repository: "ghcr.io/c5c3/horizon", Digest: "sha256:38fee8a6" + strings.Repeat("0", 56)},
+		} {
+			h.Spec.Image = image
+			g.Expect(sessionCacheKeyPrefix(h)).To(Equal("horizon-sessions-29950a095e7f"), "image %s", image.Reference())
+		}
 	})
+
+	t.Run("another namespace or name moves the prefix", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		base := sessionCacheKeyPrefix(withMeta("default", "test-horizon"))
+		g.Expect(sessionCacheKeyPrefix(withMeta("openstack", "test-horizon"))).NotTo(Equal(base))
+		g.Expect(sessionCacheKeyPrefix(withMeta("default", "other-horizon"))).NotTo(Equal(base))
+	})
+}
+
+// TestRenderLocalSettings_SessionCollisionsFail covers the render-time backstop
+// for a CR that bypassed the validating webhook: every rule of ValidateSession
+// fails the render, and reconcileConfig then writes no ConfigMap, so the
+// running pods keep theirs.
+func TestRenderLocalSettings_SessionCollisionsFail(t *testing.T) {
+	setting := func(name, raw string) map[string]apiextensionsv1.JSON {
+		return map[string]apiextensionsv1.JSON{name: {Raw: []byte(raw)}}
+	}
+	cached := horizonv1alpha1.SessionBackendCache
+	for _, tc := range []struct {
+		name         string
+		backend      horizonv1alpha1.SessionBackend
+		extraConfig  map[string]apiextensionsv1.JSON
+		cacheBackend string
+		wantSub      string
+	}{
+		{name: "Cache with extraConfig CACHES", backend: cached, extraConfig: setting(horizonv1alpha1.SettingCaches, `{"default": {}}`), wantSub: "spec.extraConfig[CACHES]"},
+		{name: "Cache with extraConfig SESSION_CACHE_ALIAS", backend: cached, extraConfig: setting(horizonv1alpha1.SettingSessionCacheAlias, `"default"`), wantSub: "spec.extraConfig[SESSION_CACHE_ALIAS]"},
+		{name: "Cache with extraConfig SESSION_ENGINE", backend: cached, extraConfig: setting(horizonv1alpha1.SettingSessionEngine, `"django.contrib.sessions.backends.db"`), wantSub: "spec.extraConfig[SESSION_ENGINE]"},
+		{name: "Cache with the LocMemCache backend", backend: cached, cacheBackend: "django.core.cache.backends.locmem.LocMemCache", wantSub: "requires the cache backend"},
+		{name: "SignedCookies with extraConfig SESSION_ENGINE", backend: horizonv1alpha1.SessionBackendSignedCookies, extraConfig: setting(horizonv1alpha1.SettingSessionEngine, `"django.contrib.sessions.backends.cache"`), wantSub: "spec.extraConfig[SESSION_ENGINE]"},
+		{name: "backend Database", backend: "Database", wantSub: `spec.session.backend: Unsupported value: "Database"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			h := testHorizon()
+			h.Spec.Session = &horizonv1alpha1.SessionSpec{Backend: tc.backend}
+			h.Spec.ExtraConfig = tc.extraConfig
+			if tc.cacheBackend != "" {
+				h.Spec.Cache.Backend = tc.cacheBackend
+			}
+
+			_, err := renderLocalSettingsWithoutList(h)
+			g.Expect(err).To(MatchError(And(ContainSubstring("spec.session"), ContainSubstring(tc.wantSub))))
+
+			r := newTestReconciler(testScheme(), h)
+			_, err = r.reconcileConfig(context.Background(), r.Client, h)
+			g.Expect(err).To(MatchError(HavePrefix("rendering local_settings.py: spec.session: ")))
+
+			var cms corev1.ConfigMapList
+			g.Expect(r.List(context.Background(), &cms, client.InNamespace("default"))).To(Succeed())
+			g.Expect(cms.Items).To(BeEmpty())
+		})
+	}
+}
+
+// TestReconcileConfig_SessionEngineOverrideWithoutBlockReported covers the
+// escape hatch a CR without spec.session keeps: an extraConfig SESSION_ENGINE
+// is rendered as written, CACHES keeps its one alias, and the guard reports
+// the override with the session Impact in the condition and one Warning event.
+func TestReconcileConfig_SessionEngineOverrideWithoutBlockReported(t *testing.T) {
+	g := NewGomegaWithT(t)
+	h := testHorizon()
+	h.Spec.ExtraConfig = map[string]apiextensionsv1.JSON{
+		horizonv1alpha1.SettingSessionEngine: {Raw: []byte(`"django.contrib.sessions.backends.cache"`)},
+	}
+	r := newTestReconciler(testScheme(), h)
+
+	name, err := r.reconcileConfig(context.Background(), r.Client, h)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var cm corev1.ConfigMap
+	g.Expect(r.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: name}, &cm)).To(Succeed())
+	rendered := cm.Data["local_settings.py"]
+	g.Expect(rendered).To(MatchRegexp(`(?m)^SESSION_ENGINE = "django\.contrib\.sessions\.backends\.cache"$`))
+	g.Expect(rendered).NotTo(ContainSubstring("SESSION_CACHE_ALIAS"))
+	g.Expect(rendered).To(ContainSubstring(`CACHES = {"default": {`))
+	g.Expect(rendered).NotTo(ContainSubstring(`"sessions"`))
+
+	cond := conditions.GetCondition(h.Status.Conditions, config.ConditionTypeExtraConfigHealthy)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Message).To(ContainSubstring("SESSION_ENGINE"))
+	g.Expect(cond.Message).To(ContainSubstring("typed session field"))
+
+	fakeRecorder := r.Recorder.(*record.FakeRecorder)
+	g.Expect(fakeRecorder.Events).To(Receive(And(
+		ContainSubstring("Warning "+config.EventReasonExtraConfigOwnedKeyOverride),
+		ContainSubstring(cond.Message),
+	)))
+	g.Expect(fakeRecorder.Events).NotTo(Receive(), "the guard must emit exactly one event")
+}
+
+// TestReconcileConfig_SessionCacheAliasBesideSignedCookiesReported covers the
+// session key the webhook admits beside the block: an extraConfig
+// SESSION_CACHE_ALIAS on backend SignedCookies. The guard reports it with its
+// own Impact, which says the setting takes effect only beside an extraConfig
+// cache SESSION_ENGINE, not the SESSION_ENGINE text about a cache engine set
+// in extraConfig.
+func TestReconcileConfig_SessionCacheAliasBesideSignedCookiesReported(t *testing.T) {
+	g := NewGomegaWithT(t)
+	h := testHorizon()
+	h.Spec.Session = &horizonv1alpha1.SessionSpec{Backend: horizonv1alpha1.SessionBackendSignedCookies}
+	h.Spec.ExtraConfig = map[string]apiextensionsv1.JSON{
+		horizonv1alpha1.SettingSessionCacheAlias: {Raw: []byte(`"default"`)},
+	}
+	r := newTestReconciler(testScheme(), h)
+
+	_, err := r.reconcileConfig(context.Background(), r.Client, h)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cond := conditions.GetCondition(h.Status.Conditions, config.ConditionTypeExtraConfigHealthy)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Message).To(ContainSubstring("SESSION_CACHE_ALIAS (the typed session field selects the session store; " +
+		"this setting takes effect only beside a cache SESSION_ENGINE set in extraConfig"))
+	g.Expect(cond.Message).NotTo(ContainSubstring("cache engine set here"))
 }

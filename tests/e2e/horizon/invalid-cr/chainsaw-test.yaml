@@ -270,3 +270,56 @@ spec:
             ($error != null): true
             (contains($error, 'spec.podDisruptionBudget.minAvailable')): true
             (contains($error, 'allows no voluntary eviction')): true
+  # spec.session.backend outside SignedCookies and Cache must be rejected by
+  # the Enum marker, which answers before the webhook twin.
+  - try:
+    - apply:
+        file: 26-session-backend-unknown.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.session.backend')): true
+            (contains($error, 'Unsupported value')): true
+  # spec.extraConfig.SESSION_ENGINE beside a spec.session block must be rejected
+  # by the validating webhook (webhook-only).
+  - try:
+    - apply:
+        file: 27-session-extraconfig-session-engine.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.extraConfig[SESSION_ENGINE]')): true
+            (contains($error, 'SESSION_ENGINE is managed via')): true
+            (contains($error, 'spec.session')): true
+  # spec.extraConfig.CACHES while spec.session.backend is Cache must be rejected
+  # by the validating webhook (webhook-only).
+  - try:
+    - apply:
+        file: 28-session-cache-extraconfig-caches.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.extraConfig[CACHES]')): true
+            (contains($error, 'CACHES must not be set in extraConfig while')): true
+            (contains($error, 'spec.session.backend')): true
+  # spec.extraConfig.SESSION_CACHE_ALIAS while spec.session.backend is Cache must
+  # be rejected by the validating webhook (webhook-only).
+  - try:
+    - apply:
+        file: 29-session-cache-extraconfig-session-cache-alias.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.extraConfig[SESSION_CACHE_ALIAS]')): true
+            (contains($error, 'SESSION_CACHE_ALIAS is managed via')): true
+            (contains($error, 'spec.session')): true
+  # spec.session.backend Cache on a cache backend other than PyMemcacheCache must
+  # be rejected by the validating webhook (webhook-only).
+  - try:
+    - apply:
+        file: 30-session-cache-backend-not-shared.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.session.backend')): true
+            (contains($error, 'requires the cache backend')): true
