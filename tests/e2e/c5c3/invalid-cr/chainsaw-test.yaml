@@ -1463,6 +1463,28 @@ spec:
             ($error != null): true
             (contains($error, 'spec.sizing.keystone.api.podDisruptionBudget.minAvailable')): true
             (contains($error, 'allows no voluntary eviction')): true
+  # A database antiAffinity outside Required, Preferred and Off must be rejected
+  # by the Enum marker on AntiAffinityMode, which answers before the webhook
+  # twin.
+  - try:
+    - apply:
+        file: 167-sizing-anti-affinity-unsupported.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.sizing.database.antiAffinity')): true
+            (contains($error, 'Unsupported value')): true
+  # A messaging podDisruptionBudget.maxUnavailable of 0 must be rejected by the
+  # Minimum marker on BackingPodDisruptionBudgetSpec, which answers before the
+  # webhook twin.
+  - try:
+    - apply:
+        file: 168-sizing-backing-pdb-max-unavailable-zero.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.sizing.messaging.podDisruptionBudget.maxUnavailable')): true
+            (contains($error, 'should be greater than or equal to 1')): true
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test

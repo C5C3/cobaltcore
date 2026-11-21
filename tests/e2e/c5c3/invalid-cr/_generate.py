@@ -3325,6 +3325,39 @@ FIXTURES: tuple[Fixture, ...] = (
             "          minAvailable: 1\n"
         ),
     ),
+    Fixture(
+        filename="167-sizing-anti-affinity-unsupported.yaml",
+        comment=(
+            "spec.sizing.database.antiAffinity Strict is none of Required, Preferred and\n"
+            "Off. The Enum marker on AntiAffinityMode answers at the CRD schema layer; the\n"
+            "webhook mirrors it with field.NotSupported on the sizing as written."
+        ),
+        name="cp-sizing-anti-affinity-unsupported",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        sizing=(
+            "  sizing:\n"
+            "    database:\n"
+            "      antiAffinity: Strict\n"
+        ),
+    ),
+    Fixture(
+        filename="168-sizing-backing-pdb-max-unavailable-zero.yaml",
+        comment=(
+            "spec.sizing.messaging.podDisruptionBudget.maxUnavailable 0 would let no drain\n"
+            "evict a broker. The Minimum marker on BackingPodDisruptionBudgetSpec answers\n"
+            "at the CRD schema layer; the webhook mirrors it with `must be at least 1`."
+        ),
+        name="cp-sizing-backing-pdb-max-unavailable-zero",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        sizing=(
+            "  sizing:\n"
+            "    messaging:\n"
+            "      podDisruptionBudget:\n"
+            "        maxUnavailable: 0\n"
+        ),
+    ),
     # --- transition wave H: Cinder entry type freeze
     #     (Test: c5c3-invalid-cr-cinder-type-freeze) ---
     Fixture(
