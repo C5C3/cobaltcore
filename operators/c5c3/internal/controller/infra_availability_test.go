@@ -14,8 +14,10 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
@@ -299,5 +301,172 @@ func TestEnsureMariaDB_Availability(t *testing.T) {
 		g.Expect(err).To(MatchError(ContainSubstring(`updating owned MariaDB "openstack-db"`)))
 		g.Expect(errors.Is(err, sentinel)).To(BeTrue())
 		g.Expect(*updates).To(Equal(1))
+	})
+}
+
+// wantMemcachedHA is the spec.highAvailability of a cache with preset and a
+// budget of maxUnavailable pods, in the types the API decodes them to.
+func wantMemcachedHA(preset string, maxUnavailable int64) map[string]interface{} {
+	return map[string]interface{}{
+		"antiAffinityPreset":  preset,
+		"podDisruptionBudget": map[string]interface{}{"enabled": true, "maxUnavailable": maxUnavailable},
+	}
+}
+
+func TestEnsureMemcached_Availability(t *testing.T) {
+	cacheSizing := func(a c5c3v1alpha1.AvailabilitySizingSpec) *c5c3v1alpha1.CacheSizingSpec {
+		return &c5c3v1alpha1.CacheSizingSpec{AvailabilitySizingSpec: a}
+	}
+	highAvailability := func(g Gomega, u *unstructured.Unstructured) (map[string]interface{}, bool) {
+		ha, found, err := unstructured.NestedMap(u.Object, "spec", "highAvailability")
+		g.Expect(err).NotTo(HaveOccurred())
+		return ha, found
+	}
+
+	createTests := []struct {
+		name     string
+		replicas int32
+		sizing   *c5c3v1alpha1.CacheSizingSpec
+		want     map[string]interface{}
+	}{
+		{
+			name: "three replicas get soft anti-affinity and a budget of 1", replicas: 3,
+			sizing: cacheSizing(c5c3v1alpha1.AvailabilitySizingSpec{}), want: wantMemcachedHA("soft", 1),
+		},
+		{
+			name: "Required gets hard anti-affinity", replicas: 3,
+			sizing: cacheSizing(availabilitySizing(c5c3v1alpha1.AntiAffinityRequired, nil, nil)),
+			want:   wantMemcachedHA("hard", 1),
+		},
+		{
+			name: "Off beside a budget gets soft anti-affinity", replicas: 3,
+			sizing: cacheSizing(availabilitySizing(c5c3v1alpha1.AntiAffinityOff, nil, ptr.To[int32](2))),
+			want:   wantMemcachedHA("soft", 2),
+		},
+		{
+			name: "Off beside enabled: false gets no spec.highAvailability", replicas: 3,
+			sizing: cacheSizing(availabilitySizing(c5c3v1alpha1.AntiAffinityOff, ptr.To(false), nil)),
+		},
+		{
+			name: "one replica gets no spec.highAvailability", replicas: 1,
+			sizing: cacheSizing(availabilitySizing(c5c3v1alpha1.AntiAffinityRequired, ptr.To(true), ptr.To[int32](1))),
+		},
+		{
+			name: "a cache without a count of its own is judged on the sizing's 3", replicas: 0,
+			sizing: &c5c3v1alpha1.CacheSizingSpec{Replicas: ptr.To[int32](3)}, want: wantMemcachedHA("soft", 1),
+		},
+		{
+			name: "a cache's own count of 1 wins over the sizing's 3", replicas: 1,
+			sizing: &c5c3v1alpha1.CacheSizingSpec{Replicas: ptr.To[int32](3)},
+		},
+		{name: "a nil sizing at one replica gets no spec.highAvailability", replicas: 1},
+	}
+	for _, tc := range createTests {
+		t.Run("on create, "+tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			s := infraTestScheme(t)
+			cp := managedInfraControlPlane()
+			cp.Spec.Infrastructure.Cache.Replicas = tc.replicas
+			c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+			r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+			_, err := r.ensureMemcached(context.Background(), c, cp, &cp.Spec.Infrastructure.Cache, tc.sizing, cp.Namespace)
+			g.Expect(err).NotTo(HaveOccurred())
+			u, _, _ := getMemcached(g, c, cp.Namespace)
+			ha, found := highAvailability(g, u)
+			if tc.want == nil {
+				g.Expect(found).To(BeFalse(), "spec.highAvailability must be absent, got %v", ha)
+				return
+			}
+			g.Expect(ha).To(Equal(tc.want))
+		})
+	}
+
+	// owned builds a label-owned cache in the identity namespace of a
+	// ControlPlane whose cache declares replicas, seeded at seedReplicas with
+	// the restricted security and ha (unless nil) as spec.highAvailability.
+	owned := func(
+		t *testing.T, g Gomega, replicas int32, seedReplicas int64, ha interface{},
+	) (*ControlPlaneReconciler, client.Client, *c5c3v1alpha1.ControlPlane, *int) {
+		t.Helper()
+		s := infraTestScheme(t)
+		cp := splitNamespaceControlPlane()
+		cp.Spec.Infrastructure.Cache.Replicas = replicas
+		seed := seedMemcached("identity", controlPlaneChildLabels(cp), ptr.To(seedReplicas))
+		g.Expect(unstructured.SetNestedMap(seed.Object, wantMemcachedSecurity(), "spec", "security")).To(Succeed())
+		if ha != nil {
+			g.Expect(unstructured.SetNestedField(seed.Object, ha, "spec", "highAvailability")).To(Succeed())
+		}
+		updates := 0
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, seed).
+			WithInterceptorFuncs(memcachedUpdateInterceptor(&updates, nil)).Build()
+		return &ControlPlaneReconciler{Client: c, Scheme: s}, c, cp, &updates
+	}
+
+	t.Run("an owned cache going from three replicas to one loses both keys with one Update, then none", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		r, c, cp, updates := owned(t, g, 1, 3, wantMemcachedHA("soft", 1))
+		for range 2 {
+			_, err := r.ensureMemcached(context.Background(), c, cp, &cp.Spec.Infrastructure.Cache, nil, "identity")
+			g.Expect(err).NotTo(HaveOccurred())
+		}
+		g.Expect(*updates).To(Equal(1))
+		u, replicas, _ := getMemcached(g, c, "identity")
+		g.Expect(replicas).To(Equal(int64(1)))
+		_, found := highAvailability(g, u)
+		g.Expect(found).To(BeFalse())
+	})
+
+	t.Run("a live gracefulShutdown survives every write", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		graceful := map[string]interface{}{"enabled": true, "preStopDelaySeconds": int64(10)}
+		r, c, cp, updates := owned(t, g, 3, 3, map[string]interface{}{"gracefulShutdown": graceful})
+
+		_, err := r.ensureMemcached(context.Background(), c, cp, &cp.Spec.Infrastructure.Cache, nil, "identity")
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(*updates).To(Equal(1))
+		u, _, _ := getMemcached(g, c, "identity")
+		ha, _ := highAvailability(g, u)
+		want := wantMemcachedHA("soft", 1)
+		want["gracefulShutdown"] = graceful
+		g.Expect(ha).To(Equal(want))
+
+		// Both settings off: the preset stays soft beside gracefulShutdown.
+		off := cacheSizing(availabilitySizing(c5c3v1alpha1.AntiAffinityOff, ptr.To(false), nil))
+		for range 2 {
+			_, err = r.ensureMemcached(context.Background(), c, cp, &cp.Spec.Infrastructure.Cache, off, "identity")
+			g.Expect(err).NotTo(HaveOccurred())
+		}
+		g.Expect(*updates).To(Equal(2), "the written soft preset counts as matching")
+		u, _, _ = getMemcached(g, c, "identity")
+		ha, _ = highAvailability(g, u)
+		g.Expect(ha).To(Equal(map[string]interface{}{"antiAffinityPreset": "soft", "gracefulShutdown": graceful}))
+	})
+
+	t.Run("a spec.highAvailability that is not a map fails the pass without a write", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		r, c, cp, updates := owned(t, g, 3, 3, "soft")
+		_, err := r.ensureMemcached(context.Background(), c, cp, &cp.Spec.Infrastructure.Cache, nil, "identity")
+		g.Expect(err).To(MatchError(And(ContainSubstring(`reading Memcached "openstack-memcached"`),
+			ContainSubstring("spec.highAvailability"))))
+		g.Expect(*updates).To(BeZero())
+	})
+
+	t.Run("a Memcached the ControlPlane does not own is not written", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := infraTestScheme(t)
+		cp := splitNamespaceControlPlane()
+		foreign := seedMemcached("identity", nil, ptr.To(int64(3)))
+		updates := 0
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, foreign).
+			WithInterceptorFuncs(memcachedUpdateInterceptor(&updates, nil)).Build()
+		r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+		_, err := r.ensureMemcached(context.Background(), c, cp, &cp.Spec.Infrastructure.Cache, nil, "identity")
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(updates).To(BeZero())
+		u, _, _ := getMemcached(g, c, "identity")
+		_, found := highAvailability(g, u)
+		g.Expect(found).To(BeFalse())
 	})
 }
