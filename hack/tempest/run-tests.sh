@@ -23,12 +23,17 @@
 # running stestr with an empty include list. Both empty is rejected by the
 # calling wrapper before the container starts.
 #
+# With TEMPEST_KEYSTONE_LEAK_CHECK=fail the script lists Keystone's objects
+# with keystone-inventory.py before the first phase and after the retry, and
+# fails the run on every object the run added, also when every test passed.
+#
 # Expected layout inside the container:
 #   /etc/tempest/tempest.conf
 #   /etc/tempest/phases/phase-1-core.txt     (may be empty; core phase skipped)
 #   /etc/tempest/phases/phase-2-plugin.txt   (may be empty; plugin phase skipped)
 #   /etc/tempest/extract-failed.py
 #   /etc/tempest/merge-retry-junit.py
+#   /etc/tempest/keystone-inventory.py   (read with TEMPEST_KEYSTONE_LEAK_CHECK=fail only)
 #   /etc/tempest/exclude-tests.txt       (optional)
 #   /output/                              (mounted, writable)
 #
@@ -39,6 +44,7 @@
 #   TEMPEST_GROUP_START  — log group-start marker (default: "--- ")
 #   TEMPEST_GROUP_END    — log group-end marker   (default: empty; CI sets it)
 #   TEMPEST_ERROR_PREFIX — error line prefix      (default: "ERROR: ")
+#   TEMPEST_KEYSTONE_LEAK_CHECK — off or fail     (default: off, also when empty)
 
 set -euo pipefail
 
@@ -46,6 +52,15 @@ set -euo pipefail
 GROUP_START="${TEMPEST_GROUP_START:---- }"
 GROUP_END="${TEMPEST_GROUP_END:-}"
 ERROR_PREFIX="${TEMPEST_ERROR_PREFIX:-ERROR: }"
+# Checked before the script touches /tmp, so a wrong value fails fast.
+LEAK_CHECK="${TEMPEST_KEYSTONE_LEAK_CHECK:-off}"
+case "${LEAK_CHECK}" in
+  off | fail) ;;
+  *)
+    echo "${ERROR_PREFIX}TEMPEST_KEYSTONE_LEAK_CHECK must be off or fail, got '${LEAK_CHECK}'."
+    exit 1
+    ;;
+esac
 
 # HOME=/tmp: the openstack user's real home (/var/lib/openstack) is owned by
 # root, so tempest cannot create ~/.tempest there. Redirect to /tmp.
@@ -81,6 +96,22 @@ run_phase() {
   group_end
   return ${phase_rc}
 }
+
+# Keystone leak check, before: list Keystone's objects before the first test
+# runs. The outputs of an earlier run in a reused output directory go first, so
+# the files the check leaves are this run's. With off the script never reads
+# the helper, so a caller that stages none is unaffected.
+if [[ "${LEAK_CHECK}" == fail ]]; then
+  rm -f /output/keystone-inventory-before.json /output/keystone-inventory-after.json \
+    /output/keystone-leftovers.tsv /output/tempest.log
+  before_rc=0
+  python3 /etc/tempest/keystone-inventory.py snapshot --conf /etc/tempest/tempest.conf \
+    --out /output/keystone-inventory-before.json || before_rc=$?
+  if [[ ${before_rc} -ne 0 ]]; then
+    echo "${ERROR_PREFIX}Keystone inventory before the run failed (exit ${before_rc}); no test was started."
+    exit 1
+  fi
+fi
 
 # Phase 1 is optional: an include list that only selects plugin tests (e.g. the
 # barbican key-manager leg) has no tempest.* patterns, so the phase-1 file is
@@ -194,6 +225,47 @@ if [[ -f /output/tempest-results.xml ]] \
   fi
 fi
 
+# Keystone leak check, after: list Keystone's objects again and report every
+# object the run added. The gate has no tolerance. A test whose failure the retry
+# resolved can still have left an object, a failed cleanup for example, and that
+# object stays in the cloud, so a leftover fails the run even when every test
+# passed in the end. tempest.log ties a leftover to the test that created it.
+# The helper exits 1 for a diff with lines, and also when Python dies with a
+# traceback; only a non-empty leftovers file counts as a leak.
+leak_rc=0
+if [[ "${LEAK_CHECK}" == fail ]]; then
+  echo
+  echo "${GROUP_START}Keystone leak check"
+  after_rc=0
+  diff_rc=0
+  python3 /etc/tempest/keystone-inventory.py snapshot --conf /etc/tempest/tempest.conf \
+    --out /output/keystone-inventory-after.json || after_rc=$?
+  if [[ ${after_rc} -eq 0 ]]; then
+    python3 /etc/tempest/keystone-inventory.py diff \
+      --before /output/keystone-inventory-before.json \
+      --after /output/keystone-inventory-after.json \
+      --out /output/keystone-leftovers.tsv > /dev/null || diff_rc=$?
+  fi
+  if [[ ${after_rc} -ne 0 ]]; then
+    echo "${ERROR_PREFIX}Keystone leak check failed (exit ${after_rc}); the run proves nothing about leftovers."
+    leak_rc=1
+  elif [[ ${diff_rc} -eq 0 ]]; then
+    echo "Keystone leak check: the run left no Keystone object behind."
+  elif [[ ${diff_rc} -eq 1 && -s /output/keystone-leftovers.tsv ]]; then
+    leftovers=$(wc -l < /output/keystone-leftovers.tsv | tr -d ' ')
+    echo "${ERROR_PREFIX}Tempest left ${leftovers} Keystone object(s) behind; see keystone-leftovers.tsv:"
+    cat /output/keystone-leftovers.tsv
+    if [[ -f /tmp/tempest-logs/tempest.log ]]; then
+      cp /tmp/tempest-logs/tempest.log /output/tempest.log
+    fi
+    leak_rc=1
+  else
+    echo "${ERROR_PREFIX}Keystone leak check failed (exit ${diff_rc}); the run proves nothing about leftovers."
+    leak_rc=1
+  fi
+  group_end
+fi
+
 # Decide exit code:
 #   - If the JUnit report still lists failures/errors, fail.
 #   - Else if we retried and the rewritten report is clean, succeed (the
@@ -206,5 +278,9 @@ if [[ -f /output/tempest-results.xml ]] \
   overall_rc=1
 elif [[ ${retried} -eq 1 ]]; then
   overall_rc=0
+fi
+# A failed leak check fails the run whatever the tests did.
+if [[ ${leak_rc} -ne 0 ]]; then
+  overall_rc=1
 fi
 exit ${overall_rc}
