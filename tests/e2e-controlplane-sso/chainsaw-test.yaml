@@ -37,7 +37,9 @@
 #   - Detaching the backends removes both surfaces again
 #   - With no backend attached, the ControlPlane's own
 #     services.horizon.multiDomain block turns on a domain dropdown through
-#     which a SQL-backed user outside Default logs in
+#     which a SQL-backed user outside Default logs in, on the cache sessions
+#     services.horizon.session selects: her session holds the domain-scoped
+#     token, and no dashboard pod logs the signed-cookie ERROR line
 #
 # ── DECISION: the browser runs IN-CLUSTER, not on the chainsaw host ──────────
 # Unlike the gateway-quick-start smokes (which curl from the CI host through
@@ -792,6 +794,10 @@ spec:
   # The ControlPlane declares one itself: a dropdown over Default and a
   # SQL-backed domain no backend names. The projection writes it onto the
   # Horizon child as written, and a user of that domain logs in through it.
+  # The same patch selects cache sessions, so the dashboard rolls once.
+  # Under signed cookies openstack_auth drops the domain-scoped token of a
+  # user with a domain role and no project from the session and logs an
+  # ERROR line; with cache sessions it keeps the token (7d).
   - name: controlplane-multi-domain
     try:
     # defaultDomain is left out on purpose: the projection resolves it to
@@ -815,6 +821,8 @@ spec:
                     label: Default
                   - name: cobaltcore-local
                     label: CobaltCore local
+                session:
+                  backend: Cache
     - assert:
         resource:
           apiVersion: horizon.openstack.c5c3.io/v1alpha1
@@ -833,6 +841,8 @@ spec:
                 label: Default
               - name: cobaltcore-local
                 label: CobaltCore local
+            session:
+              backend: Cache
     # The four waits of step 5, for the same reasons: the new block re-renders
     # local_settings.py and rolls the Horizon Deployment, and the detach above
     # rolled the Keystone Deployment, which serves the admin calls below.
@@ -917,6 +927,11 @@ spec:
           expect 'OPENSTACK_KEYSTONE_DOMAIN_DROPDOWN = True'
           expect 'OPENSTACK_KEYSTONE_DOMAIN_CHOICES'
           expect 'cobaltcore-local'
+          # The cache sessions of the same patch, with the "sessions" alias
+          # whose KEY_PREFIX hashes "openstack/controlplane-sso-horizon".
+          expect 'SESSION_ENGINE = "django.contrib.sessions.backends.cache"'
+          expect 'SESSION_CACHE_ALIAS = "sessions"'
+          expect '"KEY_PREFIX": "horizon-sessions-c434a8949d7f"'
           reject 'WEBSSO_ENABLED'
           if [[ "$fail" -ne 0 ]]; then exit 1; fi
 
@@ -944,7 +959,9 @@ spec:
           fi
 
           # NOTE: single-quoted `python3 -c` string — no apostrophes inside.
-          kubectl exec -n "$NAMESPACE" "$POD" -c keystone -- \
+          # The output is captured for the session key 7c prints last; the
+          # key is a live session of leela, so it stays out of the log.
+          OUT=$(kubectl exec -n "$NAMESPACE" "$POD" -c keystone -- \
             python3 -c '
           import http.client, http.cookiejar, json, re, sys, time
           import urllib.error, urllib.parse, urllib.request
@@ -1051,7 +1068,49 @@ spec:
           assert any(c.name == "sessionid" for c in jar), f"login of {USER} in {DOMAIN} established no session"
           assert status == 302, f"login POST returned HTTP {status}, expected the 302 after a login"
           print(f"OK: {USER} of {DOMAIN} logged in through the domain dropdown")
-          ' "$ADMIN_PASSWORD"
+          session_key = next(c.value for c in jar if c.name == "sessionid")
+          assert len(session_key) == 32, (
+              f"sessionid of {USER} has {len(session_key)} characters, not the 32 of a cache session key")
+          print("OK: the sessionid is a 32-character cache session key")
+          print(f"SESSION_KEY={session_key}")
+          ' "$ADMIN_PASSWORD") || { printf '%s\n' "$OUT" | grep -v '^SESSION_KEY='; exit 1; }
+          printf '%s\n' "$OUT" | grep -v '^SESSION_KEY='
+          SESSION_KEY=$(printf '%s\n' "$OUT" | sed -n 's/^SESSION_KEY=//p' | tail -n 1)
+          if [[ ${#SESSION_KEY} -ne 32 ]]; then
+            echo "ERROR: 7c printed no 32-character session key"; exit 1
+          fi
+
+          # 7d: the session lives in Memcached and holds the domain-scoped
+          # token. A dashboard pod loads it with its own SessionStore; only
+          # the key names are printed, never the tokens. Pods that are being
+          # deleted belong to an earlier rollout and are skipped, here and in
+          # the log check below, which proves no current pod logged the
+          # signed-cookie ERROR line.
+          HORIZON_PODS=$(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=controlplane-sso-horizon \
+            -o go-template='{{range .items}}{{if not .metadata.deletionTimestamp}}{{.metadata.name}}{{"\n"}}{{end}}{{end}}')
+          if [[ -z "${HORIZON_PODS}" ]]; then
+            echo "ERROR: no dashboard pod to read the session in"; exit 1
+          fi
+          kubectl exec -n "$NAMESPACE" "$(head -n 1 <<<"$HORIZON_PODS")" -c horizon -- \
+            env DJANGO_SETTINGS_MODULE=openstack_dashboard.settings PYTHONWARNINGS=ignore python3 -c '
+          import sys
+          import django; django.setup()
+          from importlib import import_module
+          from django.conf import settings
+          s = import_module(settings.SESSION_ENGINE).SessionStore(session_key=sys.argv[1])
+          keys = sorted(s.keys())
+          print("session keys: " + ", ".join(keys))
+          if "domain_token" not in keys:
+              sys.exit("the session of leela holds no domain_token")
+          print("OK: the session of leela holds the domain-scoped token")
+          ' "$SESSION_KEY"
+          for pod in $HORIZON_PODS; do
+            LOGS=$(kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=-1)
+            if grep -qF 'Using signed cookies as SESSION_ENGINE' <<<"$LOGS"; then
+              echo "ERROR: dashboard pod ${pod} logged the signed-cookie ERROR line"; exit 1
+            fi
+          done
+          echo "OK: no dashboard pod logged the signed-cookie ERROR line"
     catch:
     - script:
         content: |
