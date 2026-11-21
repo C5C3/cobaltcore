@@ -414,6 +414,150 @@ if not any(WARNING in message for message in handler.messages):
   assert_eq "only a key file readable by others is reported" "0" "$exit_code"
 }
 
+# --- Test 10: a list cut at max_db_limit reports truncation ---
+test_list_truncation_patch_applied() {
+  echo "Test: a list cut at max_db_limit reports truncation"
+  # Proves the image build applied
+  # patches/keystone/<release>/0006-report-truncation-when-max-db-limit-caps-a-list.patch
+  # (#1842). Upstream list_users, list_groups and list_projects cut a list
+  # requested without a limit at [DEFAULT] max_db_limit and mark it as
+  # truncated only when the request set a limit, so the answer carries no
+  # truncated key and a null links.next. The program drives the real SQL
+  # drivers against an in-memory SQLite database with max_db_limit = 3, so
+  # it needs no configuration file, no key repository and no server. Each
+  # list must leave hints.limit unset below the limit, report
+  # {"limit": 3, "truncated": True} at exactly three and at four entries,
+  # return the rest after the last marker without repeating an entry, and
+  # refuse an unknown marker with MarkerNotFound. An unpatched image exits
+  # with "list_users was cut at max_db_limit and does not report it:
+  # hints.limit is None". Stderr is echoed on failure so the reason is
+  # named.
+  local exit_code=0 err=""
+  err=$(docker run --rm "$IMAGE" \
+    /var/lib/openstack/bin/python -c \
+    'import importlib
+import pkgutil
+import sys
+import uuid
+
+import keystone
+import keystone.conf
+from keystone.common import driver_hints
+from keystone.common import sql
+from keystone import exception
+from keystone.identity.backends import sql as identity_sql
+from keystone.resource.backends import sql as resource_sql
+
+LIMIT = 3
+CONF = keystone.conf.CONF
+keystone.conf.configure()
+CONF([], project="keystone", default_config_files=[], default_config_dirs=[])
+sql.initialize()
+CONF.set_override("connection", "sqlite://", group="database")
+CONF.set_override("max_db_limit", LIMIT)
+# Every model has to be imported before the tables are created: the
+# foreign keys of the user tables point into the federation tables.
+for module in pkgutil.walk_packages(keystone.__path__, "keystone."):
+    name = module.name
+    if ".tests" not in name and name.endswith((".sql", ".sql_model")):
+        importlib.import_module(name)
+with sql.session_for_write() as session:
+    sql.ModelBase.metadata.create_all(bind=session.get_bind())
+
+identity = identity_sql.Identity()
+resource = resource_sql.Resource()
+domain_id = uuid.uuid4().hex
+resource.create_project(domain_id, {
+    "id": domain_id, "name": domain_id, "domain_id": None, "is_domain": True,
+    "enabled": True, "description": "", "parent_id": None})
+
+
+def new_user():
+    user_id = uuid.uuid4().hex
+    identity.create_user(user_id, {
+        "id": user_id, "name": user_id, "domain_id": domain_id,
+        "enabled": True})
+
+
+def new_group():
+    group_id = uuid.uuid4().hex
+    identity.create_group(group_id, {
+        "id": group_id, "name": group_id, "domain_id": domain_id})
+
+
+def new_project():
+    project_id = uuid.uuid4().hex
+    resource.create_project(project_id, {
+        "id": project_id, "name": project_id, "domain_id": domain_id,
+        "is_domain": False, "enabled": True, "description": "",
+        "parent_id": domain_id})
+
+
+def unpaged(name, list_entities, want, cut):
+    # A request without a limit: max_db_limit is the only cap.
+    hints = driver_hints.Hints()
+    refs = list_entities(hints)
+    if len(refs) != want:
+        sys.exit("%s returned %d entries, want %d" % (name, len(refs), want))
+    if cut and hints.limit != {"limit": LIMIT, "truncated": True}:
+        sys.exit("%s was cut at max_db_limit and does not report it: "
+                 "hints.limit is %r" % (name, hints.limit))
+    if not cut and hints.limit is not None:
+        sys.exit("%s: %d entries below max_db_limit %d set hints.limit %r"
+                 % (name, len(refs), LIMIT, hints.limit))
+    return refs
+
+
+def after(name, list_entities, refs, want):
+    # The request the next link names: the marker and the limit.
+    hints = driver_hints.Hints()
+    hints.set_limit(LIMIT)
+    hints.marker = refs[-1]["id"]
+    rest = list_entities(hints)
+    if len(rest) != want or (
+            {ref["id"] for ref in rest} & {ref["id"] for ref in refs}):
+        sys.exit("%s: the page after marker %s holds %d entries, want %d new"
+                 % (name, hints.marker, len(rest), want))
+    if hints.limit != {"limit": LIMIT, "truncated": False}:
+        sys.exit("%s: the last page reports hints.limit %r"
+                 % (name, hints.limit))
+
+
+# The domain is a project row, so list_projects starts with one entry.
+LISTS = (
+    ("list_users", identity.list_users, new_user, 0),
+    ("list_groups", identity.list_groups, new_group, 0),
+    ("list_projects", resource.list_projects, new_project, 1),
+)
+for name, list_entities, create, existing in LISTS:
+    # No entry, or the domain alone: whole, and not reported as cut.
+    unpaged(name, list_entities, existing, cut=False)
+    for _ in range(LIMIT - 1 - existing):
+        create()
+    unpaged(name, list_entities, LIMIT - 1, cut=False)
+    # Exactly max_db_limit entries: reported as cut, the next page is empty.
+    create()
+    refs = unpaged(name, list_entities, LIMIT, cut=True)
+    after(name, list_entities, refs, 0)
+    # One entry more than max_db_limit: the marker reaches it.
+    create()
+    refs = unpaged(name, list_entities, LIMIT, cut=True)
+    after(name, list_entities, refs, 1)
+    # An unknown marker is refused as before.
+    hints = driver_hints.Hints()
+    hints.marker = uuid.uuid4().hex
+    try:
+        list_entities(hints)
+    except exception.MarkerNotFound:
+        pass
+    else:
+        sys.exit("%s accepted an unknown marker" % name)' \
+    2>&1 > /dev/null) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "    $err"
+
+  assert_eq "a list cut at max_db_limit says so" "0" "$exit_code"
+}
+
 # --- Run all tests ---
 echo "=== keystone container verification tests ==="
 echo "Image: $IMAGE"
@@ -435,6 +579,8 @@ echo ""
 test_login_write_retry_patch_applied
 echo ""
 test_key_repository_mode_patch_applied
+echo ""
+test_list_truncation_patch_applied
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 

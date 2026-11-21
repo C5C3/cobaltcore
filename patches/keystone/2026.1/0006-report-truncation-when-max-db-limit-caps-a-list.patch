@@ -1,0 +1,265 @@
+SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+SPDX-License-Identifier: Apache-2.0
+
+Report truncation when max_db_limit caps a list
+
+Carries upstream change 1001033, patch set 1 (commit
+fad88d3be22ee61abf7de9e74aba52003bbaa164, Change-Id
+Ib116c537a9bef959b28e577fe55c194471c8aa40), proposed on master on
+2026-08-16 and not merged. No keystone tag contains it. The diff is
+carried unchanged: the same added and removed lines in the same four
+files, cut against this tag with patches 0001 to 0005 applied.
+
+list_users and list_groups in keystone/identity/backends/sql.py and
+list_projects in keystone/resource/backends/sql.py page through
+sqlalchemyutils.paginate_query with hints.get_limit_or_max();
+list_projects_acting_as_domain calls list_projects, so /v3/domains
+takes the same path. Hints.get_limit_or_max in
+keystone/common/driver_hints.py returns CONF.max_db_limit when no
+limit was requested, and build_driver_hints in
+keystone/server/flask/common.py sets hints.limit only when the request
+carries limit or list_limit applies. Each driver sets
+hints.limit["truncated"] only inside "if hints.limit:", and
+wrap_collection adds truncated and the next link only when hints.limit
+says the list was cut. An unpaged GET /v3/users, /v3/groups,
+/v3/projects or /v3/domains therefore answers at most max_db_limit
+(default 1000) entries as if the list were whole: no truncated key,
+and links.next is null. On 2026-11-21 in the C5C3/playground cluster
+(keystone 29.0.0, default max_db_limit) GET /v3/users returned 1,000
+of 3,260 users and GET /v3/projects 1,000 of 1,923 projects that way
+(C5C3/cobaltcore#1842). Upstream tracks it as Launchpad bugs 2134607
+and 2163597.
+
+The drivers now read the effective limit once, pass it to
+paginate_query and call hints.set_limit(limit, truncated=True) when
+the page holds that many rows, so a cut list carries truncated: true
+and a links.next with marker and limit. A client that follows
+links.next reads the whole collection in pages of max_db_limit rows,
+one bounded query per page: 4 requests for the playground's 3,260
+users. gophercloud's pagers do that (UserPage.NextPageURL returns
+links.next). A client that sends one GET and does not follow
+links.next still receives one page. A list of exactly max_db_limit
+rows is reported as cut and its next page is empty, because the
+driver compares with >=, as it already does for a requested limit.
+Callers inside Keystone that pass no hints get the same rows as
+before. exception.MarkerNotFound for an unknown marker is raised
+before the changed lines, and the patch keeps it. A client that
+follows links.next sends the id of the previous page's last entity
+as marker, and the drivers look that row up before the query. When
+another request deletes that entity between two pages, the next page
+answers 404 MarkerNotFound. gophercloud's Pager.AllPages then returns
+the error without the pages it read, and the caller lists again from
+the start. Before the patch an unpaged list answered one page with a
+null next link and could not meet this race; a request that sets
+limit meets it upstream as well. Continuing after a deleted marker
+would drop upstream's refusal of an unknown marker, so the diff keeps
+change 1001033 as it is. An error of the query itself, such as
+oslo.db's DBConnectionError, reaches the caller before
+hints.set_limit runs, and patch 0003 answers it with 503 as before.
+The patch needs no operator configuration: the keystone-operator
+renders neither max_db_limit nor list_limit.
+
+The patch keeps upstream's release note,
+releasenotes/notes/report-truncation-with-max-db-limit-89d415e6d6be36cd.yaml,
+so that it reverse-applies as a whole once a tag contains the change,
+which is how check-image-patches.sh --apply recognises a patch to
+retire.
+
+Tests: no existing upstream test moves. The patch adds
+test_list_no_limit_capped_by_max_db_limit and
+test_list_no_limit_below_max_db_limit to PaginationTestCaseBase in
+keystone/tests/unit/test_v3.py, which DomainPaginationTestCase,
+ProjectPaginationTestCase, UserPaginationTestCase and
+GroupPaginationTestCase in keystone/tests/unit/test_v3_resource.py
+run: six resources under max_db_limit = 4 answer four entries with
+truncated true and a next link with the fourth entry's id as marker
+and limit=4, and under max_db_limit = 100 the answer has no truncated
+key and a null next link. With only the test hunk applied,
+test_list_no_limit_capped_by_max_db_limit fails in all four classes
+on 29.0.0 and on 30.0.0.
+
+Proof: test_list_truncation_patch_applied in
+tests/container-images/verify_keystone.sh drives list_users,
+list_groups and list_projects of the built image against an in-memory
+SQLite database with max_db_limit = 3.
+
+keystone/identity/backends/sql.py, keystone/resource/backends/sql.py
+and keystone/tests/unit/test_v3.py are the same in keystone 29.0.0
+and 30.0.0, and the twins under patches/keystone/2026.1/ and
+patches/keystone/2026.2/ differ only in their Applies-to line.
+
+Applies to keystone 29.0.0 (2026.1).
+
+Upstream status: proposed as https://review.opendev.org/c/openstack/keystone/+/1001033.
+
+diff --git a/keystone/identity/backends/sql.py b/keystone/identity/backends/sql.py
+index ab9c8ca..d9ae1d5 100644
+--- a/keystone/identity/backends/sql.py
++++ b/keystone/identity/backends/sql.py
+@@ -200,16 +200,13 @@ class Identity(base.IdentityDriverBase):
+                 if not marker_row:
+                     raise exception.MarkerNotFound(marker=hints.marker)
+ 
++            limit = hints.get_limit_or_max()
+             user_refs = sqlalchemyutils.paginate_query(
+-                query,
+-                model.User,
+-                hints.get_limit_or_max(),
+-                ["id"],
+-                marker=marker_row,
++                query, model.User, limit, ["id"], marker=marker_row
+             )
+ 
+             data = user_refs.all()
+-            if hints.limit:
++            if len(data) >= limit:
+                 # the `common.manager.response_truncated` decorator expects
+                 # that when driver truncates results it should also raise
+                 # 'truncated' flag to indicate that. Since we do not really
+@@ -218,8 +215,7 @@ class Identity(base.IdentityDriverBase):
+                 # is equal to what we have limited to.
+                 # NOTE(gtema) get rid of that once proper pagination is
+                 # enabled for all resources
+-                if len(data) >= hints.limit["limit"]:
+-                    hints.limit["truncated"] = True
++                hints.set_limit(limit, truncated=True)
+ 
+             return [base.filter_user(x.to_dict()) for x in data]
+ 
+@@ -486,16 +482,13 @@ class Identity(base.IdentityDriverBase):
+                 if not marker_row:
+                     raise exception.MarkerNotFound(marker=hints.marker)
+ 
++            limit = hints.get_limit_or_max()
+             group_refs = sqlalchemyutils.paginate_query(
+-                query,
+-                model.Group,
+-                hints.get_limit_or_max(),
+-                ["id"],
+-                marker=marker_row,
++                query, model.Group, limit, ["id"], marker=marker_row
+             )
+ 
+             data = group_refs.all()
+-            if hints.limit:
++            if len(data) >= limit:
+                 # the `common.manager.response_truncated` decorator expects
+                 # that when driver truncates results it should also raise
+                 # 'truncated' flag to indicate that. Since we do not really
+@@ -504,8 +497,7 @@ class Identity(base.IdentityDriverBase):
+                 # is equal to what we have limited to.
+                 # NOTE(gtema) get rid of that once proper pagination is
+                 # enabled for all resources
+-                if len(data) >= hints.limit["limit"]:
+-                    hints.limit["truncated"] = True
++                hints.set_limit(limit, truncated=True)
+ 
+             return [ref.to_dict() for ref in data]
+ 
+diff --git a/keystone/resource/backends/sql.py b/keystone/resource/backends/sql.py
+index cacbd18..249ffb0 100644
+--- a/keystone/resource/backends/sql.py
++++ b/keystone/resource/backends/sql.py
+@@ -89,16 +89,13 @@ class Resource(base.ResourceDriverBase):
+                 if not marker_row:
+                     raise exception.MarkerNotFound(marker=hints.marker)
+ 
++            limit = hints.get_limit_or_max()
+             project_refs = sqlalchemyutils.paginate_query(
+-                query,
+-                sql_model.Project,
+-                hints.get_limit_or_max(),
+-                ["id"],
+-                marker=marker_row,
++                query, sql_model.Project, limit, ["id"], marker=marker_row
+             )
+             # Query the data
+             data = project_refs.all()
+-            if hints.limit:
++            if len(data) >= limit:
+                 # the `common.manager.response_truncated` decorator expects
+                 # that when driver truncates results it should also raise
+                 # 'truncated' flag to indicate that. Since we do not really
+@@ -107,8 +104,7 @@ class Resource(base.ResourceDriverBase):
+                 # is equal to what we have limited to.
+                 # NOTE(gtema) get rid of that once proper pagination is
+                 # enabled for all resources
+-                if len(data) >= hints.limit["limit"]:
+-                    hints.limit["truncated"] = True
++                hints.set_limit(limit, truncated=True)
+             return [project_ref.to_dict() for project_ref in data]
+ 
+     def list_projects_from_ids(self, ids):
+diff --git a/keystone/tests/unit/test_v3.py b/keystone/tests/unit/test_v3.py
+index 73c864d..10e6824 100644
+--- a/keystone/tests/unit/test_v3.py
++++ b/keystone/tests/unit/test_v3.py
+@@ -1785,6 +1785,50 @@ class PaginationTestCaseBase(RestfulTestCase):
+             "Next page link contains corrected limit and marker",
+         )
+ 
++    def test_list_no_limit_capped_by_max_db_limit(self):
++        """Tests listing resources cut by max_db_limit only"""
++        # Neither the `limit` query parameter nor `list_limit` is set, so
++        # `max_db_limit` is the only cap applied to the query.
++        self.config_fixture.config(max_db_limit=4)
++
++        count_resources: int = 6
++        self._create_resources(count_resources)
++
++        response = self.get(f'/{self.resource_name}s')
++        res_list = response.json_body[f"{self.resource_name}s"]
++        res_links = response.json_body['links']
++        self.assertEqual(4, len(res_list), "max_db_limit caps the result")
++        self.assertIs(
++            response.json_body.get('truncated'),
++            True,
++            "Result cut by max_db_limit is reported as truncated",
++        )
++        self.assertEqual(
++            f"http://localhost/v3/{self.resource_name}s?marker={res_list[-1]['id']}&limit=4",
++            res_links.get("next"),
++            "Next page link contains the applied limit and marker",
++        )
++
++    def test_list_no_limit_below_max_db_limit(self):
++        """Tests listing resources not reaching any limit"""
++        self.config_fixture.config(max_db_limit=100)
++
++        count_resources: int = 6
++        self._create_resources(count_resources)
++
++        response = self.get(f'/{self.resource_name}s')
++        res_list = response.json_body[f"{self.resource_name}s"]
++        res_links = response.json_body['links']
++        self.assertGreaterEqual(
++            len(res_list), count_resources, "All test resources are returned"
++        )
++        self.assertNotIn(
++            'truncated',
++            response.json_body,
++            "Complete collection is not reported as truncated",
++        )
++        self.assertIsNone(res_links.get("next"), "Next page link is empty")
++
+     def _consume_paginated_list(
+         self, limit: ty.Optional[int] = None
+     ) -> tuple[list[dict], int]:
+diff --git a/releasenotes/notes/report-truncation-with-max-db-limit-89d415e6d6be36cd.yaml b/releasenotes/notes/report-truncation-with-max-db-limit-89d415e6d6be36cd.yaml
+new file mode 100644
+index 0000000..749611d
+--- /dev/null
++++ b/releasenotes/notes/report-truncation-with-max-db-limit-89d415e6d6be36cd.yaml
+@@ -0,0 +1,11 @@
++---
++fixes:
++  - |
++    [`bug 2163597 <https://bugs.launchpad.net/keystone/+bug/2163597>`_]
++    List responses are now correctly reported as truncated when the result was
++    cut by the ``[DEFAULT] max_db_limit`` option. Previously, when neither the
++    ``limit`` query parameter nor the ``[DEFAULT] list_limit`` option was set,
++    ``GET /v3/users``, ``/v3/groups``, ``/v3/projects`` and ``/v3/domains``
++    silently returned at most ``max_db_limit`` entries without the
++    ``truncated`` flag or a ``links.next`` reference, leaving clients unable to
++    tell a complete collection from a truncated one.
+\ No newline at end of file

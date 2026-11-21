@@ -357,6 +357,47 @@ others, which the keystone-operator renders with `defaultMode: 0400` on the key
 volumes and `fsGroup: 42424` on the pod.
 Upstream status: not yet proposed.
 
+**Source patch:**
+`patches/keystone/2026.1/0006-report-truncation-when-max-db-limit-caps-a-list.patch`
+and its 2026.2 twin
+`patches/keystone/2026.2/0006-report-truncation-when-max-db-limit-caps-a-list.patch`
+carry upstream change 1001033 unchanged, so that a list cut at
+`[DEFAULT] max_db_limit` reports the cut (issue #1842). The twins differ in their
+`Applies to` line only. Upstream `list_users` and `list_groups` in
+`keystone/identity/backends/sql.py` and `list_projects` in
+`keystone/resource/backends/sql.py` read at most `Hints.get_limit_or_max()` rows.
+That is `max_db_limit` (default 1000) when the request carries no `limit` and no
+`list_limit` applies, and the drivers set the truncation flag only when the
+request set a limit. `GET /v3/users`, `/v3/groups`, `/v3/projects` and
+`/v3/domains` without `limit` therefore answer the first 1,000 entries with
+`links.next` null and no `truncated` key. On 2026-11-21 in the playground
+cluster (2026.1, keystone 29.0.0), such requests returned 1,000 of 3,260 users
+and 1,000 of 1,923 projects. The patches compare the number of rows a query
+returned with the limit it used, so a cut list carries `truncated: true` and a
+`links.next` with `marker` and `limit`. A client that follows `links.next`, as
+gophercloud's pagers do, reads the whole collection in pages of `max_db_limit`
+rows, one bounded query per page. A client that sends one GET and does not
+follow `links.next` still gets one page. A list of exactly `max_db_limit` rows is
+reported as cut and its next page is empty, because the drivers compare with
+`>=`, as they already do for a requested `limit`. A walk over `links.next` sends
+the id of the previous page's last entry as `marker`, and the patches keep
+upstream's answer to a marker whose row is gone: 404 `MarkerNotFound`. If that
+entry is deleted between two requests, the next page fails. gophercloud's
+`Pager.AllPages` then returns the error without the pages it read, and the
+client lists again from the start. Before the patches an unpaged list answered one page
+and could not meet this race. No existing upstream test moves; the patches add
+`test_list_no_limit_capped_by_max_db_limit` and
+`test_list_no_limit_below_max_db_limit` to `PaginationTestCaseBase` in
+`keystone/tests/unit/test_v3.py`, which the domain, project, user and group
+pagination classes of `keystone/tests/unit/test_v3_resource.py` run. The
+upstream release note travels with them, so the patches reverse-apply as a
+whole once a tag carries the change. `test_list_truncation_patch_applied` in
+`tests/container-images/verify_keystone.sh` drives the three list methods of the
+built image against an in-memory SQLite database with `max_db_limit = 3`. The
+patches need no operator configuration, because the keystone-operator renders
+neither `max_db_limit` nor `list_limit`. Upstream status: proposed as
+[openstack/keystone change 1001033](https://review.opendev.org/c/openstack/keystone/+/1001033).
+
 ### horizon
 
 **Location:** `images/horizon/image.nix`, built from the lock
