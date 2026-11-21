@@ -14,26 +14,34 @@
 # raises OfflineGenerationError and answers HTTP 500 on every page (#1305).
 # Because there is no installedRelease to gate on, the settled end state is
 # asserted in the siblings' order: the Deployment first, the CR second.
-#   (1) A fresh Horizon at :2026.1 reaches Ready=True/AllReady and its
-#       Deployment mounts a local_settings.py with KEY_PREFIX
-#       horizon-e3b48cc65c6f
+#   (1) A fresh Horizon at :2026.1 with cache sessions reaches
+#       Ready=True/AllReady and its Deployment mounts a local_settings.py
+#       with KEY_PREFIX horizon-e3b48cc65c6f, the cache session engine,
+#       SESSION_CACHE_ALIAS "sessions" and the sessions KEY_PREFIX
+#       horizon-sessions-bf5308222bb5
 #   (2) The login page renders over the Service before the hop
-#   (3) Patching spec.image.tag to 2026.2 rolls the Deployment onto :2026.2
+#   (3) The 2026.1 pod writes a session through the cache session engine
+#       (step 3b)
+#   (4) Patching spec.image.tag to 2026.2 rolls the Deployment onto :2026.2
 #       and the rollout completes
-#   (4) The Horizon is Ready=True/AllReady again with
+#   (5) The Horizon is Ready=True/AllReady again with
 #       status.observedGeneration at the patched generation
-#   (5) The Deployment mounts a new ConfigMap whose KEY_PREFIX is
-#       horizon-bf42999233c3, the 2026.1 ConfigMap stays as history, and no
-#       other exists
-#   (6) The login page renders again on the new image
-#   (7) Horizon migrates nothing: no openStackRelease, no installedRelease,
+#   (6) The Deployment mounts a new ConfigMap whose KEY_PREFIX is
+#       horizon-bf42999233c3 and whose sessions KEY_PREFIX is unchanged, the
+#       2026.1 ConfigMap stays as history, and no other exists
+#   (7) The 2026.2 pod reads the session the 2026.1 pod wrote (step 5b)
+#   (8) The login page renders again on the new image
+#   (9) Horizon migrates nothing: no openStackRelease, no installedRelease,
 #       no Job
 #
-# The two KEY_PREFIX literals are pins the release-wiring audit does not see
-# (its regex reads tag:, openStackRelease:, installedRelease: and
+# The two image-scoped KEY_PREFIX literals are pins the release-wiring audit
+# does not see (its regex reads tag:, openStackRelease:, installedRelease: and
 # ghcr.io/c5c3/<img>:<v> only). Recompute them at a release move with
 #   printf '%s' ghcr.io/c5c3/horizon:<v> | sha256sum | cut -c1-12
-# as docs/contributing/adding-a-new-release.md shows.
+# as docs/contributing/adding-a-new-release.md shows. The sessions prefix
+# horizon-sessions-bf5308222bb5 is name-scoped, the hash of
+# "openstack/horizon-release-upgrade", and needs no recomputation at a
+# release move.
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -102,11 +110,17 @@ spec:
           if ! grep -qF '"KEY_PREFIX": "horizon-e3b48cc65c6f"' <<<"$settings"; then
             echo "FAIL: $cm does not carry the 2026.1 KEY_PREFIX horizon-e3b48cc65c6f"; exit 1
           fi
+          for want in 'SESSION_ENGINE = "django.contrib.sessions.backends.cache"' \
+            'SESSION_CACHE_ALIAS = "sessions"' '"KEY_PREFIX": "horizon-sessions-bf5308222bb5"'; do
+            if ! grep -qF "$want" <<<"$settings"; then
+              echo "FAIL: $cm does not carry the cache session setting $want"; exit 1
+            fi
+          done
           count=$(kubectl get cm -n openstack -o name | grep -c 'configmap/horizon-release-upgrade-config-' || true)
           if [ "$count" != "1" ]; then
             echo "FAIL: expected one horizon-release-upgrade-config-* ConfigMap before the hop, found $count"; exit 1
           fi
-          echo "OK: $cm carries KEY_PREFIX horizon-e3b48cc65c6f and is the only config ConfigMap"
+          echo "OK: $cm carries KEY_PREFIX horizon-e3b48cc65c6f and the cache session settings and is the only config ConfigMap"
     catch:
     - script:
         content: |
@@ -186,6 +200,51 @@ spec:
     - script:
         content: |
           kubectl delete pod curl-test-horizon-release-pre -n $NAMESPACE --ignore-not-found 2>&1 || true
+  # ── Step 3b: Write a session on the 2026.1 pod ─────────────────────────
+  # The dashboard's own SessionStore writes the session through the cache
+  # session engine and the "sessions" alias of the mounted local_settings.py,
+  # in the pod's environment, HORIZON_SECRET_KEY included. The newest pod is
+  # the one the step execs into, and its image is checked. The 32-character
+  # session key goes into a ConfigMap so step 5b can read the session back on
+  # the 2026.2 pod; apply rather than create keeps a re-run on the same
+  # cluster from failing on AlreadyExists.
+  - try:
+    - script:
+        shell: bash
+        timeout: 90s
+        content: |
+          set -euo pipefail
+          pod=$(kubectl get pods -n openstack -l app.kubernetes.io/instance=horizon-release-upgrade \
+            --sort-by=.metadata.creationTimestamp -o name | tail -n 1)
+          image=$(kubectl get -n openstack "$pod" -o jsonpath='{.spec.containers[?(@.name=="horizon")].image}')
+          if [ "$image" != "ghcr.io/c5c3/horizon:2026.1" ]; then
+            echo "FAIL: $pod runs $image, not ghcr.io/c5c3/horizon:2026.1"; exit 1
+          fi
+          out=$(kubectl exec -n openstack "$pod" -c horizon -- \
+            env DJANGO_SETTINGS_MODULE=openstack_dashboard.settings PYTHONWARNINGS=ignore python3 -c '
+          import django; django.setup()
+          from importlib import import_module
+          from django.conf import settings
+          s = import_module(settings.SESSION_ENGINE).SessionStore()
+          s["probe"] = "written-before-the-hop"; s.create(); print(s.session_key)') || { printf '%s\n' "$out"; exit 1; }
+          key=$(tail -n 1 <<<"$out")
+          if [ "${#key}" -ne 32 ]; then
+            printf '%s\n' "$out"
+            echo "FAIL: the last line of the session write has ${#key} characters, not a 32-character session key"; exit 1
+          fi
+          kubectl create configmap horizon-release-upgrade-session-probe -n openstack \
+            --from-literal=key="$key" --dry-run=client -o yaml | kubectl apply -f -
+          echo "OK: $pod wrote session $key"
+    catch:
+    - script:
+        content: |
+          echo "=== Dashboard pods ==="
+          kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=horizon-release-upgrade -o wide 2>&1 || true
+          echo "=== Dashboard pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=horizon-release-upgrade -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+          done
   # ── Step 4: Patch the image tag to trigger the cross-release upgrade ────
   - try:
     - patch:
@@ -286,11 +345,14 @@ spec:
           if grep -qF 'horizon-e3b48cc65c6f' <<<"$settings"; then
             echo "FAIL: $cm still carries the 2026.1 KEY_PREFIX horizon-e3b48cc65c6f"; exit 1
           fi
+          if ! grep -qF '"KEY_PREFIX": "horizon-sessions-bf5308222bb5"' <<<"$settings"; then
+            echo "FAIL: $cm does not carry the unchanged sessions KEY_PREFIX horizon-sessions-bf5308222bb5"; exit 1
+          fi
           count=$(kubectl get cm -n openstack -o name | grep -c 'configmap/horizon-release-upgrade-config-' || true)
           if [ "$count" != "2" ]; then
             echo "FAIL: expected the 2026.1 and the 2026.2 config ConfigMaps (2) after the hop, found $count"; exit 1
           fi
-          echo "OK: $cm carries KEY_PREFIX horizon-bf42999233c3; the 2026.1 ConfigMap is retained as history"
+          echo "OK: $cm carries KEY_PREFIX horizon-bf42999233c3 and the unchanged sessions prefix; the 2026.1 ConfigMap is retained as history"
     - script:
         shell: bash
         timeout: 30s
@@ -334,6 +396,54 @@ spec:
             echo "--- $cm ---"
             kubectl get -n $NAMESPACE "$cm" -o jsonpath='{.data.local_settings\.py}' 2>&1 | grep -F KEY_PREFIX || true
           done
+  # ── Step 5b: Read the session back on the 2026.2 pod ───────────────────
+  # The "sessions" alias kept its name-scoped KEY_PREFIX across the hop
+  # (step 5), so the 2026.2 pod finds the session the 2026.1 pod wrote in
+  # step 3b; with the image-scoped prefix of the "default" alias it would
+  # miss it and the user would be logged out. Step 5's rollout status retired
+  # the 2026.1 ReplicaSet, and the image check makes sure the step reads on
+  # the new image. finally deletes the probe ConfigMap.
+  - try:
+    - script:
+        shell: bash
+        timeout: 90s
+        content: |
+          set -euo pipefail
+          key=$(kubectl get cm horizon-release-upgrade-session-probe -n openstack -o jsonpath='{.data.key}')
+          pod=$(kubectl get pods -n openstack -l app.kubernetes.io/instance=horizon-release-upgrade \
+            --sort-by=.metadata.creationTimestamp -o name | tail -n 1)
+          image=$(kubectl get -n openstack "$pod" -o jsonpath='{.spec.containers[?(@.name=="horizon")].image}')
+          if [ "$image" != "ghcr.io/c5c3/horizon:2026.2" ]; then
+            echo "FAIL: $pod runs $image, not ghcr.io/c5c3/horizon:2026.2"; exit 1
+          fi
+          out=$(kubectl exec -n openstack "$pod" -c horizon -- \
+            env DJANGO_SETTINGS_MODULE=openstack_dashboard.settings PYTHONWARNINGS=ignore python3 -c '
+          import sys
+          import django; django.setup()
+          from importlib import import_module
+          from django.conf import settings
+          s = import_module(settings.SESSION_ENGINE).SessionStore(session_key=sys.argv[1])
+          print(s.get("probe"))' "$key") || { printf '%s\n' "$out"; exit 1; }
+          got=$(tail -n 1 <<<"$out")
+          if [ "$got" != "written-before-the-hop" ]; then
+            printf '%s\n' "$out"
+            echo "FAIL: $pod read $got for session $key, not written-before-the-hop"; exit 1
+          fi
+          echo "OK: $pod read written-before-the-hop from session $key"
+    catch:
+    - script:
+        content: |
+          echo "=== Dashboard pods ==="
+          kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=horizon-release-upgrade -o wide 2>&1 || true
+          echo "=== Dashboard pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=horizon-release-upgrade -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+          done
+    finally:
+    - script:
+        content: |
+          kubectl delete cm horizon-release-upgrade-session-probe -n $NAMESPACE --ignore-not-found 2>&1 || true
   # ── Step 6: Assert the login page renders after the hop ─────────────────
   # A 2026.2 pod that still rendered the 2026.1 prefix would read the
   # fragment step 3 wrote, find no entry for it in its own offline manifest,
