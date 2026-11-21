@@ -960,6 +960,28 @@ type ServiceHorizonSpec struct {
 	// +optional
 	MultiDomain *horizonv1alpha1.MultiDomainSpec `json:"multiDomain,omitempty"`
 
+	// Design note, kept out of the CRD description by the blank line below:
+	// Session is typed as the horizon module's own SessionSpec, as MultiDomain
+	// is. The webhook validates through horizonv1alpha1.ValidateSession and
+	// passes horizonv1alpha1.DefaultCacheBackend as the cache backend, because
+	// the projection always writes it, so the cache-backend rule cannot fire
+	// here. It needs no External-mode forbid-rule: the validating webhook
+	// forbids services.horizon entirely in External mode.
+
+	// Session selects the store of the dashboard's Django sessions. The
+	// reconciler projects the block as written onto the Horizon child's
+	// spec.session, and removing it reverts the child to signed-cookie
+	// sessions. Backend Cache keeps the sessions in the dashboard's cache, the
+	// shared one or the one of dedicatedBackingServices.cache. Moving between
+	// signed cookies and Cache, in either direction, logs every user out,
+	// repeatedly while old and new dashboard pods serve side by side, until
+	// the rollout completes.
+	//
+	// The schema is copied from the horizon-operator's CRD, so roll the
+	// c5c3-operator and horizon-operator charts together.
+	// +optional
+	Session *horizonv1alpha1.SessionSpec `json:"session,omitempty"`
+
 	// DedicatedBackingServices opts the dashboard OUT of the ControlPlane-wide
 	// shared cache declared in spec.infrastructure and gives it a cache of its
 	// own. Omitting it (the default) keeps today's behavior — the dashboard shares
