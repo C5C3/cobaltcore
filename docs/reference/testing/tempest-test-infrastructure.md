@@ -570,6 +570,7 @@ SERVICE=keystone hack/run-tempest.sh
 | `OUTPUT_DIR` | `_output/tempest` | Directory for test results (JUnit XML, subunit stream) |
 | `TEMPEST_TIMEOUT` | `1800` | Timeout for Tempest execution in seconds |
 | `NAMESPACE` | `openstack` | Kubernetes namespace for the service under test |
+| `TEMPEST_KEYSTONE_LEAK_CHECK` | `fail` for `SERVICE=keystone`, `off` otherwise | `off` or `fail`, the [Keystone leak check](#keystone-leak-check). Set `off` when other clients write to the Keystone during the run |
 
 **Execution steps:**
 
@@ -578,7 +579,7 @@ SERVICE=keystone hack/run-tempest.sh
 | Pre-flight checks | Validates `SERVICE` is set, required tools (`docker`, `kubectl`, `yq`) are installed, Docker is running, service config directory exists, `test-refs.yaml` exists | Exits 1 with descriptive error |
 | Build Tempest image | Builds the flake attribute `tempest-<rel_>-image` with `nix build` and loads the stream with `docker load`; the tempest lock pins the `test-refs.yaml` versions | Exits on build failure (set -e) |
 | Extract admin password | Reads `keystone-admin` secret from the K8s cluster via `kubectl get secret` | Exits 1 if secret is not found or empty |
-| Run Tempest | Mounts `tempest.conf`, `phases/phase-1-core.txt`, `phases/phase-2-plugin.txt`, `exclude-tests.txt`, `extract-failed.py`, `merge-retry-junit.py` into container; initializes Tempest workspace; runs `stestr run --subunit` once per phase; concatenates the subunit streams; converts to JUnit XML; reruns any failed tests serially; merges the retry outcome into the JUnit report | Non-zero if any failure remains after retry, or on hard `stestr` crash |
+| Run Tempest | Mounts `tempest.conf`, `phases/phase-1-core.txt`, `phases/phase-2-plugin.txt`, `exclude-tests.txt`, `extract-failed.py`, `merge-retry-junit.py`, `keystone-inventory.py` into container; initializes Tempest workspace; with the leak check on, snapshots Keystone's objects; runs `stestr run --subunit` once per phase; concatenates the subunit streams; converts to JUnit XML; reruns any failed tests serially; merges the retry outcome into the JUnit report; with the leak check on, snapshots Keystone again and diffs the two snapshots | Non-zero if any failure remains after retry, on hard `stestr` crash, or when the leak check finds a leftover or fails itself |
 
 **Output files:**
 
@@ -587,6 +588,9 @@ SERVICE=keystone hack/run-tempest.sh
 | `_output/tempest/tempest-results.xml` | JUnit XML | Test results for CI artifact upload (retry-adjusted) |
 | `_output/tempest/tempest.subunit` | Subunit v2 | Raw test result stream (phase 1 + phase 2 + retry) |
 | `_output/tempest/retry.subunit` | Subunit v2 | Retry stream (only present if any tests failed on first run) |
+| `_output/tempest/keystone-inventory-before.json`, `keystone-inventory-after.json` | JSON | Keystone's objects before and after the run (leak check on only) |
+| `_output/tempest/keystone-leftovers.tsv` | TSV | One line per object the run left behind, empty when it left none (leak check on only) |
+| `_output/tempest/tempest.log` | Text | Tempest's log, copied only when the leak check finds a leftover |
 
 The script exits non-zero if the retry-adjusted JUnit report still lists
 failures or errors, and otherwise exits zero. Both phases always run, so a
@@ -594,7 +598,8 @@ failure in phase 1 does not short-circuit phase 2. If the initial `stestr` invoc
 crashed hard enough that no test was recorded, the script exits 1 at its zero-test
 checks. The captured phase exit code is used as a fallback when the report lists tests,
 no failures or errors remain, and no retry was merged, so infra failures are still
-reported.
+reported. With the leak check on, a Keystone object the run left behind also makes
+the script exit non-zero.
 
 ### make tempest-test
 
@@ -728,7 +733,7 @@ plus `upgrade-from`, the release its Keystone is deployed at before the upgrade.
 | Deploy the OVN chassis *(nova leg only)* | Labels the node `openstack.c5c3.io/chassis=true`, applies `matrix.config-dir/12-ovnchassis-cr.yaml`, waits 300 s for `ovnchassis/ovn-<matrix.nova-cr-name>-chassis` Ready. Without a live chassis row in the Southbound database every server the suite boots ends in ERROR on a binding failure |
 | Deploy the metadata agent *(nova leg only)* | Applies `matrix.config-dir/13-neutronmetadataagent-cr.yaml`, waits 300 s for `neutronmetadataagent/neutron-<matrix.nova-cr-name>-agent` Ready. The agent answers the 169.254.169.254 requests the servers on that chassis make, which is what the `metadata_service` tests read back |
 | Seed the flavors *(nova and cinder legs)* | Applies `*-flavor-seed-job.yaml`, waits 300 s for the `<matrix.service>-tempest-flavor-seed` Job to complete. It creates `m1.nano` and `m1.micro`, the two ids `tempest.conf` pins as `[compute] flavor_ref` and `flavor_ref_alt`. It talks to the Nova API, so it comes after the Nova is Ready |
-| Run Tempest API tests | `hack/ci-run-tempest.sh` with `CONFIG_DIR`, `TEMPEST_IMAGE`, and `SERVICE_K8S_NAME` from matrix; the barbican leg also passes `BARBICAN_K8S_NAME`, the cinder leg `CINDER_K8S_NAME`, the neutron, cinder and nova legs `NEUTRON_K8S_NAME`, the glance, cinder and nova legs `GLANCE_K8S_NAME`, the nova and cinder legs `NOVA_K8S_NAME` and `PLACEMENT_K8S_NAME`, and the nova legs `NOVA_CONSOLE_K8S_NAME` (`<nova-cr-name>-novncproxy`). Each is empty on the other legs, which disables the matching 9292, 9311, 9696, 8776, 8774, 8778 or 6080 port-forward |
+| Run Tempest API tests | `hack/ci-run-tempest.sh` with `CONFIG_DIR`, `TEMPEST_IMAGE`, and `SERVICE_K8S_NAME` from matrix; the barbican leg also passes `BARBICAN_K8S_NAME`, the cinder leg `CINDER_K8S_NAME`, the neutron, cinder and nova legs `NEUTRON_K8S_NAME`, the glance, cinder and nova legs `GLANCE_K8S_NAME`, the nova and cinder legs `NOVA_K8S_NAME` and `PLACEMENT_K8S_NAME`, and the nova legs `NOVA_CONSOLE_K8S_NAME` (`<nova-cr-name>-novncproxy`). Each is empty on the other legs, which disables the matching 9292, 9311, 9696, 8776, 8774, 8778 or 6080 port-forward. `TEMPEST_KEYSTONE_LEAK_CHECK` is `fail` on the `keystone` and `keystone-upgrade` legs and `off` on the others ([Keystone leak check](#keystone-leak-check)) |
 | Upload Tempest results | Uploads `_output/tempest/` (minus the rendered `tempest.conf`, which carries the substituted admin password) as artifact with 14-day retention |
 | Dump diagnostic info (compute stack) *(nova and cinder legs)* | `hack/ci-dump-diagnostics.sh` under `always()`, once per extra operator with `OPERATOR_ONLY=1`: `nova`, `placement`, `ovn`, `neutron`, `glance`, plus `cinder` on the cinder legs. Each of those lives in a Namespace the keystone dump above never reads |
 
@@ -803,6 +808,115 @@ it with the test id and the traceback from `tempest-results.xml` in the
 `tempest-keystone-upgrade-<release>-results` artifact. Keep it out of
 `exclude-tests.txt`: the fresh entry reads the same file and would lose the test
 too.
+
+### Keystone leak check
+
+The keystone legs prove that a Tempest run leaves Keystone as it found it.
+`hack/tempest/run-tests.sh` reads `TEMPEST_KEYSTONE_LEAK_CHECK`:
+
+| Value | Effect |
+| --- | --- |
+| `off` | The default, also when the variable is unset or empty. The script runs no check and never reads `keystone-inventory.py`, so a caller that stages none is unaffected |
+| `fail` | `hack/tempest/keystone-inventory.py` lists Keystone's objects before the first phase and again after the retry, and every object the second list has and the first lacks fails the run |
+
+Any other value ends the script with exit 1 and
+`TEMPEST_KEYSTONE_LEAK_CHECK must be off or fail, got '<value>'.` before it
+touches `/tmp`.
+
+The `Run Tempest API tests` step sets `fail` where `matrix.service` starts with
+`keystone`: on the `keystone` legs of both releases and on the
+`keystone-upgrade` entry. Each of them runs a Keystone of its own that nothing
+else writes to during the run, so an object the run added is one Tempest left
+behind. The other legs stay `off`, because what their suites leave in Keystone
+is not examined. The guest data-plane suite calls `hack/ci-run-tempest.sh`
+without the variable and stays `off` too. `hack/run-tempest.sh` defaults to
+`fail` for `SERVICE=keystone` and to `off` for every other service.
+
+**Inventory:** the helper reads `[identity] uri_v3` and the `[auth]`
+`admin_username`, `admin_password` and `admin_domain_name` of the rendered
+`tempest.conf`, with interpolation off so a `%` in the password stays literal.
+It takes a system-scoped token and lists 19 kinds with it, each request with a
+60 s timeout. It uses no proxy, also when `http_proxy` or `HTTP_PROXY` is set,
+because Tempest's own client ignores those variables as well. It keeps the id
+and one label per object, so a credential's `blob` never reaches a snapshot.
+
+| Kind | `GET` below `uri_v3` | Label |
+| --- | --- | --- |
+| `service` | `/services` | `type` |
+| `endpoint` | `/endpoints` | `url` |
+| `region` | `/regions` | `description` |
+| `policy` | `/policies` | `type` |
+| `consumer` | `/OS-OAUTH1/consumers` | `description` |
+| `domain` | `/domains` | `name` |
+| `project` | `/projects` | `name` |
+| `user` | `/users` | `name` |
+| `group` | `/groups` | `name` |
+| `role` | `/roles` | `name` |
+| `domain_role` | `/roles?domain_id=<id>`, once per domain | `name` |
+| `credential` | `/credentials` | `type` |
+| `identity_provider` | `/OS-FEDERATION/identity_providers` | `domain_id` |
+| `mapping` | `/OS-FEDERATION/mappings` | empty |
+| `service_provider` | `/OS-FEDERATION/service_providers` | empty |
+| `endpoint_group` | `/OS-EP-FILTER/endpoint_groups` | `name` |
+| `registered_limit` | `/registered_limits` | `resource_name` |
+| `limit` | `/limits` | `resource_name` |
+| `trust` | `/OS-TRUST/trusts` | empty |
+
+A list that Keystone truncated at its `list_limit` is an error, as is an
+answer that is not a success. A list of 1000 or more objects is an error too:
+Keystone cuts a list of users, groups, projects or domains at its
+`[DEFAULT] max_db_limit`, 1000 by default, and does not mark the answer as
+truncated. The helper reports each error as one stderr line that starts with
+`keystone-inventory: `, for example
+`keystone-inventory: GET /services returned 500`, and exits 2.
+
+**Outputs:** the check writes to `/output`, which is `_output/tempest/` in the
+results artifact. The files hold ids, names, types and URLs, and no secret.
+
+| File | Written | Content |
+| --- | --- | --- |
+| `keystone-inventory-before.json` | Before the first phase | `{"<kind>": {"<id>": "<label>"}}`, sorted |
+| `keystone-inventory-after.json` | After the retry | The same shape |
+| `keystone-leftovers.tsv` | After the retry | One `<kind>`, `<id>`, `<label>` line, tab-separated, per object only the after snapshot has; empty when the run left none |
+| `tempest.log` | After the retry, on a leak only | Tempest's log of the run |
+
+**Error lines:** each starts with `TEMPEST_ERROR_PREFIX`, `::error::` in CI.
+
+| Line | When |
+| --- | --- |
+| `Keystone inventory before the run failed (exit <n>); no test was started.` | The first snapshot failed. The script exits 1 before the first phase |
+| `Tempest left <n> Keystone object(s) behind; see keystone-leftovers.tsv:` | The run added objects. The lines follow inside the `Keystone leak check` log group |
+| `Keystone leak check failed (exit <n>); the run proves nothing about leftovers.` | The second snapshot or the diff failed |
+
+A failed check sets the exit code to 1 after the decision on the test results.
+A run whose tests all passed, or whose failures the retry resolved, still
+fails, and a run that also has test failures prints both messages. The gate
+has no tolerance. A test whose failure the retry resolved can still have left
+an object behind, for example when its cleanup failed on a Keystone error
+before Keystone committed the delete. That object is in the cloud, and the
+retry does not remove it.
+
+**On a red check:** find the test that created each leftover in the
+artifact's `tempest.log`. `tempest.conf` writes it at INFO level, one
+`Request (<class>:<method>): <status> <verb> <url>` line per call and no
+request body, so it holds no password. `grep -F <id> tempest.log` usually
+finds the persona's refused `DELETE`, which names the test. Otherwise the
+class and method with a `201 POST` or `201 PUT` on the leftover's collection
+and no `204 DELETE` below that collection, from the method or from
+`<class>:_run_cleanups`, created it.
+
+- When the test's cleanup failed on a Keystone error, that error is the
+  finding.
+- When the test registers no cleanup, add a hunk to
+  `nix/lib/patches/keystone-tempest-plugin-0.22.0-register-test-cleanups.patch`
+  and an assertion to `test_keystone_plugin_registers_cleanups`, or exclude
+  the test with the `tracked-by` and `re-evaluate-on` lines of
+  [Tracking version-coupled RBAC excludes](#tracking-version-coupled-rbac-excludes).
+
+Some rows stay out of the check's sight. No API lists a domain role without
+its domain's id, so the domain roles of a deleted domain are invisible.
+Deleted trusts and revocation events are Keystone's own retention and appear
+in no list.
 
 ### build-images.yaml — build-tempest Job
 
@@ -894,7 +1008,7 @@ the order the job runs them.
 
 ![The test bed of one tempest job in CI. On the runner host, the step Run Tempest API tests runs hack/ci-run-tempest.sh. The script reads the admin password from the Secret keystone-admin in the namespace openstack of the kind cluster, starts one kubectl port-forward per Service on localhost and, once every port answers, starts the Tempest container with docker run on the host network. The container mounts the directory with the rendered tempest.conf and the test lists at /etc/tempest and the output directory at /output. It calls the APIs over plain http: --add-host points the cluster DNS names of the Services at 127.0.0.1, where the forwards listen. Every job forwards the Keystone Service on port 5000. Depending on the service under test, further forwards reach Glance on 9292, Barbican on 9311, Neutron on 9696, Cinder on 8776, Nova on 8774, the noVNC proxy on 6080 and Placement on 8778. Inside the cluster, seed Jobs run the same Tempest image and call the APIs by their cluster DNS names: a catalog set-up Job, an image seed Job, a flavor seed Job, for Barbican a policy check Job and, for Neutron, an external-network Job.](../../diagrams/test-tempest-bed.svg)
 
-![The commands of one tempest job in CI, in six steps. hack/nix-lock.sh locks releases/`<release>`/test-refs.yaml into nix/locks/`<release>`/tempest/, the committed pins of tempest and the four plugins. The build-e2e-images job runs hack/ci-nix-build-e2e-images.sh per release, which runs nix build .#tempest-`<rel_>`-image in the nixos/nix container and docker load of .nix-e2e/tempest-`<release>`.tar. hack/ci-run-tempest.sh runs per matrix.service and matrix.release: it reads the admin password from the keystone-admin Secret, port-forwards svc/`<service-k8s-name>` to 5000 plus one forward per `<SERVICE>`_K8S_NAME the leg sets, each polled on localhost for up to 10 attempts. On the neutron legs it then lists the one external network with a docker run of the tempest image. It renders tempest.conf with the localhost URI, the password and, on the neutron legs, that network's id as public_network_id into _output/tempest/config next to the copied exclude-tests.txt and runner scripts, and splits include-tests.txt into phases/phase-1-core.txt and phases/phase-2-plugin.txt. docker run starts ghcr.io/c5c3/tempest:`<release>` with --rm, --network host, one --add-host pair per forwarded Service mapping `<name>`.openstack.svc.cluster.local and `<name>`.openstack.svc to 127.0.0.1, the config directory mounted read-only at /etc/tempest, _output/tempest mounted at /output and the TEMPEST_CONCURRENCY, TEMPEST_GROUP_START, TEMPEST_GROUP_END and TEMPEST_ERROR_PREFIX variables, and runs bash /etc/tempest/run-tests.sh. run-tests.sh runs tempest init, copies tempest.conf, runs stestr for the core phase and the plugin phase with subunit output, concatenates the streams and converts them with subunit2junitxml, retries the failed tests once serially from the list extract-failed.py prints, and merge-retry-junit.py rewrites the resolved failures in tempest-results.xml. actions/upload-artifact uploads tempest-`<service>`-`<release>`-results with a 14-day retention. The runner scripts never inline the steps of run-tests.sh, so CI and local runs share one code path.](../../diagrams/test-tempest-job-steps.svg)
+![The commands of one tempest job in CI, in six steps. hack/nix-lock.sh locks releases/`<release>`/test-refs.yaml into nix/locks/`<release>`/tempest/, the committed pins of tempest and the four plugins. The build-e2e-images job runs hack/ci-nix-build-e2e-images.sh per release, which runs nix build .#tempest-`<rel_>`-image in the nixos/nix container and docker load of .nix-e2e/tempest-`<release>`.tar. hack/ci-run-tempest.sh runs per matrix.service and matrix.release: it reads the admin password from the keystone-admin Secret, port-forwards svc/`<service-k8s-name>` to 5000 plus one forward per `<SERVICE>`_K8S_NAME the leg sets, each polled on localhost for up to 10 attempts. On the neutron legs it then lists the one external network with a docker run of the tempest image. It renders tempest.conf with the localhost URI, the password and, on the neutron legs, that network's id as public_network_id into _output/tempest/config next to the copied exclude-tests.txt and runner scripts, and splits include-tests.txt into phases/phase-1-core.txt and phases/phase-2-plugin.txt. docker run starts ghcr.io/c5c3/tempest:`<release>` with --rm, --network host, one --add-host pair per forwarded Service mapping `<name>`.openstack.svc.cluster.local and `<name>`.openstack.svc to 127.0.0.1, the config directory mounted read-only at /etc/tempest, _output/tempest mounted at /output and the TEMPEST_CONCURRENCY, TEMPEST_GROUP_START, TEMPEST_GROUP_END, TEMPEST_ERROR_PREFIX and TEMPEST_KEYSTONE_LEAK_CHECK variables, the last fail on the keystone legs and off on the others, and runs bash /etc/tempest/run-tests.sh. run-tests.sh runs tempest init, copies tempest.conf and, with TEMPEST_KEYSTONE_LEAK_CHECK=fail, writes keystone-inventory-before.json with keystone-inventory.py snapshot. It runs stestr for the core phase and the plugin phase with subunit output, concatenates the streams and converts them with subunit2junitxml, retries the failed tests once serially from the list extract-failed.py prints, and merge-retry-junit.py rewrites the resolved failures in tempest-results.xml. With fail it then writes keystone-inventory-after.json and diffs the two snapshots into keystone-leftovers.tsv, and a line in that file fails the run. actions/upload-artifact uploads tempest-`<service>`-`<release>`-results with a 14-day retention. The runner scripts never inline the steps of run-tests.sh, so CI and local runs share one code path.](../../diagrams/test-tempest-job-steps.svg)
 
 ## Dependencies on Prior Features
 

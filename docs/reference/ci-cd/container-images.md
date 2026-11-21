@@ -117,8 +117,10 @@ cleanup. One run of a keystone include list left 78 Keystone objects behind:
 and keeps every check the tests make. `IdentityV3RbacProtocolTests` also
 deletes the domain Keystone creates for each of its identity providers.
 `test_keystone_plugin_registers_cleanups` in `verify_tempest.sh` checks the 17
-patched methods in the built image. Upstream status: not submitted; #1840 tracks
-the patch.
+patched methods in the built image, and the
+[Keystone leak check](../testing/tempest-test-infrastructure.md#keystone-leak-check)
+fails a keystone run of the `tempest` job that leaves an object behind. Upstream
+status: not submitted; #1840 tracks the patch.
 
 **Library patches:** every service image, nova-compute and tempest included,
 carries `nix/lib/patches/uwsgi-2.0.31-retry-write-poll-on-eintr.patch` and
