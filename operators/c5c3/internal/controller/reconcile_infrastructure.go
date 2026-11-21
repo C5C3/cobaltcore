@@ -1132,7 +1132,11 @@ func unstructuredMemcachedSecurityMatches(u *unstructured.Unstructured) (bool, e
 // priority class of its own, so both go through the StatefulSet override at
 // spec.override.statefulSet.spec.template.spec, which is removed when neither
 // resolves. Unset resources leave the operator's default (1 CPU and 2Gi
-// requested, 2 CPU and 2Gi limit). Image, persistence and tls stay at the
+// requested, 2 CPU and 2Gi limit). spec.affinity carries the hostname
+// anti-affinity of the messaging availability, resolved for the bus's
+// replica count with Required as the default (rabbitMQAffinity), because two
+// brokers on one node lose quorum with that node; a single broker gets none,
+// and the operator's own zone spread stays. Image, persistence and tls stay at the
 // RabbitMQ Cluster Operator's defaults, or at whatever the platform set on an
 // adopted CR: they are site-specific hardening outside the aggregate's
 // knowledge, the posture ensureMariaDB already takes on TLS and issuerRefs.
@@ -1178,11 +1182,17 @@ func (r *ControlPlaneReconciler) ensureRabbitMQ(
 		replicas = infraRabbitMQReplicasDefault
 	}
 
+	var availability c5c3v1alpha1.AvailabilitySizingSpec
+	if sizing != nil {
+		availability = sizing.AvailabilitySizingSpec
+	}
+	av := resolveBackingAvailability(availability, replicas, c5c3v1alpha1.AntiAffinityRequired)
+
 	key := types.NamespacedName{
 		Name:      m.ClusterRef.Name,
 		Namespace: namespace,
 	}
-	pod := rabbitMQPodSizing(sizing)
+	pod := rabbitMQPodSizing(sizing, key.Name, av)
 	project := func(u *unstructured.Unstructured) error {
 		// int32 must be widened to int64 for unstructured nested-field storage.
 		if serr := unstructured.SetNestedField(u.Object, int64(replicas), "spec", "replicas"); serr != nil {
@@ -1317,13 +1327,19 @@ type rabbitMQPod struct {
 	// neither a node selector nor a priority class resolves. The upstream schema
 	// requires containers there, so it always carries an empty list.
 	podSpec map[string]interface{}
+	// affinity is the whole of spec.affinity, or nil when the bus gets no
+	// anti-affinity.
+	affinity map[string]interface{}
 }
 
-func rabbitMQPodSizing(s *c5c3v1alpha1.MessagingSizingSpec) rabbitMQPod {
+// rabbitMQPodSizing returns the pod-level sizing of the RabbitmqCluster name
+// from s and av. A nil s still yields the affinity of av.
+func rabbitMQPodSizing(s *c5c3v1alpha1.MessagingSizingSpec, name string, av backingAvailability) rabbitMQPod {
+	p := rabbitMQPod{affinity: rabbitMQAffinity(name, av.antiAffinity)}
 	if s == nil {
-		return rabbitMQPod{}
+		return p
 	}
-	p := rabbitMQPod{resources: s.Resources, tolerations: s.Tolerations}
+	p.resources, p.tolerations = s.Resources, s.Tolerations
 	if len(s.NodeSelector) > 0 || s.PriorityClassName != nil {
 		p.podSpec = map[string]interface{}{"containers": []interface{}{}}
 		if len(s.NodeSelector) > 0 {
@@ -1360,6 +1376,11 @@ func (p rabbitMQPod) applyTo(u *unstructured.Unstructured) error {
 			return fmt.Errorf("setting spec.tolerations: %w", err)
 		}
 	}
+	if p.affinity == nil {
+		unstructured.RemoveNestedField(u.Object, "spec", "affinity")
+	} else if err := unstructured.SetNestedMap(u.Object, p.affinity, "spec", "affinity"); err != nil {
+		return fmt.Errorf("setting spec.affinity: %w", err)
+	}
 	if p.podSpec == nil {
 		unstructured.RemoveNestedField(u.Object, "spec", "override", "statefulSet")
 		return nil
@@ -1374,6 +1395,13 @@ func (p rabbitMQPod) applyTo(u *unstructured.Unstructured) error {
 // matches reports whether u already carries p. Unset resources match the
 // operator's default as well as an absent field.
 func (p rabbitMQPod) matches(u *unstructured.Unstructured) (bool, error) {
+	// spec.affinity is read before the comparisons that return early, so a
+	// value that is not a map fails the pass whatever else differs and applyTo
+	// never overwrites it.
+	affinity, _, err := unstructured.NestedMap(u.Object, "spec", "affinity")
+	if err != nil {
+		return false, err
+	}
 	resourcesMatch, err := unstructuredResourcesMatch(u, p.resources, rabbitMQDefaultResources())
 	if err != nil || !resourcesMatch {
 		return false, err
@@ -1402,7 +1430,10 @@ func (p rabbitMQPod) matches(u *unstructured.Unstructured) (bool, error) {
 	if !found {
 		podSpec = nil
 	}
-	return equality.Semantic.DeepEqual(podSpec, p.podSpec), nil
+	if !equality.Semantic.DeepEqual(podSpec, p.podSpec) {
+		return false, nil
+	}
+	return equality.Semantic.DeepEqual(affinity, p.affinity), nil
 }
 
 // setUnstructuredResources writes rr at spec.resources on u, or removes the
