@@ -284,6 +284,14 @@ const (
 	horizonUWSGIThreads   = 1
 )
 
+// horizonUWSGIBufferSize is uWSGI's --buffer-size, the bytes it accepts for a
+// request's line and headers. The signed-cookie session, the scoped token and
+// its service catalog included, travels in every logged-in request, and
+// uWSGI's default of 4096 bytes drops such a request once the catalog grows:
+// uWSGI closes the connection without a response and the gateway in front
+// answers 503. 65535 is the largest value uWSGI accepts.
+const horizonUWSGIBufferSize = 65535
+
 // uwsgiCommand constructs the uWSGI container command. Horizon has no
 // per-CR uWSGI knobs in v1 (design decision D5): uwsgi loads
 // openstack_dashboard.wsgi directly (the module ships `application`), serves
@@ -292,11 +300,15 @@ const (
 // flags of the API operators (deployment.UWSGIGracefulShutdownArgs). uWSGI
 // keeps a connection open between requests (--http-keepalive, where
 // deployment.BuildUWSGICommand puts it), so a pooling proxy does not reuse a
-// connection that uWSGI closed right after a response.
+// connection that uWSGI closed right after a response. uWSGI accepts up to
+// horizonUWSGIBufferSize bytes of request line and headers (--buffer-size,
+// right after --http-keepalive), so it does not drop a logged-in request that
+// carries a large signed-cookie session.
 func uwsgiCommand() []string {
 	cmd := []string{
 		"uwsgi",
 		"--http", fmt.Sprintf(":%d", horizonAPIPort), "--http-keepalive",
+		"--buffer-size", strconv.Itoa(horizonUWSGIBufferSize),
 		"--module", "openstack_dashboard.wsgi",
 		"--master",
 		"--need-app",
