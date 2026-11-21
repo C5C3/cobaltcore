@@ -59,8 +59,9 @@ spec:
               Horizon is deliberately the thin profile among the service operators:
               a stateless Django/WSGI dashboard with no message bus, no service-catalog
               endpoints of its own, and no db-sync/fernet/bootstrap/upgrade machinery.
-              Sessions use Django signed cookies; Memcached only backs the Django cache,
-              so losing it degrades cache hit-rate without logging users out.
+              Sessions use Django signed cookies unless spec.session selects the cache
+              backend; with signed cookies Memcached only backs the Django cache, so
+              losing it degrades cache hit-rate without logging users out.
 
               The targetClusterRef transition rules (evaluated only on UPDATE) freeze the
               ref: adding it, removing it, or renaming it after creation is rejected at the
@@ -2379,6 +2380,31 @@ spec:
                     type: string
                 required:
                 - name
+                type: object
+              session:
+                description: |-
+                  Session selects the store of the dashboard's Django sessions. When nil
+                  (the default) the operator renders signed-cookie sessions, the same
+                  module as backend SignedCookies. Backend Cache renders Django's cache
+                  session engine on the Memcached of spec.cache, through a "sessions"
+                  cache alias whose KEY_PREFIX is scoped to this CR's namespace and name,
+                  so an image change keeps the sessions. The c5c3 ControlPlane operator
+                  projects this block from spec.services.horizon.session.
+                properties:
+                  backend:
+                    description: |-
+                      Backend selects the session store: SignedCookies keeps the session in a
+                      cookie the browser drops above about 4096 bytes, and Cache keeps it in
+                      the Memcached of spec.cache, which must use the PyMemcacheCache backend.
+                      With Cache a failed Memcached read is a logout. Switching the store in
+                      either direction logs every user out, repeatedly while old and new pods
+                      serve side by side, until the rollout completes.
+                    enum:
+                    - SignedCookies
+                    - Cache
+                    type: string
+                required:
+                - backend
                 type: object
               suspend:
                 description: |-
