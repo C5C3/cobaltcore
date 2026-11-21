@@ -30,7 +30,9 @@ The v1 operator resolves the onboarding decisions as follows:
   lowers the hit-rate too, because the operator renders 1 s pymemcache
   timeouts and `ignore_exc` into `CACHES["default"]["OPTIONS"]`, which turn
   every failed cache call into a miss (#1560). DB-backed sessions are
-  revisited only if signed cookies plus Memcached prove insufficient.
+  revisited only if signed cookies plus Memcached prove insufficient. The
+  whole session, the scoped token and its service catalog included, travels
+  in the `sessionid` cookie (see [Session size limits](#session-size-limits)).
 - **Cache keys: scoped per image.** The operator derives
   `CACHES["default"]["KEY_PREFIX"]` from `spec.image`: `horizon-` plus the
   first 12 hex characters of the SHA-256 of the image reference. Horizon
@@ -82,9 +84,13 @@ The v1 operator resolves the onboarding decisions as follows:
   deployment; uWSGI loads `openstack_dashboard.wsgi` directly. No per-CR uWSGI
   knobs in v1. uWSGI runs with `--http-keepalive`, so a client or a proxy can
   send several requests on one connection. uWSGI's HTTP router closes a
-  connection that has been idle for 60 seconds. SIGTERM starts the same
-  graceful shutdown as in the API operators' uWSGI: the requests in flight
-  finish, then uWSGI exits (see the
+  connection that has been idle for 60 seconds. uWSGI runs with
+  `--buffer-size 65535` and accepts that many bytes of request line and
+  headers, where its default is 4096 bytes (see
+  [Session size limits](#session-size-limits)). The operator upgrade that
+  brings the flag changes the pod template, so the dashboard rolls once.
+  SIGTERM starts the same graceful shutdown as in the API operators' uWSGI:
+  the requests in flight finish, then uWSGI exits (see the
   [Keystone shutdown sequence](../keystone/keystone-crd.md#shutdown-sequence)).
 - **Login-page probes.** The readiness and startup probes GET `/auth/login/`
   with a fixed `Host: localhost` header, which satisfies Django's
@@ -110,6 +116,73 @@ The v1 operator resolves the onboarding decisions as follows:
   garbage-collected via ownerReferences. A CR with it carries the
   `openstack.c5c3.io/remote-children` finalizer, which sweeps the children on
   the target cluster.
+
+## Session size limits
+
+The signed-cookie store puts the whole session into the `sessionid` cookie,
+and the browser sends it back with every logged-in request. Two limits bound
+its size: uWSGI on the server side and the browser on the client side.
+
+uWSGI accepts a request line and headers up to its `--buffer-size`. The
+operator sets 65535, the largest value uWSGI accepts. Under the default of
+4096 bytes, uWSGI logs `invalid request block size: <n> (max 4096)...skip`
+for a larger request and closes the connection without a response, and a
+gateway in front answers 503. The login page and the login carry no session
+cookie, so they keep working while every page after the login fails. With
+the flag, uWSGI serves a request with a 60000-byte cookie. It still drops one
+with a 64000-byte cookie, and logs nothing for it.
+
+The operator cannot raise the browser's limit. A browser keeps about 4096
+bytes per cookie
+([RFC 6265, section 6.1](https://www.rfc-editor.org/rfc/rfc6265#section-6.1))
+and discards a larger `sessionid` cookie. The next request arrives without a
+session, the user is on the login page again, and Horizon logs nothing.
+
+The cookie grows with the service catalog. The table gives the value of the
+`sessionid` cookie a login sets, measured in the 2026.1 image (Horizon
+25.7.0, Django 4.2.28) for
+[#1841](https://github.com/C5C3/cobaltcore/issues/1841). The catalog is
+synthetic, with random 32-hex ids and two endpoints per service as the
+ControlPlane registers them; a catalog with longer endpoint URLs gives a
+larger cookie.
+
+| Services with two endpoints | Cookie value, bytes |
+| --- | --- |
+| 8 | 2216 |
+| 12 | 2754 |
+| 16 | 3163 |
+| 20 | 3569 |
+| 24 | 3957 |
+| 26 | 4162 |
+
+A service without endpoints adds about 46 bytes, a service with two
+endpoints 100 to 135 bytes. Keystone lists every enabled service in the
+catalog, also one without endpoints.
+
+Horizon logs this line at ERROR, from the logger `horizon.middleware.base`,
+to the dashboard container's stderr through the console handler of the
+`LOGGING` setting the operator renders:
+
+```text
+Total Cookie size for user_id: <id> is <n>B >= 4093B. You need to configure file-based or database-backed sessions instead of cookie-based sessions: https://docs.openstack.org/horizon/latest/admin/sessions.html
+```
+
+It does so while the signed-cookie store is in use, for an authenticated
+request that is not AJAX, once the names and values of the cookies the
+request sends sum to 4093 bytes (`SESSION_COOKIE_MAX_SIZE`). The line needs
+a request that reaches Django: under the default buffer, uWSGI drops such a
+request before Django sees it. Since Horizon reads the cookies a
+request sends, the line warns between 4093 bytes and the browser's limit and
+stays silent once the browser has discarded the cookie. When it appears,
+delete the services the cloud does not need from the Keystone catalog, the
+ones without endpoints first.
+
+`tests/e2e/horizon/basic-deployment/` and its 2026.2 twin send the login page
+a 6000-byte and a 60000-byte cookie and expect HTTP 200 for both. Link 2c and
+Link 8e of
+[`full-controlplane-keystone`](../testing/controlplane-e2e-tests.md#full-controlplane-keystone)
+request `/project/api_access/` after a login, expect HTTP 200, and fail once
+the cookies that request sends sum to 4093 bytes.
 
 ## Owned resources
 
