@@ -1815,7 +1815,7 @@ The workflow triggers on pull requests only:
 
 | Event | Scope | Description |
 | --- | --- | --- |
-| `pull_request` | all branches | Runs when a changed path matches `images/**`, `releases/**`, `patches/**`, `scripts/**`, `hack/tempest/**`, `hack/gen-option-catalog.sh`, the keystone or glance option catalogs, `tests/container-images/**`, `tests/scripts/**`, `tests/tempest/test_retry_helpers.py`, `flake.nix`, `nix/lib/**`, `nix/pkgs/**`, the `build-nix-image` action, `build-images.yaml` or `verify-container-images.yaml` |
+| `pull_request` | all branches | Runs when a changed path matches `images/**`, `releases/**`, `patches/**`, `scripts/**`, `hack/tempest/**`, `hack/gen-option-catalog.sh`, the keystone or glance option catalogs, `tests/container-images/**`, `tests/scripts/**`, `tests/tempest/test_retry_helpers.py`, `tests/tempest/test_keystone_inventory.py`, `flake.nix`, `nix/lib/**`, `nix/pkgs/**`, the `build-nix-image` action, `build-images.yaml` or `verify-container-images.yaml` |
 
 ### Permissions and Concurrency
 
@@ -1846,6 +1846,7 @@ non-zero, the job fails.
 | 7 | Test apply-constraint-overrides | Shell | Runs `tests/scripts/test_apply_constraint_overrides.sh` |
 | 8 | Install tempest retry helper test dependencies | Shell | Installs `python3-defusedxml` with `apt-get` |
 | 9 | Test tempest retry helpers | Shell | Runs `tests/tempest/test_retry_helpers.py` |
+| 10 | Test tempest Keystone inventory helper | Shell | Runs `tests/tempest/test_keystone_inventory.py`, the unit tests of `hack/tempest/keystone-inventory.py` against a fake Keystone (standard library only) |
 
 **Test scripts executed:**
 

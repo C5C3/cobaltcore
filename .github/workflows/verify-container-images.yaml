@@ -22,6 +22,7 @@ name: Verify Container Images
       - tests/container-images/**
       - tests/scripts/**
       - tests/tempest/test_retry_helpers.py
+      - tests/tempest/test_keystone_inventory.py
       - flake.nix
       - nix/lib/**
       - nix/pkgs/**
@@ -75,3 +76,6 @@ jobs:
 
       - name: Test tempest retry helpers
         run: python3 tests/tempest/test_retry_helpers.py
+
+      - name: Test tempest Keystone inventory helper
+        run: python3 tests/tempest/test_keystone_inventory.py

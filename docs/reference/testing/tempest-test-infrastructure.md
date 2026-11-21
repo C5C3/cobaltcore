@@ -39,6 +39,8 @@ and `build-images.yaml` dynamically discovers releases for the Tempest image pip
 | `hack/ci-generate-tempest-matrix.sh` | Generates the `tempest` job matrix from `releases/*/`, emitting one leg per service (`keystone`, `glance`, `barbican`, `neutron`, `cinder`, `nova`) per release, plus one `keystone-upgrade` entry for the newest release when `keystone` is selected and two or more releases exist |
 | `hack/tempest/extract-failed.py` | Print anchored regex patterns for failed testcases in a JUnit report (used to build the retry include-list) |
 | `hack/tempest/merge-retry-junit.py` | Merge a retry subunit stream into a JUnit report, rewriting resolved failures as flakes |
+| `hack/tempest/keystone-inventory.py` | Snapshot Keystone's objects of 19 kinds with a system-scoped admin token, and diff two snapshots (the Keystone leak check of the keystone legs) |
+| `tests/tempest/test_keystone_inventory.py` | Unit tests of `keystone-inventory.py` against a fake Keystone, standard library only |
 | `hack/tempest/run-tests.sh` | Shared in-container runner invoked by both runners; holds the phase + retry + exit-code logic so it stays identical between CI and local runs |
 | `Makefile` | `tempest-test` target delegates to `hack/run-tempest.sh` |
 | `.github/workflows/ci.yaml` | `tempest` job with release matrix |
