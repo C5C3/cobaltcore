@@ -8,6 +8,7 @@
     "patches/keystone/2026.1/0002-fix-clock-race-in-totp-previous-windows-tests.patch",
     "patches/keystone/2026.1/0003-answer-unexpected-errors-instead-of-dropping-the-connection.patch",
     "patches/keystone/2026.1/0004-retry-login-writes-that-conflict-with-a-concurrent-login.patch",
-    "patches/keystone/2026.1/0005-judge-a-world-readable-key-repository-by-its-key-files.patch"
+    "patches/keystone/2026.1/0005-judge-a-world-readable-key-repository-by-its-key-files.patch",
+    "patches/keystone/2026.1/0006-report-truncation-when-max-db-limit-caps-a-list.patch"
   ]
 }
