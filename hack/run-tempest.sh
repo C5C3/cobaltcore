@@ -41,6 +41,13 @@ TEMPEST_TIMEOUT="${TEMPEST_TIMEOUT:-1800}"
 NAMESPACE="${NAMESPACE:-openstack}"
 ADMIN_SECRET="${ADMIN_SECRET:-keystone-admin}"  # K8s secret holding admin password
 TEMPEST_CONCURRENCY="${TEMPEST_CONCURRENCY:-4}" # stestr worker count; cap at replicas × uwsgi.processes
+# The Keystone leak check of hack/tempest/run-tests.sh: on for a keystone run,
+# whose Keystone nothing else should write to during the run, off otherwise.
+if [[ "${SERVICE}" == keystone ]]; then
+  TEMPEST_KEYSTONE_LEAK_CHECK="${TEMPEST_KEYSTONE_LEAK_CHECK:-fail}"
+else
+  TEMPEST_KEYSTONE_LEAK_CHECK="${TEMPEST_KEYSTONE_LEAK_CHECK:-off}"
+fi
 
 # ---------------------------------------------------------------------------
 # log — Print a timestamped log message (ISO 8601 UTC).
@@ -71,6 +78,10 @@ Optional:
   NAMESPACE            Kubernetes namespace for the service (default: openstack)
   ADMIN_SECRET         Kubernetes secret name holding admin password (default: keystone-admin)
   TEMPEST_CONCURRENCY  stestr worker count (default: 4); must not exceed replicas × uwsgi.processes
+  TEMPEST_KEYSTONE_LEAK_CHECK
+                       off or fail (default: fail for SERVICE=keystone, off otherwise);
+                       fail fails the run on every Keystone object it leaves behind.
+                       Set off when other clients write to the Keystone during the run.
 
 Examples:
   SERVICE=keystone hack/run-tempest.sh
@@ -261,6 +272,8 @@ run_tempest() {
     "${etc_dir}/extract-failed.py"
   install -m 0755 "${SCRIPT_DIR}/tempest/merge-retry-junit.py" \
     "${etc_dir}/merge-retry-junit.py"
+  install -m 0755 "${SCRIPT_DIR}/tempest/keystone-inventory.py" \
+    "${etc_dir}/keystone-inventory.py"
   install -m 0755 "${SCRIPT_DIR}/tempest/run-tests.sh" \
     "${etc_dir}/run-tests.sh"
 
@@ -320,6 +333,7 @@ run_tempest() {
       -v "${etc_dir}:/etc/tempest:ro" \
       -v "${OUTPUT_DIR}:/output" \
       -e "TEMPEST_CONCURRENCY=${TEMPEST_CONCURRENCY}" \
+      -e "TEMPEST_KEYSTONE_LEAK_CHECK=${TEMPEST_KEYSTONE_LEAK_CHECK}" \
       "${TEMPEST_IMAGE}" \
       bash /etc/tempest/run-tests.sh || rc=$?
 

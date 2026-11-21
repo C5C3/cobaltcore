@@ -6091,6 +6091,12 @@ jobs:
           # the other legs (matrix key absent → ""), which leaves
           # ci-run-tempest.sh on its default of 4.
           TEMPEST_CONCURRENCY: ${{ matrix.tempest-concurrency }}
+          # The Keystone leak check of hack/tempest/run-tests.sh: fail on the
+          # keystone legs of both releases and on the keystone-upgrade leg.
+          # Each runs a Keystone of its own that nothing else writes to during
+          # the run, so every object the run adds is one Tempest left behind.
+          # The other legs' leftovers are not examined; they stay off.
+          TEMPEST_KEYSTONE_LEAK_CHECK: ${{ startsWith(matrix.service, 'keystone') && 'fail' || 'off' }}
       - name: Upload Tempest results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

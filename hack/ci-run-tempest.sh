@@ -93,6 +93,11 @@
 #                   neutron, cinder and nova legs their service target too. Every
 #                   port-forward pins to a single pod, so capacity is raised via
 #                   uwsgi.processes in the target CR, not via replicas.
+#   TEMPEST_KEYSTONE_LEAK_CHECK — off (default) or fail. With fail,
+#                   hack/tempest/run-tests.sh lists Keystone's objects with
+#                   hack/tempest/keystone-inventory.py before and after the run
+#                   and fails on every object the run added. The tempest job
+#                   sets fail on the keystone and keystone-upgrade legs only.
 #
 # The include list is scope-split into a core (tempest.*) and a plugin
 # (<service>_tempest_plugin.*) phase. Every non-comment line must land in exactly
@@ -120,6 +125,7 @@ ADMIN_SECRET="${ADMIN_SECRET:-keystone-admin}"
 OUTPUT_DIR="${OUTPUT_DIR:-_output/tempest}"
 TEMPEST_IMAGE="${TEMPEST_IMAGE:-c5c3/tempest:local}"
 TEMPEST_CONCURRENCY="${TEMPEST_CONCURRENCY:-4}"
+TEMPEST_KEYSTONE_LEAK_CHECK="${TEMPEST_KEYSTONE_LEAK_CHECK:-off}"
 
 # Derive the service name used in k8s (e.g. keystone-tempest-2026-1).
 # Allow override for release-specific CR names (e.g. keystone-tempest-2026-2).
@@ -357,6 +363,8 @@ install -m 0755 "${SCRIPT_DIR}/tempest/extract-failed.py" \
   "${OUTPUT_DIR}/config/extract-failed.py"
 install -m 0755 "${SCRIPT_DIR}/tempest/merge-retry-junit.py" \
   "${OUTPUT_DIR}/config/merge-retry-junit.py"
+install -m 0755 "${SCRIPT_DIR}/tempest/keystone-inventory.py" \
+  "${OUTPUT_DIR}/config/keystone-inventory.py"
 install -m 0755 "${SCRIPT_DIR}/tempest/run-tests.sh" \
   "${OUTPUT_DIR}/config/run-tests.sh"
 
@@ -422,6 +430,7 @@ docker run --rm \
   -e "TEMPEST_GROUP_START=::group::" \
   -e "TEMPEST_GROUP_END=::endgroup::" \
   -e "TEMPEST_ERROR_PREFIX=::error::" \
+  -e "TEMPEST_KEYSTONE_LEAK_CHECK=${TEMPEST_KEYSTONE_LEAK_CHECK}" \
   "${TEMPEST_IMAGE}" \
   bash /etc/tempest/run-tests.sh || TEMPEST_RC=$?
 
