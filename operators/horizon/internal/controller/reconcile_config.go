@@ -15,6 +15,7 @@ import (
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/c5c3/cobaltcore/internal/common/cache"
@@ -35,14 +36,21 @@ const (
 	secretKeyEnvVarName             = "HORIZON_SECRET_KEY"
 	secretKeySettingName            = "SECRET_KEY"
 	defaultDjangoSessionEngine      = "django.contrib.sessions.backends.signed_cookies"
+	cacheDjangoSessionEngine        = "django.contrib.sessions.backends.cache"
 	horizonStaticRoot               = "/var/lib/openstack/horizon-static"
 	horizonLocalSettingsMountedPath = "/etc/openstack-dashboard/"
 	// cacheKeyPrefixStem starts every rendered CACHES["default"]["KEY_PREFIX"].
 	cacheKeyPrefixStem = "horizon-"
-	// cacheKeyPrefixHashLen is the number of hex characters of the image
-	// reference's SHA-256 in the key prefix. It is longer than the ConfigMap
-	// suffix's 8 because a collision between two releases would bring back
-	// the template-cache poisoning the prefix exists to prevent.
+	// sessionCacheKeyPrefixStem starts the rendered
+	// CACHES["sessions"]["KEY_PREFIX"].
+	sessionCacheKeyPrefixStem = "horizon-sessions-"
+	// cacheKeyPrefixHashLen is the number of hex characters of the SHA-256 in
+	// both rendered KEY_PREFIXes: the image reference's for CACHES["default"]
+	// and "<namespace>/<name>" for CACHES["sessions"]. It is longer than the
+	// ConfigMap suffix's 8 because a collision between two releases would
+	// bring back the template-cache poisoning the prefix exists to prevent.
+	// Changing it moves the sessions prefix too and logs every cache-session
+	// user out.
 	cacheKeyPrefixHashLen = 12
 	// cacheSocketTimeoutSeconds bounds every pymemcache call of the Django
 	// cache. It is the default of oslo.cache's [cache] socket_timeout, the
@@ -117,6 +125,17 @@ func (r *HorizonReconciler) reconcileConfig(ctx context.Context, children client
 // extraConfig override). cacheServers is the list cache.ResolveServers
 // returned.
 func renderLocalSettings(horizon *horizonv1alpha1.Horizon, cacheServers string) (string, error) {
+	// The session rules are the validating webhook's, re-run here as the
+	// backstop for a CR that bypassed it (old stored objects, disabled
+	// admission, direct etcd writes). Rendered anyway, an extraConfig CACHES
+	// would drop the "sessions" alias, and Django then raises on every
+	// request, the probes included. The error writes no ConfigMap, so the
+	// running pods keep theirs.
+	if errs := horizonv1alpha1.ValidateSession(field.NewPath("spec", "session"), field.NewPath("spec", "extraConfig"),
+		horizon.Spec.Session, effectiveCacheBackend(horizon), horizon.Spec.ExtraConfig); len(errs) > 0 {
+		return "", fmt.Errorf("spec.session: %w", errs.ToAggregate())
+	}
+
 	settings, err := defaultSettings(horizon, cacheServers)
 	if err != nil {
 		return "", err
@@ -174,15 +193,16 @@ func defaultSettings(horizon *horizonv1alpha1.Horizon, cacheServers string) (map
 		}
 	}
 
+	caches := map[string]any{"default": cacheDefault}
 	values := map[string]any{
-		// Signed-cookie sessions: no session state in Memcached or a
-		// database, so cache loss degrades hit-rate without logging users out
-		// and no database sub-reconcilers exist at all (design decision D1).
-		"SESSION_ENGINE": defaultDjangoSessionEngine,
-		"CACHES": map[string]any{
-			"default": cacheDefault,
-		},
-		"OPENSTACK_KEYSTONE_URL": horizon.Spec.KeystoneEndpoint,
+		// Signed-cookie sessions by default: no session state in Memcached or
+		// a database, so cache loss degrades hit-rate without logging users
+		// out and no database sub-reconcilers exist at all (design decision
+		// D1). spec.session.backend Cache moves the sessions into the
+		// "sessions" alias of CACHES (see sessionSettings).
+		horizonv1alpha1.SettingSessionEngine: defaultDjangoSessionEngine,
+		horizonv1alpha1.SettingCaches:        caches,
+		"OPENSTACK_KEYSTONE_URL":             horizon.Spec.KeystoneEndpoint,
 		// The dashboard's server-side clients resolve service URLs from the
 		// Keystone catalog, not from OPENSTACK_KEYSTONE_URL. The upstream
 		// default ("publicURL") selects browser-facing catalog entries, which
@@ -241,6 +261,7 @@ func defaultSettings(horizon *horizonv1alpha1.Horizon, cacheServers string) (map
 
 	maps.Copy(values, webSSOSettings(horizon))
 	maps.Copy(values, multiDomainSettings(horizon))
+	maps.Copy(values, sessionSettings(horizon, caches, cacheDefault))
 
 	settings := make(map[string]apiextensionsv1.JSON, len(values))
 	for name, v := range values {
@@ -311,6 +332,31 @@ func webSSOSettings(horizon *horizonv1alpha1.Horizon) map[string]any {
 		values[horizonv1alpha1.SettingWebSSOKeystoneURL] = websso.KeystoneURL
 	}
 	return values
+}
+
+// sessionSettings renders the cache session settings of spec.session. A nil
+// block and backend SignedCookies emit nothing, so the signed-cookie
+// SESSION_ENGINE and the CACHES of defaultSettings stay, byte for byte.
+// Backend Cache replaces both: SESSION_ENGINE names Django's cache engine,
+// SESSION_CACHE_ALIAS names the "sessions" alias, and CACHES is a copy of
+// caches, the CACHES of defaultSettings, with that alias added. The alias
+// copies the BACKEND, LOCATION and OPTIONS of cacheDefault, ignore_exc
+// included, and carries its own KEY_PREFIX (see sessionCacheKeyPrefix).
+func sessionSettings(horizon *horizonv1alpha1.Horizon, caches, cacheDefault map[string]any) map[string]any {
+	session := horizon.Spec.Session
+	if session == nil || session.Backend != horizonv1alpha1.SessionBackendCache {
+		return nil
+	}
+
+	sessions := maps.Clone(cacheDefault)
+	sessions["KEY_PREFIX"] = sessionCacheKeyPrefix(horizon)
+	withSessions := maps.Clone(caches)
+	withSessions[horizonv1alpha1.SessionCacheAlias] = sessions
+	return map[string]any{
+		horizonv1alpha1.SettingSessionEngine:     cacheDjangoSessionEngine,
+		horizonv1alpha1.SettingSessionCacheAlias: horizonv1alpha1.SessionCacheAlias,
+		horizonv1alpha1.SettingCaches:            withSessions,
+	}
 }
 
 // multiDomainSettings renders the OPENSTACK_KEYSTONE_MULTIDOMAIN_* Django
@@ -462,6 +508,8 @@ func cacheLocations(cacheServers string) []any {
 // cacheKeyPrefix returns the Django KEY_PREFIX for CACHES["default"]: the
 // constant stem "horizon-" followed by the first 12 hex characters of the
 // SHA-256 of spec.image's reference ("repository:tag" or "repository@digest").
+// It prefixes the "default" alias only; the "sessions" alias of cache sessions
+// carries the name-scoped prefix of sessionCacheKeyPrefix instead.
 // Django prepends it to every cache key, template fragments included, so two
 // Horizon releases sharing one Memcached never read each other's entries
 // (OfflineGenerationError, HTTP 500: see issue #1305) and an image change
@@ -472,6 +520,20 @@ func cacheLocations(cacheServers string) []any {
 func cacheKeyPrefix(horizon *horizonv1alpha1.Horizon) string {
 	sum := sha256.Sum256([]byte(horizon.Spec.Image.Reference()))
 	return cacheKeyPrefixStem + hex.EncodeToString(sum[:])[:cacheKeyPrefixHashLen]
+}
+
+// sessionCacheKeyPrefix returns the Django KEY_PREFIX for CACHES["sessions"]:
+// the constant stem "horizon-sessions-" followed by the first 12 hex
+// characters of the SHA-256 of "<namespace>/<name>" of the Horizon CR. It does
+// not follow the image, so an image change keeps every session. It hashes the
+// namespace and name, not the UID: the prefix is deterministic in tests and
+// e2e literals and survives a delete and re-create of the CR. The hash keeps
+// the Memcached key under its 250-byte limit whatever the name's length, and
+// the per-CR scope stops two dashboards on one Memcached from accepting each
+// other's session keys.
+func sessionCacheKeyPrefix(horizon *horizonv1alpha1.Horizon) string {
+	sum := sha256.Sum256([]byte(horizon.Namespace + "/" + horizon.Name))
+	return sessionCacheKeyPrefixStem + hex.EncodeToString(sum[:])[:cacheKeyPrefixHashLen]
 }
 
 // pruneStaleConfigMaps removes historical immutable ConfigMaps that exceed
