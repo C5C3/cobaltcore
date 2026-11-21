@@ -166,6 +166,16 @@ paths any other chassis or metadata agent would share.
    the image tag derived from `spec.openStackRelease`, database/cache clusterRefs
    wired to the infra CRs, and `spec.database.credentialsMode: Dynamic`;
    `KeystoneReady=True`.
+
+2c. **Dashboard login**: a login POST against the Horizon Service answers 302
+   and sets a `sessionid` cookie. With that session, `/project/api_access/`
+   answers HTTP 200: Horizon accepts the session, and uWSGI passes a request
+   that carries it. The names and values of the cookies that request sends sum
+   to less than 4093 bytes, Horizon's `SESSION_COOKIE_MAX_SIZE` (see
+   [Session size limits](../horizon/index.md#session-size-limits)). The check
+   lives in `horizon-login.sh` beside the suite and prints the size of the
+   `sessionid` cookie and the total.
+
 3. **ApplicationCredential** — owned K-ORC ApplicationCredential minted with
    `restricted: true`; `KORCReady=True`.
 4. **Credential chain** — minted credential → operator Secret → PushSecret →
@@ -481,11 +491,11 @@ paths any other chassis or metadata agent would share.
    all eight `status.services` entries at the target release and ready.
 
 8e. **Checks after the hop** — the verify Job of Link 7, the two port-event log
-   checks and the dashboard login of Link 2c run again, from the same shell
-   functions. The token issue proves that the application credential created
-   before the hop still authenticates after the Keystone migration, and the
-   server boot goes through the upgraded APIs. The hypervisor operator's Job of
-   Link 7d is not rerun.
+   checks and the dashboard login of Link 2c, with its logged-in page and its
+   cookie bound, run again, from the same shell functions. The token issue
+   proves that the application credential created before the hop still
+   authenticates after the Keystone migration, and the server boot goes through
+   the upgraded APIs. The hypervisor operator's Job of Link 7d is not rerun.
 
 The data plane stays at the start release: the fake compute and the metadata
 agent are not ControlPlane children, and nova renders `[upgrade_levels]
@@ -1701,7 +1711,8 @@ tests/e2e/c5c3/
 │   ├── 07-hypervisor-operator-verify-job.yaml  Calls as the hypervisor operator's user
 │   ├── 08-patch-upgrade.yaml           Link 8's merge patch (the target release)
 │   ├── extraconfig-edit.sh             Link 7e, sourced by the step 1 script (inline, it passes the 128 KiB argument cap)
-│   └── secret-store-checks.sh          The verify Job's vault_index and OpenBao sizing checks, sourced for the same cap
+│   ├── secret-store-checks.sh          The verify Job's vault_index and OpenBao sizing checks, sourced for the same cap
+│   └── horizon-login.sh                Link 2c's dashboard login, sourced for the same cap
 ├── healthcheck/
 │   ├── chainsaw-test.yaml              KeystoneReady and Ready wait for the Keystone API
 │   └── 00-controlplane-cr.yaml         Keystone-only ControlPlane (cp; ephemeral namespace)
