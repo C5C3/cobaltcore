@@ -33,6 +33,11 @@ spec:
                   type: integer
                 image:
                   type: string
+                # highAvailability carries the anti-affinity preset and the
+                # budget the ControlPlane projects onto a multi-replica cache.
+                highAvailability:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
             status:
               type: object
               properties:

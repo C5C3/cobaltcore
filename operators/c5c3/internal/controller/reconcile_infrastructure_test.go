@@ -742,6 +742,56 @@ func TestReconcileInfrastructure_SizingApplierThreadsReachEveryGaleraChild(t *te
 	}
 }
 
+// TestReconcileInfrastructure_CacheAvailabilityFollowsEachInstanceCount pins
+// that the cache availability is resolved per instance, on the count that
+// instance runs: a Minimal ControlPlane that raises cache.replicas to 3 gives
+// the shared cache, which declares no count, soft anti-affinity and a budget,
+// while a dedicated cache that declares 1 gets neither.
+func TestReconcileInfrastructure_CacheAvailabilityFollowsEachInstanceCount(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := infraTestScheme(t)
+	cp := dedicatedInfraControlPlane()
+	// Keystone is back on the shared cache; Horizon keeps a dedicated one.
+	cp.Spec.Services.Keystone.DedicatedBackingServices.Cache = nil
+	cp.Spec.Services.Horizon.DedicatedBackingServices.Cache.Replicas = 1
+	cp.Spec.Infrastructure.Cache.Replicas = 0
+	cp.Spec.Sizing = &c5c3v1alpha1.ControlPlaneSizingSpec{
+		Profile:    c5c3v1alpha1.SizingProfileMinimal,
+		SizingSpec: c5c3v1alpha1.SizingSpec{Cache: &c5c3v1alpha1.CacheSizingSpec{Replicas: ptr.To[int32](3)}},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileInfrastructure(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	for _, tc := range []struct {
+		name     string
+		replicas int64
+		wantHA   map[string]interface{}
+	}{
+		{name: "openstack-memcached", replicas: 3, wantHA: wantMemcachedHA("soft", 1)},
+		{name: "cp-horizon-cache", replicas: 1},
+	} {
+		u := &unstructured.Unstructured{}
+		u.SetGroupVersionKind(cache.MemcachedGVK)
+		g.Expect(c.Get(context.Background(), types.NamespacedName{
+			Name: tc.name, Namespace: childNamespace(cp),
+		}, u)).To(Succeed(), "Memcached %q must be provisioned", tc.name)
+		replicas, _, nerr := unstructured.NestedInt64(u.Object, "spec", "replicas")
+		g.Expect(nerr).NotTo(HaveOccurred())
+		g.Expect(replicas).To(Equal(tc.replicas), "Memcached %q replica count", tc.name)
+		ha, found, nerr := unstructured.NestedMap(u.Object, "spec", "highAvailability")
+		g.Expect(nerr).NotTo(HaveOccurred())
+		if tc.wantHA == nil {
+			g.Expect(found).To(BeFalse(), "Memcached %q must carry no spec.highAvailability, got %v", tc.name, ha)
+			continue
+		}
+		g.Expect(ha).To(Equal(tc.wantHA), "Memcached %q spec.highAvailability", tc.name)
+	}
+}
+
 // TestReconcileInfrastructure_SkipsSharedInstancesNoServiceResolvesTo pins the
 // consumer-driven provisioning rule: a MANAGED shared instance every service has
 // opted out of has no consumer, so it is not provisioned and does not gate
@@ -1227,8 +1277,8 @@ func TestEnsureMemcached_CrossNamespaceOwnedReconcilesReplicas(t *testing.T) {
 }
 
 // TestEnsureMemcached_OwnedAtDeclaredCountWritesNothing pins the steady state: a
-// label-owned cache already at the declared count, resources and security is
-// compared, not rewritten.
+// label-owned cache already at the declared count, resources, security and
+// availability is compared, not rewritten.
 func TestEnsureMemcached_OwnedAtDeclaredCountWritesNothing(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := infraTestScheme(t)
@@ -1237,6 +1287,7 @@ func TestEnsureMemcached_OwnedAtDeclaredCountWritesNothing(t *testing.T) {
 	updates := 0
 	seed := seedMemcached("identity", controlPlaneChildLabels(cp), ptr.To(int64(3)))
 	g.Expect(unstructured.SetNestedMap(seed.Object, wantMemcachedSecurity(), "spec", "security")).To(Succeed())
+	g.Expect(unstructured.SetNestedMap(seed.Object, wantMemcachedHA("soft", 1), "spec", "highAvailability")).To(Succeed())
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, seed).
 		WithInterceptorFuncs(memcachedUpdateInterceptor(&updates, nil)).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}

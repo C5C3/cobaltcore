@@ -961,6 +961,14 @@ func mariaDBSecurityMatches(m *mariadbv1alpha1.MariaDB, galeraEnabled bool) bool
 // supplies the replica count cache leaves unset, and spec.resources, which is
 // removed when the sizing sets none. The Memcached CRD has no node selector,
 // tolerations or priority class, so the cache takes no placement.
+//
+// Its availability, resolved for the instance's own replica count with
+// Preferred as the default, owns two keys under spec.highAvailability
+// (applyMemcachedAvailability): antiAffinityPreset and podDisruptionBudget.
+// A cache of several replicas gets soft anti-affinity and a budget of one pod,
+// a single replica neither. Off yields no anti-affinity only beside a disabled
+// budget, because the memcached-operator defaults the preset to soft whenever
+// spec.highAvailability exists.
 func (r *ControlPlaneReconciler) ensureMemcached(
 	ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane,
 	cache *commonv1.CacheSpec, sizing *c5c3v1alpha1.CacheSizingSpec, namespace string,
@@ -981,9 +989,12 @@ func (r *ControlPlaneReconciler) ensureMemcached(
 		replicas = infraMemcachedReplicasDefault
 	}
 	var resources *corev1.ResourceRequirements
+	var availability c5c3v1alpha1.AvailabilitySizingSpec
 	if sizing != nil {
 		resources = sizing.Resources
+		availability = sizing.AvailabilitySizingSpec
 	}
+	av := resolveBackingAvailability(availability, replicas, c5c3v1alpha1.AntiAffinityPreferred)
 	project := func(u *unstructured.Unstructured) error {
 		// int32 must be widened to int64 for unstructured nested-field storage.
 		if serr := unstructured.SetNestedField(u.Object, int64(replicas), "spec", "replicas"); serr != nil {
@@ -1000,7 +1011,7 @@ func (r *ControlPlaneReconciler) ensureMemcached(
 				return fmt.Errorf("setting Memcached %q spec.security.%s: %w", key.Name, field, serr)
 			}
 		}
-		return nil
+		return applyMemcachedAvailability(u, av)
 	}
 
 	u := commoncache.NewMemcached()
@@ -1022,8 +1033,9 @@ func (r *ControlPlaneReconciler) ensureMemcached(
 		return false, fmt.Errorf("getting Memcached %q: %w", key.Name, err)
 	default:
 		// An existing Memcached. If this ControlPlane OWNS it (we created it on an
-		// earlier pass), reconcile spec.replicas, spec.resources and the two
-		// spec.security contexts so a ControlPlane spec or sizing change actually
+		// earlier pass), reconcile spec.replicas, spec.resources, the two
+		// spec.security contexts and the two spec.highAvailability keys so a
+		// ControlPlane spec or sizing change actually
 		// resizes the cache we own instead of being ignored after first creation,
 		// and drift off the restricted contexts is corrected. The re-projection
 		// runs in both directions and needs no opt-in: scaling a cache drops cached
@@ -1047,7 +1059,11 @@ func (r *ControlPlaneReconciler) ensureMemcached(
 			if serr != nil {
 				return false, fmt.Errorf("reading Memcached %q spec.security: %w", key.Name, serr)
 			}
-			if !found || current != int64(replicas) || !resourcesMatch || !securityMatches {
+			availabilityMatches, aerr := memcachedAvailabilityMatches(u, av)
+			if aerr != nil {
+				return false, aerr
+			}
+			if !found || current != int64(replicas) || !resourcesMatch || !securityMatches || !availabilityMatches {
 				if perr := project(u); perr != nil {
 					return false, perr
 				}
