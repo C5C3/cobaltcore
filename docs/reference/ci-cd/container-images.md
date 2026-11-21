@@ -103,6 +103,23 @@ read against a server that never answers raises `KeyManagerError` within 5 s
 with `timeout = 1`, and the session is built with `timeout=None` without the
 option. Upstream status: not submitted.
 
+**Library patch:** the tempest image carries
+`nix/lib/patches/keystone-tempest-plugin-0.22.0-register-test-cleanups.patch`,
+which `nix/lib/python-env.nix` applies to the keystone-tempest-plugin 0.22.0 of
+both tempest locks
+([Nix Image Build](./nix-image-build.md#python-environments-and-locks)).
+The plugin's RBAC and federation tests create objects with the system-admin
+client, check that the persona under test cannot delete them, and register no
+cleanup. One run of a keystone include list left 78 Keystone objects behind:
+9 catalog services, 9 policies, 9 OAuth1 consumers, 9 regions, 9 global and
+9 domain roles, 5 groups, 3 projects, 15 domains and 1 federation mapping
+(#1840). The patch registers the missing cleanup at 17 places in 12 test files
+and keeps every check the tests make. `IdentityV3RbacProtocolTests` also
+deletes the domain Keystone creates for each of its identity providers.
+`test_keystone_plugin_registers_cleanups` in `verify_tempest.sh` checks the 17
+patched methods in the built image. Upstream status: not submitted; #1840 tracks
+the patch.
+
 **Library patches:** every service image, nova-compute and tempest included,
 carries `nix/lib/patches/uwsgi-2.0.31-retry-write-poll-on-eintr.patch` and
 `nix/lib/patches/uwsgi-2.0.31-flush-logs-under-threaded-logger-lock.patch`,

@@ -524,6 +524,7 @@ bash tests/container-images/verify_tempest.sh [image_name]
 | --- | --- | --- |
 | `test_tempest_version` | `tempest --version` exits 0 with non-empty output | Tempest CLI is installed and functional |
 | `test_keystone_tempest_plugin_importable` | `python3 -c 'import keystone_tempest_plugin'` exits 0 | Plugin is installed in the virtualenv |
+| `test_keystone_plugin_registers_cleanups` | One `python3` parses 12 files of the installed plugin with `ast` and, for each of the 17 patched methods, finds in its whitespace-collapsed source a text the unpatched method lacks (one assertion per hunk of the patch, 17 in all, and one that the `HUNKS` table has as many entries as the patch has hunks) | `nix/lib/patches/keystone-tempest-plugin-0.22.0-register-test-cleanups.patch` reached the image |
 | `test_barbican_tempest_plugin_importable` | `python3 -c 'import barbican_tempest_plugin'` exits 0 | Plugin is installed in the virtualenv |
 | `test_neutron_tempest_plugin_importable` | `python3 -c 'import neutron_tempest_plugin'` exits 0 | Plugin is installed in the virtualenv |
 | `test_cinder_tempest_plugin_importable` | `python3 -c 'import cinder_tempest_plugin'` exits 0 | Plugin is installed in the virtualenv |

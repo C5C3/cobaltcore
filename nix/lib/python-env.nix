@@ -128,6 +128,16 @@ let
         --replace-fail "sess = session.Session(auth=auth, verify=self._verify)" \
         "sess = session.Session(auth=auth, verify=self._verify, timeout=self.conf.barbican.timeout)"
     '';
+    # The tempest locks: keystone-tempest-plugin 0.22.0's RBAC and federation
+    # tests create objects with the system-admin client and never delete
+    # them, so one keystone run left 78 Keystone objects behind (#1840). The
+    # patch registers the missing cleanups. A plugin bump that moves the
+    # patched lines fails here with "Hunk #N FAILED", and a release that
+    # carries the fix with "Reversed (or previously applied) patch detected".
+    keystone-tempest-plugin.attrs.postInstall = ''
+      patch -p1 --fuzz=0 --no-backup-if-mismatch -d "$out/${python.sitePackages}" \
+        < ${./patches/keystone-tempest-plugin-0.22.0-register-test-cleanups.patch}
+    '';
     # barbican's test group: 0.10.0 ships no wheel, and its setup.py fails
     # with "ModuleNotFoundError: No module named 'setuptools'".
     pykmip.buildSystem.setuptools = [ ];
