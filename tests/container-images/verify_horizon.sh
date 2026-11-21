@@ -484,6 +484,150 @@ EOF
   assert_eq "OPENSTACK_REQUEST_TIMEOUT reaches every Keystone and service client" "0" "$exit_code"
 }
 
+# --- Test 11: an oversized session cookie is logged and announced at the login ---
+test_session_cookie_size_is_announced() {
+  echo "Test: an oversized session cookie is logged and announced at the login"
+  # Proves the image build applied
+  # patches/horizon/<release>/0003-warn-when-the-session-cookie-exceeds-the-size-a-browser-keeps.patch
+  # (#1845). Upstream Horizon checks the session cookie only on the request
+  # side; a browser discards a cookie over its limit, so the next request
+  # carries none, and the login page and the log stay silent. The probe
+  # asserts that MIDDLEWARE lists SessionCookieSizeMiddleware directly
+  # before Django's SessionMiddleware, then sends a small and a large
+  # signed-cookie session through the image's middleware chain with
+  # django.test.Client: the small one must set a session cookie, no
+  # logout_reason cookie and log nothing, the large one must set
+  # logout_reason and logout_status=error and log one ERROR record naming
+  # its size. Last it drops the session cookie, as a browser would, follows
+  # the redirects from LOGIN_REDIRECT_URL as a browser does after the login,
+  # and asserts that they end on the login page and that it shows the
+  # message in its alert-danger box. local_settings.py
+  # sets CACHES to the local-memory cache, because upstream's default
+  # points at a Memcached on 127.0.0.1 and the login page reads the cache;
+  # COMPRESS_OFFLINE and STATIC_ROOT let the login page render from the
+  # manifest built into the image; ALLOWED_HOSTS admits the test client.
+  # Against an unpatched image the MIDDLEWARE check fails. Stderr is echoed
+  # on failure so the reason is named.
+  local probe err="" exit_code=0
+  probe=$(
+    cat <<'EOF'
+import logging
+import re
+import secrets
+import sys
+import types
+
+import django
+
+django.setup()
+
+from django.conf import settings
+from django.http import HttpResponse
+from django.test import Client
+from django.test.utils import override_settings
+from django.urls import include, path
+
+SIZE_CHECK = "horizon.middleware.SessionCookieSizeMiddleware"
+SESSION = "django.contrib.sessions.middleware.SessionMiddleware"
+REASON = ("Your session is too large for a browser cookie and the login "
+          "cannot complete. Contact your administrator.")
+
+middleware = list(settings.MIDDLEWARE)
+if (SIZE_CHECK not in middleware or SESSION not in middleware
+        or middleware.index(SIZE_CHECK) + 1 != middleware.index(SESSION)):
+    sys.exit("MIDDLEWARE does not list %s directly before %s: %r"
+             % (SIZE_CHECK, SESSION, middleware))
+
+from horizon.middleware import session_cookie_size
+
+
+class Collect(logging.Handler):
+    def __init__(self):
+        super().__init__(level=logging.ERROR)
+        self.messages = []
+
+    def emit(self, record):
+        self.messages.append(record.getMessage())
+
+
+# A silenced logger would let the large session fail for the wrong reason.
+collect = Collect()
+session_cookie_size.LOG.addHandler(collect)
+session_cookie_size.LOG.error("verify: handler self-check")
+if collect.messages != ["verify: handler self-check"]:
+    sys.exit("the handler on session_cookie_size.LOG caught %r"
+             % (collect.messages,))
+collect.messages.clear()
+
+
+# The signed-cookie store compresses the session and the hex shrinks to
+# about 60 percent: 6000 hex characters give a cookie of about 4.7 KB.
+def pad(request, size):
+    request.session["pad"] = secrets.token_hex(size // 2)
+    return HttpResponse()
+
+
+verify_urls = types.ModuleType("verify_urls")
+verify_urls.urlpatterns = [
+    path("verify-session/<int:size>/", pad),
+    path("", include("openstack_dashboard.urls")),
+]
+sys.modules["verify_urls"] = verify_urls
+
+with override_settings(ROOT_URLCONF="verify_urls"):
+    client = Client()
+
+    r = client.get("/verify-session/1000/")
+    if settings.SESSION_COOKIE_NAME not in r.cookies:
+        sys.exit("a small session set no %s cookie: %s"
+                 % (settings.SESSION_COOKIE_NAME, sorted(r.cookies)))
+    if "logout_reason" in r.cookies or collect.messages:
+        sys.exit("a small session was flagged: %s, %r"
+                 % (sorted(r.cookies), collect.messages))
+
+    r = client.get("/verify-session/6000/")
+    cookie = r.cookies.get(settings.SESSION_COOKIE_NAME)
+    size = len(cookie.key) + len(cookie.value) if cookie else 0
+    status = r.cookies.get("logout_status")
+    if ("logout_reason" not in r.cookies or status is None
+            or status.value != "error"):
+        sys.exit("a %d-byte session cookie set no logout_reason: %s"
+                 % (size, sorted(r.cookies)))
+    if (len(collect.messages) != 1
+            or "%dB >= 4093B" % size not in collect.messages[0]):
+        sys.exit("expected one ERROR record naming %dB, got %r"
+                 % (size, collect.messages))
+
+    client.cookies.pop(settings.SESSION_COOKIE_NAME, None)
+    r = client.get(settings.LOGIN_REDIRECT_URL, follow=True)
+    if r.request["PATH_INFO"] != settings.LOGIN_URL:
+        sys.exit("%s without a session did not end on the login page: %r"
+                 % (settings.LOGIN_REDIRECT_URL, r.redirect_chain))
+    match = re.search(r'alert (alert-\w+)" id="logout_reason">\s*<p>(.*?)</p>',
+                      r.content.decode())
+    if (r.status_code != 200 or match is None
+            or match.groups() != ("alert-danger", REASON)):
+        sys.exit("the login page (HTTP %d) shows no error reason: %r"
+                 % (r.status_code, match and match.groups()))
+EOF
+  )
+  err=$(docker run --rm --tmpfs /etc/openstack-dashboard:uid=42424,gid=42424 \
+    -e DJANGO_SETTINGS_MODULE=openstack_dashboard.settings -e COOKIE_PROBE="$probe" "$IMAGE" sh -c \
+    'printf "%s\n" \
+       "SECRET_KEY = \"verify\"" \
+       "SESSION_ENGINE = \"django.contrib.sessions.backends.signed_cookies\"" \
+       "CACHES = {\"default\": {\"BACKEND\": \"django.core.cache.backends.locmem.LocMemCache\"}}" \
+       "COMPRESS_OFFLINE = True" \
+       "STATIC_ROOT = \"/var/lib/openstack/horizon-static\"" \
+       "ALLOWED_HOSTS = [\"testserver\"]" \
+       > /etc/openstack-dashboard/local_settings.py &&
+     exec /var/lib/openstack/bin/python -W ignore -c "$COOKIE_PROBE"' \
+    2>&1 > /dev/null) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "    $err"
+
+  assert_eq "an oversized session cookie is logged and announced at the login" "0" "$exit_code"
+}
+
 # --- Run all tests ---
 echo "=== horizon container verification tests ==="
 echo "Image: $IMAGE"
@@ -507,6 +651,8 @@ echo ""
 test_rbac_policies_panel_checks_catalog_first
 echo ""
 test_request_timeout_reaches_every_client
+echo ""
+test_session_cookie_size_is_announced
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 

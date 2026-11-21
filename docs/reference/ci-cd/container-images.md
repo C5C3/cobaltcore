@@ -528,6 +528,46 @@ image, asserts the `timeout` of `get_session()` and of every patched constructor
 then repeats with `None` and asserts that the Glance client gets no `timeout`
 argument. Upstream status: not yet proposed.
 
+**Source patch:**
+`patches/horizon/2026.1/0003-warn-when-the-session-cookie-exceeds-the-size-a-browser-keeps.patch`
+and its 2026.2 twin
+`patches/horizon/2026.2/0003-warn-when-the-session-cookie-exceeds-the-size-a-browser-keeps.patch`
+report a session cookie that a browser discards (#1845). Upstream Horizon
+checks the size of a signed-cookie session on the request side only:
+`HorizonMiddleware` sums the cookies a request sends and logs
+`Total Cookie size ...` once they reach 4093 bytes. A browser discards a
+cookie over its limit, so the request after the login carries no session
+cookie and the check never runs. The user sees a login that answers with a
+redirect and a login page that comes back without a reason, and Horizon logs
+nothing. With 71 services in the Keystone catalog, the login set a
+`sessionid` cookie of 4903 to 4919 bytes in both images. The patches add
+`horizon.middleware.SessionCookieSizeMiddleware` and list it in `openstack_dashboard/settings.py` directly before Django's
+`SessionMiddleware`. `SessionMiddleware` sets the session cookie when the
+response passes through it, and `HorizonMiddleware` sits further in, so only a
+middleware listed before it sees the cookie. While the signed-cookie store is in
+use and the length of the session cookie's name plus the length of its value
+reach `SESSION_COOKIE_MAX_SIZE` (4093), the middleware logs this line at ERROR
+from the logger `horizon.middleware.session_cookie_size`:
+`Session cookie for user_id: <id> is <n>B >= 4093B. A browser discards a cookie of this size, so the session is lost. You need to configure server-side sessions instead of cookie-based sessions: https://docs.openstack.org/horizon/latest/admin/sessions.html`.
+The same response sets the `logout_reason` and `logout_status` cookies, and the
+login page shows this message in its red alert box:
+`Your session is too large for a browser cookie and the login cannot complete. Contact your administrator.`
+The response is otherwise unchanged, so a client that keeps the cookie stays
+logged in and only the log line appears. A Horizon CR that replaces `MIDDLEWARE`
+through `spec.extraConfig` has to list
+`horizon.middleware.SessionCookieSizeMiddleware` before `SessionMiddleware`
+itself. No upstream test lists the production `MIDDLEWARE`, and the test
+settings do not load the new entry, so no upstream test moves. The patches add
+the twelve tests of `SessionCookieSizeMiddlewareTests` in
+`horizon/test/unit/middleware/test_session_cookie_size.py`.
+`test_session_cookie_size_is_announced` in
+`tests/container-images/verify_horizon.sh` asserts that the built image lists
+the middleware directly before `SessionMiddleware`. It then asserts that a
+small session sets no reason cookie and logs nothing, that a large one sets
+both cookies and logs one ERROR record with its size, and that the login page
+shows the message in its `alert-danger` box once the session cookie is gone.
+The patches need no operator configuration. Upstream status: not yet proposed.
+
 **Build and verify:**
 
 ```bash

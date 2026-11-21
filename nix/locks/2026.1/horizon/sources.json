@@ -5,6 +5,7 @@
   "project": "horizon",
   "patches": [
     "patches/horizon/2026.1/0001-check-the-service-catalog-before-the-rbac-policies-panel-asks-neutron.patch",
-    "patches/horizon/2026.1/0002-add-a-request-timeout-for-the-keystone-and-service-clients.patch"
+    "patches/horizon/2026.1/0002-add-a-request-timeout-for-the-keystone-and-service-clients.patch",
+    "patches/horizon/2026.1/0003-warn-when-the-session-cookie-exceeds-the-size-a-browser-keeps.patch"
   ]
 }

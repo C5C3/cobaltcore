@@ -1,0 +1,390 @@
+SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+SPDX-License-Identifier: Apache-2.0
+
+Warn when the session cookie exceeds the size a browser keeps
+
+HorizonMiddleware._process_request in horizon/middleware/base.py checks
+the size of a signed-cookie session on the request side: it sums the
+cookies a request sends and logs "Total Cookie size ..." at ERROR once
+they reach SESSION_COOKIE_MAX_SIZE (4093 bytes, horizon/defaults.py).
+A browser discards a cookie of that size, so the request after the
+login carries no session cookie and the check never runs. The login
+answers with a redirect, the browser is on the login page again, the
+page shows no reason, and Horizon logs nothing (#1845). With 71
+services in the Keystone catalog, the login set a sessionid cookie of
+4903 to 4919 bytes.
+
+The patch adds SessionCookieSizeMiddleware in
+horizon/middleware/session_cookie_size.py and lists it in
+openstack_dashboard/settings.py directly before Django's
+SessionMiddleware. SessionMiddleware sets the session cookie when the
+response passes through it. HorizonMiddleware sits further in, so it
+has returned before the cookie exists; a middleware listed before
+SessionMiddleware sees the cookie as the browser does. When the
+signed-cookie store is in use and the name plus the value of the
+session cookie a response sets reach SESSION_COOKIE_MAX_SIZE, the
+middleware logs "Session cookie for user_id: <id> is <n>B >= <max>B.
+..." at ERROR and calls add_logout_reason with status "error". The
+login page then shows "Your session is too large for a browser cookie
+and the login cannot complete. Contact your administrator." in its
+alert-danger box. SESSION_COOKIE_MAX_SIZE = None disables the check,
+and every other session engine skips it.
+
+The patch reports and does not refuse. The response is otherwise
+unchanged, and a client that keeps a cookie of any size stays logged in
+and only causes the log line. The patch adds no setting and needs no
+operator configuration.
+
+Tests: no upstream test lists openstack_dashboard.settings.MIDDLEWARE,
+and the test settings of horizon, openstack_auth and openstack_dashboard
+do not load the new entry, so no upstream test moves. The patch adds
+the 12 tests of SessionCookieSizeMiddlewareTests in
+horizon/test/unit/middleware/test_session_cookie_size.py. Ten call the
+middleware with a stub response: a cookie over, at and under the limit,
+another session engine, the setting at None, no and a deleted session
+cookie, a custom SESSION_COOKIE_NAME, a request without a session, and
+an exception from the inner chain. Two run it around Django's
+SessionMiddleware: a large session is flagged and a small one is not,
+and a large session of an HTTP 500 response sets no session cookie and
+is not flagged.
+
+Proof: test_session_cookie_size_is_announced in
+tests/container-images/verify_horizon.sh asserts the MIDDLEWARE position
+in the built image, sends a small and a large signed-cookie session
+through the image's middleware chain and asserts the ERROR record and
+the two cookies for the large one only, then follows the redirects from
+LOGIN_REDIRECT_URL without the session cookie, as a browser does after
+the login, and asserts that they end on the login page with the message
+in its alert-danger box.
+
+The 2026.1 twin carries the same hunks: horizon/middleware/__init__.py
+and openstack_dashboard/settings.py are identical in 25.7.0 and 27.0.0,
+and the other two files are new.
+
+Applies to horizon 27.0.0 (2026.2).
+
+Upstream status: not yet proposed.
+
+diff --git a/horizon/middleware/__init__.py b/horizon/middleware/__init__.py
+index 1f00a29..7a3042a 100644
+--- a/horizon/middleware/__init__.py
++++ b/horizon/middleware/__init__.py
+@@ -14,8 +14,10 @@
+ 
+ from horizon.middleware import base
+ from horizon.middleware import operation_log
++from horizon.middleware import session_cookie_size
+ from horizon.middleware import simultaneous_sessions as sessions
+ 
+ HorizonMiddleware = base.HorizonMiddleware
+ OperationLogMiddleware = operation_log.OperationLogMiddleware
++SessionCookieSizeMiddleware = session_cookie_size.SessionCookieSizeMiddleware
+ SimultaneousSessionsMiddleware = sessions.SimultaneousSessionsMiddleware
+diff --git a/horizon/middleware/session_cookie_size.py b/horizon/middleware/session_cookie_size.py
+new file mode 100644
+index 0000000..6be4fd5
+--- /dev/null
++++ b/horizon/middleware/session_cookie_size.py
+@@ -0,0 +1,80 @@
++#    Licensed under the Apache License, Version 2.0 (the "License"); you may
++#    not use this file except in compliance with the License. You may obtain
++#    a copy of the License at
++#
++#         http://www.apache.org/licenses/LICENSE-2.0
++#
++#    Unless required by applicable law or agreed to in writing, software
++#    distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
++#    License for the specific language governing permissions and limitations
++#    under the License.
++
++import logging
++
++from django.conf import settings
++from django.utils.translation import gettext_lazy as _
++
++from horizon.utils import functions as utils
++
++
++LOG = logging.getLogger(__name__)
++
++SIGNED_COOKIES_ENGINE = 'django.contrib.sessions.backends.signed_cookies'
++LOGOUT_REASON = _('Your session is too large for a browser cookie and the '
++                  'login cannot complete. Contact your administrator.')
++
++
++class SessionCookieSizeMiddleware(object):
++    """Report a session cookie that a browser discards.
++
++    With the signed-cookie session store the whole session travels in the
++    session cookie. Once the name and the value of that cookie reach
++    SESSION_COOKIE_MAX_SIZE, a browser discards it and the next request
++    arrives without a session. The check of HorizonMiddleware reads the
++    cookies of a request and never sees that cookie.
++
++    This middleware reads the session cookie a response sets. When it is
++    too large, it logs the size at ERROR and sets the logout reason
++    cookies, so the login page tells the user why the login did not
++    complete. It does not change the response otherwise.
++
++    Django's SessionMiddleware sets the session cookie when the response
++    passes through it, after every middleware listed below it has
++    returned. List this middleware before SessionMiddleware in
++    MIDDLEWARE, so that it sees the cookie as the browser does.
++    """
++
++    def __init__(self, get_response):
++        self.get_response = get_response
++
++    def __call__(self, request):
++        response = self.get_response(request)
++        if settings.SESSION_ENGINE != SIGNED_COOKIES_ENGINE:
++            return response
++        max_cookie_size = settings.SESSION_COOKIE_MAX_SIZE
++        if max_cookie_size is None:
++            return response
++        cookie = response.cookies.get(settings.SESSION_COOKIE_NAME)
++        if cookie is None:
++            return response
++        cookie_size = len(cookie.key) + len(cookie.value)
++        if cookie_size >= max_cookie_size:
++            LOG.error(
++                'Session cookie for user_id: %(user_id)s is '
++                '%(cookie_size)sB >= %(max_cookie_size)sB. '
++                'A browser discards a cookie of this size, so the session '
++                'is lost. You need to configure server-side sessions '
++                'instead of cookie-based sessions: '
++                'https://docs.openstack.org/horizon/latest/'
++                'admin/sessions.html',
++                {
++                    'user_id': getattr(request, 'session', {}).get(
++                        'user_id', 'Unknown'),
++                    'cookie_size': cookie_size,
++                    'max_cookie_size': max_cookie_size,
++                }
++            )
++            utils.add_logout_reason(request, response, LOGOUT_REASON,
++                                    'error')
++        return response
+diff --git a/horizon/test/unit/middleware/test_session_cookie_size.py b/horizon/test/unit/middleware/test_session_cookie_size.py
+new file mode 100644
+index 0000000..c6a6a15
+--- /dev/null
++++ b/horizon/test/unit/middleware/test_session_cookie_size.py
+@@ -0,0 +1,203 @@
++#    Licensed under the Apache License, Version 2.0 (the "License"); you may
++#    not use this file except in compliance with the License. You may obtain
++#    a copy of the License at
++#
++#         http://www.apache.org/licenses/LICENSE-2.0
++#
++#    Unless required by applicable law or agreed to in writing, software
++#    distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
++#    License for the specific language governing permissions and limitations
++#    under the License.
++
++import secrets
++
++from django.conf import settings
++from django.contrib.sessions.middleware import SessionMiddleware
++from django import http
++from django import test as django_test
++from django.test.utils import override_settings
++
++from horizon import defaults
++from horizon import middleware
++
++
++LOGGER = 'horizon.middleware.session_cookie_size'
++REASON = ('Your session is too large for a browser cookie and the login '
++          'cannot complete. Contact your administrator.')
++
++
++@override_settings(
++    SESSION_ENGINE='django.contrib.sessions.backends.signed_cookies',
++    SESSION_COOKIE_MAX_SIZE=100)
++class SessionCookieSizeMiddlewareTests(django_test.TestCase):
++
++    def setUp(self):
++        super().setUp()
++        self.factory = django_test.RequestFactory()
++        self.request = self.factory.get('/auth/login/')
++        self.request.session = {'user_id': 'user-1'}
++
++    def _response(self, size, name=None):
++        """Return a redirect whose session cookie has size bytes.
++
++        The size counts the name and the value of the cookie.
++        """
++        name = name or settings.SESSION_COOKIE_NAME
++        response = http.HttpResponseRedirect('/project/')
++        response.set_cookie(name, 'x' * (size - len(name)))
++        return response
++
++    def _call(self, response):
++        mw = middleware.SessionCookieSizeMiddleware(lambda request: response)
++        return mw(self.request)
++
++    def _call_session_middleware(self, nbytes, status=200):
++        """Run the middleware around Django's SessionMiddleware.
++
++        The view stores nbytes random bytes as hex in the session. The
++        signed-cookie store compresses the session, and the hex shrinks
++        to about 60 percent, so 3000 bytes give a cookie of about 4.7 KB.
++        """
++        def view(request):
++            request.session['pad'] = secrets.token_hex(nbytes)
++            return http.HttpResponse(status=status)
++
++        mw = middleware.SessionCookieSizeMiddleware(SessionMiddleware(view))
++        return mw(self.factory.get('/'))
++
++    def assertNoLogoutReason(self, response):
++        self.assertNotIn('logout_reason', response.cookies)
++        self.assertNotIn('logout_status', response.cookies)
++
++    def assertLogoutReason(self, response):
++        self.assertEqual(REASON.encode('unicode_escape').decode('ascii'),
++                         response.cookies['logout_reason'].value)
++        self.assertEqual('error', response.cookies['logout_status'].value)
++
++    def test_oversized_session_cookie_is_logged_and_announced(self):
++        response = self._response(150)
++        with self.assertLogs(LOGGER, level='ERROR') as logs:
++            result = self._call(response)
++
++        self.assertEqual(1, len(logs.records))
++        self.assertEqual('ERROR', logs.records[0].levelname)
++        self.assertIn('Session cookie for user_id: user-1 is 150B >= 100B',
++                      logs.records[0].getMessage())
++        self.assertIs(response, result)
++        self.assertEqual(302, result.status_code)
++        self.assertEqual('x' * (150 - len(settings.SESSION_COOKIE_NAME)),
++                         result.cookies[settings.SESSION_COOKIE_NAME].value)
++        self.assertLogoutReason(result)
++        self.assertEqual(10, result.cookies['logout_reason']['max-age'])
++        self.assertEqual(10, result.cookies['logout_status']['max-age'])
++
++    def test_session_cookie_at_the_limit_is_flagged(self):
++        with self.assertLogs(LOGGER, level='ERROR') as logs:
++            result = self._call(self._response(100))
++
++        self.assertIn('is 100B >= 100B', logs.records[0].getMessage())
++        self.assertLogoutReason(result)
++
++    def test_session_cookie_under_the_limit_passes(self):
++        response = self._response(99)
++        with self.assertNoLogs(LOGGER):
++            result = self._call(response)
++
++        self.assertIs(response, result)
++        self.assertNoLogoutReason(result)
++
++    @override_settings(
++        SESSION_ENGINE='django.contrib.sessions.backends.cache')
++    def test_other_session_engine_is_not_checked(self):
++        with self.assertNoLogs(LOGGER):
++            result = self._call(self._response(150))
++
++        self.assertNoLogoutReason(result)
++
++    @override_settings(SESSION_COOKIE_MAX_SIZE=None)
++    def test_max_size_none_disables_the_check(self):
++        with self.assertNoLogs(LOGGER):
++            result = self._call(self._response(150))
++
++        self.assertNoLogoutReason(result)
++
++    def test_response_without_session_cookie_passes(self):
++        response = http.HttpResponseRedirect('/project/')
++        with self.assertNoLogs(LOGGER):
++            result = self._call(response)
++
++        self.assertIs(response, result)
++        self.assertNoLogoutReason(result)
++
++    def test_deleted_session_cookie_passes(self):
++        response = http.HttpResponseRedirect('/auth/login/')
++        response.delete_cookie(settings.SESSION_COOKIE_NAME)
++        with self.assertNoLogs(LOGGER):
++            result = self._call(response)
++
++        self.assertEqual(
++            '', result.cookies[settings.SESSION_COOKIE_NAME].value)
++        self.assertNoLogoutReason(result)
++
++    @override_settings(SESSION_COOKIE_NAME='horizon_session')
++    def test_custom_session_cookie_name(self):
++        # 15 characters of the name and 85 of the value reach the limit.
++        with self.assertLogs(LOGGER, level='ERROR') as logs:
++            result = self._call(self._response(100))
++
++        self.assertIn('is 100B >= 100B', logs.records[0].getMessage())
++        self.assertLogoutReason(result)
++
++        with self.assertNoLogs(LOGGER):
++            result = self._call(self._response(150, name='sessionid'))
++
++        self.assertNoLogoutReason(result)
++
++    def test_request_without_session_logs_unknown_user(self):
++        self.request = self.factory.get('/auth/login/')
++        with self.assertLogs(LOGGER, level='ERROR') as logs:
++            result = self._call(self._response(150))
++
++        self.assertIn('Session cookie for user_id: Unknown is 150B',
++                      logs.records[0].getMessage())
++        self.assertLogoutReason(result)
++
++    @override_settings(SESSION_COOKIE_MAX_SIZE=defaults.SESSION_COOKIE_MAX_SIZE)
++    def test_reads_the_cookie_the_session_middleware_sets(self):
++        with self.assertLogs(LOGGER, level='ERROR') as logs:
++            result = self._call_session_middleware(3000)
++
++        cookie = result.cookies[settings.SESSION_COOKIE_NAME]
++        size = len(cookie.key) + len(cookie.value)
++        self.assertIn(
++            'is %dB >= %dB' % (size, defaults.SESSION_COOKIE_MAX_SIZE),
++            logs.records[0].getMessage())
++        self.assertLogoutReason(result)
++
++        with self.assertNoLogs(LOGGER):
++            result = self._call_session_middleware(100)
++
++        self.assertIn(settings.SESSION_COOKIE_NAME, result.cookies)
++        self.assertNoLogoutReason(result)
++
++    @override_settings(SESSION_COOKIE_MAX_SIZE=defaults.SESSION_COOKIE_MAX_SIZE)
++    def test_error_response_keeps_no_session_cookie(self):
++        with self.assertNoLogs(LOGGER):
++            result = self._call_session_middleware(3000, status=500)
++
++        self.assertEqual(500, result.status_code)
++        self.assertNotIn(settings.SESSION_COOKIE_NAME, result.cookies)
++        self.assertNoLogoutReason(result)
++
++    def test_exception_from_the_inner_chain_propagates(self):
++        error = RuntimeError('boom')
++
++        def get_response(request):
++            raise error
++
++        mw = middleware.SessionCookieSizeMiddleware(get_response)
++        with self.assertRaises(RuntimeError) as cm:
++            mw(self.request)
++
++        self.assertIs(error, cm.exception)
+diff --git a/openstack_dashboard/settings.py b/openstack_dashboard/settings.py
+index b17ec9b..fc67ee6 100644
+--- a/openstack_dashboard/settings.py
++++ b/openstack_dashboard/settings.py
+@@ -79,6 +79,8 @@ MIDDLEWARE = (
+     'debreach.middleware.RandomCommentMiddleware',
+     'django.middleware.common.CommonMiddleware',
+     'django.middleware.csrf.CsrfViewMiddleware',
++    # Outside SessionMiddleware, to see the session cookie it sets.
++    'horizon.middleware.SessionCookieSizeMiddleware',
+     'django.contrib.sessions.middleware.SessionMiddleware',
+     'django.contrib.auth.middleware.AuthenticationMiddleware',
+     'horizon.middleware.OperationLogMiddleware',
