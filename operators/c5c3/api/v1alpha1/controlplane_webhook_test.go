@@ -1677,6 +1677,83 @@ func TestValidateCreate_HorizonMultiDomain(t *testing.T) {
 	}
 }
 
+// TestValidateCreate_HorizonSession pins the mirror of the Horizon child's
+// session rules on services.horizon.session: both backends are admitted, a
+// colliding extraConfig key is rejected under the ControlPlane's own paths, and
+// an extraConfig SESSION_ENGINE without the block stays admitted with the
+// ownership warning.
+func TestValidateCreate_HorizonSession(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+	setting := func(name, raw string) map[string]apiextensionsv1.JSON {
+		return map[string]apiextensionsv1.JSON{name: {Raw: []byte(raw)}}
+	}
+	signed := &horizonv1alpha1.SessionSpec{Backend: horizonv1alpha1.SessionBackendSignedCookies}
+	cached := &horizonv1alpha1.SessionSpec{Backend: horizonv1alpha1.SessionBackendCache}
+	tests := []struct {
+		name        string
+		session     *horizonv1alpha1.SessionSpec
+		extraConfig map[string]apiextensionsv1.JSON
+		wantPath    string
+		wantSub     string
+	}{
+		{name: "no block", session: nil},
+		{name: "SignedCookies", session: signed},
+		{name: "Cache", session: cached},
+		{
+			name:        "Cache with extraConfig CACHES",
+			session:     cached,
+			extraConfig: setting(horizonv1alpha1.SettingCaches, `{"default": {}}`),
+			wantPath:    "spec.services.horizon.extraConfig[CACHES]",
+			wantSub:     "while spec.services.horizon.session.backend is Cache",
+		},
+		{
+			name:        "SignedCookies with extraConfig SESSION_ENGINE",
+			session:     signed,
+			extraConfig: setting(horizonv1alpha1.SettingSessionEngine, `"django.contrib.sessions.backends.cache"`),
+			wantPath:    "spec.services.horizon.extraConfig[SESSION_ENGINE]",
+			wantSub:     "is managed via spec.services.horizon.session",
+		},
+		{
+			name:        "Cache with extraConfig SESSION_ENGINE",
+			session:     cached,
+			extraConfig: setting(horizonv1alpha1.SettingSessionEngine, `"django.contrib.sessions.backends.signed_cookies"`),
+			wantPath:    "spec.services.horizon.extraConfig[SESSION_ENGINE]",
+			wantSub:     "is managed via spec.services.horizon.session",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := validControlPlane()
+			cp.Spec.Services.Horizon = &ServiceHorizonSpec{Session: tc.session, ExtraConfig: tc.extraConfig}
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			if tc.wantPath == "" {
+				g.Expect(err).NotTo(HaveOccurred())
+				return
+			}
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring(tc.wantPath))
+			g.Expect(err.Error()).To(ContainSubstring(tc.wantSub))
+		})
+	}
+
+	t.Run("extraConfig SESSION_ENGINE without a block is admitted with a warning", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := validControlPlane()
+		cp.Spec.Services.Horizon = &ServiceHorizonSpec{
+			ExtraConfig: setting(horizonv1alpha1.SettingSessionEngine, `"django.contrib.sessions.backends.cache"`),
+		}
+
+		warnings, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(warnings).To(ContainElement(And(
+			ContainSubstring("SESSION_ENGINE overrides an operator-owned Django setting"),
+			ContainSubstring("typed session field"),
+		)))
+	})
+}
+
 // --- External-mode validation matrix ---
 
 // TestValidateCreate_AcceptsMinimalExternalControlPlane is the acceptance proof

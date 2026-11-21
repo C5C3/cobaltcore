@@ -16,9 +16,12 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
@@ -1083,6 +1086,106 @@ func TestReconcileHorizon_MultiDomainProjectedFromControlPlane(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(getProjectedHorizon(t, r.Client, cp).Spec.MultiDomain).To(BeNil(),
 		"removing the block without an LDAP backend must clear the child's")
+}
+
+// TestReconcileHorizon_SessionProjectedFromControlPlane pins the
+// revert-on-clear projection of services.horizon.session: a set block reaches
+// the child without aliasing the ControlPlane's, removing it clears the
+// child's, and a ControlPlane that never sets it projects none.
+func TestReconcileHorizon_SessionProjectedFromControlPlane(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := horizonControlPlane()
+	cp.Spec.Services.Horizon.Session = &horizonv1alpha1.SessionSpec{Backend: horizonv1alpha1.SessionBackendCache}
+	// The interceptor keeps the pointer the reconciler wrote onto the child,
+	// before the fake client stores a decoded copy of the object.
+	var projected *horizonv1alpha1.SessionSpec
+	s := horizonTestScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp).
+		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &horizonv1alpha1.Horizon{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				if h, ok := obj.(*horizonv1alpha1.Horizon); ok {
+					projected = h.Spec.Session
+				}
+				return cl.Create(ctx, obj, opts...)
+			},
+		}).
+		Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+	ctx := context.Background()
+
+	_, err := r.reconcileHorizon(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	h := getProjectedHorizon(t, r.Client, cp)
+	g.Expect(h.Spec.Session).To(Equal(&horizonv1alpha1.SessionSpec{Backend: horizonv1alpha1.SessionBackendCache}))
+
+	// No aliasing: the projection copies the block, so the child's pointer is
+	// not the ControlPlane's.
+	g.Expect(projected).NotTo(BeNil())
+	g.Expect(projected).NotTo(BeIdenticalTo(cp.Spec.Services.Horizon.Session),
+		"the child must not alias cp.Spec.Services.Horizon.Session")
+
+	cp.Spec.Services.Horizon.Session = nil
+	_, err = r.reconcileHorizon(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getProjectedHorizon(t, r.Client, cp).Spec.Session).To(BeNil(),
+		"removing the block must revert the child to signed-cookie sessions")
+
+	t.Run("a ControlPlane without the block projects none", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := horizonControlPlane()
+		r := newHorizonTestReconciler(t, cp)
+
+		_, err := r.reconcileHorizon(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(getProjectedHorizon(t, r.Client, cp).Spec.Session).To(BeNil())
+	})
+}
+
+// TestReconcileHorizon_SessionRejectedByChild covers a projection the Horizon
+// API server rejects, for example a session block beside a colliding
+// extraConfig key on a ControlPlane admitted before the mirror existed: the
+// Invalid error propagates and HorizonReady carries the distinct reason.
+func TestReconcileHorizon_SessionRejectedByChild(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := horizonControlPlane()
+	cp.Spec.Services.Horizon.Session = &horizonv1alpha1.SessionSpec{Backend: horizonv1alpha1.SessionBackendCache}
+	cp.Spec.Services.Horizon.ExtraConfig = map[string]apiextensionsv1.JSON{
+		horizonv1alpha1.SettingCaches: {Raw: []byte(`{"default": {}}`)},
+	}
+
+	// The stub runs the Horizon webhook's session rules on the projected
+	// child, so the rejection depends on what the projection wrote.
+	s := horizonTestScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp).
+		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &horizonv1alpha1.Horizon{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				if h, ok := obj.(*horizonv1alpha1.Horizon); ok {
+					if errs := horizonv1alpha1.ValidateSession(field.NewPath("spec", "session"),
+						field.NewPath("spec", "extraConfig"), h.Spec.Session, h.Spec.Cache.Backend,
+						h.Spec.ExtraConfig); len(errs) > 0 {
+						return apierrors.NewInvalid(
+							schema.GroupKind{Group: horizonv1alpha1.GroupVersion.Group, Kind: "Horizon"}, h.Name, errs)
+					}
+				}
+				return cl.Create(ctx, obj, opts...)
+			},
+		}).
+		Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileHorizon(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(apierrors.IsInvalid(err)).To(BeTrue(), "the Invalid rejection must propagate: %v", err)
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeHorizonReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("HorizonProjectionRejected"))
+	g.Expect(cond.Message).To(ContainSubstring("spec.extraConfig[CACHES]"))
 }
 
 // TestReconcileHorizon_IdentityBackendListErrorKeepsChild pins that the
