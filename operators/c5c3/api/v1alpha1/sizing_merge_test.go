@@ -290,17 +290,6 @@ func TestMergeSizing(t *testing.T) {
 		})
 	}
 
-	// backing returns a SizingSpec whose only block is the backing-service
-	// block name, carrying a.
-	backing := func(name string, a AvailabilitySizingSpec) SizingSpec {
-		switch name {
-		case "database":
-			return SizingSpec{Database: &DatabaseSizingSpec{AvailabilitySizingSpec: a}}
-		case "cache":
-			return SizingSpec{Cache: &CacheSizingSpec{AvailabilitySizingSpec: a}}
-		}
-		return SizingSpec{Messaging: &MessagingSizingSpec{AvailabilitySizingSpec: a}}
-	}
 	budget := func(enabled *bool, maxUnavailable *int32) *BackingPodDisruptionBudgetSpec {
 		return &BackingPodDisruptionBudgetSpec{Enabled: enabled, MaxUnavailable: maxUnavailable}
 	}
@@ -340,8 +329,8 @@ func TestMergeSizing(t *testing.T) {
 		} {
 			t.Run(block+": "+tc.name, func(t *testing.T) {
 				g := NewWithT(t)
-				got := MergeSizing(backing(block, tc.base), backing(block, tc.override))
-				g.Expect(equality.Semantic.DeepEqual(got, backing(block, tc.want))).To(BeTrue(), "got %+v", got)
+				got := MergeSizing(backingSizing(block, tc.base), backingSizing(block, tc.override))
+				g.Expect(equality.Semantic.DeepEqual(got, backingSizing(block, tc.want))).To(BeTrue(), "got %+v", got)
 			})
 		}
 	}

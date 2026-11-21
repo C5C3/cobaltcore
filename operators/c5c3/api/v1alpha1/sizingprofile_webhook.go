@@ -76,11 +76,13 @@ func (w *SizingProfileWebhook) Default(_ context.Context, obj *SizingProfile) er
 // profile names, and then the merged sizing of every ControlPlane that already
 // references it: a profile restored after its deletion meets ControlPlanes
 // whose spec.sizing edits were admitted without a merge while it was missing.
+// It warns about a cache antiAffinity of Off that the memcached-operator
+// overrides (sizingAvailabilityWarnings).
 func (w *SizingProfileWebhook) ValidateCreate(ctx context.Context, obj *SizingProfile) (admission.Warnings, error) {
 	allErrs := validateSizingProfile(obj)
 	allErrs = append(allErrs, validateNewPriorityClasses(ctx, w.Client, field.NewPath("spec"), nil, &obj.Spec.SizingSpec)...)
 	allErrs = append(allErrs, w.validateReferencingControlPlanes(ctx, obj)...)
-	return nil, newInvalidSizingProfileIfErrs(obj, allErrs)
+	return sizingAvailabilityWarnings(field.NewPath("spec"), &obj.Spec.SizingSpec), newInvalidSizingProfileIfErrs(obj, allErrs)
 }
 
 // ValidateUpdate implements admission.Validator[*SizingProfile]. It runs the
@@ -88,7 +90,8 @@ func (w *SizingProfileWebhook) ValidateCreate(ctx context.Context, obj *SizingPr
 // name, and then, when the spec changed, checks the merged sizing of every
 // ControlPlane that references the profile, since such an edit changes what
 // each of them projects. Each such error names the ControlPlane it belongs to.
-// A metadata-only edit changes no merged sizing, so it lists nothing.
+// A metadata-only edit changes no merged sizing, so it lists nothing. It warns
+// like ValidateCreate.
 func (w *SizingProfileWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj *SizingProfile) (admission.Warnings, error) {
 	allErrs := validateSizingProfile(newObj)
 	allErrs = append(allErrs, validateNewPriorityClasses(ctx, w.Client, field.NewPath("spec"),
@@ -96,7 +99,7 @@ func (w *SizingProfileWebhook) ValidateUpdate(ctx context.Context, oldObj, newOb
 	if !equality.Semantic.DeepEqual(oldObj.Spec, newObj.Spec) {
 		allErrs = append(allErrs, w.validateReferencingControlPlanes(ctx, newObj)...)
 	}
-	return nil, newInvalidSizingProfileIfErrs(newObj, allErrs)
+	return sizingAvailabilityWarnings(field.NewPath("spec"), &newObj.Spec.SizingSpec), newInvalidSizingProfileIfErrs(newObj, allErrs)
 }
 
 // validateSizingProfile checks the values of a profile as written. The base
