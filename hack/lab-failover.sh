@@ -15,7 +15,8 @@
 # Subcommands, wrapped by the four make targets lab-failover-<subcommand>:
 #   preflight          Read-only checks of the lab: the tools, the context,
 #                      the API, the Gardener shoot, Chaos Mesh, the objects
-#                      the plane needs, and the free memory requests.
+#                      the plane needs, the free memory requests, and three
+#                      Ready nodes, one per Galera member and broker.
 #   up                 preflight, then bring the plane up and write
 #                      _output/lab-failover/<run>/versions.txt and
 #                      topology.txt. It refuses an existing openstack-ha and
@@ -109,6 +110,9 @@ LF_WAIT_READY=900
 LF_WAIT_RUN_READY=60
 LF_WAIT_GONE=300
 LF_WAIT_NAMESPACE_GONE=600
+# The Ready nodes lf_preflight requires, one per Galera member and broker of
+# the Standard plane.
+LF_MIN_READY_NODES=3
 
 # Set by lf_kubeconfig, lf_preflight and up.
 LF_KUBECONFIG=""
@@ -334,6 +338,12 @@ lf_preflight() {
     lf_check_fail "free memory requests ${free} GiB are below the floor LAB_FAILOVER_MIN_FREE_MEMORY=${LAB_FAILOVER_MIN_FREE_MEMORY} (allocatable ${alloc} GiB on ${nodes} Ready nodes, requested ${req} GiB)"
   fi
   echo "OK: free memory requests ${free} GiB reach the floor ${LAB_FAILOVER_MIN_FREE_MEMORY} (allocatable ${alloc} GiB on ${nodes} Ready nodes, requested ${req} GiB)"
+  # The Standard plane's MariaDB and RabbitmqCluster run three replicas with
+  # required hostname anti-affinity, so a member finds no node on fewer.
+  if (( nodes < LF_MIN_READY_NODES )); then
+    lf_check_fail "the Standard plane needs ${LF_MIN_READY_NODES} Ready nodes, one per Galera member and broker (found ${nodes})"
+  fi
+  echo "OK: ${nodes} Ready nodes, one per Galera member and broker of the Standard plane"
   echo "shoot: ${LF_SHOOT}"
   echo "server: ${server}"
   echo "free memory requests: ${free} GiB"
