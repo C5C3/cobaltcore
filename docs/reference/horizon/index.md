@@ -22,10 +22,13 @@ uniquely among the services — HTTP ingress by default.
 
 The v1 operator resolves the onboarding decisions as follows:
 
-- **Sessions: signed cookies, no database.** `SESSION_ENGINE` is Django's
-  `signed_cookies` backend and Memcached only backs the Django cache
-  (`CACHES`, `PyMemcacheCache`). Losing Memcached degrades cache hit-rate; it
-  neither logs users out nor flips any condition. The operator therefore has
+- **Sessions: signed cookies by default, no database.** Without
+  `spec.session`, `SESSION_ENGINE` is Django's `signed_cookies` backend and
+  Memcached only backs the Django cache (`CACHES`, `PyMemcacheCache`).
+  `spec.session.backend: Cache` is the opt-in that moves the sessions into
+  Memcached (see [Cache sessions](#cache-sessions)). With signed cookies,
+  losing Memcached degrades cache hit-rate; it neither logs users out nor
+  flips any condition. The operator therefore has
   no database sub-reconcilers at all. A Memcached that hangs or restarts only
   lowers the hit-rate too, because the operator renders 1 s pymemcache
   timeouts and `ignore_exc` into `CACHES["default"]["OPTIONS"]`, which turn
@@ -46,7 +49,9 @@ The v1 operator resolves the onboarding decisions as follows:
   ([#1305](https://github.com/C5C3/cobaltcore/issues/1305)). The
   `tests/e2e/horizon/release-upgrade/` suite moves a Horizon from 2026.1 to
   2026.2 and asserts that the prefix the Deployment mounts changes with the
-  image, and that the login page renders on both sides of the hop.
+  image, and that the login page renders on both sides of the hop. The
+  `sessions` alias of [cache sessions](#cache-sessions) has a prefix of its
+  own that does not follow the image.
 - **Requests to the services: bounded at 30 seconds.** The operator renders
   `OPENSTACK_REQUEST_TIMEOUT = 30`, which horizon patch 0002 passes as
   `timeout` to every keystoneauth session and service client the dashboard
@@ -206,6 +211,110 @@ Link 8e of
 [`full-controlplane-keystone`](../testing/controlplane-e2e-tests.md#full-controlplane-keystone)
 request `/project/api_access/` after a login, expect HTTP 200, and fail once
 the cookies that request sends sum to 4093 bytes.
+
+When the catalog cannot shrink, [cache sessions](#cache-sessions) take the
+session out of the cookie.
+
+## Cache sessions
+
+`spec.session.backend: Cache` keeps the session in the Memcached of
+`spec.cache`, which must use the `PyMemcacheCache` backend (see
+[SessionSpec](./horizon-crd.md#sessionspec)). On the ControlPlane the block
+is `spec.services.horizon.session`, and the c5c3-operator projects it onto
+the Horizon child. The operator renders three settings:
+
+```python
+SESSION_ENGINE = "django.contrib.sessions.backends.cache"
+SESSION_CACHE_ALIAS = "sessions"
+CACHES = {
+    "default": {...},
+    "sessions": {...},  # BACKEND, LOCATION and OPTIONS of "default"
+}
+```
+
+The `sessions` alias reaches the same servers as `default`, with the same
+1-second pymemcache timeouts and `ignore_exc`. Its `KEY_PREFIX` is
+`horizon-sessions-` plus the first 12 hex characters of the SHA-256 of
+`<namespace>/<name>` of the Horizon CR: `openstack/horizon-release-upgrade`
+gives `horizon-sessions-bf5308222bb5`. The prefix does not follow the image,
+so an image change keeps the sessions, which the
+`tests/e2e/horizon/release-upgrade/` suite checks by writing a session on the
+2026.1 pod and reading it on the 2026.2 pod. Two dashboards on one Memcached
+have different prefixes and do not accept each other's session keys. The hash
+keeps the Memcached key under its 250-byte limit whatever the length of the
+name.
+
+With cache sessions the cookie carries only a 32-character session key, so
+neither of the [session size limits](#session-size-limits) bounds the
+session, and Horizon's `Total Cookie size` check does not run. Every logged-in request reads its
+session from Memcached, a call the 1-second timeouts bound.
+
+The failure behaviour was measured on 2026-11-21 with
+`ghcr.io/c5c3/horizon:2026.1` (Horizon 25.7.0, Django 4.2.28, pymemcache
+4.0.0), one Memcached 1.6 server and the `OPTIONS` the operator renders,
+through Django's cache `SessionStore`. HTTP status codes were not measured.
+
+| Memcached | Reading a session | Creating a session (a login) | Saving a loaded session |
+| --- | --- | --- | --- |
+| stalled (container paused) | empty session after 1.00 s: the user is logged out | `RuntimeError: Unable to create a new session key. It is likely that the cache is unavailable.` after 2.1 s | `UpdateError` |
+| stopped | empty session at once | the same `RuntimeError` after 1.15 s | `UpdateError` |
+
+Without `ignore_exc` the reads and saves behave the same, and the create
+raises `TimeoutError` (stalled) or `socket.gaierror` (stopped), so the
+`sessions` alias keeps `ignore_exc` like `default`. Django answers an unhandled exception with HTTP 500: a login during
+a Memcached outage fails with an error page.
+
+Memcached does not replicate. A lost or restarted Memcached pod, or an
+eviction under memory pressure, logs out the users whose sessions it held.
+A change of the server list (a Memcached replica change, the first per-pod
+list the Memcached publishes, a switch to or from
+`dedicatedBackingServices.cache`) rehashes the session keys and logs out the
+users whose keys moved. While the list is a Service name in front of several
+pods (the Memcached has published no `status.serverList` yet, or a brownfield
+`spec.cache.servers` entry names such a Service), each request reaches one of
+those pods at random, and a request on a pod that does not hold the session
+logs the user out. Brownfield `spec.cache.servers` for cache sessions lists
+every Memcached instance under a name of its own.
+
+Switching the store to `Cache` or back renders a new ConfigMap and rolls the
+dashboard once. The old and the new pods do not accept each other's cookies,
+so the switch logs every user out, and again each time a request moves
+between an old and a new pod, until the rollout completes. A nil block and
+`backend: SignedCookies` render the same module. The operator upgrade that
+brings the field renders that module for a CR without the block, so it rolls
+no dashboard.
+
+With cache sessions, Memcached holds the session keys and the Keystone
+tokens of every logged-in user in clear. A client that reaches its port
+11211 can list the keys, read the tokens and take over the sessions. The
+c5c3-operator sets no NetworkPolicy, SASL or TLS on the Memcached CRs it
+creates, the shared one and a dedicated one alike, so restricting access to
+them is left to the cluster's own NetworkPolicies.
+`services.horizon.dedicatedBackingServices.cache` gives the dashboard a
+Memcached of its own (see the
+[ControlPlane CRD](../c5c3/controlplane-crd.md#servicehorizonspec)), which
+keeps the sessions off the Memcached the other services use but is reachable
+the same way.
+
+Multi-domain login is the second reason to choose cache sessions. For a user
+who holds a role on the domain they log in to and on no project,
+`openstack_auth` uses the domain-scoped token as the scoped one. Under signed
+cookies it leaves that token out of the session and logs this line at ERROR:
+
+```text
+Using signed cookies as SESSION_ENGINE with OPENSTACK_KEYSTONE_MULTIDOMAIN_SUPPORT is enabled. This disables the ability to perform identity operations due to cookie size constraints.
+```
+
+With cache sessions the session keeps the token under `domain_token`. Step 7
+of [`e2e-controlplane-sso`](../testing/controlplane-e2e-tests.md#federated-controlplane)
+logs in such a user through the domain dropdown, checks that the session
+holds `domain_token`, and checks that no dashboard pod logs the line.
+
+`spec.extraConfig.SESSION_ENGINE` without the typed block is honored and
+reported as an
+[owned-key override](./horizon-crd.md#extraconfig-ownership-guard). It keeps
+the sessions in the `default` alias, whose image-scoped prefix loses them on
+every image change.
 
 ## Owned resources
 

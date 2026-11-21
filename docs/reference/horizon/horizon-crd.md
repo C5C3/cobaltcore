@@ -16,7 +16,7 @@ chart ships a synced copy (`make sync-crds` / `make verify-crd-sync`).
 | `deployment` | `DeploymentSpec` | no | Shared pod-level knobs: `replicas` (default 3), `resources` (resolved per resource when the pod is rendered: 70m CPU request, no CPU limit, and 720Mi memory request and limit for the fixed two uWSGI processes of one thread, see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)), `terminationGracePeriodSeconds`, `preStopSleepSeconds`, `strategy`, `topologySpreadConstraints`, `priorityClassName`, and the node placement `nodeSelector`, `tolerations` and `affinity` (see [NodePlacementSpec](../keystone/keystone-crd.md#nodeplacementspec)). Horizon runs no Job, so it has no `spec.jobs` block |
 | `deployment.verticalAutoscaling` | [`*VerticalAutoscalingSpec`](../keystone/keystone-crd.md#verticalautoscalingspec) | no | Opts the Horizon dashboard Deployment into a VerticalPodAutoscaler that controls the requests of its containers; see [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec). Rejected beside `spec.autoscaling`, which scales the same Deployment. On a cluster without the VPA, `VPAReady` turns False with reason `VPANotInstalled`. |
 | `image` | `ImageSpec` | yes | Container image; exactly one of `tag` or `digest` (shared CEL rule) |
-| `cache` | `CacheSpec` | yes | Memcached backing the Django cache. Exactly one of `clusterRef` (managed) or `servers` (brownfield); `backend` is a Django cache backend path, defaulted to `django.core.cache.backends.memcached.PyMemcacheCache`. The operator renders `CACHES["default"]["KEY_PREFIX"]` as `horizon-` plus the first 12 hex characters of the SHA-256 of the image reference (`repository:tag` or `repository@digest`), so Horizon releases that share one Memcached never read each other's template-fragment cache and an image change starts with a cold cache. The prefix follows the spec and the operator never resolves the running digest: two builds pushed behind one tag share a prefix. For `PyMemcacheCache`, an empty `backend` included, the operator also renders `CACHES["default"]["OPTIONS"]` as `{"connect_timeout": 1, "ignore_exc": True, "timeout": 1}`: every pymemcache call gives up after 1 s and every pymemcache error is a cache miss, so a Memcached that stops answering or restarts costs cache hits instead of hanging the dashboard or failing a page with HTTP 500. Other backends take other options and get no `OPTIONS` |
+| `cache` | `CacheSpec` | yes | Memcached backing the Django cache. Exactly one of `clusterRef` (managed) or `servers` (brownfield); `backend` is a Django cache backend path, defaulted to `django.core.cache.backends.memcached.PyMemcacheCache`. The operator renders `CACHES["default"]["KEY_PREFIX"]` as `horizon-` plus the first 12 hex characters of the SHA-256 of the image reference (`repository:tag` or `repository@digest`), so Horizon releases that share one Memcached never read each other's template-fragment cache and an image change starts with a cold cache. The prefix follows the spec and the operator never resolves the running digest: two builds pushed behind one tag share a prefix. For `PyMemcacheCache`, an empty `backend` included, the operator also renders `CACHES["default"]["OPTIONS"]` as `{"connect_timeout": 1, "ignore_exc": True, "timeout": 1}`: every pymemcache call gives up after 1 s and every pymemcache error is a cache miss, so a Memcached that stops answering or restarts costs cache hits instead of hanging the dashboard or failing a page with HTTP 500. Other backends take other options and get no `OPTIONS`. With `spec.session.backend: Cache` the operator renders a second alias, `CACHES["sessions"]`, with the `BACKEND`, `LOCATION` and `OPTIONS` of `default` and a `KEY_PREFIX` of `horizon-sessions-` plus the first 12 hex characters of the SHA-256 of `<namespace>/<name>`, which does not follow the image |
 | `keystoneEndpoint` | `string` | yes | The Keystone endpoint URL (`OPENSTACK_KEYSTONE_URL`); must match `^https?://` and parse with a host. Consumed server-side by the dashboard pods, so it must be reachable from inside the cluster — for a colocated control plane use the cluster-local Service URL, not an externally routable address |
 | `secretKeyRef` | `SecretRefSpec` | yes | Secret holding the Django `SECRET_KEY`; `key` defaults to `secret-key`. Injected as the `HORIZON_SECRET_KEY` env var, never into the ConfigMap |
 | `gateway` | `*GatewaySpec` | no | External exposure via a Gateway API HTTPRoute on port 8080; requires `hostname` and `parentRef.name` |
@@ -24,9 +24,10 @@ chart ships a synced copy (`make sync-crds` / `make verify-crd-sync`).
 | `autoscaling` | `*AutoscalingSpec` | no | HPA bounds, CPU/memory utilization targets and scaling behavior |
 | `podDisruptionBudget` | [`*PodDisruptionBudgetSpec`](../keystone/keystone-crd.md#poddisruptionbudgetspec) | no | Budget of the dashboard PodDisruptionBudget, `minAvailable` or `maxUnavailable`. When `nil`, the operator renders `minAvailable: 1` above a lower replica bound of one and `maxUnavailable: 1` at one. A set budget must allow one voluntary eviction at the lower replica bound |
 | `logging` | `*LoggingSpec` | no | Django `LOGGING` dictConfig derivation: root `level`, `format`, `debug`, `perLoggerLevels`. Defaulted to `text`/`INFO`/`debug: false`. One stderr handler carries one formatter: `text` prints oslo.log's line format, `<date> <time>.<ms> <pid> <LEVEL> <logger> [-] <message>`, and `json` prints one JSON object per record through `oslo_log.formatters.JSONFormatter`, which the image must ship (both CobaltCore OpenStack Horizon images declare `oslo.log`). On an image without it, such as a custom image or a 2026.2 image built before `releases/2026.2/extra-packages.yaml` declared `oslo.log`, the dashboard fails to load with `Unable to configure formatter 'json'`, the new pods never turn Ready, and with the default rolling strategy the rollout stalls while the old pods keep serving. Move `spec.image` to an image that ships `oslo.log` before or with the operator upgrade, or keep `text` until then. The rendered `loggers` always name `django` at `INFO` (a `perLoggerLevels` entry for it wins), which drops the unformatted console handler Django's defaults attach to it, so each record is printed once, under `debug` too. The entry keeps Django's `mail_admins` handler, so with `debug` off a CR that sets `ADMINS` and the `EMAIL_*` settings through `extraConfig` still gets Django's error mails. Django sends each mail inside the request, on one of the two single-thread uWSGI processes, and its `EMAIL_TIMEOUT` default of `None` sets no SMTP timeout: a relay that accepts the connection and never answers blocks that process until an `EMAIL_TIMEOUT` set through `extraConfig` ends the wait. Unauthenticated requests produce mails too, through the `django.security` reports, for example a POST with more than 1000 fields or a disallowed `Host` header. `debug` maps to Django `DEBUG` and leaves the root level alone. A change of any field renders a new ConfigMap and rolls the Deployment |
-| `extraConfig` | `map[string]JSON` | no | Free-form Django settings rendered after the operator defaults (user values win). `SECRET_KEY` is rejected by the webhook. Overrides of operator-owned settings (for example `STATIC_ROOT`, `COMPRESS_OFFLINE`, `CACHES`, whose override drops the image-scoped `KEY_PREFIX` and the pymemcache timeout `OPTIONS`, or `OPENSTACK_REQUEST_TIMEOUT`, the 30-second bound of every Keystone and service client the dashboard builds, which `OPENSTACK_REQUEST_TIMEOUT: 60` raises) are honored but reported via the `ExtraConfigHealthy` condition and an `ExtraConfigOwnedKeyOverride` Warning event |
+| `extraConfig` | `map[string]JSON` | no | Free-form Django settings rendered after the operator defaults (user values win). `SECRET_KEY` is rejected by the webhook, and so are the session settings `spec.session` owns while it is set (see [SessionSpec](#sessionspec)). Overrides of operator-owned settings (for example `STATIC_ROOT`, `COMPRESS_OFFLINE`, `CACHES`, whose override drops the image-scoped `KEY_PREFIX` and the pymemcache timeout `OPTIONS`, or `OPENSTACK_REQUEST_TIMEOUT`, the 30-second bound of every Keystone and service client the dashboard builds, which `OPENSTACK_REQUEST_TIMEOUT: 60` raises) are honored but reported via the `ExtraConfigHealthy` condition and an `ExtraConfigOwnedKeyOverride` Warning event |
 | `websso` | `*WebSSOSpec` | no | Federated single-sign-on choices on the login page. When nil the operator renders no `WEBSSO_*` settings and the dashboard offers local credentials only. The c5c3 ControlPlane projects this from the federation backends attached to its Keystone child |
 | `multiDomain` | `*MultiDomainSpec` | no | Multi-domain login: the domain field (or dropdown) on the login form, needed when users live in domains other than the default one — typically LDAP-backed. When nil the operator renders no `OPENSTACK_KEYSTONE_MULTIDOMAIN_*` settings |
+| `session` | [`*SessionSpec`](#sessionspec) | no | Selects the store of the dashboard's Django sessions. When nil the operator renders signed-cookie sessions, the same module as `backend: SignedCookies`. `backend: Cache` keeps the sessions in the Memcached of `spec.cache` (see [Cache sessions](./index.md#cache-sessions)). A move between signed cookies (a nil block or `SignedCookies`) and `Cache`, in either direction, renders a new ConfigMap and rolls the Deployment. It logs every user out, repeatedly while old and new pods serve side by side, until the rollout completes. The c5c3 ControlPlane projects it from `spec.services.horizon.session` |
 | `secretStoreRef` | `*SecretStoreRefSpec` | no | Selects the External Secrets store the dashboard resolves its `SecretsReady` gate against — `kind` (`ClusterSecretStore` \| `SecretStore`, default `ClusterSecretStore`) and a required non-empty `name`. When omitted the shared cluster-scoped `ClusterSecretStore` `openbao-cluster-store` is used, so existing deployments are unchanged; set to a namespaced `SecretStore` in this Horizon's own namespace to reach OpenBao as a per-tenant identity. It only gates `SecretsReady` on the selected store — Horizon creates no PushSecrets. Normally projected from the owning ControlPlane |
 | `targetClusterRef` | `*TargetClusterRefSpec` | no | Names the registered target cluster that receives this Horizon's children: the Deployment, the ConfigMaps, and the Secrets. The CR itself does not move, and neither do its status or the webhooks that admit it. When omitted the children are created on the local cluster the operator runs on, so an existing CR keeps its behavior without an edit. `name` must be a non-empty DNS-1123 subdomain matching the registration Secret. **Immutable** (CEL transition rule): adding, removing, or renaming the ref strands the children already created on the previously selected cluster; delete and recreate instead. See [Target Clusters](../target-clusters.md) |
 | `suspend` | `bool` | no | Pauses the operator's reconciliation of this Horizon. While it is `true` the operator creates, updates and deletes nothing for the CR: no provisioning, no rollout of spec changes, no release upgrade or schema migration, and no correction of drift in the objects it owns. Workloads that already run keep running. The CR reports `Suspended=True` and keeps its last `Ready` condition and `status.observedGeneration`. Deleting a suspended CR runs its deletion path as usual. Setting it to `false` or removing it resumes reconciliation. It is the only pause switch a Horizon has, since the CR runs no CronJob. `kubectl get horizons` shows the value in the Suspended column. See [Suspension](./horizon-reconciler.md#suspension). |
@@ -71,6 +72,26 @@ the budget must allow one voluntary eviction at the lower replica bound,
 otherwise. An update that lowers either below what the budget tolerates is
 rejected.
 
+`spec.session` is checked by `ValidateSession`, which the ControlPlane webhook
+calls too, on create and on every update. A `nil` block checks nothing, so an
+`extraConfig.SESSION_ENGINE` without the block stays admitted. Every
+violation is accumulated:
+
+| Condition | Error | Message | Layer |
+| --- | --- | --- | --- |
+| `backend` is neither `SignedCookies` nor `Cache` | `Unsupported value` at `spec.session.backend` | `supported values: "SignedCookies", "Cache"` | Enum marker; the webhook repeats it |
+| `extraConfig` sets `SESSION_ENGINE`, either backend | `Forbidden` at `spec.extraConfig[SESSION_ENGINE]` | `SESSION_ENGINE is managed via spec.session and must not also be set in extraConfig (extraConfig wins the merge, which would silently drop the typed block)` | Webhook-only |
+| `backend` is `Cache` and `extraConfig` sets `SESSION_CACHE_ALIAS` | `Forbidden` at `spec.extraConfig[SESSION_CACHE_ALIAS]` | the same message, naming `SESSION_CACHE_ALIAS` | Webhook-only |
+| `backend` is `Cache` and `extraConfig` sets `CACHES` | `Forbidden` at `spec.extraConfig[CACHES]` | `CACHES must not be set in extraConfig while spec.session.backend is Cache (the override would drop the "sessions" cache alias that holds the sessions)` | Webhook-only |
+| `backend` is `Cache` and `spec.cache.backend` is neither empty nor `django.core.cache.backends.memcached.PyMemcacheCache` | `Invalid` at `spec.session.backend` | `requires the cache backend django.core.cache.backends.memcached.PyMemcacheCache, got "<backend>" (a per-process cache cannot hold a session across uWSGI processes and replicas)` | Webhook-only |
+
+With `backend: SignedCookies`, a `CACHES` or `SESSION_CACHE_ALIAS` override and
+any `spec.cache.backend` stay admitted. The renderer runs the same rules
+before every render, for a CR that bypassed the webhook: a violation sets
+`ConfigReady=False` with reason `ConfigError` and a message that starts
+`rendering local_settings.py: spec.session:`, writes no ConfigMap, and leaves
+the running pods on theirs.
+
 ### ExtraConfig ownership guard
 
 Beyond the rejected settings, the operator ships a registry of the
@@ -86,7 +107,15 @@ changes, never on the steady reconcile poll. The condition is intentionally not
 aggregated into `Ready`, so an explicit operator override is honored rather than
 blocking the rollout. `OPENSTACK_ENDPOINT_TYPE` and `SECURE_PROXY_SSL_HEADER` are
 deliberately left unregistered as supported escape hatches, so overriding either
-stays silent. Horizon has no separate events reference page by design; this is
+stays silent. `SESSION_ENGINE` is reported while `spec.session` is unset, and
+`SESSION_CACHE_ALIAS` while it is unset or `SignedCookies`. The message names
+the typed session field. For `SESSION_ENGINE` it says that a cache engine set
+there keeps the sessions in the `default` alias, whose image-scoped
+`KEY_PREFIX` logs every user out on each image change. For
+`SESSION_CACHE_ALIAS` it says that the setting takes effect only beside a cache
+`SESSION_ENGINE` set in `extraConfig`. The webhook rejects `SESSION_ENGINE`
+beside either backend and `SESSION_CACHE_ALIAS` beside `Cache`. Horizon has no
+separate events reference page by design; this is
 the documentation home for the `ExtraConfigOwnedKeyOverride` event.
 
 ## WebSSOSpec
@@ -144,6 +173,17 @@ Configures the login form's domain handling. Horizon only renders the domain
 dropdown when `domainDropdown` is true **and** `domainChoices` is non-empty;
 with `enabled` alone the form shows a free-text domain field.
 
+Under signed-cookie sessions, a user who logs in to a domain they hold a role
+on has no domain-scoped token in the session, which disables identity
+operations for them. `openstack_auth` logs this line at ERROR on such a login:
+
+```text
+Using signed cookies as SESSION_ENGINE with OPENSTACK_KEYSTONE_MULTIDOMAIN_SUPPORT is enabled. This disables the ability to perform identity operations due to cookie size constraints.
+```
+
+`spec.session.backend: Cache` lifts that: the session keeps the token under
+`domain_token` (see [Cache sessions](./index.md#cache-sessions)).
+
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `enabled` | `bool` | no | `false` | Turns on multi-domain login (`OPENSTACK_KEYSTONE_MULTIDOMAIN_SUPPORT`) |
@@ -157,6 +197,15 @@ with `enabled` alone the form shows a free-text domain field.
 | --- | --- | --- | --- |
 | `name` | `string` | yes | The Keystone domain name submitted with the login form |
 | `label` | `string` | yes | Human-readable text rendered for this domain |
+
+## SessionSpec
+
+Selects where the dashboard's Django sessions live. The block is optional and
+gets no default, so a stored CR without it renders signed-cookie sessions.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `backend` | `string` | yes | `SignedCookies` keeps the whole session in the `sessionid` cookie, signed with `SECRET_KEY` (`SESSION_ENGINE = "django.contrib.sessions.backends.signed_cookies"`), the same module a `nil` block renders. `Cache` renders `SESSION_ENGINE = "django.contrib.sessions.backends.cache"`, `SESSION_CACHE_ALIAS = "sessions"` and the `CACHES["sessions"]` alias described in the `cache` row; it requires the `PyMemcacheCache` cache backend. With `Cache` a failed Memcached read is a logout. Switching the store in either direction logs every user out, repeatedly while old and new pods serve side by side, until the rollout completes |
 
 ## Status
 
