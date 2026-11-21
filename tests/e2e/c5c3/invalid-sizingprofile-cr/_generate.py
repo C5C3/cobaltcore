@@ -319,6 +319,31 @@ FIXTURES: tuple[Fixture, ...] = (
             "        maxUnavailable: \"half\"\n"
         ),
     ),
+    Fixture(
+        filename="16-anti-affinity-unsupported.yaml",
+        comment=(
+            "cache.antiAffinity Strict is none of Required, Preferred and Off and violates\n"
+            "the Enum marker on AntiAffinityMode; the webhook mirrors it."
+        ),
+        name="c5c3-e2e-sizing-anti-affinity-unsupported",
+        spec=(
+            "  cache:\n"
+            "    antiAffinity: Strict\n"
+        ),
+    ),
+    Fixture(
+        filename="17-backing-pdb-max-unavailable-zero.yaml",
+        comment=(
+            "database.podDisruptionBudget.maxUnavailable of 0 violates the Minimum=1\n"
+            "marker on BackingPodDisruptionBudgetSpec; the webhook mirrors it."
+        ),
+        name="c5c3-e2e-sizing-backing-pdb-max-unavailable-zero",
+        spec=(
+            "  database:\n"
+            "    podDisruptionBudget:\n"
+            "      maxUnavailable: 0\n"
+        ),
+    ),
 )
 
 
