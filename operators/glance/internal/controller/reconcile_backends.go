@@ -81,8 +81,7 @@ type backendsProjection struct {
 // CONTRACT: this step never returns a requeue and never returns an error for
 // waiting states (a missing default, pending backends, missing credential
 // Secrets, control-char values) — the GlanceBackend watch wakes the parent when
-// a backend's status flips. Only genuine infrastructure failures (List/create/
-// prune errors) surface as errors.
+// a backend's status flips. Only genuine infrastructure failures (List/read/create errors) surface as errors.
 func (r *GlanceReconciler) reconcileBackends(ctx context.Context, children client.Client, glance *glancev1alpha1.Glance) (ctrl.Result, backendsProjection, error) {
 	logger := log.FromContext(ctx)
 
@@ -148,11 +147,20 @@ func (r *GlanceReconciler) reconcileBackends(ctx context.Context, children clien
 	// a control character is added to the pending set (and warned, for a fault)
 	// rather than failing the step.
 	sections := map[string]map[string]string{}
-	var renderedNames []string
+	var enabled []string
 	var pending []string
+	// stale is set when a backend's spec changed after its controller last
+	// reported CredentialsReady=True. The backend is healthy as far as anyone
+	// knows, and its controller is about to gate the new spec.
+	stale := false
 	for _, backend := range c.Attached {
 		if !credentialsReady(backend) {
-			pending = append(pending, fmt.Sprintf("%s (credentials not ready)", backend.Name))
+			reason := "credentials not ready"
+			if credentialsStale(backend) {
+				stale = true
+				reason = "spec changed since its credentials were checked"
+			}
+			pending = append(pending, fmt.Sprintf("%s (%s)", backend.Name, reason))
 			continue
 		}
 
@@ -173,14 +181,21 @@ func (r *GlanceReconciler) reconcileBackends(ctx context.Context, children clien
 			return ctrl.Result{}, backendsProjection{}, fmt.Errorf("rendering store section for backend %s: %w", backend.Name, err)
 		}
 		sections[backend.Name] = section
-		renderedNames = append(renderedNames, backend.Name)
+		enabled = append(enabled, backend.Name+":s3")
 	}
 
-	// enabled_backends lists the rendered stores as "<name>:s3" in sorted order
-	// (renderedNames follows the sorted backend list).
-	enabled := make([]string, 0, len(renderedNames))
-	for _, name := range renderedNames {
-		enabled = append(enabled, name+":s3")
+	if len(pending) > 0 {
+		conditions.SetCondition(&glance.Status.Conditions, metav1.Condition{
+			Type: conditionTypeBackendsReady, Status: metav1.ConditionFalse, ObservedGeneration: glance.Generation,
+			Reason: conditionReasonWaitingForBackends, Message: "Waiting for backends: " + strings.Join(pending, "; "),
+		})
+		// A ready default can lose its Secret between observation and render.
+		// A stale backend holds the projection too: rendering without it would
+		// roll its store out of the API and back in one status write later.
+		// The backend's next status write wakes this Glance through the watch.
+		if _, ok := sections[defaultBackend]; !ok || stale {
+			return ctrl.Result{}, backendsProjection{hosts: hosts}, nil
+		}
 	}
 
 	secretName, err := config.CreateImmutableSecret(ctx, children, r.Scheme, glance,
@@ -189,15 +204,6 @@ func (r *GlanceReconciler) reconcileBackends(ctx context.Context, children clien
 	if err != nil {
 		return ctrl.Result{}, backendsProjection{}, fmt.Errorf("creating backends Secret: %w", err)
 	}
-	if err := config.PruneImmutableSecrets(ctx, children, r.Scheme, glance, config.PruneOptions{
-		BaseName:    glance.Name + "-backends",
-		Namespace:   glance.Namespace,
-		CurrentName: secretName,
-		Retain:      defaultConfigMapRetainCount,
-	}); err != nil {
-		return ctrl.Result{}, backendsProjection{}, fmt.Errorf("pruning backends Secrets: %w", err)
-	}
-
 	projection := backendsProjection{
 		valid:           true,
 		enabledBackends: strings.Join(enabled, ","),
@@ -206,24 +212,12 @@ func (r *GlanceReconciler) reconcileBackends(ctx context.Context, children clien
 		hosts:           hosts,
 	}
 
-	if len(pending) > 0 {
+	if len(pending) == 0 {
 		conditions.SetCondition(&glance.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeBackendsReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: glance.Generation,
-			Reason:             conditionReasonWaitingForBackends,
-			Message:            "Waiting for backends: " + strings.Join(pending, "; "),
+			Type: conditionTypeBackendsReady, Status: metav1.ConditionTrue, ObservedGeneration: glance.Generation,
+			Reason: conditionReasonAllBackendsProjected, Message: "All attached backends are projected",
 		})
-		return ctrl.Result{}, projection, nil
 	}
-
-	conditions.SetCondition(&glance.Status.Conditions, metav1.Condition{
-		Type:               conditionTypeBackendsReady,
-		Status:             metav1.ConditionTrue,
-		ObservedGeneration: glance.Generation,
-		Reason:             conditionReasonAllBackendsProjected,
-		Message:            "All attached backends are projected",
-	})
 	return ctrl.Result{}, projection, nil
 }
 
@@ -232,8 +226,16 @@ func (r *GlanceReconciler) reconcileBackends(ctx context.Context, children clien
 // consult the aggregate Ready (which also requires ConfigProjected, only True
 // after this step projects the backend), so gating here never deadlocks.
 func credentialsReady(backend *glancev1alpha1.GlanceBackend) bool {
-	cond := conditions.GetCondition(backend.Status.Conditions, conditionTypeCredentialsReady)
-	return cond != nil && cond.Status == metav1.ConditionTrue
+	c := conditions.GetCondition(backend.Status.Conditions, conditionTypeCredentialsReady)
+	return c != nil && c.Status == metav1.ConditionTrue && c.ObservedGeneration == backend.Generation
+}
+
+// credentialsStale reports whether CredentialsReady is True for an older
+// generation: the backend's spec changed and its controller has not gated the
+// new one yet. A backend that never reported, or reports False, is not stale.
+func credentialsStale(backend *glancev1alpha1.GlanceBackend) bool {
+	c := conditions.GetCondition(backend.Status.Conditions, conditionTypeCredentialsReady)
+	return c != nil && c.Status == metav1.ConditionTrue && c.ObservedGeneration != backend.Generation
 }
 
 // renderStoreSection renders one credential-ready backend's [<name>] store

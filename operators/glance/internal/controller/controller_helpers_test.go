@@ -89,6 +89,7 @@ func credentialReadyBackend(name, glanceRef string, isDefault bool) *glancev1alp
 		Type:               conditionTypeCredentialsReady,
 		Status:             metav1.ConditionTrue,
 		Reason:             conditionReasonCredentialsAvailable,
+		ObservedGeneration: b.Generation,
 		LastTransitionTime: metav1.Now(),
 	}}
 	return b

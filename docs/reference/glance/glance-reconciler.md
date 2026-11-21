@@ -53,14 +53,17 @@ minimal.
 ## Conditions
 
 The aggregate `Ready` condition is `True` (reason `AllReady`) exactly when all
-ten sub-conditions are `True`; otherwise `False` (`NotAllReady`).
+ten sub-conditions are `True` for the current generation and the pass succeeds.
+A missing, stale or unready condition gives `NotAllReady`. A failed pass with
+all ten conditions current and true gives `ReconcileError`. During rollout,
+`DeploymentReady` waits for all desired replicas to be updated, ready and available.
 
 | Type | True reasons | False reasons |
 | --- | --- | --- |
 | `SecretsReady` | `SecretsAvailable` | `TargetClusterUnavailable`, `SecretStoreNotReady`, `ClusterSecretStoreUnsupported`, `WaitingForDBCredentials`, `WaitingForServiceUserCredentials`, `ConfigError` |
 | `BackendsReady` | `AllBackendsProjected` | `WaitingForBackends`, `NoDefaultBackend` |
 | `DatabaseReady` | `DatabaseSynced` | `ClusterNotReady`, `WaitingForDatabase`, `DBSyncFailed`, `DBSyncInProgress`, `WaitingForBackends`, `ImageReleaseMismatch`, `VersionParseError`, `DowngradeNotSupported`, `UpgradePathInvalid`, `UpgradeTargetChanged`, `ExpandInProgress`, `MigrateInProgress`, `UpgradeRollingUpdate`, `ContractInProgress`, `ExpandFailed`, `MigrateFailed`, `ContractFailed` |
-| `DeploymentReady` | `DeploymentReady` | `WaitingForDeployment`, `WaitingForBackends` |
+| `DeploymentReady` | `DeploymentReady` | `WaitingForDeployment`, `ProgressDeadlineExceeded`, `WaitingForBackends` |
 | `GlanceAPIReady` | `APIHealthy` | `APIUnhealthy`, `EndpointNotReady`, `HealthCheckTimeout`, `ConnectionFailed`, `HealthCheckFailed` |
 | `HPAReady` | `HPAReady`, `HPANotRequired` | — (errors propagate) |
 | `VPAReady` | `VPAReady`, `VPANotRequired` | `VPANotInstalled`, `CapabilityProbeFailed`, `VPAError` |
@@ -139,9 +142,9 @@ The Backends step lists the attached `GlanceBackend`s (via the
 `spec.glanceRef.name` field index), sorts them by name for deterministic output,
 and renders one `[<name>]` store section per **credential-ready** backend into a
 content-hashed backends Secret (rolled on any content change, 3 historical
-retained). It gates each backend on `CredentialsReady==True` — never the
-aggregate `Ready`, which also requires `ConfigProjected` and would deadlock,
-since `ConfigProjected` only turns True after this step projects the backend.
+retained). Each backend must report `CredentialsReady==True` for its current
+generation. Waiting for its aggregate `Ready` would deadlock because
+`ConfigProjected` only turns true after this step projects the backend.
 
 - **Exactly-one-Ready-default rule.** Zero or more than one credential-ready
   default is an invalid projection (`BackendsReady=False / NoDefaultBackend`):
@@ -149,7 +152,16 @@ since `ConfigProjected` only turns True after this step projects the backend.
 - **Per-backend fault isolation.** A backend whose credentials Secret is
   missing/unreadable, or whose rendered values carry a control character, is
   skipped with a `GlanceBackendSkipped` Warning event on the Glance CR while the
-  healthy siblings keep projecting.
+  healthy siblings keep projecting. If the default store is skipped, the API
+  keeps its mounted configuration and a first install waits.
+- **Spec edits hold the projection.** A backend whose spec changed after it
+  last reported `CredentialsReady==True` holds the whole projection
+  (`BackendsReady=False / WaitingForBackends`). The API keeps its mounted
+  configuration until the backend's controller has checked the new spec, so an
+  edit never rolls the store out of `enabled_backends` and back in. A backend
+  that has not reported yet, or reports `False`, holds nothing.
+
+Pruning waits for rollout and preserves older ConfigMaps still mounted by Jobs.
 
 ## Database
 
@@ -277,15 +289,13 @@ across a planned upgrade to avoid the noise.
   digest annotation, and the operator omits it while
   `spec.extraConfig.database.connection_parameters` is set; see
   [Database socket timeouts](../../guides/advanced-configuration.md#database-socket-timeouts).
-- **Deletion** runs the `glance.openstack.c5c3.io/finalizer`: it issues Delete
-  on the MariaDB `Database`/`User`/`Grant` CRs before the owner-ref chain
-  disappears, emitting `FinalizingDatabase` while cleanup remains and
-  `DatabaseFinalized` when the finalizer is released. Every other owned resource
-  is namespace-scoped with a controller owner reference, so Kubernetes garbage
-  collection reclaims it. A CR whose target cluster was deregistered in the meantime cannot
-  reach any of it: the finalizer is released against no cleanup at all, a
-  `RemoteChildrenAbandoned` Warning names what stays behind, and the CR
-  leaves etcd instead of hanging in Terminating. See
+- **Deletion** runs the `glance.openstack.c5c3.io/finalizer`. In managed mode,
+  it requests deletion of Glance-owned MariaDB `Database`, `User` and `Grant`
+  CRs (`FinalizingDatabase`). Absent or terminating CRs allow finalization
+  (`DatabaseFinalized`). Brownfield databases skip this step.
+  Kubernetes garbage collection handles local children. If a target stays
+  unreachable through the abandonment window, Glance releases its finalizer
+  and emits a `RemoteChildrenAbandoned` warning. See
   [Target Clusters](../target-clusters.md).
   The `GlanceBackend` controller has no finalizer: the
   operator provisions no S3 resources, so there is nothing to clean up remotely.
@@ -316,6 +326,7 @@ watches:
   `spec.serviceUser.secretRef.name` / `spec.database.secretRef.name` field
   index) or through an attached backend's S3 credentials Secret (via the backend
   secret-name index).
+- **Policy ConfigMaps** referenced by `spec.policyOverrides.configMapRef`.
 - **GlanceBackends**, mapped to their parent Glance with no generation predicate
   — a backend's `CredentialsReady` flip is exactly what wakes the aggregation.
 - **MariaDB** clusters referenced by `spec.database.clusterRef`, so an upstream

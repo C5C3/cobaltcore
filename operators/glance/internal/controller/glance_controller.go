@@ -16,7 +16,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -25,7 +24,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
@@ -38,6 +36,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/deployment"
 	"github.com/c5c3/cobaltcore/internal/common/gateway"
 	"github.com/c5c3/cobaltcore/internal/common/healthcheck"
+	"github.com/c5c3/cobaltcore/internal/common/lifecycle"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
 	"github.com/c5c3/cobaltcore/internal/common/secrets"
@@ -91,14 +90,14 @@ func glanceSecretNameExtractor(obj client.Object) []string {
 	return names
 }
 
-// registerGlanceIndexes registers the Glance field indexer under
-// GlanceSecretNameIndexKey with the given FieldIndexer.
-// GlanceReconciler.SetupWithManager calls this once against
-// mgr.GetFieldIndexer() (next commit) so secretToGlanceMapper can resolve a
-// Secret event to the referencing Glance CRs via an O(1) reverse lookup instead
-// of an unfiltered namespace-scoped List.
+const policyConfigMapIndexKey = "spec.policyOverrides.configMapRef.name"
+
 func registerGlanceIndexes(ctx context.Context, indexer client.FieldIndexer) error {
-	return watch.RegisterSecretNameIndex(ctx, indexer, &glancev1alpha1.Glance{}, GlanceSecretNameIndexKey, glanceSecretNameExtractor)
+	obj := &glancev1alpha1.Glance{}
+	if err := watch.RegisterSecretNameIndex(ctx, indexer, obj, GlanceSecretNameIndexKey, glanceSecretNameExtractor); err != nil {
+		return err
+	}
+	return watch.RegisterParentRefIndex(ctx, indexer, obj, policyConfigMapIndexKey, glancePolicyConfigMapRef)
 }
 
 // GlanceBackendGlanceRefIndexKey is the field-indexer key under which
@@ -283,14 +282,10 @@ var httpRouteGVK = schema.GroupVersionKind{
 	Kind:    "HTTPRoute",
 }
 
-// glanceSkeleton bundles the shared controller-skeleton glue (Ready
-// aggregation, no-op-skipping status writes, config-failure marking) with
-// glance's sub-condition vocabulary and status accessor. The wrapper helpers
-// below delegate to it; the pipeline wiring that also uses it (updateStatus,
-// RunParallelGroup) lands in the next commit.
 var glanceSkeleton = commonreconcile.Skeleton[*glancev1alpha1.Glance, glancev1alpha1.GlanceStatus]{
-	SubConditionTypes: subConditionTypes,
-	Conditions:        func(g *glancev1alpha1.Glance) *[]metav1.Condition { return &g.Status.Conditions },
+	RequireCurrentGeneration: true,
+	SubConditionTypes:        subConditionTypes,
+	Conditions:               func(g *glancev1alpha1.Glance) *[]metav1.Condition { return &g.Status.Conditions },
 }
 
 // conditionReasonConfigError is the SecretsReady=False reason set when
@@ -345,9 +340,9 @@ var GlanceRemoteChildKinds = []schema.GroupVersionKind{
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;patch;delete
 // Unexercised by the e2e suites; used by operators/glance/internal/controller/reconcile_deployment.go:210 (reconcileDeployment) to delete services.
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;patch;delete
-// Unexercised by the e2e suites; used by operators/glance/internal/controller/reconcile_config.go:181 (reconcileConfig) to delete configmaps.
+// Unexercised by the e2e suites; used by operators/glance/internal/controller/reconcile_config.go:170 (pruneConfigHistory) to delete configmaps.
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;delete
-// Unexercised by the e2e suites; used by operators/glance/internal/controller/reconcile_backends.go:192 (reconcileBackends) to delete secrets.
+// Unexercised by the e2e suites; used by operators/glance/internal/controller/reconcile_config.go:176 (pruneConfigHistory) to delete secrets.
 // Unexercised by the e2e suites; used by operators/glance/internal/controller/reconcile_dbconnection_secret.go:49 (reconcileDBConnectionSecret) to update secrets.
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;delete
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
@@ -379,7 +374,7 @@ var GlanceRemoteChildKinds = []schema.GroupVersionKind{
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;patch;delete
 // Unexercised by the e2e suites; used by internal/common/deployment/vpa_flow.go:190 (ReconcileVPAs) to create and patch verticalpodautoscalers.
 // Unexercised by the e2e suites; used by internal/common/deployment/vpa_flow.go:213 (ReconcileVPAs) to delete verticalpodautoscalers.
-// Unexercised by the e2e suites; used by operators/glance/internal/controller/glance_controller.go:826 (SetupWithManager) to list and watch verticalpodautoscalers.
+// Unexercised by the e2e suites; used by operators/glance/internal/controller/glance_controller.go:716 (SetupWithManager) to list and watch verticalpodautoscalers.
 // +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch;create;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;patch;delete
 // Required to create, patch and delete HTTPRoutes that expose the Glance API externally.
@@ -392,123 +387,34 @@ var GlanceRemoteChildKinds = []schema.GroupVersionKind{
 // Unexercised by the e2e suites; used by internal/common/validation/validation.go:312 (PriorityClassExists) to get priorityclasses.
 // +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get
 
-// Reconcile is the main reconciliation loop for the Glance CR. It fetches the
-// CR, drives the finalizer-gated deletion path, ends the pass for a suspended
-// CR, ensures the finalizer, then runs the sub-reconciler pipeline threading
-// the digests, projection, and config artefacts through the closures. Every
-// exit funnels through updateStatus, which re-aggregates the Ready condition
-// and stamps ObservedGeneration.
+// Reconcile runs the shared service lifecycle around the Glance pipeline.
+// r.Client reads Glance and GlanceBackend objects on the management cluster.
+// The hooks receive the target cluster's client for workloads, or r.Client for local workloads.
 func (r *GlanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	var glance glancev1alpha1.Glance
-	if err := r.Get(ctx, req.NamespacedName, &glance); err != nil {
-		if apierrors.IsNotFound(err) {
-			log.FromContext(ctx).V(1).Info("Glance resource not found; likely deleted")
-			return ctrl.Result{}, nil
-		}
-		return ctrl.Result{}, fmt.Errorf("fetching Glance: %w", err)
+	driver := lifecycle.Service[*glancev1alpha1.Glance, glancev1alpha1.GlanceStatus]{
+		Client:          r.Client,
+		Resolver:        r.Resolver,
+		Recorder:        r.Recorder,
+		Skeleton:        glanceSkeleton,
+		Finalizer:       glanceFinalizer,
+		TargetCondition: "SecretsReady",
+		Fields: func(g *glancev1alpha1.Glance) lifecycle.Fields[glancev1alpha1.GlanceStatus] {
+			return lifecycle.Fields[glancev1alpha1.GlanceStatus]{
+				Target:             g.Spec.TargetClusterRef,
+				Suspended:          g.Spec.Suspend,
+				Status:             &g.Status,
+				CopyStatus:         g.Status.DeepCopy,
+				ObservedGeneration: &g.Status.ObservedGeneration,
+			}
+		},
+		Sync:     r.reconcileService,
+		Finalize: r.reconcileDelete,
+		Sweep:    r.reconcileDeleteRemoteChildren,
 	}
+	return driver.Reconcile(ctx, req, &glancev1alpha1.Glance{})
+}
 
-	// Handle deletion via the finalizer: issue Delete on the MariaDB CRs, then
-	// release the finalizer once no live (not-yet-deleted) resource remains. The
-	// cleanup itself sets no conditions, so it returns directly without
-	// updateStatus; only the hold on an unresolvable target below reports.
-	//
-	// It comes before the target-cluster resolution below and uses the deletion
-	// variant, which never fails the pass: a CR whose cluster was deregistered
-	// after the finalizer went on would otherwise short-circuit on the
-	// unresolvable ref on every pass and stay Terminating forever. A target that
-	// has not resolved yet requeues instead of being given up on — engagement is
-	// asynchronous, so an operator restart looks exactly like a deregistration
-	// until the provider has synced.
-	if !glance.DeletionTimestamp.IsZero() {
-		children, wait := commonmulticluster.ResolveChildrenClientForDeletion(
-			ctx, r.Resolver, r.Client, glance.Spec.TargetClusterRef, *glance.DeletionTimestamp)
-		if wait {
-			// The hold goes on the CR, not only into the operator's log. It is a
-			// deliberate state a CR can sit in for minutes, and "Terminating,
-			// waiting on the target cluster" has to be distinguishable from a
-			// wedged finalizer without correlating logs across replicas. This exit
-			// precedes the pipeline's status snapshot below, so it takes its own
-			// baseline for the skip-unchanged write.
-			statusBefore := glance.Status.DeepCopy()
-			glanceSkeleton.MarkFailed(&glance, "SecretsReady",
-				commonmulticluster.TargetClusterUnavailable,
-				fmt.Errorf("target cluster %s does not resolve; waiting at least %s before abandoning its children",
-					glance.Spec.TargetClusterRef.Name, commonmulticluster.AbandonAfter))
-			return r.updateStatus(ctx, &glance, statusBefore,
-				ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil)
-		}
-		if result, err := r.reconcileDelete(ctx, children, &glance); !result.IsZero() || err != nil {
-			return result, err
-		}
-		// The label-selected sweep runs after the named MariaDB cleanup, never
-		// before it: that flow waits one pass on the CRs it deletes by name, and a
-		// sweep running first would delete them out from under it. The ordering
-		// mirrors the local one, where the garbage collection cascade starts only
-		// once every finalizer has been released.
-		if err := r.reconcileDeleteRemoteChildren(ctx, children, &glance); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, nil
-	}
-
-	// A suspended CR ends the pass here. The deletion branch above still runs
-	// its cleanup; nothing below runs until spec.suspend is cleared.
-	if stop, gateResult, err := commonreconcile.GateSuspend(ctx, r.Client, r.Recorder, &glance,
-		&glance.Status.Conditions, glance.Spec.Suspend); stop || err != nil {
-		return gateResult, err
-	}
-
-	// Resolve the client every child object of this CR is read and written with.
-	// The embedded client stays on the management cluster (the CR, its status,
-	// its finalizer, and the sibling GlanceBackends live there); children carries
-	// everything the CR projects into the target cluster. The resolution runs
-	// before the finalizer is added so a CR naming an unresolvable cluster stays
-	// clean of finalizers: nothing was created for it, so there is nothing to
-	// clean up, and a finalizer would only block its deletion.
-	children, err := commonmulticluster.ResolveChildrenClient(ctx, r.Resolver, r.Client, glance.Spec.TargetClusterRef)
-	if err != nil {
-		// This exit precedes the pipeline's status snapshot below, so it takes its
-		// own baseline for the skip-unchanged write.
-		statusBefore := glance.Status.DeepCopy()
-		glanceSkeleton.MarkFailed(&glance, "SecretsReady", commonmulticluster.TargetClusterUnavailable, err)
-		return r.updateStatus(ctx, &glance, statusBefore,
-			ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil)
-	}
-
-	// Ensure the finalizer is installed before any sub-reconciler runs so a
-	// deletion issued before the next pass still funnels through reconcileDelete.
-	// Requeuing after the Update guarantees the next reconcile observes the
-	// persisted finalizer rather than the in-memory copy.
-	if added, err := commonreconcile.EnsureFinalizer(ctx, r.Client, &glance, glanceFinalizer); err != nil {
-		return ctrl.Result{}, err
-	} else if added {
-		return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
-	}
-
-	// The remote-children finalizer goes on only when the CR projects onto a
-	// target cluster. A local CR keeps the garbage collection cascade, which
-	// reaps its children from their owner references, so it has nothing for this
-	// finalizer to hold the CR open for. spec.targetClusterRef is immutable, so
-	// the condition cannot flip under a live CR.
-	if glance.Spec.TargetClusterRef != nil {
-		if added, err := commonreconcile.EnsureFinalizer(ctx, r.Client, &glance,
-			commonmulticluster.RemoteChildrenFinalizer); err != nil {
-			return ctrl.Result{}, err
-		} else if added {
-			return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
-		}
-	}
-
-	// Snapshot the persisted status so updateStatus can skip the write when a
-	// pass leaves status unchanged (no write → no watch event → no
-	// resourceVersion churn). Taken after the finalizer add so an early requeue
-	// there does not race a status write.
-	statusBefore := glance.Status.DeepCopy()
-
-	// Pipeline locals threaded through the step closures. Each step runs in
-	// dependency order; the first to return a non-zero result or an error
-	// short-circuits the chain and funnels through updateStatus.
+func (r *GlanceReconciler) reconcileService(ctx context.Context, children client.Client, glance *glancev1alpha1.Glance) (ctrl.Result, error) {
 	var (
 		// authTokenDigest is the SHA-256 of the service-user password produced by
 		// reconcileSecrets; stamped into a pod-template annotation so a rotated
@@ -527,24 +433,16 @@ func (r *GlanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		art configArtifacts
 	)
 	pipeline := []commonreconcile.Step{
-		{Name: "Secrets", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			var (
-				res ctrl.Result
-				err error
-			)
-			res, authTokenDigest, err = r.reconcileSecrets(ctx, children, &glance)
+		{Name: "Secrets", Fn: func(ctx context.Context) (res ctrl.Result, err error) {
+			res, authTokenDigest, err = r.reconcileSecrets(ctx, children, glance)
 			return res, err
 		}},
 		// reconcileDBConnectionSecret materialises the DB URL into the derived
 		// <glance.Name>-db-connection Secret. It runs after Secrets (upstream
 		// credentials must be synced) and before Config; failures set
 		// SecretsReady=False, the same condition reconcileSecrets uses.
-		{Name: "DBConnectionSecret", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			var (
-				res ctrl.Result
-				err error
-			)
-			res, dsnDigest, err = r.reconcileDBConnectionSecret(ctx, children, &glance)
+		{Name: "DBConnectionSecret", Fn: func(ctx context.Context) (res ctrl.Result, err error) {
+			res, dsnDigest, err = r.reconcileDBConnectionSecret(ctx, children, glance)
 			return res, err
 		}},
 		// reconcileBackends aggregates the attached, credential-ready backends
@@ -552,37 +450,29 @@ func (r *GlanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		// short-circuit the pipeline — the step returns a zero result so
 		// first-install can proceed, and backend status flips re-enqueue this
 		// Glance via the backend watch.
-		{Name: "Backends", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			var (
-				res ctrl.Result
-				err error
-			)
-			res, projection, err = r.reconcileBackends(ctx, children, &glance)
+		{Name: "Backends", Fn: func(ctx context.Context) (res ctrl.Result, err error) {
+			res, projection, err = r.reconcileBackends(ctx, children, glance)
 			return res, err
 		}},
 		// reconcileConfig renders glance-api.conf into an immutable ConfigMap. On
 		// an invalid projection it returns the live Deployment's last-good artefact
 		// names instead of re-rendering. It self-marks SecretsReady=False on
 		// failure via markConfigFailed, so the wrapper only threads the result.
-		{Name: "Config", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			var (
-				res ctrl.Result
-				err error
-			)
-			res, art, err = r.reconcileConfig(ctx, children, &glance, projection)
+		{Name: "Config", Fn: func(ctx context.Context) (res ctrl.Result, err error) {
+			res, art, err = r.reconcileConfig(ctx, children, glance, projection)
 			return res, err
 		}},
 		// reconcileDatabase provisions/migrates the schema. It waits (requeue)
 		// while art.configMapName is empty (no rendered config to db-sync yet).
 		{Name: "Database", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcileDatabase(ctx, children, &glance, art.configMapName)
+			return r.reconcileDatabase(ctx, children, glance, art.configMapName)
 		}},
 		// reconcileDeployment ensures the API Deployment/Service/PDB and stamps the
 		// status endpoint. It re-applies the last-good config on an invalid
 		// projection when a Deployment exists, else waits for a ready default
 		// backend.
 		{Name: "Deployment", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcileDeployment(ctx, children, &glance, art, dsnDigest, authTokenDigest)
+			return r.reconcileDeployment(ctx, children, glance, art, dsnDigest, authTokenDigest)
 		}},
 		// Once the Deployment/Service/Config outputs are in place, HTTPRoute,
 		// HealthCheck, HPA, NetworkPolicy, and DBPurge have no inter-dependency and
@@ -590,7 +480,7 @@ func (r *GlanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		// self-instruments its members, so this step carries no sub_reconciler
 		// name.
 		{Fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcileParallelGroup(ctx, &glance, []commonreconcile.ParallelStep[*glancev1alpha1.Glance]{
+			return glanceSkeleton.RunParallelGroup(ctx, glance, instrumenter.Instrument, []commonreconcile.ParallelStep[*glancev1alpha1.Glance]{
 				{
 					Name:          "HTTPRoute",
 					ConditionType: conditionTypeHTTPRouteReady,
@@ -601,9 +491,7 @@ func (r *GlanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 				{
 					Name:          "HealthCheck",
 					ConditionType: conditionTypeGlanceAPIReady,
-					Fn: func(ctx context.Context, g *glancev1alpha1.Glance) (ctrl.Result, error) {
-						return r.reconcileHealthCheck(ctx, g)
-					},
+					Fn:            r.reconcileHealthCheck,
 				},
 				{
 					Name:          "HPA",
@@ -641,17 +529,23 @@ func (r *GlanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 
 	result, err := commonreconcile.RunPipeline(ctx, instrumenter.Instrument, pipeline)
+	// Prune only after the Deployment and purge CronJob use the new revisions.
+	if err == nil && result.IsZero() && projection.valid {
+		if err = r.pruneConfigHistory(ctx, children, glance, art); err != nil {
+			markConfigFailed(glance, err)
+		}
+	}
 	result = healthcheck.ScheduleReprobe(result, err, &r.healthProbeCache,
-		client.ObjectKeyFromObject(&glance))
-	return r.updateStatus(ctx, &glance, statusBefore, result, err)
+		client.ObjectKeyFromObject(glance))
+	return result, err
 }
 
 // reconcileDelete drives the finalizer cleanup when the Glance CR is being
-// deleted. It is a no-op when the finalizer is absent. Otherwise it issues
-// Delete on the MariaDB Database/User/Grant CRs (idempotent, NotFound-tolerant)
-// and, while at least one of them was still live (not yet issued a Delete),
-// holds the finalizer for one more pass so the schema teardown is triggered
-// before the owner-ref chain disappears. Once no live resource remains it drops
+// deleted. It is a no-op when the finalizer is absent. In managed mode
+// (spec.database.clusterRef is set) it requests deletion of the MariaDB
+// Database, User, and Grant this Glance owns, and holds the finalizer for one
+// more pass whenever it requested one, so the schema teardown starts before the
+// owner-ref chain disappears. A brownfield CR skips that step. It then drops
 // the per-CR metrics, evicts the health-probe cache, and releases the finalizer.
 //
 // A nil children client means the target cluster this CR named is no longer
@@ -663,33 +557,22 @@ func (r *GlanceReconciler) reconcileDelete(ctx context.Context, children client.
 		return ctrl.Result{}, nil
 	}
 
-	key := client.ObjectKey{Name: glance.Name, Namespace: glance.Namespace}
-
 	if children == nil {
 		r.Recorder.Event(glance, corev1.EventTypeWarning, "RemoteChildrenAbandoned",
-			"Target cluster is no longer registered; releasing the finalizer without deleting the MariaDB Database, User, and Grant on it")
-	} else {
-		// Observe whether any MariaDB CR is still live BEFORE issuing the Delete: a
-		// Delete flips DeletionTimestamp, so a post-Delete check would always report
-		// none-live and release immediately. Gating on the pre-Delete observation
-		// keeps the CR alive one extra pass so the teardown is actually triggered.
-		hasLive, err := database.HasLiveResources(ctx, children, key)
+			"Target cluster is no longer registered; releasing the Glance finalizer")
+	} else if glance.Spec.Database.ClusterRef != nil {
+		requested, err := database.FinalizeOwnedResources(ctx, children, r.Scheme, glance)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
-
-		if err := database.FinalizeResources(ctx, children, key); err != nil {
-			return ctrl.Result{}, err
-		}
-
-		if hasLive {
+		if requested {
 			r.Recorder.Event(glance, corev1.EventTypeNormal, "FinalizingDatabase",
 				"Cleaning up MariaDB Database, User, and Grant before removing Glance")
 			return ctrl.Result{RequeueAfter: RequeueDatabaseWait}, nil
 		}
 
 		r.Recorder.Event(glance, corev1.EventTypeNormal, "DatabaseFinalized",
-			"MariaDB Database, User, and Grant marked for deletion; releasing finalizer")
+			"Owned MariaDB resources are absent or terminating; releasing finalizer")
 	}
 
 	controllerutil.RemoveFinalizer(glance, glanceFinalizer)
@@ -711,38 +594,6 @@ func (r *GlanceReconciler) reconcileDelete(ctx context.Context, children client.
 func (r *GlanceReconciler) reconcileDeleteRemoteChildren(ctx context.Context, children client.Client, glance *glancev1alpha1.Glance) error {
 	return commonmulticluster.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
 		glance, glance.Spec.TargetClusterRef, children, GlanceRemoteChildKinds)
-}
-
-// updateStatus persists the current status conditions and returns the given
-// result and error, delegating to the shared skeleton: the write is skipped when
-// the pass left status semantically unchanged from the statusBefore snapshot, a
-// failed write is joined with reconcileErr, and the mutate hook re-aggregates the
-// Ready condition on every persist and stamps status.observedGeneration.
-func (r *GlanceReconciler) updateStatus(ctx context.Context, glance *glancev1alpha1.Glance, statusBefore *glancev1alpha1.GlanceStatus, result ctrl.Result, reconcileErr error) (ctrl.Result, error) {
-	return glanceSkeleton.UpdateStatus(ctx, r.Client, glance, statusBefore, &glance.Status, func() {
-		glance.Status.ObservedGeneration = glance.Generation
-	}, result, reconcileErr)
-}
-
-// setReadyCondition sets the aggregate Ready condition based on all
-// sub-conditions, delegating to the shared skeleton with glance's sub-condition
-// vocabulary.
-func setReadyCondition(glance *glancev1alpha1.Glance) {
-	glanceSkeleton.SetReady(glance)
-}
-
-// reconcileParallelGroup runs the given sub-reconcilers concurrently, delegating
-// to the shared skeleton: each member operates on its own DeepCopy of the Glance
-// CR, conditions from every member — including those that succeeded before a
-// peer failed — are merged back into the primary glance, and on success the
-// shortest non-zero RequeueAfter is returned. Members instrument individually
-// via instrumenter.Instrument.
-func (r *GlanceReconciler) reconcileParallelGroup(
-	ctx context.Context,
-	glance *glancev1alpha1.Glance,
-	subs []commonreconcile.ParallelStep[*glancev1alpha1.Glance],
-) (ctrl.Result, error) {
-	return glanceSkeleton.RunParallelGroup(ctx, glance, instrumenter.Instrument, subs)
 }
 
 // SetupWithManager registers the GlanceReconciler with the controller manager.
@@ -834,11 +685,14 @@ func (r *GlanceReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 			return glance.Spec.TargetClusterRef
 		})
 
+	options := bootstrap.TypedControllerOptions[mcreconcile.Request](r.MaxConcurrentReconciles)
+	// multicluster-runtime does not inherit name validation from the host manager.
+	options.SkipNameValidation = local.GetControllerOptions().SkipNameValidation
 	b := mcbuilder.ControllerManagedBy(mgr).
 		// Shared controller options: MaxConcurrentReconciles lets independent CRs
 		// reconcile in parallel, and the tuned RateLimiter caps per-item failure
 		// backoff at 30s (see bootstrap.TypedControllerOptions).
-		WithOptions(bootstrap.TypedControllerOptions[mcreconcile.Request](r.MaxConcurrentReconciles)).
+		WithOptions(options).
 		// Filter the CR's own status-only updates so Status().Update does not
 		// re-wake the controller (see watch.CRUpdatePredicate).
 		For(&glancev1alpha1.Glance{}, mcbuilder.WithPredicates(watch.CRUpdatePredicate()), engageLocal, engageNoProviders).
@@ -882,6 +736,13 @@ func (r *GlanceReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	// EnqueueRequestForOwner would never match them.
 	b, err = commonmulticluster.AddInputWatch(b, local.GetScheme(), targets, &corev1.Secret{},
 		secretToGlanceWithBackendsMapper(local.GetClient()))
+	if err != nil {
+		return err
+	}
+
+	// A referenced policy ConfigMap is owned by the user and does not match Owns.
+	b, err = commonmulticluster.AddInputWatch(b, local.GetScheme(), targets, &corev1.ConfigMap{},
+		policyConfigMapToGlanceMapper(local.GetClient()))
 	if err != nil {
 		return err
 	}

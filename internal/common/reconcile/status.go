@@ -26,23 +26,36 @@ import (
 // sub-reconciler takes when it degrades after the CR was already Ready — so
 // Ready never stays stale-True when a sub-condition flips (SC-CHAOS-006).
 func SetAggregateReady(conds *[]metav1.Condition, observedGeneration int64, subConditionTypes []string) {
-	if conditions.AllTrue(*conds, subConditionTypes...) {
-		conditions.SetCondition(conds, metav1.Condition{
-			Type:               "Ready",
-			Status:             metav1.ConditionTrue,
-			ObservedGeneration: observedGeneration,
-			Reason:             "AllReady",
-			Message:            "All sub-conditions are ready",
-		})
-	} else {
-		conditions.SetCondition(conds, metav1.Condition{
-			Type:               "Ready",
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: observedGeneration,
-			Reason:             "NotAllReady",
-			Message:            "One or more sub-conditions are not ready",
-		})
+	setAggregateReady(conds, observedGeneration, subConditionTypes, false, nil)
+}
+
+func setAggregateReady(conds *[]metav1.Condition, generation int64, required []string, requireCurrent bool, passErr error) {
+	ready := metav1.Condition{
+		Type: "Ready", ObservedGeneration: generation, Status: metav1.ConditionTrue,
+		Reason: "AllReady", Message: "All sub-conditions are ready",
 	}
+	for _, name := range required {
+		c := conditions.GetCondition(*conds, name)
+		switch {
+		case c == nil:
+			ready.Message = name + " has not been reported"
+		case requireCurrent && c.ObservedGeneration != generation:
+			ready.Message = fmt.Sprintf("%s last observed generation %d", name, c.ObservedGeneration)
+		case c.Status != metav1.ConditionTrue:
+			ready.Message = name + ": " + c.Reason
+		default:
+			continue
+		}
+		ready.Status, ready.Reason = metav1.ConditionFalse, "NotAllReady"
+		if !requireCurrent {
+			ready.Message = "One or more sub-conditions are not ready"
+		}
+		break
+	}
+	if requireCurrent && passErr != nil && ready.Status == metav1.ConditionTrue {
+		ready.Status, ready.Reason, ready.Message = metav1.ConditionFalse, "ReconcileError", "The reconciliation pass failed"
+	}
+	conditions.SetCondition(conds, ready)
 }
 
 // UpdateStatus persists obj's status and returns the given result and error.

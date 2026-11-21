@@ -349,8 +349,11 @@ func TestReconcileDelete_LiveResourcesRetainFinalizer(t *testing.T) {
 	g := NewGomegaWithT(t)
 	glance := testGlance()
 	glance.Finalizers = []string{glanceFinalizer}
+	glance.Spec.Database.Host = ""
+	glance.Spec.Database.ClusterRef = &corev1.LocalObjectReference{Name: "managed-db"}
 	// A live MariaDB Database owned by this Glance (key is the bare CR name).
 	mdb := &mariadbv1alpha1.Database{}
+	mdb.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(glance, glancev1alpha1.GroupVersion.WithKind("Glance"))}
 	mdb.Name = "test-glance"
 	mdb.Namespace = "default"
 	r := newGlanceTestReconciler(glance, mdb)
@@ -393,15 +396,21 @@ func TestSetReadyCondition_TrueOnlyWhenAllSubConditionsTrue(t *testing.T) {
 	// Every sub-condition True → aggregate Ready True.
 	for _, ct := range subConditionTypes {
 		conditions.SetCondition(&glance.Status.Conditions, metav1.Condition{
-			Type:   ct,
-			Status: metav1.ConditionTrue,
-			Reason: "OK",
+			Type:               ct,
+			ObservedGeneration: glance.Generation,
+			Status:             metav1.ConditionTrue,
+			Reason:             "OK",
 		})
 	}
-	setReadyCondition(glance)
+	glanceSkeleton.SetReady(glance)
 	ready := conditions.GetCondition(glance.Status.Conditions, "Ready")
 	g.Expect(ready).NotTo(BeNil())
 	g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
+
+	glance.Generation++
+	glanceSkeleton.SetReady(glance)
+	g.Expect(conditions.GetCondition(glance.Status.Conditions, "Ready").Message).To(ContainSubstring("last observed generation"))
+	glance.Generation--
 
 	// Flip one sub-condition False → aggregate Ready flips False.
 	conditions.SetCondition(&glance.Status.Conditions, metav1.Condition{
@@ -409,7 +418,7 @@ func TestSetReadyCondition_TrueOnlyWhenAllSubConditionsTrue(t *testing.T) {
 		Status: metav1.ConditionFalse,
 		Reason: "Degraded",
 	})
-	setReadyCondition(glance)
+	glanceSkeleton.SetReady(glance)
 	ready = conditions.GetCondition(glance.Status.Conditions, "Ready")
 	g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
 }
@@ -474,12 +483,12 @@ func TestGlanceBackendGlanceRefExtractor(t *testing.T) {
 	g.Expect(glanceBackendGlanceRefExtractor(&corev1.Secret{})).To(BeNil())
 }
 
-func TestRegisterGlanceIndexes_RegistersSecretNameKey(t *testing.T) {
+func TestRegisterGlanceIndexes_RegistersInputKeys(t *testing.T) {
 	g := NewGomegaWithT(t)
 
 	idx := &recordingFieldIndexer{}
 	g.Expect(registerGlanceIndexes(context.Background(), idx)).To(Succeed())
-	g.Expect(idx.keys).To(ConsistOf(GlanceSecretNameIndexKey))
+	g.Expect(idx.keys).To(ConsistOf(GlanceSecretNameIndexKey, policyConfigMapIndexKey))
 }
 
 func TestRegisterGlanceBackendIndexes_RegistersBothKeys(t *testing.T) {
@@ -669,4 +678,29 @@ func TestReconcile_LocalCRNeverCarriesTheRemoteChildrenFinalizer(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(getGlance(t, r.Client, "test-glance").Finalizers).To(ConsistOf(glanceFinalizer),
 		"a local CR must keep the finalizer set it always had")
+}
+
+func TestGlanceDeletionPreservesForeignDatabase(t *testing.T) {
+	for _, mode := range []string{"managed", "brownfield"} {
+		t.Run(mode, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ctx := context.Background()
+			glance := testGlance()
+			if mode == "managed" {
+				glance.Spec.Database.Host = ""
+				glance.Spec.Database.ClusterRef = &corev1.LocalObjectReference{Name: "db"}
+			}
+			glance.Finalizers = []string{glanceFinalizer}
+			key := client.ObjectKeyFromObject(glance)
+			foreign := &mariadbv1alpha1.Database{ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace, UID: "foreign"}}
+			r := newGlanceTestReconciler(glance, foreign)
+			g.Expect(r.Delete(ctx, glance)).To(Succeed())
+			result, err := r.Reconcile(ctx, glanceRequest)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(result.IsZero()).To(BeTrue())
+			g.Expect(r.Get(ctx, key, foreign)).To(Succeed())
+			g.Expect(foreign.DeletionTimestamp.IsZero()).To(BeTrue())
+			g.Expect(apierrors.IsNotFound(r.Get(ctx, key, glance))).To(BeTrue())
+		})
+	}
 }

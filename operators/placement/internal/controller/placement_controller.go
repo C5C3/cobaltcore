@@ -263,7 +263,7 @@ var PlacementRemoteChildKinds = []schema.GroupVersionKind{
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;patch;delete
 // Unexercised by the e2e suites; used by operators/placement/internal/controller/reconcile_deployment.go:176 (reconcileDeployment) to delete services.
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;patch;delete
-// Unexercised by the e2e suites; used by internal/common/config/config.go:517 (pruneImmutableObjects) to delete configmaps.
+// Unexercised by the e2e suites; used by internal/common/config/config.go:544 (pruneImmutableObjects) to delete configmaps.
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;delete
 // Unexercised by the e2e suites; used by internal/common/database/connection.go:342 (ReconcileConnectionSecret) to update secrets.
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update

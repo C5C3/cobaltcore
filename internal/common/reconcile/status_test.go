@@ -28,6 +28,32 @@ import (
 
 var testSubConditionTypes = []string{"AReady", "BReady"}
 
+func TestCurrentAggregateRejectsMissingStaleFailedAndErroredObservations(t *testing.T) {
+	g := gomega.NewWithT(t)
+	gate := metav1.Condition{Type: "AReady", Status: metav1.ConditionTrue, ObservedGeneration: 1}
+	for _, tc := range []struct {
+		gate       *metav1.Condition
+		generation int64
+		passErr    error
+		message    string
+	}{
+		{nil, 1, nil, "has not been reported"},
+		{&gate, 2, nil, "last observed generation 1"},
+		{&metav1.Condition{Type: "AReady", Status: metav1.ConditionFalse, ObservedGeneration: 1, Reason: "Waiting"}, 1, nil, "Waiting"},
+		{&gate, 1, context.DeadlineExceeded, "pass failed"},
+	} {
+		var conds []metav1.Condition
+		if tc.gate != nil {
+			conds = append(conds, *tc.gate)
+		}
+		setAggregateReady(&conds, tc.generation, []string{"AReady"}, true, tc.passErr)
+		ready := meta.FindStatusCondition(conds, "Ready")
+		g.Expect(ready.Status).To(gomega.Equal(metav1.ConditionFalse))
+		g.Expect(ready.ObservedGeneration).To(gomega.Equal(tc.generation))
+		g.Expect(ready.Message).To(gomega.ContainSubstring(tc.message))
+	}
+}
+
 func TestSetAggregateReady_AllTrue(t *testing.T) {
 	g := gomega.NewWithT(t)
 
