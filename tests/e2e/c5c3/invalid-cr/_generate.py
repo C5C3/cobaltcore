@@ -3325,6 +3325,60 @@ FIXTURES: tuple[Fixture, ...] = (
             "          minAvailable: 1\n"
         ),
     ),
+    Fixture(
+        filename="167-horizon-session-backend-unknown.yaml",
+        comment=(
+            "services.horizon.session.backend of Database is outside the Enum marker of the\n"
+            "embedded horizon SessionSpec, copied into the ControlPlane CRD, so the schema\n"
+            "answers before the webhook's delegated ValidateSession runs."
+        ),
+        name="cp-horizon-session-backend-unknown",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        horizon=(
+            "    horizon:\n"
+            "      session:\n"
+            "        backend: Database\n"
+        ),
+    ),
+    Fixture(
+        filename="168-horizon-session-extraconfig-session-engine.yaml",
+        comment=(
+            "services.horizon.extraConfig.SESSION_ENGINE beside a services.horizon.session\n"
+            "block would win the child's render-time merge and drop the block. No schema\n"
+            "rule sees extraConfig; the webhook's delegated ValidateSession rejects it."
+        ),
+        name="cp-horizon-session-extraconfig-engine",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        horizon=(
+            "    horizon:\n"
+            "      session:\n"
+            "        backend: Cache\n"
+            "      extraConfig:\n"
+            '        SESSION_ENGINE: "django.contrib.sessions.backends.signed_cookies"\n'
+        ),
+    ),
+    Fixture(
+        filename="169-horizon-session-cache-extraconfig-caches.yaml",
+        comment=(
+            "services.horizon.extraConfig.CACHES while services.horizon.session.backend is\n"
+            "Cache would replace the child's CACHES whole and drop the \"sessions\" alias.\n"
+            "The webhook's delegated ValidateSession rejects it (webhook-only)."
+        ),
+        name="cp-horizon-session-extraconfig-caches",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        horizon=(
+            "    horizon:\n"
+            "      session:\n"
+            "        backend: Cache\n"
+            "      extraConfig:\n"
+            "        CACHES:\n"
+            "          default:\n"
+            "            BACKEND: django.core.cache.backends.locmem.LocMemCache\n"
+        ),
+    ),
     # --- transition wave H: Cinder entry type freeze
     #     (Test: c5c3-invalid-cr-cinder-type-freeze) ---
     Fixture(
