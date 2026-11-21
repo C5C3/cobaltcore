@@ -12,13 +12,20 @@ import "github.com/c5c3/cobaltcore/internal/common/config"
 // one source of truth. Every entry is flat (Section ""): Horizon renders a flat
 // Django settings module, not an INI file.
 //
-// Two rules govern what belongs here:
+// Three rules govern what belongs here:
 //
 //   - The registry is static. Conditionally rendered keys — the websso and
-//     multiDomain settings — are registered unconditionally, because the
-//     registry documents "this key is not the user's to set", not "this key is
-//     currently rendered". A key the operator owns whenever it renders it stays
-//     owned even in the CRs where that render is skipped.
+//     multiDomain settings, and SESSION_CACHE_ALIAS of cache sessions — are
+//     registered unconditionally, because the registry documents "this key is
+//     not the user's to set", not "this key is currently rendered". A key the
+//     operator owns whenever it renders it stays owned even in the CRs where
+//     that render is skipped.
+//
+//   - The session keys SESSION_ENGINE and SESSION_CACHE_ALIAS are reported,
+//     not rejected, where the webhook admits them: SESSION_ENGINE on a CR
+//     without spec.session, SESSION_CACHE_ALIAS on a CR without the block or
+//     with backend SignedCookies. ValidateSession rejects SESSION_ENGINE beside
+//     either backend and SESSION_CACHE_ALIAS beside backend Cache.
 //
 //   - The sanctioned-override exceptions OPENSTACK_ENDPOINT_TYPE and
 //     SECURE_PROXY_SSL_HEADER are deliberately NOT registered. The code comments
@@ -28,6 +35,18 @@ import "github.com/c5c3/cobaltcore/internal/common/config"
 //     cloud overrides OPENSTACK_ENDPOINT_TYPE, and the proxy-ssl header stays
 //     overridable per the ingress path — so a user override of either must stay
 //     silent rather than be reported or rejected.
+
+// sessionEngineImpact and sessionCacheAliasImpact are the Impacts of the two
+// reported session keys. Each names what its extraConfig override does
+// instead of the typed spec.session block.
+const (
+	sessionEngineImpact = "the typed session field selects the session store; a cache engine set " +
+		"here keeps the sessions in the default cache alias, whose image-scoped KEY_PREFIX logs every " +
+		"user out on each image change"
+	sessionCacheAliasImpact = "the typed session field selects the session store; this setting takes " +
+		"effect only beside a cache SESSION_ENGINE set in extraConfig, and backend Cache of the typed " +
+		"field renders its own name-scoped \"sessions\" alias"
+)
 
 // OwnedConfigKeys is the registry of local_settings.py Django settings the
 // operator owns. Reported entries are honored-but-surfaced when overridden in
@@ -44,8 +63,9 @@ func buildOwnedConfigKeys() []config.OwnedKey {
 		// Reported: emitted by defaultSettings (reconcile_config.go).
 		{Key: "OPENSTACK_KEYSTONE_URL", OwnedBy: "operator-computed"},
 		{Key: "ALLOWED_HOSTS", OwnedBy: "operator-computed"},
-		{Key: "CACHES", OwnedBy: "operator-computed", Impact: "drops the image-scoped KEY_PREFIX and the 1 s Memcached timeouts with ignore_exc; Horizon releases sharing one Memcached then poison each other's template cache (OfflineGenerationError, HTTP 500), and a Memcached that stops answering blocks the dashboard"},
-		{Key: "SESSION_ENGINE", OwnedBy: "operator-computed"},
+		{Key: SettingCaches, OwnedBy: "operator-computed", Impact: "drops the image-scoped KEY_PREFIX and the 1 s Memcached timeouts with ignore_exc; Horizon releases sharing one Memcached then poison each other's template cache (OfflineGenerationError, HTTP 500), and a Memcached that stops answering blocks the dashboard"},
+		{Key: SettingSessionEngine, OwnedBy: "operator-computed", Impact: sessionEngineImpact},
+		{Key: SettingSessionCacheAlias, OwnedBy: "operator-computed", Impact: sessionCacheAliasImpact},
 		{Key: "DEBUG", OwnedBy: "operator-computed"},
 		{Key: "LOGGING", OwnedBy: "operator-computed"},
 		{Key: "COMPRESS_OFFLINE", OwnedBy: "operator-computed", Impact: "static assets are pre-compressed at image build; disagreement breaks template rendering"},
