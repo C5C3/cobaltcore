@@ -38,6 +38,9 @@ var minCacheMemoryLimit = resource.MustParse("96Mi")
 // SpreadConstraintSpec.WhenUnsatisfiable.
 var spreadWhenUnsatisfiable = []corev1.UnsatisfiableConstraintAction{corev1.DoNotSchedule, corev1.ScheduleAnyway}
 
+// antiAffinityModes mirrors the Enum marker on AntiAffinityMode.
+var antiAffinityModes = []AntiAffinityMode{AntiAffinityRequired, AntiAffinityPreferred, AntiAffinityOff}
+
 // sizingComponent is one sizable component of a SizingSpec with the field path
 // it lives at, so the validators below walk every component uniformly. The
 // top level of the SizingSpec is a component too: its placement is the
@@ -210,7 +213,10 @@ func sizingComponents(fldPath *field.Path, s *SizingSpec) []sizingComponent {
 // that one component sets autoscaling or verticalAutoscaling, not both, and
 // the twin of the CEL rule and the value rule of a podDisruptionBudget block.
 // Whether a budget allows an eviction depends on the merged replica count, so
-// validateResolvedSizing checks that.
+// validateResolvedSizing checks that. On the database, cache and messaging
+// blocks it also runs the twins of the Enum marker on antiAffinity and the
+// Minimum marker on podDisruptionBudget.maxUnavailable
+// (validateBackingAvailability).
 func validateSizingSpec(fldPath *field.Path, s *SizingSpec) field.ErrorList {
 	var allErrs field.ErrorList
 	for _, c := range sizingComponents(fldPath, s) {
@@ -258,6 +264,31 @@ func validateSizingSpec(fldPath *field.Path, s *SizingSpec) field.ErrorList {
 				fmt.Sprintf("memory limit must be at least %s: the Memcached operator requires maxMemoryMB (64) plus 32Mi",
 					minCacheMemoryLimit.String())))
 		}
+	}
+	if db := s.Database; db != nil {
+		allErrs = append(allErrs, validateBackingAvailability(fldPath.Child("database"), &db.AvailabilitySizingSpec)...)
+	}
+	if c := s.Cache; c != nil {
+		allErrs = append(allErrs, validateBackingAvailability(fldPath.Child("cache"), &c.AvailabilitySizingSpec)...)
+	}
+	if m := s.Messaging; m != nil {
+		allErrs = append(allErrs, validateBackingAvailability(fldPath.Child("messaging"), &m.AvailabilitySizingSpec)...)
+	}
+	return allErrs
+}
+
+// validateBackingAvailability checks the availability fields of the backing
+// service block at path: the webhook twins of the Enum marker on antiAffinity
+// and the Minimum marker on podDisruptionBudget.maxUnavailable. An empty mode,
+// a nil budget and a nil maxUnavailable are unset and pass.
+func validateBackingAvailability(path *field.Path, a *AvailabilitySizingSpec) field.ErrorList {
+	var allErrs field.ErrorList
+	if a.AntiAffinity != "" && !slices.Contains(antiAffinityModes, a.AntiAffinity) {
+		allErrs = append(allErrs, field.NotSupported(path.Child("antiAffinity"), a.AntiAffinity, antiAffinityModes))
+	}
+	if b := a.PodDisruptionBudget; b != nil && b.MaxUnavailable != nil && *b.MaxUnavailable < 1 {
+		allErrs = append(allErrs, field.Invalid(path.Child("podDisruptionBudget", "maxUnavailable"),
+			*b.MaxUnavailable, "must be at least 1"))
 	}
 	return allErrs
 }
@@ -366,6 +397,23 @@ func validateNewPriorityClasses(
 		}
 	}
 	return allErrs
+}
+
+// sizingAvailabilityWarnings returns one warning when s sets the cache's
+// antiAffinity to Off beside a disruption budget that is not disabled: the
+// memcached-operator defaults antiAffinityPreset to soft whenever
+// spec.highAvailability exists, so the ControlPlane writes soft. fldPath is
+// the path of s; a nil s or a nil s.Cache returns nil.
+func sizingAvailabilityWarnings(fldPath *field.Path, s *SizingSpec) admission.Warnings {
+	if s == nil || s.Cache == nil || s.Cache.AntiAffinity != AntiAffinityOff {
+		return nil
+	}
+	if b := s.Cache.PodDisruptionBudget; b != nil && b.Enabled != nil && !*b.Enabled {
+		return nil
+	}
+	return admission.Warnings{fmt.Sprintf(
+		"%s: Off takes effect only when %s is false; the memcached-operator applies soft anti-affinity whenever a budget is set",
+		fldPath.Child("cache", "antiAffinity"), fldPath.Child("cache", "podDisruptionBudget", "enabled"))}
 }
 
 // sizingInertWarnings returns one warning per spec.sizing.<service> block

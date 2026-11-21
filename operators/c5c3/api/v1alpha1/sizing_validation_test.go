@@ -481,7 +481,7 @@ func TestSizingComponents_CoverEveryBlock(t *testing.T) {
 	g := NewWithT(t)
 	var s SizingSpec
 	skeletonSizing(reflect.ValueOf(&s).Elem())
-	var wantResources, wantSelectors, wantClasses, wantBudgets []string
+	var wantResources, wantSelectors, wantClasses, wantBudgets, wantModes []string
 	walkSizing(reflect.ValueOf(&s).Elem(), field.NewPath("spec"), func(path *field.Path, v reflect.Value) {
 		switch b := v.Addr().Interface().(type) {
 		case *ContainerSizingSpec:
@@ -502,10 +502,13 @@ func TestSizingComponents_CoverEveryBlock(t *testing.T) {
 		case *HorizonAPISizingSpec:
 			b.PodDisruptionBudget = &commonv1.PodDisruptionBudgetSpec{}
 			wantBudgets = append(wantBudgets, path.Child("podDisruptionBudget").String())
+		case *AvailabilitySizingSpec:
+			b.AntiAffinity = "Strict"
+			wantModes = append(wantModes, path.Child("antiAffinity").String())
 		}
 	})
 
-	var gotResources, gotSelectors, gotBudgets []string
+	var gotResources, gotSelectors, gotBudgets, gotModes []string
 	for _, err := range validateSizingSpec(field.NewPath("spec"), &s) {
 		switch {
 		case strings.HasSuffix(err.Field, ".resources.requests.cpu"):
@@ -514,12 +517,16 @@ func TestSizingComponents_CoverEveryBlock(t *testing.T) {
 			gotSelectors = append(gotSelectors, err.Field)
 		case strings.HasSuffix(err.Field, "podDisruptionBudget"):
 			gotBudgets = append(gotBudgets, err.Field)
+		case strings.HasSuffix(err.Field, ".antiAffinity"):
+			gotModes = append(gotModes, err.Field)
 		}
 	}
 	g.Expect(gotResources).To(ConsistOf(wantResources))
 	g.Expect(gotSelectors).To(ConsistOf(wantSelectors))
 	g.Expect(wantBudgets).To(HaveLen(8), "seven api blocks and horizon.api")
 	g.Expect(gotBudgets).To(ConsistOf(wantBudgets))
+	g.Expect(wantModes).To(HaveLen(3), "database, cache and messaging")
+	g.Expect(gotModes).To(ConsistOf(wantModes))
 
 	var gotClasses []string
 	for _, pc := range sizingPriorityClassNames(field.NewPath("spec"), &s) {
@@ -567,6 +574,120 @@ func TestSizingInertWarnings(t *testing.T) {
 	cp.Spec.Services.Glance = &ServiceGlanceSpec{}
 	cp.Spec.Services.Nova = &ServiceNovaSpec{}
 	g.Expect(sizingInertWarnings(cp)).To(BeEmpty())
+}
+
+// backingSizing returns a SizingSpec whose only block is the backing-service
+// block name (database, cache or messaging), carrying a.
+func backingSizing(name string, a AvailabilitySizingSpec) SizingSpec {
+	switch name {
+	case "database":
+		return SizingSpec{Database: &DatabaseSizingSpec{AvailabilitySizingSpec: a}}
+	case "cache":
+		return SizingSpec{Cache: &CacheSizingSpec{AvailabilitySizingSpec: a}}
+	}
+	return SizingSpec{Messaging: &MessagingSizingSpec{AvailabilitySizingSpec: a}}
+}
+
+func TestValidateSizingSpec_BackingAvailability(t *testing.T) {
+	sizingPath := field.NewPath("spec", "sizing")
+	maxUnavailable := func(n int32) *BackingPodDisruptionBudgetSpec {
+		return &BackingPodDisruptionBudgetSpec{MaxUnavailable: ptr.To(n)}
+	}
+	for _, block := range []string{"database", "cache", "messaging"} {
+		t.Run(block+": antiAffinity Strict is not supported", func(t *testing.T) {
+			g := NewWithT(t)
+			s := backingSizing(block, AvailabilitySizingSpec{AntiAffinity: "Strict"})
+			errs := validateSizingSpec(sizingPath, &s)
+			g.Expect(errs).To(HaveLen(1))
+			g.Expect(errs[0].Type).To(Equal(field.ErrorTypeNotSupported))
+			g.Expect(errs[0].Field).To(Equal("spec.sizing." + block + ".antiAffinity"))
+			g.Expect(errs[0].BadValue).To(Equal(AntiAffinityMode("Strict")))
+		})
+
+		t.Run(block+": maxUnavailable 0 must be at least 1", func(t *testing.T) {
+			g := NewWithT(t)
+			s := backingSizing(block, AvailabilitySizingSpec{PodDisruptionBudget: maxUnavailable(0)})
+			errs := validateSizingSpec(sizingPath, &s)
+			g.Expect(errs).To(HaveLen(1))
+			g.Expect(errs[0].Type).To(Equal(field.ErrorTypeInvalid))
+			g.Expect(errs[0].Field).To(Equal("spec.sizing." + block + ".podDisruptionBudget.maxUnavailable"))
+			g.Expect(errs[0].Detail).To(Equal("must be at least 1"))
+		})
+
+		for _, tc := range []struct {
+			name string
+			a    AvailabilitySizingSpec
+		}{
+			{name: "Required", a: AvailabilitySizingSpec{AntiAffinity: AntiAffinityRequired}},
+			{name: "Preferred", a: AvailabilitySizingSpec{AntiAffinity: AntiAffinityPreferred}},
+			{name: "Off", a: AvailabilitySizingSpec{AntiAffinity: AntiAffinityOff}},
+			{name: "an empty mode and a nil budget", a: AvailabilitySizingSpec{}},
+			{name: "a budget without maxUnavailable", a: AvailabilitySizingSpec{
+				PodDisruptionBudget: &BackingPodDisruptionBudgetSpec{Enabled: ptr.To(false)},
+			}},
+			{name: "maxUnavailable 1", a: AvailabilitySizingSpec{PodDisruptionBudget: maxUnavailable(1)}},
+		} {
+			t.Run(block+": "+tc.name+" is accepted", func(t *testing.T) {
+				g := NewWithT(t)
+				s := backingSizing(block, tc.a)
+				g.Expect(validateSizingSpec(sizingPath, &s)).To(BeEmpty())
+			})
+		}
+	}
+
+	t.Run("nil backing blocks are accepted", func(t *testing.T) {
+		g := NewWithT(t)
+		g.Expect(validateSizingSpec(sizingPath, &SizingSpec{})).To(BeEmpty())
+	})
+}
+
+func TestSizingAvailabilityWarnings(t *testing.T) {
+	sizingPath := field.NewPath("spec", "sizing")
+	const want = "spec.sizing.cache.antiAffinity: Off takes effect only when " +
+		"spec.sizing.cache.podDisruptionBudget.enabled is false; " +
+		"the memcached-operator applies soft anti-affinity whenever a budget is set"
+	enabled := func(b bool) *BackingPodDisruptionBudgetSpec {
+		return &BackingPodDisruptionBudgetSpec{Enabled: ptr.To(b)}
+	}
+	for _, tc := range []struct {
+		name string
+		s    *SizingSpec
+		want []string
+	}{
+		{
+			name: "cache Off without a budget block warns", want: []string{want},
+			s: ptr.To(backingSizing("cache", AvailabilitySizingSpec{AntiAffinity: AntiAffinityOff})),
+		},
+		{
+			name: "cache Off beside enabled: true warns", want: []string{want},
+			s: ptr.To(backingSizing("cache", AvailabilitySizingSpec{AntiAffinity: AntiAffinityOff, PodDisruptionBudget: enabled(true)})),
+		},
+		{
+			name: "cache Off beside a budget that sets only maxUnavailable warns", want: []string{want},
+			s: ptr.To(backingSizing("cache", AvailabilitySizingSpec{
+				AntiAffinity: AntiAffinityOff, PodDisruptionBudget: &BackingPodDisruptionBudgetSpec{MaxUnavailable: ptr.To[int32](2)},
+			})),
+		},
+		{name: "a nil sizing", s: nil},
+		{name: "a nil cache block", s: &SizingSpec{}},
+		{
+			name: "cache Off beside enabled: false",
+			s:    ptr.To(backingSizing("cache", AvailabilitySizingSpec{AntiAffinity: AntiAffinityOff, PodDisruptionBudget: enabled(false)})),
+		},
+		{name: "cache Preferred", s: ptr.To(backingSizing("cache", AvailabilitySizingSpec{AntiAffinity: AntiAffinityPreferred}))},
+		{name: "database Off", s: ptr.To(backingSizing("database", AvailabilitySizingSpec{AntiAffinity: AntiAffinityOff}))},
+		{name: "messaging Off", s: ptr.To(backingSizing("messaging", AvailabilitySizingSpec{AntiAffinity: AntiAffinityOff}))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+			got := sizingAvailabilityWarnings(sizingPath, tc.s)
+			if tc.want == nil {
+				g.Expect(got).To(BeEmpty())
+				return
+			}
+			g.Expect([]string(got)).To(Equal(tc.want))
+		})
+	}
 }
 
 func TestValidateCreate_SizingRejections(t *testing.T) {
@@ -861,6 +982,35 @@ func TestValidateCreate_SizingWarnings(t *testing.T) {
 	warnings, err = w.ValidateUpdate(context.Background(), oldCP, cp)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(warnings).To(ContainElement("spec.sizing.horizon is set but spec.services.horizon is not; the values are inert"))
+}
+
+func TestValidateCreate_SizingAvailabilityWarning(t *testing.T) {
+	const want = "spec.sizing.cache.antiAffinity: Off takes effect only when " +
+		"spec.sizing.cache.podDisruptionBudget.enabled is false; " +
+		"the memcached-operator applies soft anti-affinity whenever a budget is set"
+	g := NewWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := managedControlPlane()
+	cp.Spec.Sizing = &ControlPlaneSizingSpec{SizingSpec: SizingSpec{
+		Cache: &CacheSizingSpec{AvailabilitySizingSpec: AvailabilitySizingSpec{AntiAffinity: AntiAffinityOff}},
+	}}
+	warnings, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(warnings).To(ContainElement(want))
+
+	warnings, err = w.ValidateUpdate(context.Background(), cp.DeepCopy(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(warnings).To(ContainElement(want))
+
+	// A ControlPlane without spec.sizing gets no such warning.
+	unsized := managedControlPlane()
+	unsized.Spec.Sizing = nil
+	warnings, err = w.ValidateCreate(context.Background(), unsized)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(warnings).NotTo(ContainElement(ContainSubstring("antiAffinity")))
+	warnings, err = w.ValidateUpdate(context.Background(), unsized.DeepCopy(), unsized)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(warnings).NotTo(ContainElement(ContainSubstring("antiAffinity")))
 }
 
 func TestValidateUpdate_UnresolvableProfileRefUnchangedAdmitted(t *testing.T) {
