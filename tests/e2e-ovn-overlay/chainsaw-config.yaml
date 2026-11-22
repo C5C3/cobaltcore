@@ -4,15 +4,22 @@
 
 # Chainsaw configuration for the multi-node OVN overlay suites.
 #
-# The suites live outside tests/e2e/ because each needs two schedulable nodes.
-# Every suite under tests/e2e/ runs against the single-node hack/kind-config.yaml
-# cluster that `make e2e` sweeps, where neither question has an answer:
+# The suites live outside tests/e2e/. The first two need two schedulable nodes:
+# every suite under tests/e2e/ runs against the single-node hack/kind-config.yaml
+# cluster that `make e2e` sweeps, where neither of their questions has an
+# answer. The third needs frr-k8s, which `make e2e` does not deploy:
 #   - default-spread checks where the replicas of an OVNCentral that names no
 #     spread land on two workers without a zone label: northd two on each, the
 #     Northbound members on both. On one node every pod lands on that node.
 #   - geneve-datapath programs one logical switch port on each worker and pings
 #     across the Geneve tunnel between them. On one node the second port would
 #     land beside the first and the tunnel would never carry a packet.
+#   - fabric-advertised-route attaches one worker to a BGP fabric of two FRR
+#     Pods through spec.fabric and follows a route of a test logical router
+#     into the node's ovnvrf42 and to both peers. It needs one worker only, and
+#     runs here because this job already brings the ovn-operator, the OVN image
+#     and the openvswitch module; it also needs frr-k8s (WITH_FRR_K8S=true) and
+#     the vrf module.
 #
 # Key differences from the happy-path config at tests/e2e/chainsaw-config.yaml:
 #   - Assert timeout: 300s (5m) vs 120s: the OVNCentral, the two chassis
@@ -24,8 +31,9 @@
 #     network namespaces, two OVS ports and one logical switch. No finalizer
 #     waits on a database behind it, so it needs less than the happy path.
 #   - Parallelism: 1 vs 4: the probe Pods run with hostNetwork and own
-#     /run/openvswitch and /run/netns on both workers, and there is one
-#     `openstack` namespace to put them in. The spread suite also loads one
+#     /run/openvswitch and /run/netns on both workers, the fabric suite rewires
+#     a worker's network namespace, and there is one `openstack` namespace to
+#     put them in. The spread suite also loads one
 #     worker with a ballast Pod for its whole run, which would steer the pods
 #     of any suite running beside it.
 #

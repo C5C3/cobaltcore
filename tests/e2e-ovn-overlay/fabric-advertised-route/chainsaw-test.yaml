@@ -1,0 +1,616 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for OVN dynamic routing over the BGP fabric
+# (docs/reference/networking/ovn-dynamic-routing.md): an OVNChassis whose
+# spec.fabric attaches one worker of hack/kind-config-multinode.yaml, with two
+# FRR Pods standing in for the worker's leaf pair. The suite proves:
+#   - the operator prepares the node: the VRF "fabric" with its table and both
+#     loopbacks, the peer bridges br-fab1 and br-fab2 in it with MTU 9000 and
+#     accept_ra 0, and the port mapping ovn-controller reads
+#   - the generated FRRConfiguration brings up two unnumbered eBGP sessions
+#     with BFD over the peer bridges in the VRF "fabric"
+#   - a static route of a test logical router lands in ovnvrf42 as a blackhole
+#     and reaches both peers with the node's ASN as the AS path, while the
+#     baits outside the announceable ranges reach neither
+#   - OVN learns the leaf defaults once per uplink into Learned_Route, and
+#     ovnvrf10 holds them over both bridges
+#   - the node's main table stays untouched
+#   - RoutesAdvertised reports both counts, and removing spec.fabric tears the
+#     devices and the FRRConfiguration down
+#
+# spec.namespace is openstack, where the OVNCentral's issuer lives and the
+# chassis pods are admitted. spec.concurrent is false because the fixture Pods
+# own the node's network namespace and /run/openvswitch.
+#
+# The suite marks the node it labels with e2e.c5c3.io/ovn-fabric=true, which is
+# also what the OVNChassis selects, and removes labels only through that
+# marker. It refuses to start on a cluster with a node that kind did not create
+# (providerID kind://), and while a node it did not mark carries
+# openstack.c5c3.io/frr-k8s. Every vtysh and `ip -j` read is parsed with jq on
+# the runner.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: ovn-fabric-advertised-route
+spec:
+  namespace: openstack
+  concurrent: false
+  steps:
+  # ── Step 1: Guard and label ─────────────────────────────────────────────
+  # Refuses a cluster without frr-k8s, a node kind did not create and a node
+  # carrying the frr-k8s label without the suite's marker, removes what a
+  # killed run left, and labels the first worker.
+  - name: guard-label
+    try:
+    - script:
+        timeout: 12m
+        shell: bash
+        content: |
+          set -euo pipefail
+          ds="$(kubectl get daemonset frr-k8s -n frr-k8s-system --ignore-not-found -o name)"
+          if [ -z "$ds" ]; then
+            echo "ERROR: DaemonSet frr-k8s-system/frr-k8s not found; deploy with WITH_FRR_K8S=true"
+            exit 1
+          fi
+          # The suite rewires the network namespace of the node it labels.
+          nonkind="$(kubectl get nodes -o json | jq -r '.items[]
+            | select((.spec.providerID // "") | startswith("kind://") | not)
+            | .metadata.name')"
+          if [ -n "$nonkind" ]; then
+            echo "ERROR: the suite rewires the network namespace of a node; it runs only against a kind cluster, but kind did not create these nodes:"
+            echo "$nonkind"
+            exit 1
+          fi
+          foreign="$(kubectl get nodes -l 'openstack.c5c3.io/frr-k8s,!e2e.c5c3.io/ovn-fabric' -o name)"
+          if [ -n "$foreign" ]; then
+            echo "ERROR: the suite labels its own node, but these nodes carry openstack.c5c3.io/frr-k8s already:"
+            echo "$foreign"
+            exit 1
+          fi
+          node="$(kubectl get nodes -l '!node-role.kubernetes.io/control-plane' \
+            -o jsonpath='{.items[0].metadata.name}')"
+          if [ -z "$node" ]; then
+            echo "ERROR: no worker node"
+            kubectl get nodes -o wide
+            exit 1
+          fi
+
+          # What a killed run left. The OVNChassis goes first: its finalizer
+          # deletes the FRRConfiguration while the central still answers.
+          kubectl delete ovnchassis ovn-fabric -n "$NAMESPACE" --ignore-not-found --wait=true --timeout=5m
+          kubectl delete ovncentral ovn-fabric-central -n "$NAMESPACE" --ignore-not-found --wait=true --timeout=5m
+          kubectl delete pod fabric-peer-1 fabric-peer-2 fabric-probe ovn-fabric-client -n "$NAMESPACE" \
+            --ignore-not-found --wait=true --timeout=90s
+          kubectl delete configmap fabric-scripts -n "$NAMESPACE" --ignore-not-found
+          kubectl label nodes -l e2e.c5c3.io/ovn-fabric \
+            openstack.c5c3.io/frr-k8s- e2e.c5c3.io/ovn-fabric- >/dev/null
+
+          kubectl label node "$node" openstack.c5c3.io/frr-k8s=true e2e.c5c3.io/ovn-fabric=true --overwrite
+          echo "OK: labelled ${node} with openstack.c5c3.io/frr-k8s=true and e2e.c5c3.io/ovn-fabric=true"
+    cleanup:
+    - script:
+        content: |
+          kubectl label nodes -l e2e.c5c3.io/ovn-fabric \
+            openstack.c5c3.io/frr-k8s- e2e.c5c3.io/ovn-fabric- >/dev/null
+          echo "OK: removed openstack.c5c3.io/frr-k8s and e2e.c5c3.io/ovn-fabric from the suite's node"
+  # ── Step 2: Peers and probe ─────────────────────────────────────────────
+  # The peers create the uplinks fab1 and fab2 in the node's namespace before
+  # the chassis exists, which is what fabric-node.sh's guards look for.
+  # fabric-probe runs in the node's network namespace and mounts its
+  # /run/openvswitch, so every node read of the later steps goes through it,
+  # including the ones after the ovn-controller pod was replaced. It snapshots
+  # both main-table defaults before the operator touches the node.
+  - name: peers-probe
+    try:
+    - script:
+        timeout: 1m
+        shell: bash
+        content: |
+          set -euo pipefail
+          kubectl create configmap fabric-scripts -n "$NAMESPACE" \
+            --from-file=peer.sh --from-file=routers.sh \
+            --from-file=../../e2e-bgp-fabric/frr-k8s-fabric-peering/peer-frr.conf \
+            --from-file=../../e2e-bgp-fabric/frr-k8s-fabric-peering/daemons
+    - apply:
+        file: 03-fabric-peers.yaml
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+          node="$(kubectl get nodes -l e2e.c5c3.io/ovn-fabric=true -o jsonpath='{.items[0].metadata.name}')"
+          # The OVNCentral does not exist yet, so the OVN image is the pin
+          # the operator's default image follows.
+          img="ghcr.io/c5c3/ovn:$(../../../hack/ci-resolve-ovn-version.sh)"
+          kubectl apply -n "$NAMESPACE" -f - <<YAML
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: fabric-probe
+          spec:
+            nodeName: ${node}
+            hostNetwork: true
+            restartPolicy: Never
+            automountServiceAccountToken: false
+            terminationGracePeriodSeconds: 1
+            containers:
+            - name: probe
+              image: ${img}
+              command: ["sleep", "infinity"]
+              securityContext:
+                privileged: true
+                runAsUser: 0
+              volumeMounts:
+              - name: run-ovs
+                mountPath: /run/openvswitch
+            volumes:
+            - name: run-ovs
+              hostPath:
+                path: /run/openvswitch
+                type: DirectoryOrCreate
+          YAML
+          for pod in fabric-peer-1 fabric-peer-2 fabric-probe; do
+            if ! kubectl wait --for=condition=Ready "pod/${pod}" -n "$NAMESPACE" --timeout=180s; then
+              echo "ERROR: ${pod} did not become Ready; its log:"
+              kubectl logs "$pod" -n "$NAMESPACE" 2>&1 || true
+              exit 1
+            fi
+          done
+          kubectl exec -n "$NAMESPACE" fabric-probe -- sh -c \
+            'ip -4 route show default > /tmp/default-v4.before && ip -6 route show default > /tmp/default-v6.before'
+          for uplink in fab1 fab2; do
+            if ! kubectl exec -n "$NAMESPACE" fabric-probe -- ip link show "$uplink" >/dev/null; then
+              echo "ERROR: the uplink ${uplink} does not exist on ${node}"
+              exit 1
+            fi
+          done
+          echo "OK: both peers and fabric-probe run, fab1 and fab2 exist on ${node}, the defaults are recorded"
+    cleanup:
+    - script:
+        content: |
+          kubectl delete pod fabric-probe -n "$NAMESPACE" --ignore-not-found --wait=false
+          kubectl delete configmap fabric-scripts -n "$NAMESPACE" --ignore-not-found
+  # ── Step 3: Central and chassis ─────────────────────────────────────────
+  # Ready on the OVNChassis includes FabricReady, so the node's
+  # FRRConfiguration exists once it holds. The cleanup deletes the chassis
+  # first: its fabric finalizer deletes the FRRConfiguration.
+  - name: central-chassis
+    try:
+    - script:
+        timeout: 11m
+        shell: bash
+        content: |
+          set -euo pipefail
+          node="$(kubectl get nodes -l e2e.c5c3.io/ovn-fabric=true -o jsonpath='{.items[0].metadata.name}')"
+          kubectl apply -n "$NAMESPACE" -f 01-ovncentral-cr.yaml
+          sed "s/NODE_NAME/${node}/g" 02-ovnchassis-cr.yaml | kubectl apply -n "$NAMESPACE" -f -
+          kubectl wait --for=condition=Ready ovnchassis/ovn-fabric -n "$NAMESPACE" --timeout=10m
+          echo "OK: OVNChassis ovn-fabric is Ready on ${node}"
+    catch: &fabric-dump
+    - script:
+        timeout: 2m
+        shell: bash
+        content: |
+          echo "=== OVNChassis CR ==="
+          kubectl get ovnchassis ovn-fabric -n "$NAMESPACE" -o yaml 2>&1 || true
+          kubectl describe ovnchassis ovn-fabric -n "$NAMESPACE" 2>&1 | tail -40 || true
+          echo "=== Chassis pods, init containers included ==="
+          for pod in $(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=ovn-fabric -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --prefix --tail=80 2>&1 || true
+          done
+          echo "=== frr-k8s ==="
+          for pod in $(kubectl get pods -n frr-k8s-system -l app.kubernetes.io/component=frr-k8s -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n frr-k8s-system "$pod" -c frr --tail=60 2>&1 || true
+            kubectl logs -n frr-k8s-system "$pod" -c controller --tail=60 2>&1 || true
+            kubectl exec -n frr-k8s-system "$pod" -c frr -- vtysh -c 'show running-config' 2>/dev/null || true
+          done
+          kubectl get frrnodestates.frrk8s.metallb.io -o yaml 2>&1 || true
+          kubectl get bgpsessionstates.frrk8s.metallb.io -n frr-k8s-system -o yaml 2>&1 || true
+          kubectl get frrconfigurations.frrk8s.metallb.io -n frr-k8s-system -o yaml 2>&1 || true
+          echo "=== The node ==="
+          kubectl exec -n "$NAMESPACE" fabric-probe -- ip -d link show 2>&1 || true
+          kubectl exec -n "$NAMESPACE" fabric-probe -- ip route show table all 2>&1 || true
+          kubectl exec -n "$NAMESPACE" fabric-probe -- ip -6 route show table all 2>&1 || true
+          kubectl exec -n "$NAMESPACE" fabric-probe -- ovs-vsctl show 2>&1 || true
+          echo "=== Southbound route tables ==="
+          kubectl exec -n "$NAMESPACE" ovn-fabric-client -- bash -c \
+            'for t in Advertised_Route Learned_Route; do ovn-sbctl --db="$SB_ADDRESS" -p /certs/tls.key -c /certs/tls.crt -C /certs/ca.crt --timeout=30 list "$t"; done' 2>&1 || true
+          echo "=== ovn-operator pod logs ==="
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=80 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n "$NAMESPACE" --sort-by='.lastTimestamp' 2>&1 | tail -40 || true
+    cleanup:
+    - script:
+        timeout: 11m
+        content: |
+          kubectl delete ovnchassis ovn-fabric -n "$NAMESPACE" --ignore-not-found --wait=true --timeout=5m
+          kubectl delete ovncentral ovn-fabric-central -n "$NAMESPACE" --ignore-not-found --wait=true --timeout=5m
+  # ── Step 4: Devices ─────────────────────────────────────────────────────
+  - name: devices
+    try:
+    - script:
+        timeout: 3m
+        shell: bash
+        content: |
+          set -euo pipefail
+          in_node() {
+            kubectl exec -n "$NAMESPACE" fabric-probe -- "$@"
+          }
+          vrf="$(in_node ip -j -d link show fabric | jq -r '.[0].linkinfo.info_data.table')"
+          if [ "$vrf" != "100" ]; then
+            echo "ERROR: the VRF fabric has table '${vrf}', want 100"
+            exit 1
+          fi
+          addrs="$(in_node ip -j addr show dev fabric \
+            | jq -c '[.[0].addr_info[] | select(.scope == "global") | "\(.local)/\(.prefixlen)"] | sort')"
+          if [ "$addrs" != '["192.0.2.1/32","2001:db8::1/128"]' ]; then
+            echo "ERROR: the VRF fabric carries ${addrs}, want both loopbacks"
+            exit 1
+          fi
+          for br in br-fab1 br-fab2; do
+            got="$(in_node ip -j link show "$br" | jq -c '.[0] | [.master, .mtu]')"
+            if [ "$got" != '["fabric",9000]' ]; then
+              echo "ERROR: ${br} has master and MTU ${got}, want [\"fabric\",9000]"
+              exit 1
+            fi
+          done
+          for dev in fab1 fab2 br-fab1 br-fab2; do
+            ra="$(in_node cat "/proc/sys/net/ipv6/conf/${dev}/accept_ra")"
+            if [ "$ra" != "0" ]; then
+              echo "ERROR: accept_ra of ${dev} is ${ra}, want 0"
+              exit 1
+            fi
+          done
+          mapping="$(in_node ovs-vsctl get open . external_ids:dynamic-routing-port-mapping)"
+          if [ "$mapping" != '"br-fab1=br-fab1,br-fab2=br-fab2"' ]; then
+            echo "ERROR: dynamic-routing-port-mapping is ${mapping}"
+            exit 1
+          fi
+          fabric="$(kubectl get ovnchassis ovn-fabric -n "$NAMESPACE" -o jsonpath='{.status.nodes[0].fabric}')"
+          if [ "$fabric" != "true" ]; then
+            echo "ERROR: status.nodes[0].fabric is '${fabric}', want true"
+            exit 1
+          fi
+          echo "OK: VRF fabric table 100 with both loopbacks, br-fab1 and br-fab2 in it at MTU 9000, accept_ra 0, port mapping set"
+    catch: *fabric-dump
+  # ── Step 5: Sessions ────────────────────────────────────────────────────
+  - name: sessions
+    try:
+    - script:
+        timeout: 6m
+        shell: bash
+        content: |
+          set -euo pipefail
+          node="$(kubectl get nodes -l e2e.c5c3.io/ovn-fabric=true -o jsonpath='{.items[0].metadata.name}')"
+          owned="openstack.c5c3.io/owner-kind=OVNChassis,openstack.c5c3.io/owner-name=ovn-fabric,openstack.c5c3.io/owner-namespace=${NAMESPACE}"
+          count="$(kubectl get frrconfigurations.frrk8s.metallb.io -n frr-k8s-system -l "$owned" -o name | wc -l | tr -d ' ')"
+          if [ "$count" != "1" ]; then
+            echo "ERROR: ${count} FRRConfigurations carry the ownership labels of ovn-fabric, want 1"
+            exit 1
+          fi
+
+          want='[{"peer":"br-fab1","vrf":"fabric","bgp":"Established","bfd":"Up"},{"peer":"br-fab2","vrf":"fabric","bgp":"Established","bfd":"Up"}]'
+          got=""
+          for _ in $(seq 1 120); do
+            got="$(kubectl get bgpsessionstates.frrk8s.metallb.io -n frr-k8s-system -o json \
+              | jq -c '[.items[].status | select(.vrf == "fabric")
+                  | {peer, vrf, bgp: .bgpStatus, bfd: .bfdStatus}] | sort_by(.peer)')"
+            if [ "$got" = "$want" ]; then
+              break
+            fi
+            sleep 2
+          done
+          if [ "$got" != "$want" ]; then
+            echo "ERROR: the sessions in VRF fabric are not both Established with BFD Up"
+            echo "  want: ${want}"
+            echo "  got:  ${got}"
+            exit 1
+          fi
+          echo "OK: br-fab1 and br-fab2 Established, BFD Up, in VRF fabric"
+
+          result="$(kubectl get frrnodestates.frrk8s.metallb.io "$node" -o json \
+            | jq -r '"\(.status.lastConversionResult) \(.status.lastReloadResult)"')"
+          if [ "$result" != "success success" ]; then
+            echo "ERROR: FRRNodeState ${node} reports conversion and reload '${result}', want 'success success'"
+            exit 1
+          fi
+          reason="$(kubectl get ovnchassis ovn-fabric -n "$NAMESPACE" -o json \
+            | jq -r '.status.conditions[] | select(.type == "FabricReady") | "\(.status) \(.reason)"')"
+          if [ "$reason" != "True FabricConfigured" ]; then
+            echo "ERROR: FabricReady is '${reason}', want 'True FabricConfigured'"
+            exit 1
+          fi
+          echo "OK: FRRNodeState ${node} success twice, FabricReady True FabricConfigured"
+    catch: *fabric-dump
+  # ── Step 6: Routers ─────────────────────────────────────────────────────
+  # The client Pod writes the two routers the way a CMS writes them and stays
+  # for the Southbound reads of the later steps.
+  - name: routers
+    try:
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+          img="$(kubectl get sts ovn-fabric-central-nb -n "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')"
+          nb="$(kubectl get ovncentral ovn-fabric-central -n "$NAMESPACE" -o jsonpath='{.status.northbound.internalDbAddress}')"
+          sb="$(kubectl get ovncentral ovn-fabric-central -n "$NAMESPACE" -o jsonpath='{.status.southbound.internalDbAddress}')"
+          test -n "$img" && test -n "$nb" && test -n "$sb"
+          kubectl apply -n "$NAMESPACE" -f - <<YAML
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: ovn-fabric-client
+          spec:
+            restartPolicy: Never
+            automountServiceAccountToken: false
+            terminationGracePeriodSeconds: 1
+            containers:
+            - name: client
+              image: ${img}
+              command: ["sleep", "infinity"]
+              env:
+              - name: NB_ADDRESS
+                value: "${nb}"
+              - name: SB_ADDRESS
+                value: "${sb}"
+              volumeMounts:
+              - name: certs
+                mountPath: /certs
+                readOnly: true
+              - name: config
+                mountPath: /config
+                readOnly: true
+            volumes:
+            - name: certs
+              secret:
+                secretName: ovn-fabric-central-client
+            - name: config
+              configMap:
+                name: fabric-scripts
+          YAML
+          kubectl wait --for=condition=Ready pod/ovn-fabric-client -n "$NAMESPACE" --timeout=120s
+          id="$(kubectl get ovnchassis ovn-fabric -n "$NAMESPACE" -o jsonpath='{.status.nodes[0].systemID}')"
+          test -n "$id"
+          kubectl exec -n "$NAMESPACE" ovn-fabric-client -- bash /config/routers.sh up "$id"
+          echo "OK: lr-adv and lr-learn are bound to chassis ${id}"
+    catch: *fabric-dump
+    cleanup:
+    - script:
+        timeout: 2m
+        content: |
+          kubectl exec -n "$NAMESPACE" ovn-fabric-client -- bash /config/routers.sh down 2>&1 || true
+          kubectl delete pod ovn-fabric-client -n "$NAMESPACE" --ignore-not-found --wait=false
+  # ── Step 7: Advertised ──────────────────────────────────────────────────
+  # ovn-controller installs the static routes of lr-adv into ovnvrf42, baits
+  # included; the node's outbound lists keep the baits from the peers.
+  - name: advertised
+    try:
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+          in_node() {
+            kubectl exec -n "$NAMESPACE" fabric-probe -- "$@"
+          }
+          # table_holds <family> <prefix>: the node's table 42 holds the
+          # prefix as the blackhole route ovn-controller installs.
+          table_holds() {
+            local got="" _
+            for _ in $(seq 1 60); do
+              got="$(in_node ip -j "$1" route show table 42 "$2" 2>/dev/null \
+                | jq -c '[.[] | {type, protocol}]' || true)"
+              if [ "$got" = '[{"type":"blackhole","protocol":"ovn"}]' ]; then
+                echo "OK: table 42 holds blackhole $2 proto ovn"
+                return 0
+              fi
+              sleep 2
+            done
+            echo "ERROR: table 42 does not hold blackhole $2 proto ovn (got: ${got})"
+            exit 1
+          }
+          table_holds -4 198.51.100.10
+          table_holds -6 2001:db8::10
+          table_holds -4 203.0.113.10
+          table_holds -6 2001:db8:0:1::10
+
+          # paths <pod> <family> <prefix>: [number of paths, first AS path].
+          paths() {
+            kubectl exec -n "$NAMESPACE" "$1" -c frr -- \
+              vtysh -c "show bgp $2 unicast $3 json" 2>/dev/null \
+              | jq -c '[((.paths // []) | length), (.paths[0].aspath.string // "")]'
+          }
+          for pod in fabric-peer-1 fabric-peer-2; do
+            for route in "ipv4 198.51.100.10/32" "ipv6 2001:db8::10/128"; do
+              set -- $route
+              got=""
+              for _ in $(seq 1 60); do
+                got="$(paths "$pod" "$1" "$2" || true)"
+                if [ "$got" = '[1,"4200000001"]' ]; then
+                  break
+                fi
+                sleep 2
+              done
+              if [ "$got" != '[1,"4200000001"]' ]; then
+                echo "ERROR: ${pod} does not hold $2 on one path with AS path 4200000001 (paths, AS path: ${got})"
+                exit 1
+              fi
+              echo "OK: ${pod} holds $2 with AS path 4200000001"
+            done
+            for bait in "ipv4 203.0.113.10/32" "ipv6 2001:db8:0:1::10/128"; do
+              set -- $bait
+              got="$(paths "$pod" "$1" "$2")"
+              if [ "$got" != '[0,""]' ]; then
+                echo "ERROR: ${pod} holds the bait $2 (paths, AS path: ${got})"
+                exit 1
+              fi
+            done
+            echo "OK: ${pod} holds neither bait"
+          done
+    catch: *fabric-dump
+  # ── Step 8: Learned ─────────────────────────────────────────────────────
+  - name: learned
+    try:
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+          want=$'0.0.0.0/0\n0.0.0.0/0\n::/0\n::/0'
+          got=""
+          for _ in $(seq 1 60); do
+            got="$(kubectl exec -n "$NAMESPACE" ovn-fabric-client -- bash -c \
+              'ovn-sbctl --db="$SB_ADDRESS" -p /certs/tls.key -c /certs/tls.crt -C /certs/ca.crt --timeout=30 --format=csv --no-headings --columns=ip_prefix list Learned_Route' \
+              2>/dev/null | tr -d '"' | sort || true)"
+            if [ "$got" = "$want" ]; then
+              break
+            fi
+            sleep 2
+          done
+          if [ "$got" != "$want" ]; then
+            echo "ERROR: Learned_Route does not hold 0.0.0.0/0 and ::/0 once per uplink"
+            echo "  got: ${got}"
+            exit 1
+          fi
+          echo "OK: Learned_Route holds 0.0.0.0/0 twice and ::/0 twice"
+
+          for family in -4 -6; do
+            got="$(kubectl exec -n "$NAMESPACE" fabric-probe -- ip -j "$family" route show table 10 default \
+              | jq -c '[.[] | {protocol, devs: ([.nexthops[]?.dev, .dev] | map(select(. != null)) | sort)}]')"
+            if [ "$got" != '[{"protocol":"bgp","devs":["br-fab1","br-fab2"]}]' ]; then
+              echo "ERROR: the ${family} default in table 10 is not proto bgp over br-fab1 and br-fab2 (got: ${got})"
+              exit 1
+            fi
+            echo "OK: the ${family} default in table 10 is proto bgp over br-fab1 and br-fab2"
+          done
+    catch: *fabric-dump
+  # ── Step 9: Isolation ───────────────────────────────────────────────────
+  # A whole-table diff is wrong here: kindnet adds a host route per Pod. The
+  # step compares the two defaults with the snapshots of step 2 and looks for
+  # BGP and OVN routes and for routes over the fabric devices.
+  - name: isolation
+    try:
+    - script:
+        timeout: 3m
+        shell: bash
+        content: |
+          set -euo pipefail
+          in_node() {
+            kubectl exec -n "$NAMESPACE" fabric-probe -- "$@"
+          }
+          for family in 4 6; do
+            before="$(in_node cat "/tmp/default-v${family}.before")"
+            now="$(in_node ip "-${family}" route show default)"
+            if [ "$now" != "$before" ]; then
+              echo "ERROR: the IPv${family} default of the main table changed"
+              echo "  before: ${before}"
+              echo "  now:    ${now}"
+              exit 1
+            fi
+            for proto in bgp ovn; do
+              held="$(in_node ip "-${family}" route show proto "$proto")"
+              if [ -n "$held" ]; then
+                echo "ERROR: the IPv${family} main table holds proto ${proto} routes:"
+                echo "$held"
+                exit 1
+              fi
+            done
+            fabric="$(in_node ip "-${family}" route show \
+              | { grep -E '(^| )dev (fab1|fab2|br-fab1|br-fab2|fabric)( |$)' || true; })"
+            if [ -n "$fabric" ]; then
+              echo "ERROR: the IPv${family} main table holds routes over the fabric devices:"
+              echo "$fabric"
+              exit 1
+            fi
+            echo "OK: the IPv${family} main table keeps its default and holds no BGP, OVN or fabric route"
+          done
+    catch: *fabric-dump
+  # ── Step 10: Condition ──────────────────────────────────────────────────
+  # The probe Job runs once per 5-minute window, so the first one may have
+  # counted before the routers existed.
+  - name: condition
+    try:
+    - script:
+        timeout: 9m
+        shell: bash
+        content: |
+          set -euo pipefail
+          got=""
+          for _ in $(seq 1 240); do
+            got="$(kubectl get ovnchassis ovn-fabric -n "$NAMESPACE" -o json \
+              | jq -r '.status.conditions[] | select(.type == "RoutesAdvertised") | "\(.status) \(.message)"')"
+            if grep -Eq '^True .*holds [1-9][0-9]* advertised and [1-9][0-9]* learned routes$' <<<"$got"; then
+              echo "OK: RoutesAdvertised ${got}"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "ERROR: RoutesAdvertised did not report advertised and learned routes within 8 minutes (got: ${got})"
+          exit 1
+    catch: *fabric-dump
+  # ── Step 11: Teardown ───────────────────────────────────────────────────
+  # Removing spec.fabric runs the apply Job that tears the devices down,
+  # deletes the FRRConfiguration and releases the fabric finalizer. The NIC
+  # outlives its bridge.
+  - name: teardown
+    try:
+    - script:
+        timeout: 6m
+        shell: bash
+        content: |
+          set -euo pipefail
+          kubectl exec -n "$NAMESPACE" ovn-fabric-client -- bash /config/routers.sh down
+          kubectl patch ovnchassis ovn-fabric -n "$NAMESPACE" --type=json -p '[{"op":"remove","path":"/spec/fabric"}]'
+
+          owned="openstack.c5c3.io/owner-kind=OVNChassis,openstack.c5c3.io/owner-name=ovn-fabric,openstack.c5c3.io/owner-namespace=${NAMESPACE}"
+          in_node() {
+            kubectl exec -n "$NAMESPACE" fabric-probe -- "$@"
+          }
+          # state prints one line per teardown check that does not hold yet.
+          state() {
+            local cr
+            cr="$(kubectl get ovnchassis ovn-fabric -n "$NAMESPACE" -o json)"
+            if [ -n "$(kubectl get frrconfigurations.frrk8s.metallb.io -n frr-k8s-system -l "$owned" -o name)" ]; then
+              echo "an FRRConfiguration of ovn-fabric is left"
+            fi
+            if jq -e '.metadata.finalizers // [] | index("ovn.openstack.c5c3.io/fabric-frrconfigurations")' <<<"$cr" >/dev/null; then
+              echo "the fabric finalizer is left"
+            fi
+            if jq -e '.status.conditions[] | select(.type == "RoutesAdvertised")' <<<"$cr" >/dev/null; then
+              echo "RoutesAdvertised is left"
+            fi
+            if [ "$(jq -r '.status.conditions[] | select(.type == "FabricReady") | "\(.status) \(.reason)"' <<<"$cr")" != "True FabricNotConfigured" ]; then
+              echo "FabricReady is not True FabricNotConfigured"
+            fi
+            if in_node ip link show fabric >/dev/null 2>&1; then
+              echo "the VRF fabric is left"
+            fi
+            if in_node ovs-vsctl list-br | grep -Eq '^br-fab(1|2)$'; then
+              echo "a peer bridge is left"
+            fi
+            if [ -n "$(in_node ovs-vsctl --if-exists get open . external_ids:dynamic-routing-port-mapping)" ]; then
+              echo "the port mapping is left"
+            fi
+            if ! in_node ip link show fab1 >/dev/null 2>&1; then
+              echo "the uplink fab1 is gone"
+            fi
+          }
+          left=""
+          for _ in $(seq 1 150); do
+            left="$(state || true)"
+            if [ -z "$left" ]; then
+              echo "OK: no FRRConfiguration, no finalizer, no RoutesAdvertised, FabricReady FabricNotConfigured, no fabric device, fab1 kept"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "ERROR: the teardown did not complete within 5 minutes:"
+          echo "$left"
+          exit 1
+    catch: *fabric-dump
