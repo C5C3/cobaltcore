@@ -40,3 +40,13 @@ spec:
     adminPasswordSecretRef:
       name: keystone-admin
     region: RegionOne
+  # Disable dogpile.cache for this fixture, for the reason the
+  # ldap-domain-backend fixture gives: parallel Keystone CRs share
+  # `openstack-memcached` under the same keys (#227). A neighbouring suite's
+  # bootstrap writes get_project_by_name("admin", "default") with its own
+  # project, and the project-scoped token request of step 3 then answers
+  # HTTP 404 (CI run 44972380549). With the cache off, step 3 also validates
+  # its token by decrypting it, not from the entry issue_token cached.
+  extraConfig:
+    cache:
+      enabled: "false"
