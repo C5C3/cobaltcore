@@ -7,6 +7,9 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"net/netip"
+	"slices"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -25,6 +28,17 @@ import (
 // updateStrategyOnDelete is the DaemonSet update strategy that hands the rollout
 // pace to whoever deletes the pods. maxUnavailable has no meaning under it.
 const updateStrategyOnDelete = "OnDelete"
+
+// integrationBridge is the OVS bridge ovn-controller creates and owns. A fabric
+// peer bridge of that name would hand the integration bridge to the fabric
+// node script, which enslaves it to the fabric VRF and deletes it at teardown.
+const integrationBridge = "br-int"
+
+// ovnVRFPrefix is the prefix of the VRF devices ovn-controller maintains, one
+// ovnvrf<id> per dynamic-routing-vrf-id. A fabric VRF carrying it could collide
+// with one of them, and ovn-controller deletes a maintained VRF it no longer
+// needs.
+const ovnVRFPrefix = "ovnvrf"
 
 // OVNChassisWebhook implements defaulting and validation webhooks for the
 // OVNChassis CRD. Client is injected at startup for cluster-scoped resource
@@ -150,6 +164,7 @@ func (w *OVNChassisWebhook) validate(ctx context.Context, c *OVNChassis, extra f
 	allErrs = append(allErrs, validateImage(specPath.Child("image"), c.Spec.Image)...)
 	allErrs = append(allErrs, validation.JobBase(ctx, w.Client, specPath.Child("jobs"), c.Spec.Jobs)...)
 	allErrs = append(allErrs, validateBridgeMappings(specPath.Child("bridgeMappings"), c.Spec.BridgeMappings)...)
+	allErrs = append(allErrs, validateFabric(specPath.Child("fabric"), c.Spec.Fabric)...)
 	allErrs = append(allErrs, validateUpdateStrategy(specPath.Child("updateStrategy"), c.Spec.UpdateStrategy)...)
 	// Defense-in-depth twins of the verticalAutoscaling markers and CEL rules,
 	// plus the minAllowed-above-maxAllowed rule CEL cannot express.
@@ -215,6 +230,142 @@ func validateBridgeMappings(fldPath *field.Path, mappings []OVNBridgeMapping) fi
 			errs = append(errs, field.Duplicate(fldPath.Index(i).Child("bridge"), m.Bridge))
 		}
 		seenBridges[m.Bridge] = struct{}{}
+	}
+	return errs
+}
+
+// validateFabric runs the rules of spec.fabric that no schema marker expresses.
+// Each compares two fields, or reads a value as an address or a prefix, so the
+// schema bounds of the block (patterns, ranges, formats, list sizes) get no twin
+// here: the API server enforces them whether or not this webhook runs.
+//
+// Loopbacks are parsed with netip.ParseAddr and ranges with netip.ParsePrefix.
+// A value that does not parse is skipped, because the schema format has already
+// rejected it. A nil block returns nothing.
+func validateFabric(fldPath *field.Path, fabric *OVNFabricSpec) field.ErrorList {
+	if fabric == nil {
+		return nil
+	}
+	var errs field.ErrorList
+	vrfPath := fldPath.Child("vrf")
+
+	interfaces := make(map[string]struct{}, len(fabric.Uplinks))
+	for _, uplink := range fabric.Uplinks {
+		interfaces[uplink.Interface] = struct{}{}
+	}
+
+	seenBridges := make(map[string]struct{}, len(fabric.Uplinks))
+	for i, uplink := range fabric.Uplinks {
+		uplinkPath := fldPath.Child("uplinks").Index(i)
+		bridgePath := uplinkPath.Child("bridge")
+		if _, dup := seenBridges[uplink.Bridge]; dup {
+			errs = append(errs, field.Duplicate(bridgePath, uplink.Bridge))
+		}
+		seenBridges[uplink.Bridge] = struct{}{}
+
+		// The script adds the NIC as a port of the bridge, and a bridge named
+		// after an uplink would take that uplink's own name in the kernel.
+		if _, taken := interfaces[uplink.Bridge]; taken {
+			errs = append(errs, field.Invalid(bridgePath, uplink.Bridge,
+				"a peer bridge cannot carry the name of an uplink interface"))
+		}
+		if uplink.Bridge == integrationBridge {
+			errs = append(errs, field.Invalid(bridgePath, uplink.Bridge,
+				"br-int is the integration bridge of ovn-controller"))
+		}
+		// One kernel namespace holds the VRF device, the bridges and the NICs.
+		if uplink.Bridge == fabric.VRF.Name {
+			errs = append(errs, field.Invalid(bridgePath, uplink.Bridge,
+				"the name is taken by the fabric VRF device"))
+		}
+		if uplink.Interface == fabric.VRF.Name {
+			errs = append(errs, field.Invalid(uplinkPath.Child("interface"), uplink.Interface,
+				"the name is taken by the fabric VRF device"))
+		}
+	}
+
+	if strings.HasPrefix(fabric.VRF.Name, ovnVRFPrefix) {
+		errs = append(errs, field.Invalid(vrfPath.Child("name"), fabric.VRF.Name,
+			"the prefix ovnvrf is reserved for the VRFs ovn-controller maintains"))
+	}
+
+	switch fabric.VRF.Table {
+	case 253, 254, 255:
+		errs = append(errs, field.Invalid(vrfPath.Child("table"), fabric.VRF.Table,
+			"tables 253, 254 and 255 are the kernel's default, main and local tables"))
+	}
+	// ovn-controller creates ovnvrf<id> with table <id>, so a fabric VRF on that
+	// table would share its routes with one of the OVN VRFs.
+	if slices.Contains(fabric.AdvertiseVRFIDs, fabric.VRF.Table) || slices.Contains(fabric.LearnVRFIDs, fabric.VRF.Table) {
+		errs = append(errs, field.Invalid(vrfPath.Child("table"), fabric.VRF.Table,
+			"ovn-controller uses a VRF id as the table of ovnvrf<id>"))
+	}
+
+	// Importing in both directions between one ovnvrf<id> and the fabric VRF
+	// is untested.
+	for i, id := range fabric.LearnVRFIDs {
+		if slices.Contains(fabric.AdvertiseVRFIDs, id) {
+			errs = append(errs, field.Invalid(fldPath.Child("learnVRFIDs").Index(i), id,
+				"a VRF id is either advertised from or learned into, not both"))
+		}
+	}
+
+	errs = append(errs, validateFabricNodes(fldPath.Child("nodes"), fabric.Nodes)...)
+
+	rangesPath := fldPath.Child("announceableRanges")
+	for i, value := range fabric.AnnounceableRanges {
+		prefix, err := netip.ParsePrefix(value)
+		if err != nil {
+			continue
+		}
+		// The FRRConfiguration prints every range masked, so a range with host
+		// bits would permit another network than the one written here.
+		if masked := prefix.Masked(); masked != prefix {
+			errs = append(errs, field.Invalid(rangesPath.Index(i), value,
+				"must be a network address; did you mean "+masked.String()))
+		}
+	}
+	if len(fabric.AdvertiseVRFIDs) > 0 && len(fabric.AnnounceableRanges) == 0 {
+		errs = append(errs, field.Required(rangesPath,
+			"advertiseVRFIDs needs at least one announceable range"))
+	}
+	return errs
+}
+
+// validateFabricNodes rejects an ASN or a loopback two rows of the node table
+// share. The list-map key makes the node names unique already. A BGP speaker
+// drops a route whose AS path carries its own ASN, so two nodes sharing one
+// would drop each other's routes, and two nodes sharing a loopback announce the
+// same host route.
+func validateFabricNodes(fldPath *field.Path, nodes []OVNFabricNode) field.ErrorList {
+	var errs field.ErrorList
+	seenASNs := make(map[int64]struct{}, len(nodes))
+	seenLoopbacks := make(map[netip.Addr]struct{}, 2*len(nodes))
+
+	for i, node := range nodes {
+		nodePath := fldPath.Index(i)
+		if _, dup := seenASNs[node.ASN]; dup {
+			errs = append(errs, field.Duplicate(nodePath.Child("asn"), node.ASN))
+		}
+		seenASNs[node.ASN] = struct{}{}
+
+		for _, loopback := range []struct {
+			name, value string
+		}{
+			{"loopbackIPv4", node.LoopbackIPv4},
+			{"loopbackIPv6", node.LoopbackIPv6},
+		} {
+			// Compared as parsed addresses, so 2001:db8::1 and 2001:DB8:0::1 are
+			// the same loopback.
+			addr, err := netip.ParseAddr(loopback.value)
+			if err != nil {
+				continue
+			}
+			if _, dup := seenLoopbacks[addr]; dup {
+				errs = append(errs, field.Duplicate(nodePath.Child(loopback.name), loopback.value))
+			}
+			seenLoopbacks[addr] = struct{}{}
+		}
 	}
 	return errs
 }
