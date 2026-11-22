@@ -244,6 +244,7 @@ const sidebar: DefaultTheme.Sidebar = [
         items: [
           { text: 'BGP Fabric Contract', link: '/reference/networking/bgp-fabric-contract' },
           { text: 'BGP Node Substrate', link: '/reference/networking/bgp-node-substrate' },
+          { text: 'OVN Dynamic Routing', link: '/reference/networking/ovn-dynamic-routing' },
         ],
       },
       {

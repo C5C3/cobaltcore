@@ -6,16 +6,19 @@
 # Verify the docs/reference/ovn/ovn-chassis-crd.md reference page documents the
 # CRD's conditions and the names its children take. An OVNChassis projects two
 # DaemonSets, two ConfigMaps and three per-node maintenance Jobs onto the nodes
-# it selects, so the vocabulary it has to pin down is the five sub-conditions
-# plus the aggregate, and the component suffix each child carries.
+# it selects, and a fabric chassis adds a route probe Job and one
+# FRRConfiguration per fabric node, so the vocabulary it has to pin down is the
+# sub-conditions plus the aggregate, RoutesAdvertised, and the component suffix
+# each child carries.
 #
 #   1. The "### Conditions" section exists and documents every condition type:
 #      CentralReady, NodesReady, the two DaemonSet conditions OVSReady and
-#      ControllerReady, MaintenanceReady, and the aggregate Ready reason
-#      AllReady.
+#      ControllerReady, MaintenanceReady, FabricReady, RoutesAdvertised, and
+#      the aggregate Ready reason AllReady.
 #   2. The "## Sub-Resource Naming Convention" section documents the suffix of
-#      every child: the two DaemonSets, the nodes and scripts ConfigMaps, and
-#      the hashed apply, evacuate and chassis-del Jobs.
+#      every child: the two DaemonSets, the nodes and scripts ConfigMaps, the
+#      hashed apply, evacuate and chassis-del Jobs, the route probe Job and the
+#      hashed FRRConfiguration.
 #
 # CRD_DOC overrides the page under test, so the script can also be pointed at a
 # scratch copy or at a path that does not exist.
@@ -85,6 +88,12 @@ test_conditions_documented() {
   assert_file_contains "documents MaintenanceReady" \
     "$CRD_DOC" \
     'MaintenanceReady'
+  assert_file_contains "documents FabricReady" \
+    "$CRD_DOC" \
+    'FabricReady'
+  assert_file_contains "documents RoutesAdvertised" \
+    "$CRD_DOC" \
+    'RoutesAdvertised'
   assert_file_contains "documents the aggregate Ready reason AllReady" \
     "$CRD_DOC" \
     'AllReady'
@@ -122,6 +131,12 @@ test_child_naming_documented() {
   assert_contains "documents the {name}-chassis-del-<hash> Job" \
     "$body" \
     '-chassis-del-'
+  assert_contains "documents the {name}-route-probe Job" \
+    "$body" \
+    '{name}-route-probe'
+  assert_contains "documents the {name}-fabric-<hash> FRRConfiguration" \
+    "$body" \
+    '{name}-fabric-<8 hex>'
 }
 
 # --- Run ---
