@@ -479,12 +479,36 @@ in an init container and `fabric-node.sh` in its privileged main container. A
 chassis without the block renders its DaemonSet and its Jobs as before, so an
 operator upgrade restarts no `ovn-controller`.
 
-Before its first change the script refuses two uplinks and exits 1: one that does
-not exist (`ERROR: fabric uplink <nic> does not exist on <node>`), and one that
-carries a global address (`ERROR: fabric uplink <nic> carries a global address on
-<node>; a fabric uplink carries link-local addresses only`). The second guard
-keeps a mistyped interface name from pulling the node network's port into a
-bridge. It then creates or keeps:
+Before its first change the script refuses four names and exits 1. An uplink
+that does not exist:
+
+```text
+ERROR: fabric uplink <nic> does not exist on <node>
+```
+
+An uplink that carries a global address:
+
+```text
+ERROR: fabric uplink <nic> carries a global address on <node>; a fabric uplink carries link-local addresses only
+```
+
+A peer bridge name that a device other than an OVS bridge carries, such as the
+node's bond:
+
+```text
+ERROR: <bridge> exists on <node> and is not an OVS bridge; a peer bridge takes a name no other device of the node carries
+```
+
+A VRF name that a device carries which is not the VRF the script recorded, such
+as a NIC or a VRF of the host:
+
+```text
+ERROR: <vrf> exists on <node> and is not the VRF the fabric script created
+```
+
+The second guard keeps a mistyped interface name from pulling the node network's
+port into a bridge. The last two keep the script from enslaving, stripping or
+deleting a device the node had before. The script then creates or keeps:
 
 | Device or key | What the script sets |
 | --- | --- |
