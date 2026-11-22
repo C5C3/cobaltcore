@@ -108,6 +108,10 @@ const (
 // The longest kind renders "{name}-chassis-del-{8 hex}", 21 characters on top of
 // metadata.name. That is the budget MaxOVNChassisNameLength bounds the CR name
 // by, and the webhook enforces.
+//
+// fabricFRRConfigurationName names the FRRConfigurations with it too, so a
+// change here also renames every live FRRConfiguration: the Fabric step then
+// deletes each one and writes it again under the new name.
 func maintenanceJobName(cr *ovnv1alpha1.OVNChassis, kind, node string) string {
 	sum := sha256.Sum256([]byte(node))
 	return cr.Name + "-" + kind + "-" + hex.EncodeToString(sum[:])[:maintenanceNameHashLength]

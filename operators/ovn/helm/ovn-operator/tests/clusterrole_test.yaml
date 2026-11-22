@@ -291,3 +291,22 @@ tests:
               - get
               - create
               - update
+
+  # The Fabric step writes one FRRConfiguration per fabric node into
+  # frr-k8s-system and reads them back with a live list, so the grant carries
+  # no watch.
+  - it: should grant FRRConfiguration writes without watch
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - frrk8s.metallb.io
+            resources:
+              - frrconfigurations
+            verbs:
+              - create
+              - delete
+              - get
+              - list
+              - patch

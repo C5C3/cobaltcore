@@ -253,6 +253,10 @@ var OVNCentralRemoteChildKinds = []schema.GroupVersionKind{
 // The validating webhooks look up every priorityClassName the two CR kinds
 // reference, through the uncached API reader that runs as this ServiceAccount.
 // +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get
+// frrconfigurations carry the per-node BGP configuration of a fabric chassis.
+// The Fabric step lists them as a live read and sets no watch, so the rule has
+// no watch verb.
+// +kubebuilder:rbac:groups=frrk8s.metallb.io,resources=frrconfigurations,verbs=get;list;create;patch;delete
 
 // Reconcile is the main reconciliation loop for the OVNCentral CR. It fetches
 // the CR, drives the teardown of a terminating one, ends the pass for a
@@ -338,11 +342,11 @@ func (r *OVNCentralReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	// The remote-children finalizer goes on only when the CR projects onto a
-	// target cluster, and it is the only finalizer this operator installs. A CR
-	// that keeps its children on the management cluster keeps the garbage
-	// collection cascade, which reaps them from their owner references, so it has
-	// nothing for a finalizer to hold it open for. spec.targetClusterRef is
-	// immutable, so the condition cannot flip under a live CR.
+	// target cluster. A CR that keeps its children on the management cluster
+	// keeps the garbage collection cascade, which reaps them from their owner
+	// references, so it has nothing for a finalizer to hold it open for.
+	// spec.targetClusterRef is immutable, so the condition cannot flip under a
+	// live CR.
 	//
 	// It is installed before any sub-reconciler runs, so a deletion issued
 	// between this pass and the next still funnels through the sweep. Requeuing

@@ -8,10 +8,13 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	. "github.com/onsi/gomega"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -24,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	"github.com/c5c3/cobaltcore/internal/common/instrumentation"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
 	mctestutil "github.com/c5c3/cobaltcore/internal/common/testutil/multicluster"
@@ -308,12 +312,14 @@ func TestReconcileChassis_CentralNotFoundGatesThePipeline(t *testing.T) {
 	g.Expect(ovnChassisCondition(got, conditionTypeNodesReady)).To(BeNil())
 }
 
-// TestChassisPipelineSteps_OrderAndNames pins the pipeline: seven named steps
+// TestChassisPipelineSteps_OrderAndNames pins the pipeline: eight named steps
 // in dependency order and no parallel group, because ovn-controller registers
 // itself in the local database Open vSwitch owns. The client-Secret step sits
 // between the central and the node step, since it consumes what the first
 // resolves and every later step mounts the Secret it names. The VPA step
-// follows the two DaemonSets it targets.
+// follows the two DaemonSets it targets. The Fabric step comes last, after the
+// maintenance walk, which a step that requeues on a schedule of its own must
+// not cut short.
 func TestChassisPipelineSteps_OrderAndNames(t *testing.T) {
 	g := NewGomegaWithT(t)
 	r := &OVNChassisReconciler{}
@@ -325,7 +331,7 @@ func TestChassisPipelineSteps_OrderAndNames(t *testing.T) {
 		named = append(named, step.Name)
 	}
 	g.Expect(named).To(Equal([]string{
-		"Central", "ClientSecret", "Nodes", "OVS", "Controller", "ChassisVPA", "Maintenance",
+		"Central", "ClientSecret", "Nodes", "OVS", "Controller", "ChassisVPA", "Maintenance", "Fabric",
 	}))
 }
 
@@ -594,4 +600,97 @@ func TestReconcileChassisDeleteRemoteChildren_SweepFailureKeepsFinalizer(t *test
 	g.Expect(getOVNChassis(t, r.Client, testOVNChassisName).Finalizers).
 		To(ContainElement(commonmulticluster.RemoteChildrenFinalizer),
 			"a failed sweep must keep the finalizer so the next pass retries")
+}
+
+// --- fabric -----------------------------------------------------------------
+
+// A terminating fabric chassis loses its FRRConfigurations before the CR goes:
+// they live in frr-k8s-system, which no cascade and no remote sweep reaches,
+// and the fabric finalizer holds the CR until they are deleted.
+func TestReconcileChassis_TerminatingFabricChassisDeletesItsFRRConfigurations(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cr := fabricChassis()
+	r, _ := newFabricReconciler(t, true, interceptor.Funcs{}, cr)
+	_, err := passFabric(ctx, t, r, cr, renderedNodes{testNodeA: fabricEntry(true)})
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(readFRRConfiguration(ctx, t, r.Client, testFRRConfigurationNodeA)).NotTo(BeNil())
+
+	g.Expect(r.Delete(ctx, getOVNChassis(t, r.Client, testOVNChassisName))).To(Succeed())
+	res, err := r.Reconcile(ctx, ovnChassisRequest)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.IsZero()).To(BeTrue())
+	g.Expect(readFRRConfiguration(ctx, t, r.Client, testFRRConfigurationNodeA)).To(BeNil())
+	err = r.Get(ctx, ovnChassisRequest.NamespacedName, &ovnv1alpha1.OVNChassis{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the CR goes once its finalizer is released")
+}
+
+// FabricReady is a sub-condition of Ready: a fabric chassis whose Fabric step
+// fails is not ready, and the error is counted under condition_type
+// FabricReady.
+func TestReconcileChassis_FabricErrorHoldsReadyAndIsCounted(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	reg := prometheus.NewRegistry()
+	prev := instrumenter
+	instrumenter = instrumentation.NewInstrumenter(instrumentation.NewMetricsOnRegistry("ovn_operator", reg),
+		subReconcilerConditionTypes)
+	t.Cleanup(func() { instrumenter = prev })
+
+	cr := fabricChassis()
+	node := chassisNode(testNodeA, map[string]string{testChassisNodeLabel: "true", frrK8sNodeLabel: "true"})
+	listErr := errors.New("frr-k8s-system is unreachable")
+	r, _ := newFabricReconciler(t, true, interceptor.Funcs{
+		List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+			return listErr
+		},
+	}, cr, readyCentral(), node)
+
+	// The first pass projects the DaemonSets, which the fake runs no controller
+	// for. Once both are ready, a pass reaches the Fabric step, installs the
+	// finalizer and returns, and the next one lists.
+	_, err := r.Reconcile(ctx, ovnChassisRequest)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(simulators.MarkDaemonSetReady(ctx, r.Client, chassisOVSDaemonSet)).To(Succeed())
+	g.Expect(simulators.MarkDaemonSetReady(ctx, r.Client, chassisControllerDaemonSet)).To(Succeed())
+	for range 3 {
+		if _, err = r.Reconcile(ctx, ovnChassisRequest); err != nil {
+			break
+		}
+	}
+
+	g.Expect(errors.Is(err, listErr)).To(BeTrue())
+	got := getOVNChassis(t, r.Client, testOVNChassisName)
+	g.Expect(ovnChassisCondition(got, conditionTypeFabricReady).Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(ovnChassisCondition(got, conditionTypeMaintenanceReady).Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(ovnChassisCondition(got, "Ready").Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(testutil.ToFloat64(instrumenterErrors(t, reg, "Fabric", conditionTypeFabricReady))).To(Equal(1.0))
+}
+
+// instrumenterErrors returns the reconcile error counter of one step and
+// condition type from reg, failing the test when the series is absent.
+func instrumenterErrors(t *testing.T, reg *prometheus.Registry, step, conditionType string) prometheus.Collector {
+	t.Helper()
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gathering the test registry: %v", err)
+	}
+	for _, family := range families {
+		if family.GetName() != "ovn_operator_reconcile_errors_total" {
+			continue
+		}
+		for _, metric := range family.GetMetric() {
+			labels := map[string]string{}
+			for _, pair := range metric.GetLabel() {
+				labels[pair.GetName()] = pair.GetValue()
+			}
+			if labels["sub_reconciler"] == step && labels["condition_type"] == conditionType {
+				return prometheus.NewCounterFunc(prometheus.CounterOpts{Name: "errors"},
+					func() float64 { return metric.GetCounter().GetValue() })
+			}
+		}
+	}
+	t.Fatalf("no ovn_operator_reconcile_errors_total series for %s/%s", step, conditionType)
+	return nil
 }

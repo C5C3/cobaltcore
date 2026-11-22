@@ -27,10 +27,11 @@ snapshots:
 | `ovn_operator_backup_total` | counter | `ovncentral`, `namespace`, `result` |
 | `ovn_operator_backup_duration_seconds` | histogram | `ovncentral`, `namespace` |
 
-One operator serves two kinds, so `sub_reconciler` carries fifteen values:
+One operator serves two kinds, so `sub_reconciler` carries sixteen values:
 `TLS`, `Northbound`, `Southbound`, `Endpoints`, `Northd`, `Relay`, `Backup` and
 `VPA` from the `OVNCentral` pipeline, `Central`, `ClientSecret`, `Nodes`, `OVS`,
-`Controller`, `ChassisVPA` and `Maintenance` from the `OVNChassis` one. The
+`Controller`, `ChassisVPA`, `Maintenance` and `Fabric` from the `OVNChassis`
+one. The
 backup pair carries the CR name and its namespace: it measures the Jobs the
 CronJob spawns, which is work that happens outside a reconcile.
 

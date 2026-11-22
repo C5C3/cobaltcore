@@ -49,6 +49,7 @@ var subReconcilerConditionTypes = map[string]string{
 	"Controller":   conditionTypeControllerReady,
 	"ChassisVPA":   "VPAReady",
 	"Maintenance":  conditionTypeMaintenanceReady,
+	"Fabric":       conditionTypeFabricReady,
 }
 
 // instrumenter wraps every sub-reconciler call with the shared duration/error

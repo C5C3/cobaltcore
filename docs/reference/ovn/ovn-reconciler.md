@@ -7,7 +7,7 @@ quadrant: operator
 
 The ovn-operator runs two controllers over the shared table-driven pipeline
 (`internal/common/reconcile`): `OVNCentralReconciler` with eight sub-reconcilers
-and `OVNChassisReconciler` with seven. In both, the first step to return a
+and `OVNChassisReconciler` with eight. In both, the first step to return a
 non-zero result or an error short-circuits the chain, and every exit path
 persists the conditions and the requeue through the shared status skeleton, which
 skips the write when a pass left status unchanged.
@@ -62,7 +62,7 @@ primary CR by hand in `parallelSteps`: `status.installedImage` from Northd, and
 
 ### OVNChassis
 
-![The pipeline of the OVNChassis controller. A pass runs its seven steps one after another and ends at the first that returns a requeue or an error: Central, ClientSecret, Nodes, OVS, Controller, ChassisVPA and Maintenance. There is no parallel group. Each step sets one condition; ClientSecret reports through CentralReady. Central hands on the resolved central, ClientSecret the name of the client Secret, and Nodes the rendered nodes. Controller reads the central and sets status.installedImage, and Maintenance reads the central and the nodes. The early exit and the full pass both end in updateStatus, which aggregates Ready from the sub-conditions and writes the status only when it changed.](../../diagrams/compute-ovnchassis-pipeline.svg)
+![The pipeline of the OVNChassis controller. A pass runs its eight steps one after another and ends at the first that returns a requeue or an error: Central, ClientSecret, Nodes, OVS, Controller, ChassisVPA, Maintenance and Fabric. There is no parallel group. Each step sets one condition; ClientSecret reports through CentralReady. Central hands on the resolved central, ClientSecret the name of the client Secret, and Nodes the rendered nodes. Controller reads the central and sets status.installedImage, Maintenance reads the central and the nodes, and Fabric reads the nodes. The early exit and the full pass both end in updateStatus, which aggregates Ready from the sub-conditions and writes the status only when it changed.](../../diagrams/compute-ovnchassis-pipeline.svg)
 
 The figure draws the steps in call order. The table lists what each one does.
 
@@ -75,6 +75,7 @@ The figure draws the steps in call order. The table lists what each one does.
 | Controller | Projects the `{name}-ovn-controller` DaemonSet, mirrors its node counters into status, and stamps `status.installedImage` | `ControllerReady` |
 | ChassisVPA | [`reconcileVPA`](../keystone/keystone-reconciler.md#reconcilevpa) applies or removes the VerticalPodAutoscalers of the two DaemonSets through the shared VPA flow | `VPAReady` |
 | Maintenance | Runs the per-node `apply`, `evacuate` and `chassis-del` Jobs that are due | `MaintenanceReady` |
+| Fabric | Applies one `FRRConfiguration` per fabric node that runs frr-k8s into `frr-k8s-system` and deletes the ones no node wants; see [`reconcileFabric`](#reconcilefabric) | `FabricReady` |
 
 The `OVNCentral` is the first gate: its Southbound address and its client Secret
 parameterise every later step, so a chassis whose central has published neither
@@ -86,8 +87,10 @@ DaemonSets mount the ConfigMap holding them.
 There is no parallel group here. The two DaemonSets look independent, but Open
 vSwitch owns the local database `ovn-controller` writes its chassis record into,
 so a node that runs the second without the first has nothing to register against.
-Maintenance runs last, since it acts on nodes the node step has already marked as
-leaving or as giving up the gateway role. `central` and `nodes` are threaded from
+Maintenance follows, since it acts on nodes the node step has already marked as
+leaving or as giving up the gateway role. Fabric runs last: the pass ends at the
+first non-zero result, and a step that requeues on a schedule of its own must not
+stand before the maintenance walk. `central` and `nodes` are threaded from
 the steps that resolve them to the steps that consume them through a closure, so
 the hand-off stays inside one pass. A field on the reconciler would be shared by
 every CR reconciled concurrently.
@@ -96,7 +99,7 @@ every CR reconciled concurrently.
 
 Each aggregate `Ready` is `True` with reason `AllReady` when every sub-condition
 of that kind is `True`, and `False` with `NotAllReady` otherwise. An `OVNCentral`
-aggregates eight, an `OVNChassis` six.
+aggregates eight, an `OVNChassis` seven.
 
 | Type | Kind | True reasons | False reasons |
 | --- | --- | --- | --- |
@@ -114,6 +117,7 @@ aggregates eight, an `OVNChassis` six.
 | `ControllerReady` | `OVNChassis` | `DaemonSetReady` | `DaemonSetProgressing`, `DaemonSetError` |
 | `MaintenanceReady` | `OVNChassis` | `MaintenanceIdle`, `MaintenanceRunning`, `MaintenanceDeferred` | `MaintenanceJobFailed`, `MaintenanceError` |
 | `VPAReady` | `OVNChassis` | `VPAReady`, `VPANotRequired` | `VPANotInstalled`, `CapabilityProbeFailed`, `VPAError` |
+| `FabricReady` | `OVNChassis` | `FabricConfigured`, `FabricNotConfigured` | `NodeWithoutFabricEntry`, `FRRK8sNotInstalled`, `CapabilityProbeFailed`, `FabricError` |
 
 `TargetClusterUnavailable` is set ahead of every sub-reconciler, when
 `spec.targetClusterRef` names a cluster that is not registered or no longer
@@ -638,6 +642,71 @@ stay behind, the same way deleting a Deployment leaves the rows its pods wrote
 (`ovnchassis_controller.go`). Drop the nodes out of `spec.nodeSelector` and let
 the `chassis-del` Jobs run before deleting the CR.
 
+### reconcileFabric
+
+**File:** `operators/ovn/internal/controller/reconcile_fabric.go`
+
+**Purpose:** Generate the frr-k8s side of `spec.fabric`. The desired set is one
+`FRRConfiguration` per node whose entry is not leaving, carries a fabric
+assignment and belongs to a Node labelled `openstack.c5c3.io/frr-k8s=true`. Each
+object is named `{name}-fabric-<8 hex>` after the SHA-256 of the node name and
+lives in `frr-k8s-system` on the cluster the children land on, the only
+namespace frr-k8s reads. It carries the component labels, the three ownership
+labels and the annotation `ovn.openstack.c5c3.io/node`, and no owner reference:
+it lives in another namespace than the CR. The operator builds the object
+unstructured and takes no Go dependency on frr-k8s. See
+[OVNChassis CRD](./ovn-chassis-crd.md) for its content.
+
+**One pass:**
+
+1. With an empty desired set and no finalizer
+   `ovn.openstack.c5c3.io/fabric-frrconfigurations`, the step sends no request
+   for the kind and goes to the condition. That is every chassis that never had a
+   fabric node on frr-k8s.
+2. With a non-empty desired set, it asks whether the children's cluster serves
+   `frrk8s.metallb.io/v1beta1` `FRRConfiguration`. The local cluster is asked on
+   every pass through the manager's RESTMapper, because frr-k8s can be installed
+   after the operator started; a target cluster is asked through its own mapper.
+   A cluster that does not serve the kind gets no write.
+3. It adds the finalizer and ends the pass with `RequeueNextPass` when it was
+   added. The write goes through a copy of the CR, so the status the pass has set
+   so far survives it.
+4. It lists the `FRRConfiguration` objects of `frr-k8s-system` once, through the
+   live reader of the children's cluster. No manager of this repository caches
+   unstructured objects, so this is a live read on the local cluster too. A
+   cluster that does not serve the kind has none.
+5. For each desired object, a live object of the same name that the CR does not
+   control is left untouched and reported. Otherwise the object is applied under
+   the operator's field manager, and only when the live object does not already
+   contain it: a label or the annotation differs, or the spec does. Fields the
+   API server or another writer added do not count as a difference, while a list
+   of another length does, so a removed uplink or VRF id reaches the object. Every
+   listed object the CR controls and no longer wants is deleted. When the desired
+   set is empty and none is left, the finalizer is removed.
+
+**Condition Contract:**
+
+| Status | Reason | Message | RequeueAfter |
+| --- | --- | --- | --- |
+| `False` | `CapabilityProbeFailed` | The wrapped error of the probe for the kind | none (error returned) |
+| `False` | `FabricError` | The wrapped error of the list (`listing FRRConfigurations in frr-k8s-system: ...`), of an apply (`applying FRRConfiguration <name>: ...`), of a delete or of a finalizer write | none (error returned) |
+| `False` | `FabricError` | "FRRConfiguration \<name\> exists and is not owned by this OVNChassis" | none |
+| `False` | `FRRK8sNotInstalled` | Names the labelled nodes and the kind their cluster does not serve | none |
+| `False` | `NodeWithoutFabricEntry` | Names, sorted, the selected nodes without a usable row in `spec.fabric.nodes` | none |
+| `True` | `FabricConfigured` | "Rendered \<n\> fabric nodes; \<m\> carry an FRRConfiguration in frr-k8s-system" | none |
+| `True` | `FabricNotConfigured` | "spec.fabric is not set; no node is attached to the BGP fabric" | none |
+
+The first matching row wins. `FabricReady` is a sub-condition of `Ready`, so a
+fabric chassis with an unattached node or without frr-k8s is not ready.
+
+**Deletion:** `reconcileDeleteFabric` runs before the remote-children sweep,
+which does not reach `frr-k8s-system`. Without the finalizer it does nothing.
+With a nil children client, a target cluster the CR was given up on, it removes
+the finalizer without a request, and the `RemoteChildrenAbandoned` event of the
+sweep that follows covers what stays behind. Otherwise it deletes every
+`FRRConfiguration` in `frr-k8s-system` the CR controls and removes the
+finalizer. A failed list or delete keeps the finalizer and is returned.
+
 ## Requeue semantics
 
 | Constant | Value | Used by |
@@ -645,7 +714,7 @@ the `chassis-del` Jobs run before deleting the CR.
 | `RequeueRaftWait` (`requeue_intervals.go`) | 15s | Every OVN wait state: a Raft cluster that has not elected a leader, a member endpoint without an address, a central that has not published one, and a maintenance Job that is still running |
 | `RequeueSecretPolling` (`internal/common/reconcile/intervals.go`) | 15s | cert-manager polling in the TLS step, the missing-`OVNCentral` poll, the client-Secret waits of the chassis, the rejected snapshot claim, and the target-cluster hold on both controllers |
 | `RequeueDeploymentPolling` (`internal/common/reconcile/intervals.go`) | 10s | Deployment and DaemonSet readiness polling: northd, the relay, and the two chassis DaemonSets |
-| `RequeueNextPass` (`internal/common/reconcile/intervals.go`) | 1s | The single pass after the remote-children finalizer was added, so the next reconcile observes the persisted finalizer and not the in-memory copy |
+| `RequeueNextPass` (`internal/common/reconcile/intervals.go`) | 1s | The single pass after the remote-children finalizer or the fabric finalizer was added, so the next reconcile observes the persisted finalizer and not the in-memory copy |
 
 None of the wait states reaches the workqueue as an error, so these intervals are
 what paces the retries. A returned error goes on the controller's own backoff
@@ -709,3 +778,9 @@ target and its central's target, either left out when it is the management
 cluster. `Secret` is also among `OVNChassisRemoteChildKinds`, so the copy on a
 target has a drift watch through its ownership labels and is swept with the
 other children.
+
+Neither controller watches `FRRConfiguration`. The kind is optional on every
+cluster, so an unconditional watch would fail the controller's start where
+frr-k8s is not installed, and the objects live in `frr-k8s-system`, which no
+other leg covers. A drifted object is written back on the next pass of its
+chassis.

@@ -40,6 +40,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -605,6 +606,60 @@ func TestIntegration_Multicluster_OVNTargetCluster(t *testing.T) {
 			ig.Expect(renewed.Data).To(HaveKeyWithValue("tls.crt", []byte("renewed-on-the-target")))
 		}, watchLatency, pollInterval).Should(Succeed(),
 			"the copy should follow a renewal on the target through the remote Secret watch")
+	})
+
+	t.Run("a placed fabric OVNChassis writes its FRRConfiguration on the target", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		// The central the previous subtest placed on the target serves this
+		// chassis too. The fabric node and frr-k8s-system exist on the target
+		// alone, which is where frr-k8s reads its objects.
+		placedName := integrationCentralName + "-placed"
+		multiclusterEnsureNamespace(t, ctx, targetClient, frrK8sNamespace)
+		const fabricNodeName = "mc-ovn-fabric-node"
+		fabricLabel := "e2e.c5c3.io/ovn-fabric-it"
+		g.Expect(targetClient.Create(ctx, &corev1.Node{ObjectMeta: metav1.ObjectMeta{
+			Name:   fabricNodeName,
+			Labels: map[string]string{fabricLabel: "true", frrK8sNodeLabel: "true"},
+		}})).To(Succeed(), "create the fabric node on the target")
+
+		chassis := integrationChassisCR("chassis-fabric", targetNamespace, placedName, targetRef)
+		chassis.Spec.NodeSelector = map[string]string{fabricLabel: "true"}
+		chassis.Spec.Gateway = nil
+		chassis.Spec.Fabric = &ovnv1alpha1.OVNFabricSpec{
+			Uplinks: []ovnv1alpha1.OVNFabricUplink{{Interface: "fab1", Bridge: "br-fab1"}},
+			Nodes: []ovnv1alpha1.OVNFabricNode{{
+				Name: fabricNodeName, ASN: 4200000001, LoopbackIPv4: "192.0.2.1", LoopbackIPv6: "2001:db8::1",
+			}},
+		}
+		g.Expect(mgmtClient.Create(ctx, chassis)).To(Succeed(), "create the placed fabric OVNChassis CR")
+		fabricKey := client.ObjectKeyFromObject(chassis)
+
+		ovsKey := client.ObjectKey{Namespace: targetNamespace, Name: chassisOVSName(chassis)}
+		eventuallyExists(t, ctx, targetClient, ovsKey, &appsv1.DaemonSet{}, "ovs DaemonSet", eventuallyTimeout)
+		g.Expect(simulators.MarkDaemonSetReady(ctx, targetClient, ovsKey)).To(Succeed())
+		controllerKey := client.ObjectKey{Namespace: targetNamespace, Name: chassisControllerName(chassis)}
+		eventuallyExists(t, ctx, targetClient, controllerKey, &appsv1.DaemonSet{}, "ovn-controller DaemonSet",
+			eventuallyLongTimeout)
+		g.Expect(simulators.MarkDaemonSetReady(ctx, targetClient, controllerKey)).To(Succeed())
+
+		frrKey := client.ObjectKey{Namespace: frrK8sNamespace, Name: fabricFRRConfigurationName(chassis, fabricNodeName)}
+		frr := &unstructured.Unstructured{}
+		frr.SetGroupVersionKind(frrConfigurationGVK)
+		multiclusterExpectRemoteOwnership(t, ctx, targetClient, frrKey, frr, "FRRConfiguration",
+			"OVNChassis", chassis.Name, targetNamespace)
+		absent := &unstructured.Unstructured{}
+		absent.SetGroupVersionKind(frrConfigurationGVK)
+		g.Expect(apierrors.IsNotFound(mgmtClient.Get(ctx, frrKey, absent))).To(BeTrue(),
+			"the object belongs on the cluster of the fabric node")
+
+		g.Expect(mgmtClient.Delete(ctx, chassis)).To(Succeed(), "delete the placed fabric OVNChassis")
+		g.Eventually(func() bool {
+			return apierrors.IsNotFound(mgmtClient.Get(ctx, fabricKey, &ovnv1alpha1.OVNChassis{}))
+		}, eventuallyLongTimeout, pollInterval).Should(BeTrue(),
+			"the CR should leave etcd once both finalizers are released")
+		g.Expect(apierrors.IsNotFound(targetClient.Get(ctx, frrKey, frr.DeepCopy()))).To(BeTrue(),
+			"the FRRConfiguration goes before the fabric finalizer is released")
 	})
 }
 

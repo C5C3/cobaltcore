@@ -101,6 +101,16 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - update
   - watch
 - apiGroups:
+  - frrk8s.metallb.io
+  resources:
+  - frrconfigurations
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+- apiGroups:
   - ovn.openstack.c5c3.io
   resources:
   - ovncentrals

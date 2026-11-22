@@ -11,6 +11,7 @@
 //
 //	cert-manager/        — cert-manager.io CRDs (Certificate, ClusterIssuer)
 //	external-secrets/    — external-secrets.io CRDs (ExternalSecret, PushSecret, ClusterSecretStore, SecretStore)
+//	frr-k8s/             — frrk8s.metallb.io CRDs (FRRConfiguration)
 //	k-orc/               — openstack.k-orc.cloud CRDs (ApplicationCredential, Service, Endpoint, User, Domain, Project, Role, RoleAssignment, Region)
 //	mariadb-operator/    — k8s.mariadb.com CRDs (MariaDB, MaxScale, Database, Grant, User)
 //	memcached-operator/  — memcached.c5c3.io CRDs (Memcached)
