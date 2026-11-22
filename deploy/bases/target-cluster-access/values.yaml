@@ -80,6 +80,24 @@ authDelegatorBinding: false
 # pool's nodes come and go with its selector.
 hypervisorTraits: false
 
+# Whether to grant get, list, create, patch and delete on
+# frrconfigurations.frrk8s.metallb.io in frr-k8s-system, the one namespace
+# frr-k8s reads its configuration from. An OVNChassis placed on this cluster
+# whose spec.fabric attaches nodes that carry openstack.c5c3.io/frr-k8s=true
+# writes one FRRConfiguration per such node there. The grant is a Role of its
+# own, so frr-k8s-system does not join the namespaces above and gets none of
+# the workload grants.
+#
+# The chart does not create frr-k8s-system: frr-k8s's own install does, so turn
+# the value on after frr-k8s is installed, or the Role has no namespace to land
+# in.
+#
+# Turning it back off while such a chassis still carries the finalizer
+# ovn.openstack.c5c3.io/fabric-frrconfigurations makes that chassis's deletion
+# fail on a forbidden list, and the chassis stays in Terminating until the grant
+# is back.
+frrConfigurations: false
+
 # The subset of the namespaces above that host node-level workloads. Each entry
 # gets two things: its Namespace is labelled
 # pod-security.kubernetes.io/enforce: privileged, and its Role is the only one

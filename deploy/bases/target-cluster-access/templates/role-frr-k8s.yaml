@@ -1,0 +1,48 @@
+{{/*
+The opt-in grant on FRRConfigurations in frr-k8s-system, the namespace frr-k8s
+reads them from. A Role and its binding of their own, rather than an entry in
+values.namespaces, which would grant the full workload Role in a namespace that
+holds frr-k8s itself. The chart does not create the namespace: frr-k8s's own
+install does, so the value is turned on after it.
+*/}}
+{{- include "target-cluster-access.requireNamespaces" . }}
+{{- if .Values.frrConfigurations }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "target-cluster-access.fullname" . }}-frr-k8s
+  namespace: frr-k8s-system
+  labels:
+    {{- include "target-cluster-access.labels" . | nindent 4 }}
+rules:
+  # frrk8s.metallb.io - frrconfigurations
+  # One per fabric node of an OVNChassis placed on this cluster. The operator
+  # lists them as a live read and sets no watch.
+  - apiGroups:
+      - frrk8s.metallb.io
+    resources:
+      - frrconfigurations
+    verbs:
+      - get
+      - list
+      - create
+      - patch
+      - delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "target-cluster-access.fullname" . }}-frr-k8s
+  namespace: frr-k8s-system
+  labels:
+    {{- include "target-cluster-access.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "target-cluster-access.fullname" . }}-frr-k8s
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.serviceAccount.name }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
