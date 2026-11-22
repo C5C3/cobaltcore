@@ -468,3 +468,25 @@ func TestOVNChassisValidate_Jobs(t *testing.T) {
 		})
 	}
 }
+
+// validFabric returns a spec.fabric block that passes every rule, in the shape
+// the CRD schema would have defaulted it: two uplinks, one node row, one
+// announceable range per family and one VRF id on each side. The webhook tests
+// and the CRD-only envtest mutate one field of it per case.
+func validFabric() *OVNFabricSpec {
+	return &OVNFabricSpec{
+		VRF: OVNFabricVRFSpec{Name: "fabric", Table: 100},
+		Uplinks: []OVNFabricUplink{
+			{Interface: "fab1", Bridge: "br-fab1"},
+			{Interface: "fab2", Bridge: "br-fab2"},
+		},
+		MTU: 9000,
+		Nodes: []OVNFabricNode{{
+			Name: "node-1", ASN: 4200000001, LoopbackIPv4: "192.0.2.1", LoopbackIPv6: "2001:db8::1",
+		}},
+		AnnounceableRanges: []string{"198.51.100.0/24", "2001:db8::/64"},
+		AdvertiseVRFIDs:    []int64{42},
+		LearnVRFIDs:        []int64{10},
+		BFD:                OVNFabricBFDSpec{ReceiveIntervalMs: 300, TransmitIntervalMs: 300, DetectMultiplier: 3},
+	}
+}
