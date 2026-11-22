@@ -21,6 +21,9 @@
 #   - node-prep.sh, run against a stub `ip`, names the missing vrf module and
 #     exits 1, ignores only a missing device on delete, and rejects an
 #     unknown verb
+#   - the fabric peers of tests/e2e-ovn-overlay/fabric-advertised-route/ run
+#     the same lab pin, and their peer.sh leaves the node end of the uplink to
+#     the OVNChassis: it neither enslaves it nor brings it up
 #
 # Usage: bash tests/unit/lab/bgp_fabric_peering_suite_test.sh
 
@@ -42,6 +45,7 @@ LAB_DIR="$PROJECT_ROOT/tests/lab/bgp-fabric"
 NODE1_CONF="$LAB_DIR/node1/frr.conf"
 PER_NODE="$SUITE/03-frrconfiguration.yaml"
 KERNEL_ROUTES="$SUITE/04-frrconfiguration-kernel-routes.yaml"
+OVERLAY_SUITE="$PROJECT_ROOT/tests/e2e-ovn-overlay/fabric-advertised-route"
 
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
@@ -71,6 +75,18 @@ test_pod_images_follow_the_lab_pin() {
     images="$(awk '/^[[:space:]]+image:/ { print $2 }' "$SUITE/$f" | sort -u)"
     assert_eq "$f runs only the lab's FRR pin" "$pin" "$images"
   done
+  images="$(awk '/^[[:space:]]+image:/ { print $2 }' "$OVERLAY_SUITE/03-fabric-peers.yaml" | sort -u)"
+  assert_eq "the overlay suite's 03-fabric-peers.yaml runs only the lab's FRR pin" "$pin" "$images"
+}
+
+test_overlay_peer_leaves_the_uplink_to_the_chassis() {
+  echo "Test: the overlay suite's peer.sh leaves the node end of the uplink alone"
+
+  local peer="$OVERLAY_SUITE/peer.sh"
+  assert_file_contains "peer.sh creates the veth uplink in the node's namespace" "$peer" \
+    'nsenter -t 1 -n -- ip link add "\$UPLINK" mtu 9000 type veth peer name eth1 mtu 9000 netns \$\$'
+  assert_file_not_contains "peer.sh does not enslave the uplink" "$peer" 'master'
+  assert_file_not_contains "peer.sh does not bring the uplink up" "$peer" 'ip link set "\$UPLINK" up'
 }
 
 test_daemons_is_the_lab_file_without_ospfd() {
@@ -227,6 +243,7 @@ EOF
 
 test_every_suite_file_carries_the_spdx_pair
 test_pod_images_follow_the_lab_pin
+test_overlay_peer_leaves_the_uplink_to_the_chassis
 test_daemons_is_the_lab_file_without_ospfd
 test_per_node_configuration_states_the_contract
 test_kernel_routes_configuration_widens_the_generated_lists

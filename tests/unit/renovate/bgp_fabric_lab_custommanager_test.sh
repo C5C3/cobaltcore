@@ -8,8 +8,10 @@
 #   - quay.io/frrouting/frr in tests/lab/bgp-fabric/bgp-fabric.clab.yml, the
 #     image every lab node runs, and in the two Pod files of the
 #     e2e-bgp-fabric suite (01-fabric-node.yaml, 02-fabric-peers.yaml under
-#     tests/e2e-bgp-fabric/frr-k8s-fabric-peering/), so the lab and the
-#     suite's fabric peers move together
+#     tests/e2e-bgp-fabric/frr-k8s-fabric-peering/) and in the peers file of
+#     the fabric-advertised-route suite (03-fabric-peers.yaml under
+#     tests/e2e-ovn-overlay/fabric-advertised-route/), so the lab and both
+#     suites' fabric peers move together
 #   - ghcr.io/srl-labs/clab in tests/lab/bgp-fabric/run.sh, the
 #     CLAB_IMAGE_DEFAULT the runner deploys and destroys the lab with
 # For each: the docker-datasource regex captures depName, tag (currentValue)
@@ -217,11 +219,58 @@ test_suite_pod_files() {
   done
 }
 
+# --- Test 5: the FRR manager and both lab rules cover the overlay suite's peers ---
+test_overlay_suite_peers_file() {
+  echo "Test: the FRR manager and both lab rules cover the peers file of the fabric-advertised-route suite"
+
+  if ! command -v jq >/dev/null 2>&1 || ! command -v perl >/dev/null 2>&1; then
+    echo "  SKIP: jq or perl not installed (6 checks skipped)"
+    SKIP=$((SKIP + 6))
+    return
+  fi
+
+  local peers_file="tests/e2e-ovn-overlay/fabric-advertised-route/03-fabric-peers.yaml"
+  local entry matched
+  entry="$(manager_for "$FRR_PATH")"
+
+  # Of the overlay suites, the manager reads the one peers file and no other.
+  matched="$(cd "$PROJECT_ROOT" && find tests/e2e-ovn-overlay -type f | sort |
+    PATTERNS="$(jq -r '.managerFilePatterns[]' <<<"$entry")" perl -ne '
+      chomp; my $f = $_;
+      for my $p (split /\n/, $ENV{PATTERNS}) {
+        (my $re = $p) =~ s{^/|/$}{}g;
+        if ($f =~ /$re/) { print "$f\n"; last }
+      }' | paste -sd' ' -)"
+  assert_eq "the FRR manager reads exactly the peers file of the overlay suites" "$peers_file" "$matched"
+
+  local line captured count=0
+  while IFS= read -r line; do
+    count=$((count + 1))
+    captured="$(REGEX="$(jq -r '.matchStrings[0]' <<<"$entry")" LINE="$line" perl -e '
+      my $re = $ENV{REGEX}; my $l = $ENV{LINE};
+      print "$+{depName}|$+{currentValue}|$+{currentDigest}" if $l =~ /$re/;
+    ')"
+    assert_contains "the regex captures depName, tag and digest from image line $count of the peers file" \
+      "$captured" "$FRR_PACKAGE|"
+  done < <(cd "$PROJECT_ROOT" && grep -h 'image: ' "$peers_file")
+  assert_eq "the peers file pins the FRR image on two lines" "2" "$count"
+
+  local type
+  for type in major minor; do
+    assert_eq "the $type lab rule lists $peers_file" "1" \
+      "$(jq --arg p "$FRR_PACKAGE" --arg f "$peers_file" --arg t "$type" '[.packageRules[]
+        | select(((.matchPackageNames // []) | index($p)) != null
+                 and ((.matchFileNames // []) | index($f)) != null
+                 and ((.matchUpdateTypes // []) | index($t)) != null)] | length' "$RENOVATE_FILE")"
+  done
+}
+
 # --- Run ---
 test_custom_managers_capture_the_pins
 test_package_rules
 test_each_image_is_pinned_once
 test_suite_pod_files
+test_overlay_suite_peers_file
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

@@ -181,8 +181,9 @@ govulncheck:
 # the scripts of the libvirt suites (the guest suite's guest-lib.sh and the
 # POSIX sh guest-user-data.sh), the patch checks the hvo and kna manager
 # builds run (images/*/patch-checks.sh), the BGP fabric lab (run.sh and the
-# POSIX sh setup.sh of every box under tests/lab/bgp-fabric/) and the POSIX sh
-# fixture scripts of the BGP fabric suite (tests/e2e-bgp-fabric/).
+# POSIX sh setup.sh of every box under tests/lab/bgp-fabric/), the POSIX sh
+# fixture scripts of the BGP fabric suite (tests/e2e-bgp-fabric/) and the
+# fixture scripts of the OVN overlay suites (tests/e2e-ovn-overlay/).
 shellcheck:
 	@echo "Linting hack/*.sh..."
 	@shellcheck --severity=warning hack/*.sh
@@ -202,6 +203,8 @@ shellcheck:
 	@shellcheck --severity=warning tests/lab/bgp-fabric/*.sh tests/lab/bgp-fabric/*/*.sh
 	@echo "Linting the BGP fabric suite scripts..."
 	@shellcheck --severity=warning tests/e2e-bgp-fabric/*/*.sh
+	@echo "Linting the OVN overlay suite scripts..."
+	@shellcheck --severity=warning tests/e2e-ovn-overlay/*/*.sh
 
 .PHONY: chainsaw-lint
 # chainsaw-lint validates every Chainsaw test (tests/**/chainsaw-test.yaml) and
@@ -994,24 +997,30 @@ e2e-orders-multicluster:
 	chainsaw test --config tests/e2e-orders-multicluster/chainsaw-config.yaml tests/e2e-orders-multicluster/
 
 .PHONY: e2e-ovn-overlay
-# e2e-ovn-overlay runs the two suites under tests/e2e-ovn-overlay/ across the
-# two workers of a multi-node kind cluster (hack/kind-config-multinode.yaml),
-# default-spread first:
+# e2e-ovn-overlay runs the three suites under tests/e2e-ovn-overlay/ on a
+# multi-node kind cluster (hack/kind-config-multinode.yaml), in directory
+# order:
 #   - default-spread loads the first worker with a ballast Pod, applies an
 #     OVNCentral that names no spread, and checks where the pods land: the
 #     four northd replicas two on each worker, the three Northbound members on
 #     both. It is the check that the default spread works on nodes without a
 #     topology.kubernetes.io/zone label.
+#   - fabric-advertised-route attaches the first worker to two FRR Pods
+#     through an OVNChassis spec.fabric and follows a route of a test logical
+#     router into the node's ovnvrf42 and to both peers, the leaf defaults
+#     into Learned_Route, and the teardown once the block is removed.
 #   - geneve-datapath programs one logical switch port per worker, pings from
 #     a network namespace on the first to the port on the second, and asserts
 #     the Southbound database bound the port and registered two Geneve tunnel
 #     endpoints.
 # The suites live OUTSIDE tests/e2e/ because every suite there runs against the
 # single-node hack/kind-config.yaml cluster that `make e2e` sweeps, where every
-# pod lands on one node and no packet would ever enter a tunnel.
+# pod lands on one node and no packet would ever enter a tunnel, and which
+# carries no frr-k8s.
 #
-# The two preflights are kept separate so a kubectl/cluster reachability failure
-# is not conflated with a single-node cluster. See review pattern
+# The three preflights are kept separate so a kubectl/cluster reachability
+# failure is not conflated with a single-node cluster or with a cluster deployed
+# without the frr-k8s overlay. See review pattern
 # .planwerk/review_patterns/distinguish-collapsed-failure-modes-in-preflight-checks.md
 # This target satisfies the CI-to-Makefile parity expected by
 # .planwerk/review_patterns/maintain-ci-to-makefile-parity-for-new-jobs.md so
@@ -1023,10 +1032,13 @@ e2e-orders-multicluster:
 # hack/ci-deploy-operator.sh`) and that two schedulable nodes exist. default-spread
 # wants exactly two, neither with a topology.kubernetes.io/zone label, and its
 # first step fails otherwise. The chassis pods need the openvswitch and geneve
-# modules on the host, which `WITH_OVN_KERNEL_MODULES=true` loads at deploy time.
+# modules on the host, which `WITH_OVN_KERNEL_MODULES=true` loads at deploy time,
+# and fabric-advertised-route needs frr-k8s (`WITH_FRR_K8S=true`) and the vrf
+# module, which its first `ip link add ... type vrf` loads.
 e2e-ovn-overlay:
 	@kubectl version --request-timeout=2s >/dev/null 2>&1 || { echo 'kubectl is not configured or no cluster is reachable' >&2; exit 1; }
 	@[ "$$(kubectl get nodes -l '!node-role.kubernetes.io/control-plane' -o name | wc -l | tr -d ' ')" -ge 2 ] || { echo 'the overlay suite needs a multi-node cluster; run KIND_CONFIG=hack/kind-config-multinode.yaml make deploy-infra first' >&2; exit 1; }
+	@kubectl get daemonset frr-k8s -n frr-k8s-system >/dev/null 2>&1 || { echo 'frr-k8s is not deployed; the fabric suite needs it: run KIND_CONFIG=hack/kind-config-multinode.yaml WITH_OVN_KERNEL_MODULES=true WITH_FRR_K8S=true make deploy-infra first' >&2; exit 1; }
 	chainsaw test --config tests/e2e-ovn-overlay/chainsaw-config.yaml tests/e2e-ovn-overlay/
 
 .PHONY: e2e-bgp-fabric

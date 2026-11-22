@@ -142,8 +142,8 @@ test_ci_yaml_wires_the_signal() {
   assert_filter_is_wired tests_ovn_overlay e2e-ovn-overlay
 }
 
-test_filter_names_the_suite_and_nothing_else() {
-  echo "Test: the filter lists the overlay suite only"
+test_filter_names_the_suite_and_its_overlay() {
+  echo "Test: the filter lists the overlay suites and the frr-k8s overlay only"
 
   # The filter block ends at the next filter key at the same indent.
   local block
@@ -155,6 +155,10 @@ test_filter_names_the_suite_and_nothing_else() {
 
   assert_contains "the filter lists the overlay suite" \
     "$block" "tests/e2e-ovn-overlay/**"
+  # The fabric suite peers through frr-k8s, so a change to its overlay has to
+  # run the suite that depends on it.
+  assert_contains "the filter lists the frr-k8s overlay" \
+    "$block" "deploy/overlays/kind/frr-k8s/**"
   # The operator and the daemon image reach the job through the `ovn` and
   # `image_ovn` filters the resolver reads, and the deploy stack and the hack
   # scripts through the canary. Listing them here would schedule a self-hosted
@@ -184,6 +188,8 @@ test_the_signal_reaches_its_consumers() {
     "needs.changes.outputs.e2e-ovn-overlay == 'true'"
   assert_contains "the job runs the suite through the Makefile" "$job" \
     "make e2e-ovn-overlay"
+  assert_contains "the job deploys the frr-k8s overlay the fabric suite needs" "$job" \
+    'WITH_FRR_K8S: "true"'
 
   assert_file_contains "the Makefile declares the target" "$MAKEFILE" \
     "^e2e-ovn-overlay:$"
@@ -193,6 +199,8 @@ test_the_signal_reaches_its_consumers() {
   # kind config a developer has to pass to get a second schedulable node.
   assert_file_contains "the preflight names the multi-node config" "$MAKEFILE" \
     "the overlay suite needs a multi-node cluster; run KIND_CONFIG=hack/kind-config-multinode.yaml make deploy-infra first"
+  assert_file_contains "the preflight names the frr-k8s deploy" "$MAKEFILE" \
+    "frr-k8s is not deployed; the fabric suite needs it: run KIND_CONFIG=hack/kind-config-multinode.yaml WITH_OVN_KERNEL_MODULES=true WITH_FRR_K8S=true make deploy-infra first"
 }
 
 # ---------------------------------------------------------------------------
@@ -205,7 +213,7 @@ test_noop_run_still_emits_the_output
 test_tag_push_forces_the_job
 test_the_signal_reaches_the_image_build
 test_ci_yaml_wires_the_signal
-test_filter_names_the_suite_and_nothing_else
+test_filter_names_the_suite_and_its_overlay
 test_the_signal_reaches_its_consumers
 
 echo ""
