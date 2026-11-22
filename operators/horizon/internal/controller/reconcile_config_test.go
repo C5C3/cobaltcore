@@ -58,7 +58,7 @@ func TestReconcileConfig_RendersLocalSettings(t *testing.T) {
 	g.Expect(rendered).To(ContainSubstring(`"KEY_PREFIX": "horizon-e3b48cc65c6f"`))
 	// OPTIONS bound every pymemcache call at 1 s and turn its errors into
 	// misses (issue #1560).
-	g.Expect(rendered).To(ContainSubstring(`CACHES = {"default": {"BACKEND": "django.core.cache.backends.memcached.PyMemcacheCache", "KEY_PREFIX": "horizon-e3b48cc65c6f", "LOCATION": ["memcached:11211"], "OPTIONS": {"connect_timeout": 1, "ignore_exc": True, "timeout": 1}}}`))
+	g.Expect(rendered).To(ContainSubstring(`CACHES = {"default": {"BACKEND": "django.core.cache.backends.memcached.PyMemcacheCache", "KEY_PREFIX": "horizon-e3b48cc65c6f", "LOCATION": ["memcached:11211"], "OPTIONS": {"connect_timeout": 1, "ignore_exc": True, "timeout": 1}}, "template_fragments": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}`))
 
 	g.Expect(rendered).To(ContainSubstring(`OPENSTACK_KEYSTONE_URL = "http://keystone.default.svc.cluster.local:5000/v3"`))
 	// The server-side clients must use the internal catalog interface — the
@@ -792,9 +792,9 @@ func TestReconcileConfig_SameImageRendersSameConfigMapName(t *testing.T) {
 
 // TestReconcileConfig_CachesOverrideDropsKeyPrefixAndIsReported covers the
 // escape hatch for a cache backend spec.cache cannot express: the user dict
-// replaces the operator's CACHES whole, KEY_PREFIX and OPTIONS included, and
-// the guard names the lost prefix and timeouts in the condition and the
-// Warning event.
+// replaces the operator's CACHES whole, the template_fragments alias,
+// KEY_PREFIX and OPTIONS included, and the guard names the lost alias, prefix
+// and timeouts in the condition and the Warning event.
 func TestReconcileConfig_CachesOverrideDropsKeyPrefixAndIsReported(t *testing.T) {
 	g := NewGomegaWithT(t)
 	h := testHorizon()
@@ -810,6 +810,7 @@ func TestReconcileConfig_CachesOverrideDropsKeyPrefixAndIsReported(t *testing.T)
 	g.Expect(r.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: name}, &cm)).To(Succeed())
 	rendered := cm.Data["local_settings.py"]
 	g.Expect(rendered).To(ContainSubstring(`CACHES = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}`))
+	g.Expect(rendered).NotTo(ContainSubstring("template_fragments"))
 	g.Expect(rendered).NotTo(ContainSubstring("KEY_PREFIX"))
 	g.Expect(rendered).NotTo(ContainSubstring("OPTIONS"))
 
@@ -818,11 +819,12 @@ func TestReconcileConfig_CachesOverrideDropsKeyPrefixAndIsReported(t *testing.T)
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(config.ConditionReasonOwnedKeysOverridden))
 	g.Expect(cond.Message).To(ContainSubstring("CACHES"))
+	g.Expect(cond.Message).To(ContainSubstring("template_fragments"))
 	g.Expect(cond.Message).To(ContainSubstring("KEY_PREFIX"))
 	g.Expect(cond.Message).To(ContainSubstring("timeouts"))
 
 	fakeRecorder := r.Recorder.(*record.FakeRecorder)
-	g.Expect(fakeRecorder.Events).To(Receive(And(ContainSubstring("KEY_PREFIX"), ContainSubstring("timeouts"))))
+	g.Expect(fakeRecorder.Events).To(Receive(And(ContainSubstring("template_fragments"), ContainSubstring("KEY_PREFIX"), ContainSubstring("timeouts"))))
 }
 
 // TestRenderLocalSettings_EmptyCacheSpecRendersLocationNoneWithKeyPrefix covers
@@ -836,7 +838,7 @@ func TestRenderLocalSettings_EmptyCacheSpecRendersLocationNoneWithKeyPrefix(t *t
 
 	rendered, err := renderLocalSettingsWithoutList(h)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(rendered).To(ContainSubstring(`CACHES = {"default": {"BACKEND": "django.core.cache.backends.memcached.PyMemcacheCache", "KEY_PREFIX": "horizon-e3b48cc65c6f", "LOCATION": None, "OPTIONS": {"connect_timeout": 1, "ignore_exc": True, "timeout": 1}}}`))
+	g.Expect(rendered).To(ContainSubstring(`CACHES = {"default": {"BACKEND": "django.core.cache.backends.memcached.PyMemcacheCache", "KEY_PREFIX": "horizon-e3b48cc65c6f", "LOCATION": None, "OPTIONS": {"connect_timeout": 1, "ignore_exc": True, "timeout": 1}}, "template_fragments": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}`))
 }
 
 // TestRenderLocalSettings_EmptyBackendRendersTimeoutOptions covers an empty
@@ -850,7 +852,7 @@ func TestRenderLocalSettings_EmptyBackendRendersTimeoutOptions(t *testing.T) {
 
 	rendered, err := renderLocalSettingsWithoutList(h)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(rendered).To(ContainSubstring(`CACHES = {"default": {"BACKEND": "django.core.cache.backends.memcached.PyMemcacheCache", "KEY_PREFIX": "horizon-e3b48cc65c6f", "LOCATION": ["memcached:11211"], "OPTIONS": {"connect_timeout": 1, "ignore_exc": True, "timeout": 1}}}`))
+	g.Expect(rendered).To(ContainSubstring(`CACHES = {"default": {"BACKEND": "django.core.cache.backends.memcached.PyMemcacheCache", "KEY_PREFIX": "horizon-e3b48cc65c6f", "LOCATION": ["memcached:11211"], "OPTIONS": {"connect_timeout": 1, "ignore_exc": True, "timeout": 1}}, "template_fragments": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}`))
 }
 
 // TestRenderLocalSettings_OtherCacheBackendRendersNoOptions covers a Django
@@ -863,14 +865,56 @@ func TestRenderLocalSettings_OtherCacheBackendRendersNoOptions(t *testing.T) {
 
 	rendered, err := renderLocalSettingsWithoutList(h)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(rendered).To(ContainSubstring(`CACHES = {"default": {"BACKEND": "django.core.cache.backends.memcached.PyLibMCCache", "KEY_PREFIX": "horizon-e3b48cc65c6f", "LOCATION": ["memcached:11211"]}}`))
+	g.Expect(rendered).To(ContainSubstring(`CACHES = {"default": {"BACKEND": "django.core.cache.backends.memcached.PyLibMCCache", "KEY_PREFIX": "horizon-e3b48cc65c6f", "LOCATION": ["memcached:11211"]}, "template_fragments": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}`))
 	g.Expect(rendered).NotTo(ContainSubstring(`"OPTIONS"`))
 }
 
-// sessionUnsetLocalSettings is the complete local_settings.py of testHorizon(),
-// captured from the renderer before spec.session existed. A CR without the
-// block must keep rendering it byte for byte, so the operator upgrade creates
-// no ConfigMap and rolls no dashboard.
+// TestRenderLocalSettings_TemplateFragmentsAlias pins the per-process alias
+// Django's {% cache %} tag prefers over "default": it renders for every cache
+// backend and session backend, and it holds the local-memory BACKEND only, no
+// KEY_PREFIX, LOCATION or OPTIONS of the Memcached alias beside it.
+func TestRenderLocalSettings_TemplateFragmentsAlias(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		mutate           func(*horizonv1alpha1.Horizon)
+		wantLocationNone bool
+	}{
+		{name: "default CR", mutate: func(*horizonv1alpha1.Horizon) {}},
+		{name: "empty cache backend", mutate: func(h *horizonv1alpha1.Horizon) { h.Spec.Cache.Backend = "" }},
+		{name: "PyLibMCCache", mutate: func(h *horizonv1alpha1.Horizon) {
+			h.Spec.Cache.Backend = "django.core.cache.backends.memcached.PyLibMCCache"
+		}},
+		// A CR that bypassed the webhook: "default" renders LOCATION None.
+		{name: "CacheSpec without clusterRef and servers", mutate: func(h *horizonv1alpha1.Horizon) {
+			h.Spec.Cache = commonv1.CacheSpec{Backend: horizonv1alpha1.DefaultCacheBackend}
+		}, wantLocationNone: true},
+		{name: "cache sessions", mutate: func(h *horizonv1alpha1.Horizon) {
+			h.Spec.Session = &horizonv1alpha1.SessionSpec{Backend: horizonv1alpha1.SessionBackendCache}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			h := testHorizon()
+			tc.mutate(h)
+
+			rendered, err := renderLocalSettingsWithoutList(h)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(rendered).To(ContainSubstring(`"template_fragments": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}`))
+
+			caches := renderedCaches(t, h)
+			g.Expect(caches["template_fragments"]).To(Equal(map[string]any{"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}))
+			if tc.wantLocationNone {
+				g.Expect(rendered).To(ContainSubstring(`"LOCATION": None`))
+				g.Expect(caches["default"]).To(HaveKeyWithValue("LOCATION", BeNil()))
+			}
+		})
+	}
+}
+
+// sessionUnsetLocalSettings is the complete local_settings.py of testHorizon()
+// as of issue #1847. A CR without spec.session must render it byte for byte.
+// The operator upgrade that brings the template_fragments alias renders a new
+// ConfigMap and rolls each dashboard once.
 const sessionUnsetLocalSettings = `import os
 
 # Rendered by the horizon-operator; edits are overwritten on the next reconcile.
@@ -879,7 +923,7 @@ const sessionUnsetLocalSettings = `import os
 SECRET_KEY = os.environ["HORIZON_SECRET_KEY"]
 
 ALLOWED_HOSTS = ["localhost", "test-horizon", "test-horizon.default", "test-horizon.default.svc", "test-horizon.default.svc.cluster.local"]
-CACHES = {"default": {"BACKEND": "django.core.cache.backends.memcached.PyMemcacheCache", "KEY_PREFIX": "horizon-e3b48cc65c6f", "LOCATION": ["memcached:11211"], "OPTIONS": {"connect_timeout": 1, "ignore_exc": True, "timeout": 1}}}
+CACHES = {"default": {"BACKEND": "django.core.cache.backends.memcached.PyMemcacheCache", "KEY_PREFIX": "horizon-e3b48cc65c6f", "LOCATION": ["memcached:11211"], "OPTIONS": {"connect_timeout": 1, "ignore_exc": True, "timeout": 1}}, "template_fragments": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}
 COMPRESS_OFFLINE = True
 DEBUG = False
 LOGGING = {"disable_existing_loggers": False, "filters": {"require_debug_false": {"()": "django.utils.log.RequireDebugFalse"}}, "formatters": {"text": {"datefmt": "%Y-%m-%d %H:%M:%S", "format": "%(asctime)s.%(msecs)03d %(process)d %(levelname)s %(name)s [-] %(message)s"}}, "handlers": {"console": {"class": "logging.StreamHandler", "formatter": "text", "stream": "ext://sys.stderr"}, "mail_admins": {"class": "django.utils.log.AdminEmailHandler", "filters": ["require_debug_false"], "level": "ERROR"}}, "loggers": {"django": {"handlers": ["mail_admins"], "level": "INFO"}}, "root": {"handlers": ["console"], "level": "INFO"}, "version": 1}
@@ -1042,7 +1086,8 @@ func renderedCaches(t *testing.T, h *horizonv1alpha1.Horizon) map[string]map[str
 
 // TestRenderLocalSettings_SessionSignedCookiesMatchesUnset pins that backend
 // SignedCookies is the unset block spelled out: the same module, the
-// signed-cookie engine, no SESSION_CACHE_ALIAS and one CACHES alias.
+// signed-cookie engine, no SESSION_CACHE_ALIAS and the two CACHES aliases
+// default and template_fragments.
 func TestRenderLocalSettings_SessionSignedCookiesMatchesUnset(t *testing.T) {
 	g := NewGomegaWithT(t)
 	unset := testHorizon()
@@ -1058,8 +1103,9 @@ func TestRenderLocalSettings_SessionSignedCookiesMatchesUnset(t *testing.T) {
 	g.Expect(got).To(ContainSubstring(`SESSION_ENGINE = "django.contrib.sessions.backends.signed_cookies"`))
 	g.Expect(got).NotTo(ContainSubstring("SESSION_CACHE_ALIAS"))
 	for _, h := range []*horizonv1alpha1.Horizon{unset, signed} {
-		g.Expect(renderedCaches(t, h)).To(HaveLen(1))
+		g.Expect(renderedCaches(t, h)).To(HaveLen(2))
 		g.Expect(renderedCaches(t, h)).To(HaveKey("default"))
+		g.Expect(renderedCaches(t, h)).To(HaveKey("template_fragments"))
 	}
 }
 
@@ -1082,10 +1128,12 @@ func TestRenderLocalSettings_CacheSessions(t *testing.T) {
 		`"OPTIONS": {"connect_timeout": 1, "ignore_exc": True, "timeout": 1}}, ` +
 		`"sessions": {"BACKEND": "django.core.cache.backends.memcached.PyMemcacheCache", ` +
 		`"KEY_PREFIX": "horizon-sessions-29950a095e7f", "LOCATION": ["memcached:11211"], ` +
-		`"OPTIONS": {"connect_timeout": 1, "ignore_exc": True, "timeout": 1}}}`))
+		`"OPTIONS": {"connect_timeout": 1, "ignore_exc": True, "timeout": 1}}, ` +
+		`"template_fragments": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}`))
 
 	caches := renderedCaches(t, h)
-	g.Expect(caches).To(HaveLen(2))
+	g.Expect(caches).To(HaveLen(3))
+	g.Expect(caches).To(HaveKey("template_fragments"))
 	g.Expect(caches["default"]["KEY_PREFIX"]).To(Equal("horizon-e3b48cc65c6f"))
 	g.Expect(caches["sessions"]["KEY_PREFIX"]).To(Equal("horizon-sessions-29950a095e7f"))
 	for _, key := range []string{"BACKEND", "LOCATION", "OPTIONS"} {
@@ -1206,7 +1254,7 @@ func TestRenderLocalSettings_SessionCollisionsFail(t *testing.T) {
 
 // TestReconcileConfig_SessionEngineOverrideWithoutBlockReported covers the
 // escape hatch a CR without spec.session keeps: an extraConfig SESSION_ENGINE
-// is rendered as written, CACHES keeps its one alias, and the guard reports
+// is rendered as written, CACHES gains no sessions alias, and the guard reports
 // the override with the session Impact in the condition and one Warning event.
 func TestReconcileConfig_SessionEngineOverrideWithoutBlockReported(t *testing.T) {
 	g := NewGomegaWithT(t)
