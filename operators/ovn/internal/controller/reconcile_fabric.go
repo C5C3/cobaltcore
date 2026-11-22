@@ -375,11 +375,10 @@ func (r *OVNChassisReconciler) reconcileFabric(ctx context.Context, children cli
 // that runs frr-k8s, in frr-k8s-system on the cluster the children land on, and
 // reports in FabricReady whether the node side of the fabric is configured.
 //
-// Its objects carry the ownership labels
-// rather than an owner reference, because they live in another namespace than
-// the CR, and fabricFinalizer holds the CR until they are gone. There is no
-// watch on the kind: it is optional on every cluster, so a drifted object is
-// written back on the next pass.
+// Its objects carry the ownership labels rather than an owner reference,
+// because they live in another namespace than the CR, and fabricFinalizer holds
+// the CR until they are gone. There is no watch on the kind: it is optional on
+// every cluster, so a drifted object is written back on the next pass.
 //
 // A chassis that never had a fabric node on frr-k8s and carries no finalizer
 // issues no request for the kind at all.
