@@ -120,6 +120,17 @@ type OVNChassisSpec struct {
 	// +listMapKey=physicalNetwork
 	BridgeMappings []OVNBridgeMapping `json:"bridgeMappings,omitempty"`
 
+	// Fabric attaches the selected nodes to the BGP fabric. Every node with an
+	// entry in fabric.nodes gets the fabric VRF, the fabric loopback and one
+	// OVS peer bridge per dedicated uplink, and the port mapping ovn-controller
+	// reads to tie a router port to a peer bridge. A node that also carries
+	// the label openstack.c5c3.io/frr-k8s=true gets an FRRConfiguration in
+	// frr-k8s-system. The router and port options that make OVN advertise or
+	// learn routes are rows of the Northbound database, which the CMS writes;
+	// this block covers the chassis side only. When nil no node is attached.
+	// +optional
+	Fabric *OVNFabricSpec `json:"fabric,omitempty"`
+
 	// EncapType is the tunnel protocol between chassis. Geneve carries the
 	// variable-length option header OVN uses for its logical metadata; VXLAN has
 	// no room for it and so caps the logical topology, and is offered only for
@@ -205,6 +216,168 @@ type OVNBridgeMapping struct {
 	// leaves 15 usable bytes.
 	// +kubebuilder:validation:Pattern=`^[a-zA-Z0-9_.-]{1,15}$`
 	Bridge string `json:"bridge"`
+}
+
+// OVNFabricSpec attaches a class of chassis nodes to the BGP fabric. The node
+// network stays untouched: BGP runs unnumbered over dedicated uplinks inside a
+// VRF of its own, and the uplinks belong to OVS peer bridges.
+type OVNFabricSpec struct {
+	// VRF is the Linux VRF that holds the uplinks, the loopback and the BGP
+	// sessions (contract clause C10). Keeping them out of the main table is
+	// what leaves the node network untouched.
+	// +optional
+	// +kubebuilder:default={}
+	VRF OVNFabricVRFSpec `json:"vrf,omitempty"`
+
+	// Uplinks are the dedicated fabric uplinks, the same on every selected
+	// node. Each NIC is taken into an OVS peer bridge, and FRR peers over the
+	// bridge's own interface.
+	// +listType=map
+	// +listMapKey=interface
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=4
+	Uplinks []OVNFabricUplink `json:"uplinks"`
+
+	// MTU is the MTU of every uplink and peer bridge (contract clause C6).
+	// The leaves set the same MTU on their node ports, so the two ends of a
+	// fabric link agree on it.
+	// +optional
+	// +kubebuilder:default=9000
+	// +kubebuilder:validation:Minimum=1280
+	// +kubebuilder:validation:Maximum=9216
+	MTU int32 `json:"mtu,omitempty"`
+
+	// Nodes is the per-node table the network team owns: the private ASN and
+	// the fabric loopbacks of each node. A selected node without an entry
+	// stays unattached, and FabricReady names it.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	// +kubebuilder:validation:MaxItems=1000
+	Nodes []OVNFabricNode `json:"nodes,omitempty"`
+
+	// AnnounceableRanges are the ranges a node may announce host routes from,
+	// besides its own loopback (contract clauses C4 and C8). A route OVN
+	// installs outside them never leaves the node, because the node's outbound
+	// prefix lists permit nothing else.
+	// +optional
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:items:Format=cidr
+	AnnounceableRanges []string `json:"announceableRanges,omitempty"`
+
+	// AdvertiseVRFIDs are the dynamic-routing-vrf-id values of every logical
+	// router whose routes the node announces. ovn-controller installs those
+	// routes into the VRF ovnvrf<id>, and the fabric router imports it.
+	// +optional
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=8
+	// +kubebuilder:validation:items:Minimum=1
+	// +kubebuilder:validation:items:Maximum=4294967295
+	AdvertiseVRFIDs []int64 `json:"advertiseVRFIDs,omitempty"`
+
+	// LearnVRFIDs are the dynamic-routing-vrf-id values of every logical
+	// router that learns the leaf defaults. Their VRF ovnvrf<id> imports the
+	// fabric VRF, and ovn-controller reads the learned routes from it.
+	// +optional
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=8
+	// +kubebuilder:validation:items:Minimum=1
+	// +kubebuilder:validation:items:Maximum=4294967295
+	LearnVRFIDs []int64 `json:"learnVRFIDs,omitempty"`
+
+	// BFD carries the BFD timers of every fabric session (contract clause C5).
+	// +optional
+	// +kubebuilder:default={}
+	BFD OVNFabricBFDSpec `json:"bfd,omitempty"`
+}
+
+// OVNFabricVRFSpec names the fabric VRF device and its routing table.
+type OVNFabricVRFSpec struct {
+	// Name is the VRF device. It is bounded to 15 characters because the
+	// device is a Linux interface and the kernel's IFNAMSIZ leaves 15 usable
+	// bytes.
+	// +optional
+	// +kubebuilder:default=fabric
+	// +kubebuilder:validation:Pattern=`^[a-zA-Z0-9_.-]{1,15}$`
+	Name string `json:"name,omitempty"`
+
+	// Table is the routing table of the VRF. It must not be one of the
+	// kernel's own tables or a table ovn-controller uses for ovnvrf<id>.
+	// +optional
+	// +kubebuilder:default=100
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=4294967295
+	Table int64 `json:"table,omitempty"`
+}
+
+// OVNFabricUplink ties one fabric NIC to the OVS peer bridge that takes it.
+type OVNFabricUplink struct {
+	// Interface is the NIC on the node. It carries link-local addresses only
+	// (contract clause C2); the node preparation refuses one with a global
+	// address.
+	// +kubebuilder:validation:Pattern=`^[a-zA-Z0-9_.-]{1,15}$`
+	Interface string `json:"interface"`
+
+	// Bridge is the OVS peer bridge that takes the NIC. FRR peers over the
+	// bridge's own interface, which the node preparation enslaves to the
+	// fabric VRF, and its name is the port name a router port names in
+	// dynamic-routing-port-name.
+	// +kubebuilder:validation:Pattern=`^[a-zA-Z0-9_.-]{1,15}$`
+	Bridge string `json:"bridge"`
+}
+
+// OVNFabricNode is one row of the per-node fabric table.
+type OVNFabricNode struct {
+	// Name is the Node's name.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
+	Name string `json:"name"`
+
+	// ASN is the node's private 4-byte ASN (contract clause C3). The operator
+	// uses it in the generated FRRConfiguration; on a node with a host FRR it
+	// records the value the host stanza carries.
+	// +kubebuilder:validation:Minimum=4200000000
+	// +kubebuilder:validation:Maximum=4294967294
+	ASN int64 `json:"asn"`
+
+	// LoopbackIPv4 is the /32 fabric loopback, which is also the BGP router
+	// id (contract clause C2).
+	// +kubebuilder:validation:Format=ipv4
+	LoopbackIPv4 string `json:"loopbackIPv4"`
+
+	// LoopbackIPv6 is the /128 fabric loopback.
+	// +kubebuilder:validation:Format=ipv6
+	LoopbackIPv6 string `json:"loopbackIPv6"`
+}
+
+// OVNFabricBFDSpec carries the BFD timers of the fabric sessions. The bounds
+// are frr-k8s's own.
+type OVNFabricBFDSpec struct {
+	// ReceiveIntervalMs is the minimum interval at which this node accepts
+	// BFD control packets.
+	// +optional
+	// +kubebuilder:default=300
+	// +kubebuilder:validation:Minimum=10
+	// +kubebuilder:validation:Maximum=60000
+	ReceiveIntervalMs int32 `json:"receiveIntervalMs,omitempty"`
+
+	// TransmitIntervalMs is the minimum interval at which this node sends BFD
+	// control packets.
+	// +optional
+	// +kubebuilder:default=300
+	// +kubebuilder:validation:Minimum=10
+	// +kubebuilder:validation:Maximum=60000
+	TransmitIntervalMs int32 `json:"transmitIntervalMs,omitempty"`
+
+	// DetectMultiplier is how many control packets may be lost before the
+	// session is declared down.
+	// +optional
+	// +kubebuilder:default=3
+	// +kubebuilder:validation:Minimum=2
+	// +kubebuilder:validation:Maximum=255
+	DetectMultiplier int32 `json:"detectMultiplier,omitempty"`
 }
 
 // OVNChassisUpdateStrategy paces the DaemonSet rollout. It is a narrowed
@@ -340,6 +513,15 @@ type OVNChassisNodeStatus struct {
 	// back, so a node that is re-promoted is not treated as still drained.
 	// +optional
 	GatewayEvacuated bool `json:"gatewayEvacuated,omitempty"`
+
+	// Fabric reports that the node may carry the devices of a fabric
+	// assignment. It is set from the first pass that renders an assignment for
+	// the node, because the node's fabric-node init container can apply that
+	// entry before any apply Job runs, and only the apply Job that tore the
+	// devices down clears it. While it is set and the node's entry carries no
+	// assignment, the node gets that Job.
+	// +optional
+	Fabric bool `json:"fabric,omitempty"`
 
 	// Leaving marks a node that is no longer selected, or no longer in the
 	// cluster, and whose chassis registration has still to be deleted from the

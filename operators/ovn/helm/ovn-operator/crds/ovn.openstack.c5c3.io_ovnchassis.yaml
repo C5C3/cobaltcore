@@ -199,6 +199,205 @@ spec:
                 - geneve
                 - vxlan
                 type: string
+              fabric:
+                description: |-
+                  Fabric attaches the selected nodes to the BGP fabric. Every node with an
+                  entry in fabric.nodes gets the fabric VRF, the fabric loopback and one
+                  OVS peer bridge per dedicated uplink, and the port mapping ovn-controller
+                  reads to tie a router port to a peer bridge. A node that also carries
+                  the label openstack.c5c3.io/frr-k8s=true gets an FRRConfiguration in
+                  frr-k8s-system. The router and port options that make OVN advertise or
+                  learn routes are rows of the Northbound database, which the CMS writes;
+                  this block covers the chassis side only. When nil no node is attached.
+                properties:
+                  advertiseVRFIDs:
+                    description: |-
+                      AdvertiseVRFIDs are the dynamic-routing-vrf-id values of every logical
+                      router whose routes the node announces. ovn-controller installs those
+                      routes into the VRF ovnvrf<id>, and the fabric router imports it.
+                    items:
+                      format: int64
+                      maximum: 4294967295
+                      minimum: 1
+                      type: integer
+                    maxItems: 8
+                    type: array
+                    x-kubernetes-list-type: set
+                  announceableRanges:
+                    description: |-
+                      AnnounceableRanges are the ranges a node may announce host routes from,
+                      besides its own loopback (contract clauses C4 and C8). A route OVN
+                      installs outside them never leaves the node, because the node's outbound
+                      prefix lists permit nothing else.
+                    items:
+                      format: cidr
+                      type: string
+                    maxItems: 64
+                    type: array
+                    x-kubernetes-list-type: set
+                  bfd:
+                    default: {}
+                    description: BFD carries the BFD timers of every fabric session
+                      (contract clause C5).
+                    properties:
+                      detectMultiplier:
+                        default: 3
+                        description: |-
+                          DetectMultiplier is how many control packets may be lost before the
+                          session is declared down.
+                        format: int32
+                        maximum: 255
+                        minimum: 2
+                        type: integer
+                      receiveIntervalMs:
+                        default: 300
+                        description: |-
+                          ReceiveIntervalMs is the minimum interval at which this node accepts
+                          BFD control packets.
+                        format: int32
+                        maximum: 60000
+                        minimum: 10
+                        type: integer
+                      transmitIntervalMs:
+                        default: 300
+                        description: |-
+                          TransmitIntervalMs is the minimum interval at which this node sends BFD
+                          control packets.
+                        format: int32
+                        maximum: 60000
+                        minimum: 10
+                        type: integer
+                    type: object
+                  learnVRFIDs:
+                    description: |-
+                      LearnVRFIDs are the dynamic-routing-vrf-id values of every logical
+                      router that learns the leaf defaults. Their VRF ovnvrf<id> imports the
+                      fabric VRF, and ovn-controller reads the learned routes from it.
+                    items:
+                      format: int64
+                      maximum: 4294967295
+                      minimum: 1
+                      type: integer
+                    maxItems: 8
+                    type: array
+                    x-kubernetes-list-type: set
+                  mtu:
+                    default: 9000
+                    description: |-
+                      MTU is the MTU of every uplink and peer bridge (contract clause C6).
+                      The leaves set the same MTU on their node ports, so the two ends of a
+                      fabric link agree on it.
+                    format: int32
+                    maximum: 9216
+                    minimum: 1280
+                    type: integer
+                  nodes:
+                    description: |-
+                      Nodes is the per-node table the network team owns: the private ASN and
+                      the fabric loopbacks of each node. A selected node without an entry
+                      stays unattached, and FabricReady names it.
+                    items:
+                      description: OVNFabricNode is one row of the per-node fabric
+                        table.
+                      properties:
+                        asn:
+                          description: |-
+                            ASN is the node's private 4-byte ASN (contract clause C3). The operator
+                            uses it in the generated FRRConfiguration; on a node with a host FRR it
+                            records the value the host stanza carries.
+                          format: int64
+                          maximum: 4294967294
+                          minimum: 4200000000
+                          type: integer
+                        loopbackIPv4:
+                          description: |-
+                            LoopbackIPv4 is the /32 fabric loopback, which is also the BGP router
+                            id (contract clause C2).
+                          format: ipv4
+                          type: string
+                        loopbackIPv6:
+                          description: LoopbackIPv6 is the /128 fabric loopback.
+                          format: ipv6
+                          type: string
+                        name:
+                          description: Name is the Node's name.
+                          maxLength: 253
+                          minLength: 1
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                          type: string
+                      required:
+                      - asn
+                      - loopbackIPv4
+                      - loopbackIPv6
+                      - name
+                      type: object
+                    maxItems: 1000
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                  uplinks:
+                    description: |-
+                      Uplinks are the dedicated fabric uplinks, the same on every selected
+                      node. Each NIC is taken into an OVS peer bridge, and FRR peers over the
+                      bridge's own interface.
+                    items:
+                      description: OVNFabricUplink ties one fabric NIC to the OVS
+                        peer bridge that takes it.
+                      properties:
+                        bridge:
+                          description: |-
+                            Bridge is the OVS peer bridge that takes the NIC. FRR peers over the
+                            bridge's own interface, which the node preparation enslaves to the
+                            fabric VRF, and its name is the port name a router port names in
+                            dynamic-routing-port-name.
+                          pattern: ^[a-zA-Z0-9_.-]{1,15}$
+                          type: string
+                        interface:
+                          description: |-
+                            Interface is the NIC on the node. It carries link-local addresses only
+                            (contract clause C2); the node preparation refuses one with a global
+                            address.
+                          pattern: ^[a-zA-Z0-9_.-]{1,15}$
+                          type: string
+                      required:
+                      - bridge
+                      - interface
+                      type: object
+                    maxItems: 4
+                    minItems: 1
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - interface
+                    x-kubernetes-list-type: map
+                  vrf:
+                    default: {}
+                    description: |-
+                      VRF is the Linux VRF that holds the uplinks, the loopback and the BGP
+                      sessions (contract clause C10). Keeping them out of the main table is
+                      what leaves the node network untouched.
+                    properties:
+                      name:
+                        default: fabric
+                        description: |-
+                          Name is the VRF device. It is bounded to 15 characters because the
+                          device is a Linux interface and the kernel's IFNAMSIZ leaves 15 usable
+                          bytes.
+                        pattern: ^[a-zA-Z0-9_.-]{1,15}$
+                        type: string
+                      table:
+                        default: 100
+                        description: |-
+                          Table is the routing table of the VRF. It must not be one of the
+                          kernel's own tables or a table ovn-controller uses for ovnvrf<id>.
+                        format: int64
+                        maximum: 4294967295
+                        minimum: 1
+                        type: integer
+                    type: object
+                required:
+                - uplinks
+                type: object
               gateway:
                 description: |-
                   Gateway marks the subset of the selected nodes that announce
@@ -732,6 +931,15 @@ spec:
                         configuration change is distinguishable from a node that has simply not
                         reported back yet.
                       type: string
+                    fabric:
+                      description: |-
+                        Fabric reports that the node may carry the devices of a fabric
+                        assignment. It is set from the first pass that renders an assignment for
+                        the node, because the node's fabric-node init container can apply that
+                        entry before any apply Job runs, and only the apply Job that tore the
+                        devices down clears it. While it is set and the node's entry carries no
+                        assignment, the node gets that Job.
+                      type: boolean
                     gateway:
                       description: Gateway reports whether the node currently announces
                         enable-chassis-as-gw.

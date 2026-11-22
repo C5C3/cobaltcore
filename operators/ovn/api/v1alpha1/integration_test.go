@@ -382,6 +382,96 @@ func TestIntegration_CRD_NestedDefaultsMaterialized(t *testing.T) {
 		g.Expect(got.Spec.UpdateStrategy.Type).To(Equal("RollingUpdate"), "updateStrategy.type")
 		g.Expect(got.Spec.RemoteProbeIntervalMs).To(BeEquivalentTo(60000), "remoteProbeIntervalMs")
 	})
+
+	// A fabric block that names only its uplinks and its node table gets the
+	// VRF, the MTU and the BFD timers from the schema: the two nested objects
+	// carry empty-object defaults of their own, so dropping one of them would
+	// render a VRF without a name and BFD timers of zero.
+	t.Run("OVNChassis fabric", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ns := newNamespace(t, ctx, c, "chassis-fabric-defaults-")
+
+		chassis := &OVNChassis{
+			ObjectMeta: metav1.ObjectMeta{Name: "chassis", Namespace: ns},
+			Spec: OVNChassisSpec{
+				CentralRef:   OVNCentralRef{Name: "ovn"},
+				NodeSelector: map[string]string{"openstack.c5c3.io/network-node": "true"},
+				Fabric: &OVNFabricSpec{
+					Uplinks: []OVNFabricUplink{{Interface: "fab1", Bridge: "br-fab1"}},
+					Nodes: []OVNFabricNode{{
+						Name: "node-1", ASN: 4200000001, LoopbackIPv4: "192.0.2.1", LoopbackIPv6: "2001:db8::1",
+					}},
+				},
+			},
+		}
+		g.Expect(c.Create(ctx, chassis)).To(Succeed(),
+			"a fabric block with only uplinks and nodes should be accepted")
+
+		got := &OVNChassis{}
+		g.Expect(c.Get(ctx, types.NamespacedName{Name: "chassis", Namespace: ns}, got)).To(Succeed())
+		g.Expect(got.Spec.Fabric).NotTo(BeNil())
+
+		g.Expect(got.Spec.Fabric.VRF.Name).To(Equal("fabric"), "fabric.vrf.name")
+		g.Expect(got.Spec.Fabric.VRF.Table).To(BeEquivalentTo(100), "fabric.vrf.table")
+		g.Expect(got.Spec.Fabric.MTU).To(BeEquivalentTo(9000), "fabric.mtu")
+		g.Expect(got.Spec.Fabric.BFD.ReceiveIntervalMs).To(BeEquivalentTo(300), "fabric.bfd.receiveIntervalMs")
+		g.Expect(got.Spec.Fabric.BFD.TransmitIntervalMs).To(BeEquivalentTo(300), "fabric.bfd.transmitIntervalMs")
+		g.Expect(got.Spec.Fabric.BFD.DetectMultiplier).To(BeEquivalentTo(3), "fabric.bfd.detectMultiplier")
+	})
+}
+
+// TestIntegration_CRD_SchemaOnly_RejectsFabricBounds pins the schema markers of
+// spec.fabric that have no webhook twin: with the validating webhook absent, the
+// API server alone rejects an ASN below the private 4-byte range, an MTU below
+// the IPv6 minimum, an uplink name the kernel cannot hold and a range that is no
+// CIDR.
+func TestIntegration_CRD_SchemaOnly_RejectsFabricBounds(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	for _, tc := range []struct {
+		name    string
+		mutate  func(f *OVNFabricSpec)
+		wantSub string
+	}{
+		{
+			name:    "asn-below-range",
+			mutate:  func(f *OVNFabricSpec) { f.Nodes[0].ASN = 4199999999 },
+			wantSub: "spec.fabric.nodes[0].asn",
+		},
+		{
+			name:    "mtu-below-minimum",
+			mutate:  func(f *OVNFabricSpec) { f.MTU = 1279 },
+			wantSub: "spec.fabric.mtu",
+		},
+		{
+			name:    "interface-of-16-characters",
+			mutate:  func(f *OVNFabricSpec) { f.Uplinks[0].Interface = "abcdefghijklmnop" },
+			wantSub: "spec.fabric.uplinks[0].interface",
+		},
+		{
+			name:    "range-not-a-cidr",
+			mutate:  func(f *OVNFabricSpec) { f.AnnounceableRanges = []string{"not-a-cidr"} },
+			wantSub: "spec.fabric.announceableRanges[0]",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ns := newNamespace(t, ctx, c, "schemaonly-fabric-")
+			o := newCELOnlyChassis("fabric", ns)
+			o.Spec.Fabric = validFabric()
+			tc.mutate(o.Spec.Fabric)
+
+			expectRejected(t, c.Create(ctx, o), tc.wantSub)
+		})
+	}
+
+	t.Run("valid block is accepted", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ns := newNamespace(t, ctx, c, "schemaonly-fabric-")
+		o := newCELOnlyChassis("fabric", ns)
+		o.Spec.Fabric = validFabric()
+		g.Expect(c.Create(ctx, o)).To(Succeed(), "the fixture the rejections mutate must itself be admitted")
+	})
 }
 
 // TestIntegration_CRD_CELOnly_VerticalAutoscaling pins the CEL rules of
