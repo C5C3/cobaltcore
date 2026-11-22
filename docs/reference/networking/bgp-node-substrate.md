@@ -16,11 +16,11 @@ frr-k8s, a DaemonSet that runs FRR on every node that opts in and renders its
 configuration from `FRRConfiguration` objects. It records the decisions the BGP
 meta [#899](https://github.com/C5C3/cobaltcore/issues/899) left to this phase,
 the install, what a node needs before frr-k8s can peer, and the per-node
-configuration that the OVN phase
-[#1363](https://github.com/C5C3/cobaltcore/issues/1363) will generate and the
-Neutron phase [#1364](https://github.com/C5C3/cobaltcore/issues/1364) builds on.
-Until #1363 delivers its reconciler, a person writes that configuration by
-hand.
+configuration that the ovn-operator generates from the `spec.fabric` block of an
+[OVNChassis](../ovn/ovn-chassis-crd.md#the-frrconfiguration) and the Neutron
+phase [#1364](https://github.com/C5C3/cobaltcore/issues/1364) builds on. The
+OVN side of that configuration is on
+[OVN Dynamic Routing](ovn-dynamic-routing.md).
 
 ## Decisions
 
@@ -37,9 +37,10 @@ OVN's routes into `prefixes` was rejected too, because every floating IP would
 then pass an operator, the API server and an FRR reload.
 
 **D2, ownership.** This phase documents the per-node `FRRConfiguration` and
-ships the example its suite applies; a person writes it by hand. The reconciler
-that generates it arrives in #1363 on `OVNChassis`, beside the device
-preparation that creates the VRF, the loopback and the peer bridges it needs.
+ships the example its suite applies. The ovn-operator generates the object from
+`spec.fabric` of an `OVNChassis`, one per fabric node labelled
+`openstack.c5c3.io/frr-k8s=true`, beside the device preparation that creates the
+VRF, the loopbacks and the peer bridges it needs (#1363).
 
 **D3, nodes that already run FRR.** On such a node the host FRR carries the
 fabric VRF, and frr-k8s never runs there. frr-k8s runs with `hostNetwork: true`
@@ -97,9 +98,13 @@ them, and with them every `FRRConfiguration` on the cluster.
 
 ## Node prerequisites
 
-frr-k8s configures FRR; it creates no device. Until #1363 delivers the device
-preparation, a person sets these up on each node by hand. The suite's
-`node-prep.sh` and `peer.sh` set them up on a kind node.
+frr-k8s configures FRR; it creates no device. On a node with a row in
+`spec.fabric.nodes` of an `OVNChassis`, the chassis's `fabric-node` container
+sets them up, whichever speaker the node runs, and only a node that also carries
+`openstack.c5c3.io/frr-k8s=true` gets an `FRRConfiguration` (see
+[Fabric devices](../ovn/ovn-chassis-crd.md#fabric-devices)). This page's suite
+runs without an `OVNChassis`: its `node-prep.sh` and `peer.sh` set them up on a
+kind node.
 
 | Prerequisite | Why |
 | --- | --- |

@@ -132,9 +132,11 @@ both leaves.
 ### What a node announces and accepts
 
 C4: a node announces host routes only. Today that is its fabric loopback /32
-and /128. From #1363 on it also announces the /32 and /128 routes OVN
-advertises for floating IPs, router gateway addresses and leaked tenant
-addresses. The upstream `ovn-bgp` plugin sets `dynamic-routing-redistribute` to
+and /128. A node attached through `spec.fabric` of an
+[OVNChassis](../ovn/ovn-chassis-crd.md#ovnfabricspec) also announces the /32 and
+/128 routes OVN advertises for floating IPs, router gateway addresses and leaked
+tenant addresses, from the ranges `spec.fabric.announceableRanges` names (see
+[OVN Dynamic Routing](ovn-dynamic-routing.md)). The upstream `ovn-bgp` plugin sets `dynamic-routing-redistribute` to
 `connected-as-host,nat` and `dynamic-routing-redistribute-local-only` to `true`
 on its main router (neutron 29.0.0, `neutron/services/bgp/constants.py` and
 `ReconcileMainRouterCommand` in `commands.py`). OVN 26.03.2 documents
@@ -283,8 +285,10 @@ The fabric VRF connects to the `ovnvrf<id>` VRFs ovn-controller maintains
 through `import vrf` and `redistribute kernel`, the way the upstream reference
 leaks routes between its own VRFs. The
 [BGP Node Substrate](bgp-node-substrate.md#what-the-typed-api-cannot-say) shows
-both on frr-k8s; generating them per node belongs to
-[#1363](https://github.com/C5C3/cobaltcore/issues/1363).
+both on frr-k8s. The ovn-operator generates them per node from `spec.fabric`
+of an `OVNChassis` (see
+[The FRRConfiguration](../ovn/ovn-chassis-crd.md#the-frrconfiguration) and
+[OVN Dynamic Routing](ovn-dynamic-routing.md)).
 
 On the leaf, the node sessions live in the deployment VRF, never in the leaf's
 default VRF.

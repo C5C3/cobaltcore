@@ -2509,9 +2509,11 @@ attaches to the fabric applies the overlay's three files with its own Flux. The
 [BGP Node Substrate](../networking/bgp-node-substrate.md) records why and
 describes the install, the node prerequisites and the per-node configuration.
 
-The overlay's consumer is the `e2e-bgp-fabric` CI job, which deploys it with
+The overlay has two consumers in CI. The `e2e-bgp-fabric` job deploys it with
 `WITH_FRR_K8S=true` and runs `make e2e-bgp-fabric` (see
-[e2e-bgp-fabric](../ci-cd/ci-workflow.md#e2e-bgp-fabric)).
+[e2e-bgp-fabric](../ci-cd/ci-workflow.md#e2e-bgp-fabric)), and the
+`e2e-ovn-overlay` job deploys it the same way for its `fabric-advertised-route`
+suite (see [e2e-ovn-overlay](../ci-cd/ci-workflow.md#e2e-ovn-overlay)).
 
 The overlay ships its own `Namespace` `frr-k8s-system` at the privileged
 PodSecurity level, because the FRR container runs in the host network

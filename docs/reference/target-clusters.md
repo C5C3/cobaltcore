@@ -335,6 +335,29 @@ helm upgrade --kube-context "$TARGET" --reuse-values \
   --set hypervisorTraits=true
 ```
 
+A third grant is off by default. `frrConfigurations` renders a Role
+`<fullname>-frr-k8s` in `frr-k8s-system` with `get`, `list`, `create`, `patch`
+and `delete` on `frrconfigurations.frrk8s.metallb.io`, and a RoleBinding of it
+to the chart's ServiceAccount. An `OVNChassis` placed on the cluster whose
+`spec.fabric` attaches nodes labelled `openstack.c5c3.io/frr-k8s=true` writes one
+`FRRConfiguration` per such node there (see
+[The FRRConfiguration](./ovn/ovn-chassis-crd.md#the-frrconfiguration)). The grant
+is a Role of its own because `frr-k8s-system` holds frr-k8s itself, and listing it
+in `namespaces` would grant the full workload Role there. The chart does not
+create the namespace, frr-k8s's install does, so turn the value on after frr-k8s
+is installed:
+
+```bash
+helm upgrade --kube-context "$TARGET" --reuse-values \
+  target-cluster-access deploy/bases/target-cluster-access -n c5c3-access \
+  --set frrConfigurations=true
+```
+
+Turning it off again while such a chassis still carries the finalizer
+`ovn.openstack.c5c3.io/fabric-frrconfigurations` makes that chassis's deletion
+fail on a forbidden list, and the chassis stays in `Terminating` until the grant
+is back.
+
 The same holds for `passwords` in `generators.external-secrets.io`, which the
 chart gained with the compute service. Every placed ControlPlane needs it, not
 only one that places Nova: the teardown sweeps `Password` generators in every
@@ -787,10 +810,11 @@ FRR the [BGP Node Substrate](./networking/bgp-node-substrate.md) describes. It
 is the compute cluster's own install, as hvo is: its Flux applies the
 Namespace `frr-k8s-system` and the HelmRepository and HelmRelease of
 `deploy/overlays/kind/frr-k8s/`, and the label
-`openstack.c5c3.io/frr-k8s=true` opts a node in. Nothing CobaltCore OpenStack
-runs writes an `FRRConfiguration` yet, so the access account needs no
-`frrconfigurations` rule until
-[#1363](https://github.com/C5C3/cobaltcore/issues/1363) generates them.
+`openstack.c5c3.io/frr-k8s=true` opts a node in. An `OVNChassis` placed on
+the cluster whose `spec.fabric` attaches such a node writes one
+`FRRConfiguration` per node into `frr-k8s-system`, so the access account needs
+the opt-in grant `frrConfigurations` (see
+[Prerequisites on the target cluster](#prerequisites-on-the-target-cluster)).
 
 ## Prerequisites on the management cluster
 
