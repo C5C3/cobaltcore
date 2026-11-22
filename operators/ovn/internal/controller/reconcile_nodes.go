@@ -5,11 +5,13 @@
 package controller
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"maps"
+	"net/netip"
 	"regexp"
 	"slices"
 	"strconv"
@@ -60,7 +62,14 @@ const (
 	runVswitchdScriptKey = "run-vswitchd.sh"
 	evacuateScriptKey    = "evacuate.sh"
 	chassisDelScriptKey  = "chassis-del.sh"
+	fabricNodeScriptKey  = "fabric-node.sh"
 )
+
+// frrK8sNodeLabel is the per-node opt-in of the frr-k8s DaemonSet. A node that
+// carries it with the value "true" runs the frr-k8s speaker and gets an
+// FRRConfiguration from the Fabric step; a node with a host FRR never carries
+// it, so the CR needs no switch of its own to tell the two speakers apart.
+const frrK8sNodeLabel = "openstack.c5c3.io/frr-k8s"
 
 // configHashLength is how many hex characters of the SHA-256 digest a node
 // entry's hash keeps. Four bytes are plenty to tell one rendering of a node's
@@ -294,6 +303,145 @@ set -eu
 ovn-sbctl --db="${SB_ADDR}" -p ` + ovnTLSDir + `/tls.key -c ` + ovnTLSDir + `/tls.crt -C ` + ovnTLSDir + `/ca.crt --timeout=30 --if-exists chassis-del "$CHASSIS"
 `
 
+// fabricNodeScript prepares a node's side of the BGP fabric: the fabric VRF and
+// its two loopbacks, one OVS peer bridge per uplink with the uplink NIC as its
+// port, and the external_ids:dynamic-routing-port-mapping ovn-controller reads
+// to tie a router port to a peer bridge. The port name of the mapping is the
+// bridge name, which is the value the ovn-bgp agent extension writes too.
+//
+// The guards run before the first change: an uplink that does not exist, an
+// uplink that carries a global address, a peer bridge name another device of
+// the node carries, and a device under the VRF name that is not the VRF the
+// script recorded. A fabric uplink carries link-local addresses only, and the
+// second guard is what keeps a mistyped interface name from pulling the node
+// network's port into a bridge. The last two keep a name the spec shares with
+// a device of the node, such as its bond or a VRF of its own, from being
+// enslaved, stripped of its addresses or deleted.
+//
+// The script records what it created in three places, external_ids:c5c3-fabric
+// on each bridge and on each uplink port and external_ids:c5c3-fabric-vrf on
+// the Open_vSwitch row, so a later run removes exactly its own bridges, ports
+// and VRF. A marked port the entry no longer pairs with its bridge goes, which
+// is what lets an uplink move to another NIC or two bridges swap their NICs. An
+// entry without FABRIC_ keys is the teardown: the marked bridges, the recorded
+// VRF and the port mapping go, and the NICs stay.
+//
+// The init container and an apply Job can run the script on one node at the
+// same moment, so every step either sets a state or tolerates that the other
+// run was first: the VRF name is recorded before the device is created, so a
+// run that finds the device also finds the record, the VRF creation accepts a
+// VRF of the fabric table the other run created, and the script waits up to 30
+// seconds for a bridge device another run's transaction is still creating,
+// since ovs-vsctl add-br returns before the netdev exists.
+//
+// accept_ra is 0 on the NIC and on the bridge before either comes up, so no
+// router advertisement of the leaf installs a default route or a global address
+// on a fabric device. IPv6 is off on the NIC before it comes up: an OVS port
+// hands every frame it receives to OVS, so a link-local address of its own
+// could never answer, and its fe80::/64 route would sit in the node's main
+// table. Turning IPv6 off also drops a link-local address the NIC carried
+// before. The bridge keeps IPv6, because the unnumbered session runs over its
+// link-local address. The values are written to /proc directly, because the
+// OVN image ships no sysctl binary, and no modprobe runs: ip link add ... type
+// vrf loads the vrf module itself.
+//
+// Every value the script sources is an integer, a pattern-bound name or an
+// address the reconciler parsed and printed again, for the reason
+// systemIDPattern gives.
+const fabricNodeScript = `#!/bin/bash
+set -eu
+f="/etc/ovn-chassis/nodes/${NODE_NAME}"
+until [ -f "$f" ]; do sleep 5; done
+FABRIC_VRF="" FABRIC_TABLE="" FABRIC_MTU="" FABRIC_UPLINKS="" FABRIC_LOOPBACK_V4="" FABRIC_LOOPBACK_V6=""
+# shellcheck source=/dev/null
+. "$f"
+until ovs-vsctl --timeout=5 --no-wait show >/dev/null 2>&1; do sleep 2; done
+V="ovs-vsctl --timeout=15"
+for u in ${FABRIC_UPLINKS//,/ }; do
+  nic="${u%%:*}" br="${u#*:}"
+  if ! ip link show dev "$nic" >/dev/null 2>&1; then
+    echo "ERROR: fabric uplink $nic does not exist on ${NODE_NAME}" >&2; exit 1
+  fi
+  if [ -n "$(ip -o addr show dev "$nic" scope global)" ]; then
+    echo "ERROR: fabric uplink $nic carries a global address on ${NODE_NAME}; a fabric uplink carries link-local addresses only" >&2; exit 1
+  fi
+  # The device is asked for first: the bridge row exists before its netdev.
+  if ip link show dev "$br" >/dev/null 2>&1 && ! $V br-exists "$br"; then
+    echo "ERROR: $br exists on ${NODE_NAME} and is not an OVS bridge; a peer bridge takes a name no other device of the node carries" >&2; exit 1
+  fi
+done
+if [ -n "$FABRIC_VRF" ] && ip link show dev "$FABRIC_VRF" >/dev/null 2>&1; then
+  if [ "$($V --if-exists get open . external_ids:c5c3-fabric-vrf | tr -d '"')" != "$FABRIC_VRF" ] ||
+     ! ip -d link show dev "$FABRIC_VRF" | grep -q ' vrf table '; then
+    echo "ERROR: ${FABRIC_VRF} exists on ${NODE_NAME} and is not the VRF the fabric script created" >&2; exit 1
+  fi
+fi
+want_bridges=" "
+for u in ${FABRIC_UPLINKS//,/ }; do want_bridges="${want_bridges}${u#*:} "; done
+# Bridges this script created earlier and the entry no longer names.
+for br in $($V --bare --columns=name find bridge external_ids:c5c3-fabric=true); do
+  case "$want_bridges" in *" $br "*) ;; *) $V --if-exists del-br "$br" ;; esac
+done
+# Uplink ports this script added earlier that the entry no longer pairs with
+# the bridge they are on.
+for p in $($V --bare --columns=name find port external_ids:c5c3-fabric=true); do
+  case " ${FABRIC_UPLINKS//,/ } " in *" ${p}:$($V port-to-br "$p") "*) ;; *) $V --if-exists del-port "$p" ;; esac
+done
+# The VRF this script created earlier, when the entry names another or none.
+old_vrf="$($V --if-exists get open . external_ids:c5c3-fabric-vrf | tr -d '"')"
+if [ -n "$old_vrf" ] && [ "$old_vrf" != "$FABRIC_VRF" ]; then
+  ip link del "$old_vrf" 2>/dev/null || true
+  $V remove open . external_ids c5c3-fabric-vrf
+fi
+if [ -z "$FABRIC_VRF" ]; then
+  $V remove open . external_ids dynamic-routing-port-mapping
+  exit 0
+fi
+# The guard left only the recorded VRF under this name. A concurrent run may
+# have re-created it on the new table already, so the delete may find nothing.
+if ip link show dev "$FABRIC_VRF" >/dev/null 2>&1 &&
+   ! ip -d link show dev "$FABRIC_VRF" | grep -q "vrf table ${FABRIC_TABLE} "; then
+  ip link del "$FABRIC_VRF" 2>/dev/null || true
+fi
+if ! ip link show dev "$FABRIC_VRF" >/dev/null 2>&1; then
+  $V set open . external_ids:c5c3-fabric-vrf="$FABRIC_VRF"
+  if ! ip link add "$FABRIC_VRF" type vrf table "$FABRIC_TABLE" &&
+     ! ip -d link show dev "$FABRIC_VRF" 2>/dev/null | grep -q "vrf table ${FABRIC_TABLE} "; then
+    echo "ERROR: cannot create the VRF device ${FABRIC_VRF} on ${NODE_NAME}; the node kernel has no vrf module" >&2; exit 1
+  fi
+fi
+ip link set "$FABRIC_VRF" up
+for a in $(ip -o addr show dev "$FABRIC_VRF" scope global | awk '{print $4}'); do
+  case "$a" in "${FABRIC_LOOPBACK_V4}/32"|"${FABRIC_LOOPBACK_V6}/128") ;; *) ip addr del "$a" dev "$FABRIC_VRF" 2>/dev/null || true ;; esac
+done
+ip addr replace "${FABRIC_LOOPBACK_V4}/32" dev "$FABRIC_VRF"
+ip -6 addr replace "${FABRIC_LOOPBACK_V6}/128" dev "$FABRIC_VRF"
+mapping=""
+for u in ${FABRIC_UPLINKS//,/ }; do
+  nic="${u%%:*}" br="${u#*:}"
+  $V --may-exist add-br "$br" -- set bridge "$br" external_ids:c5c3-fabric=true \
+    -- --may-exist add-port "$br" "$nic" -- set port "$nic" external_ids:c5c3-fabric=true \
+    -- set interface "$br" mtu_request="$FABRIC_MTU"
+  n=0
+  until [ -e "/proc/sys/net/ipv6/conf/${br}/accept_ra" ]; do
+    n=$((n+1))
+    if [ "$n" -gt 30 ]; then
+      echo "ERROR: peer bridge $br did not appear on ${NODE_NAME}" >&2; exit 1
+    fi
+    sleep 1
+  done
+  echo 0 > "/proc/sys/net/ipv6/conf/${nic}/accept_ra"
+  echo 1 > "/proc/sys/net/ipv6/conf/${nic}/disable_ipv6"
+  echo 0 > "/proc/sys/net/ipv6/conf/${br}/accept_ra"
+  ip link set "$nic" mtu "$FABRIC_MTU"
+  ip link set "$br" master "$FABRIC_VRF"
+  ip link set "$nic" up
+  ip link set "$br" up
+  mapping="${mapping:+${mapping},}${br}=${br}"
+done
+$V set open . external_ids:dynamic-routing-port-mapping="$mapping"
+`
+
 // nodeEntry is everything one node needs to configure itself. The chassis pod
 // has no API client of its own (the OVN image ships no HTTP client), so the
 // rendered form of this struct is the whole channel between the operator and a
@@ -304,6 +452,35 @@ type nodeEntry struct {
 	bridgeMappings string
 	encapType      string
 	leaving        bool
+
+	// fabric is the node's fabric assignment, rendered as the FABRIC_ keys
+	// fabricNodeScript reads. It is nil for a node without a row in
+	// spec.fabric.nodes, for a node whose loopbacks do not parse, and for a
+	// leaving node.
+	fabric *nodeFabric
+
+	// The three fields below are not rendered: the node reads none of them.
+	// The Fabric step builds the node's FRRConfiguration from them.
+	//
+	// asn is the node's ASN from its spec.fabric.nodes row, set together with
+	// fabric. frrK8s reports that the Node carries frrK8sNodeLabel, and
+	// hostname is the Node's kubernetes.io/hostname label, or its name when
+	// the label is absent, which is what the FRRConfiguration selects it by.
+	asn      int64
+	frrK8s   bool
+	hostname string
+}
+
+// nodeFabric is the rendered fabric assignment of one node. uplinks is the
+// comma-separated list of interface:bridge pairs in spec order, and the two
+// loopbacks are the addresses as netip prints them.
+type nodeFabric struct {
+	vrf        string
+	table      int64
+	mtu        int32
+	uplinks    string
+	loopbackV4 string
+	loopbackV6 string
 }
 
 // renderedNodes maps a node name to the entry rendered for it. It is keyed by
@@ -316,12 +493,23 @@ type renderedNodes map[string]nodeEntry
 // in a container that has no parser to spare.
 //
 // LEAVING is written only when it is true, so an ordinary entry carries no key
-// whose absence and whose "false" value would have to mean the same thing.
+// whose absence and whose "false" value would have to mean the same thing. The
+// six FABRIC_ keys are written only for a node with a fabric assignment, so the
+// entry of a chassis without spec.fabric renders as it always has, and an entry
+// without them is what fabricNodeScript tears the fabric devices down for.
 func (e nodeEntry) render() string {
 	out := "SYSTEM_ID=" + e.systemID + "\n" +
 		"GATEWAY=" + strconv.FormatBool(e.gateway) + "\n" +
 		"BRIDGE_MAPPINGS=" + e.bridgeMappings + "\n" +
 		"ENCAP_TYPE=" + e.encapType + "\n"
+	if f := e.fabric; f != nil {
+		out += "FABRIC_VRF=" + f.vrf + "\n" +
+			"FABRIC_TABLE=" + strconv.FormatInt(f.table, 10) + "\n" +
+			"FABRIC_MTU=" + strconv.FormatInt(int64(f.mtu), 10) + "\n" +
+			"FABRIC_UPLINKS=" + f.uplinks + "\n" +
+			"FABRIC_LOOPBACK_V4=" + f.loopbackV4 + "\n" +
+			"FABRIC_LOOPBACK_V6=" + f.loopbackV6 + "\n"
+	}
 	if e.leaving {
 		out += "LEAVING=true\n"
 	}
@@ -349,7 +537,8 @@ var systemIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[
 // identity would leave the old registration behind in the Southbound database.
 //
 // Unknown keys and lines without a separator are ignored, so an entry a future
-// operator version extended still parses here.
+// operator version extended still parses here. The FABRIC_ keys are not read
+// back: they come from spec.fabric on every pass.
 func parseNodeEntry(value string) nodeEntry {
 	var entry nodeEntry
 	for _, line := range strings.Split(value, "\n") {
@@ -483,6 +672,7 @@ func renderNodeEntries(cr *ovnv1alpha1.OVNChassis, nodes []corev1.Node, live map
 	}
 	mappings := renderBridgeMappings(cr.Spec.BridgeMappings)
 	recorded := recordedNodes(cr)
+	fabricRows := fabricNodeRows(cr.Spec.Fabric)
 
 	entries := make(renderedNodes, len(nodes))
 	for i := range nodes {
@@ -491,12 +681,20 @@ func renderNodeEntries(cr *ovnv1alpha1.OVNChassis, nodes []corev1.Node, live map
 		if !selector.Matches(nodeLabels) {
 			continue
 		}
-		entries[node.Name] = nodeEntry{
+		entry := nodeEntry{
 			systemID:       systemIDFor(node.Name, live, recorded),
 			gateway:        gateways != nil && gateways.Matches(nodeLabels),
 			bridgeMappings: mappings,
 			encapType:      cr.Spec.EncapType,
+			frrK8s:         node.Labels[frrK8sNodeLabel] == "true",
+			hostname:       cmp.Or(node.Labels[corev1.LabelHostname], node.Name),
 		}
+		if row, ok := fabricRows[node.Name]; ok {
+			if entry.fabric = renderNodeFabric(cr.Spec.Fabric, row); entry.fabric != nil {
+				entry.asn = row.ASN
+			}
+		}
+		entries[node.Name] = entry
 	}
 
 	// A node that is no longer selected keeps its identity and its gateway role
@@ -576,8 +774,13 @@ func recordedNodes(cr *ovnv1alpha1.OVNChassis) map[string]ovnv1alpha1.OVNChassis
 // records what a node has applied rather than what was rendered for it. A node
 // seen for the first time is the exception: its first entry is applied by the
 // init container before ovn-controller starts, so the hash counts as applied
-// straight away. gatewayEvacuated is carried for the same reason, being the
-// evacuation Job's finding rather than this step's.
+// straight away. fabric records whether the node may carry fabric devices. It
+// is carried too, and goes up from the pass that renders an assignment for the
+// node: from then on the entry is in the ConfigMap, and the fabric-node init
+// container, or an apply Job that later fails or is superseded, may create the
+// devices before any Job succeeds. Only the maintenance step takes it down,
+// once the Job that ran the teardown has succeeded. gatewayEvacuated is carried
+// because it is the evacuation Job's finding rather than this step's.
 func nodeStatuses(cr *ovnv1alpha1.OVNChassis, entries renderedNodes) []ovnv1alpha1.OVNChassisNodeStatus {
 	recorded := recordedNodes(cr)
 
@@ -585,9 +788,9 @@ func nodeStatuses(cr *ovnv1alpha1.OVNChassis, entries renderedNodes) []ovnv1alph
 	for _, name := range slices.Sorted(maps.Keys(entries)) {
 		entry := entries[name]
 		previous := recorded[name]
-		configHash := previous.ConfigHash
+		configHash, fabric := previous.ConfigHash, previous.Fabric || entry.fabric != nil
 		if configHash == "" {
-			configHash = entry.hash()
+			configHash, fabric = entry.hash(), entry.fabric != nil
 		}
 		statuses = append(statuses, ovnv1alpha1.OVNChassisNodeStatus{
 			Name:             name,
@@ -595,10 +798,53 @@ func nodeStatuses(cr *ovnv1alpha1.OVNChassis, entries renderedNodes) []ovnv1alph
 			Gateway:          entry.gateway,
 			ConfigHash:       configHash,
 			GatewayEvacuated: previous.GatewayEvacuated,
+			Fabric:           fabric,
 			Leaving:          entry.leaving,
 		})
 	}
 	return statuses
+}
+
+// fabricNodeRows indexes spec.fabric.nodes by node name. A nil block has no
+// rows.
+func fabricNodeRows(fabric *ovnv1alpha1.OVNFabricSpec) map[string]ovnv1alpha1.OVNFabricNode {
+	if fabric == nil {
+		return nil
+	}
+	rows := make(map[string]ovnv1alpha1.OVNFabricNode, len(fabric.Nodes))
+	for _, row := range fabric.Nodes {
+		rows[row.Name] = row
+	}
+	return rows
+}
+
+// renderNodeFabric renders the fabric assignment of the node row describes. It
+// returns nil when a loopback does not parse as an address of its family, or
+// carries a zone: the loopbacks are printed into the file the node sources, so
+// only an address netip parsed and printed again may reach it. The schema
+// formats reject such a value at admission, so a nil here leaves a node
+// unattached rather than failing the pass.
+func renderNodeFabric(fabric *ovnv1alpha1.OVNFabricSpec, row ovnv1alpha1.OVNFabricNode) *nodeFabric {
+	v4, err := netip.ParseAddr(row.LoopbackIPv4)
+	if err != nil || !v4.Is4() {
+		return nil
+	}
+	v6, err := netip.ParseAddr(row.LoopbackIPv6)
+	if err != nil || !v6.Is6() || v6.Is4In6() || v6.Zone() != "" {
+		return nil
+	}
+	uplinks := make([]string, 0, len(fabric.Uplinks))
+	for _, uplink := range fabric.Uplinks {
+		uplinks = append(uplinks, uplink.Interface+":"+uplink.Bridge)
+	}
+	return &nodeFabric{
+		vrf:        fabric.VRF.Name,
+		table:      fabric.VRF.Table,
+		mtu:        fabric.MTU,
+		uplinks:    strings.Join(uplinks, ","),
+		loopbackV4: v4.String(),
+		loopbackV6: v6.String(),
+	}
 }
 
 // renderBridgeMappings renders spec.bridgeMappings into the comma-separated
@@ -662,6 +908,7 @@ func chassisScriptsConfigMap(cr *ovnv1alpha1.OVNChassis) *corev1.ConfigMap {
 			runVswitchdScriptKey: runVswitchdScript,
 			evacuateScriptKey:    evacuateScript,
 			chassisDelScriptKey:  chassisDelScript,
+			fabricNodeScriptKey:  fabricNodeScript,
 		},
 	}
 }

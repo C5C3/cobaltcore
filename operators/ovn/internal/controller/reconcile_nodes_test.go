@@ -477,7 +477,7 @@ func TestReconcileNodes_ConfigMapApplyErrorIsNodesError(t *testing.T) {
 // The scripts ConfigMap carries every script the chassis containers and the
 // maintenance Jobs run. A missing key is a container that cannot start or a Job
 // that cannot deregister a chassis.
-func TestReconcileNodes_ScriptsConfigMapCarriesSixKeys(t *testing.T) {
+func TestReconcileNodes_ScriptsConfigMapCarriesSevenKeys(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ctx := context.Background()
 	cr := testOVNChassis()
@@ -488,10 +488,11 @@ func TestReconcileNodes_ScriptsConfigMapCarriesSixKeys(t *testing.T) {
 
 	var cm corev1.ConfigMap
 	g.Expect(r.Get(ctx, chassisKey(testOVNChassisName+"-chassis-scripts"), &cm)).To(Succeed())
-	g.Expect(cm.Data).To(HaveLen(6))
+	g.Expect(cm.Data).To(HaveLen(7))
 	for _, key := range []string{
 		hostPrepareScriptKey, applyNodeScriptKey, runOVSDBScriptKey,
 		runVswitchdScriptKey, evacuateScriptKey, chassisDelScriptKey,
+		fabricNodeScriptKey,
 	} {
 		g.Expect(cm.Data).To(HaveKey(key))
 		g.Expect(cm.Data[key]).To(HavePrefix("#!/bin/bash\n"), key)
@@ -727,4 +728,220 @@ func TestReconcileNodes_ListsNodesWithTheSelector(t *testing.T) {
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(seen).To(ConsistOf(client.MatchingLabels(cr.Spec.NodeSelector)))
+}
+
+// testFabric is a spec.fabric block as the CRD schema defaults it, with one row
+// for testNodeA and none for testNodeB: two uplinks, one announceable range per
+// family, VRF id 42 advertised and VRF id 10 learned.
+func testFabric() *ovnv1alpha1.OVNFabricSpec {
+	return &ovnv1alpha1.OVNFabricSpec{
+		VRF: ovnv1alpha1.OVNFabricVRFSpec{Name: "fabric", Table: 100},
+		Uplinks: []ovnv1alpha1.OVNFabricUplink{
+			{Interface: "fab1", Bridge: "br-fab1"},
+			{Interface: "fab2", Bridge: "br-fab2"},
+		},
+		MTU: 9000,
+		Nodes: []ovnv1alpha1.OVNFabricNode{{
+			Name: testNodeA, ASN: 4200000001, LoopbackIPv4: "192.0.2.1", LoopbackIPv6: "2001:db8::1",
+		}},
+		AnnounceableRanges: []string{"198.51.100.0/24", "2001:db8::/64"},
+		AdvertiseVRFIDs:    []int64{42},
+		LearnVRFIDs:        []int64{10},
+		BFD:                ovnv1alpha1.OVNFabricBFDSpec{ReceiveIntervalMs: 300, TransmitIntervalMs: 300, DetectMultiplier: 3},
+	}
+}
+
+// testFabricLines are the six lines testFabric renders for testNodeA.
+const testFabricLines = "FABRIC_VRF=fabric\n" +
+	"FABRIC_TABLE=100\n" +
+	"FABRIC_MTU=9000\n" +
+	"FABRIC_UPLINKS=fab1:br-fab1,fab2:br-fab2\n" +
+	"FABRIC_LOOPBACK_V4=192.0.2.1\n" +
+	"FABRIC_LOOPBACK_V6=2001:db8::1\n"
+
+// A node with a row in spec.fabric.nodes renders the six FABRIC_ lines after
+// ENCAP_TYPE, which fabricNodeScript sources. A node without a row renders none
+// of them, and neither does a node whose loopback does not parse as an address
+// of its family: the file is sourced as shell, so only an address the
+// reconciler parsed and printed again may reach it.
+func TestNodes_FabricAssignment(t *testing.T) {
+	tests := []struct {
+		name       string
+		mutate     func(*ovnv1alpha1.OVNChassis)
+		wantFabric bool
+	}{
+		{name: "row present", mutate: func(*ovnv1alpha1.OVNChassis) {}, wantFabric: true},
+		{
+			name:   "no fabric block",
+			mutate: func(cr *ovnv1alpha1.OVNChassis) { cr.Spec.Fabric = nil },
+		},
+		{
+			name:   "no row for the node",
+			mutate: func(cr *ovnv1alpha1.OVNChassis) { cr.Spec.Fabric.Nodes[0].Name = testNodeB },
+		},
+		{
+			name:   "unparsable IPv4 loopback",
+			mutate: func(cr *ovnv1alpha1.OVNChassis) { cr.Spec.Fabric.Nodes[0].LoopbackIPv4 = "$(reboot)" },
+		},
+		{
+			name:   "IPv6 address in the IPv4 field",
+			mutate: func(cr *ovnv1alpha1.OVNChassis) { cr.Spec.Fabric.Nodes[0].LoopbackIPv4 = "2001:db8::9" },
+		},
+		{
+			name:   "IPv4 address in the IPv6 field",
+			mutate: func(cr *ovnv1alpha1.OVNChassis) { cr.Spec.Fabric.Nodes[0].LoopbackIPv6 = "192.0.2.9" },
+		},
+		{
+			name:   "IPv6 loopback with a zone",
+			mutate: func(cr *ovnv1alpha1.OVNChassis) { cr.Spec.Fabric.Nodes[0].LoopbackIPv6 = "fe80::1%eth0" },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cr := testOVNChassis()
+			cr.Spec.Fabric = testFabric()
+			tt.mutate(cr)
+
+			entries := renderNodeEntries(cr, []corev1.Node{*chassisNode(testNodeA, selectedLabels())},
+				map[string]nodeEntry{testNodeA: {systemID: testFixedSystemID}})
+			entry := entries[testNodeA]
+			rendered := entry.render()
+
+			if !tt.wantFabric {
+				g.Expect(entry.fabric).To(BeNil())
+				g.Expect(entry.asn).To(BeZero(), "a node without a fabric assignment has no ASN to configure")
+				g.Expect(rendered).NotTo(ContainSubstring("FABRIC_"))
+				return
+			}
+			g.Expect(rendered).To(Equal(
+				"SYSTEM_ID=" + testFixedSystemID + "\n" +
+					"GATEWAY=false\n" +
+					"BRIDGE_MAPPINGS=\n" +
+					"ENCAP_TYPE=geneve\n" +
+					testFabricLines))
+			g.Expect(entry.asn).To(BeEquivalentTo(4200000001))
+		})
+	}
+}
+
+// The loopbacks are printed as netip prints them, not as the spec spells them,
+// so two spellings of one address render one entry and one hash.
+func TestNodes_FabricLoopbacksArePrintedCanonically(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cr := testOVNChassis()
+	cr.Spec.Fabric = testFabric()
+	cr.Spec.Fabric.Nodes[0].LoopbackIPv6 = "2001:DB8:0:0::1"
+
+	entries := renderNodeEntries(cr, []corev1.Node{*chassisNode(testNodeA, selectedLabels())}, nil)
+
+	g.Expect(entries[testNodeA].render()).To(ContainSubstring("FABRIC_LOOPBACK_V6=2001:db8::1\n"))
+}
+
+// A leaving node never carries a fabric assignment, whether it left the
+// selector or the cluster: its entry is the one the teardown runs against, and
+// the Fabric step must not generate an FRRConfiguration for it.
+func TestNodes_LeavingNodeCarriesNoFabric(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cr := testOVNChassis()
+	cr.Spec.Fabric = testFabric()
+	cr.Status.Nodes = []ovnv1alpha1.OVNChassisNodeStatus{
+		{Name: testNodeB, SystemID: testFixedSystemID, ConfigHash: "abcdef01", Fabric: true},
+	}
+
+	// testNodeA is in the live ConfigMap but no longer selected; testNodeB is in
+	// status only. Both have rows in the table.
+	cr.Spec.Fabric.Nodes = append(cr.Spec.Fabric.Nodes, ovnv1alpha1.OVNFabricNode{
+		Name: testNodeB, ASN: 4200000002, LoopbackIPv4: "192.0.2.2", LoopbackIPv6: "2001:db8::2",
+	})
+	entries := renderNodeEntries(cr, []corev1.Node{*chassisNode(testNodeA, nil)},
+		map[string]nodeEntry{testNodeA: {systemID: testFixedSystemID}})
+
+	g.Expect(entries).To(HaveLen(2))
+	for name, entry := range entries {
+		g.Expect(entry.leaving).To(BeTrue(), name)
+		g.Expect(entry.fabric).To(BeNil(), name)
+		g.Expect(entry.frrK8s).To(BeFalse(), name)
+		g.Expect(entry.render()).NotTo(ContainSubstring("FABRIC_"), name)
+	}
+}
+
+// The fabric block is part of the rendered entry, so a change to it changes the
+// hash the maintenance step compares against, and with it the rerun key of the
+// node's apply Job. The ASN is not rendered: the node never reads it.
+func TestNodes_FabricChangeChangesTheHash(t *testing.T) {
+	g := NewGomegaWithT(t)
+	nodes := []corev1.Node{*chassisNode(testNodeA, selectedLabels())}
+	live := map[string]nodeEntry{testNodeA: {systemID: testFixedSystemID}}
+
+	cr := testOVNChassis()
+	without := renderNodeEntries(cr, nodes, live)[testNodeA].hash()
+
+	cr.Spec.Fabric = testFabric()
+	with := renderNodeEntries(cr, nodes, live)[testNodeA].hash()
+	g.Expect(with).NotTo(Equal(without), "adding the block must re-apply the node")
+
+	cr.Spec.Fabric.MTU = 1500
+	g.Expect(renderNodeEntries(cr, nodes, live)[testNodeA].hash()).NotTo(Equal(with),
+		"a changed MTU must re-apply the node")
+
+	cr.Spec.Fabric = testFabric()
+	cr.Spec.Fabric.Nodes[0].ASN = 4200000099
+	g.Expect(renderNodeEntries(cr, nodes, live)[testNodeA].hash()).To(Equal(with),
+		"the ASN lives in the FRRConfiguration, not in the node entry")
+}
+
+// The frr-k8s label and the hostname are read from the Node, the hostname
+// falling back to the node's name when the kubernetes.io/hostname label is
+// absent, so the FRRConfiguration's node selector always has a value to match.
+func TestNodes_FRRK8sLabelAndHostname(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cr := testOVNChassis()
+	cr.Spec.Fabric = testFabric()
+
+	labelled := chassisNode(testNodeA, map[string]string{
+		testChassisNodeLabel: "true", frrK8sNodeLabel: "true", corev1.LabelHostname: "host-a",
+	})
+	other := chassisNode(testNodeB, map[string]string{testChassisNodeLabel: "true", frrK8sNodeLabel: "false"})
+
+	entries := renderNodeEntries(cr, []corev1.Node{*labelled, *other}, nil)
+
+	g.Expect(entries[testNodeA].frrK8s).To(BeTrue())
+	g.Expect(entries[testNodeA].hostname).To(Equal("host-a"))
+	g.Expect(entries[testNodeB].frrK8s).To(BeFalse(), `only the value "true" opts a node in`)
+	g.Expect(entries[testNodeB].hostname).To(Equal(testNodeB))
+	g.Expect(entries[testNodeA].render()).NotTo(ContainSubstring("host-a"), "neither field is rendered")
+}
+
+// status.nodes[].fabric records whether a node may carry fabric devices: it
+// goes up with the first entry that carries an assignment, which the node's
+// init container may apply before any apply Job runs, stays up after the row is
+// removed until the teardown ran, and is set from the entry for a node seen for
+// the first time.
+func TestNodes_StatusFabricCarriedAndFirstSet(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cr := testOVNChassis()
+	cr.Status.Nodes = []ovnv1alpha1.OVNChassisNodeStatus{
+		{Name: testNodeA, SystemID: testFixedSystemID, ConfigHash: "abcdef01", Fabric: false},
+		{Name: testNodeB, SystemID: testFixedSystemID, ConfigHash: "abcdef02", Fabric: true},
+	}
+	fabric := &nodeFabric{vrf: "fabric"}
+	entries := renderedNodes{
+		testNodeA:  {systemID: testFixedSystemID, fabric: fabric},
+		testNodeB:  {systemID: testFixedSystemID},
+		"node-new": {systemID: testFixedSystemID, fabric: fabric},
+	}
+
+	statuses := nodeStatuses(cr, entries)
+
+	g.Expect(statuses).To(HaveLen(3))
+	byName := make(map[string]ovnv1alpha1.OVNChassisNodeStatus, len(statuses))
+	for _, status := range statuses {
+		byName[status.Name] = status
+	}
+	g.Expect(byName[testNodeA].Fabric).To(BeTrue(), "the init container may apply the assignment before the apply Job")
+	g.Expect(byName[testNodeA].ConfigHash).To(Equal("abcdef01"), "the hash still waits for the apply Job")
+	g.Expect(byName[testNodeB].Fabric).To(BeTrue(), "a removed row is still applied until the teardown ran")
+	g.Expect(byName["node-new"].Fabric).To(BeTrue(), "the init container applies the first entry")
 }

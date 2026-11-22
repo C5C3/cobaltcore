@@ -125,6 +125,99 @@ const pinChassisScriptsConfigMapGolden = `data:
         exit 1
       fi
     done
+  fabric-node.sh: |
+    #!/bin/bash
+    set -eu
+    f="/etc/ovn-chassis/nodes/${NODE_NAME}"
+    until [ -f "$f" ]; do sleep 5; done
+    FABRIC_VRF="" FABRIC_TABLE="" FABRIC_MTU="" FABRIC_UPLINKS="" FABRIC_LOOPBACK_V4="" FABRIC_LOOPBACK_V6=""
+    # shellcheck source=/dev/null
+    . "$f"
+    until ovs-vsctl --timeout=5 --no-wait show >/dev/null 2>&1; do sleep 2; done
+    V="ovs-vsctl --timeout=15"
+    for u in ${FABRIC_UPLINKS//,/ }; do
+      nic="${u%%:*}" br="${u#*:}"
+      if ! ip link show dev "$nic" >/dev/null 2>&1; then
+        echo "ERROR: fabric uplink $nic does not exist on ${NODE_NAME}" >&2; exit 1
+      fi
+      if [ -n "$(ip -o addr show dev "$nic" scope global)" ]; then
+        echo "ERROR: fabric uplink $nic carries a global address on ${NODE_NAME}; a fabric uplink carries link-local addresses only" >&2; exit 1
+      fi
+      # The device is asked for first: the bridge row exists before its netdev.
+      if ip link show dev "$br" >/dev/null 2>&1 && ! $V br-exists "$br"; then
+        echo "ERROR: $br exists on ${NODE_NAME} and is not an OVS bridge; a peer bridge takes a name no other device of the node carries" >&2; exit 1
+      fi
+    done
+    if [ -n "$FABRIC_VRF" ] && ip link show dev "$FABRIC_VRF" >/dev/null 2>&1; then
+      if [ "$($V --if-exists get open . external_ids:c5c3-fabric-vrf | tr -d '"')" != "$FABRIC_VRF" ] ||
+         ! ip -d link show dev "$FABRIC_VRF" | grep -q ' vrf table '; then
+        echo "ERROR: ${FABRIC_VRF} exists on ${NODE_NAME} and is not the VRF the fabric script created" >&2; exit 1
+      fi
+    fi
+    want_bridges=" "
+    for u in ${FABRIC_UPLINKS//,/ }; do want_bridges="${want_bridges}${u#*:} "; done
+    # Bridges this script created earlier and the entry no longer names.
+    for br in $($V --bare --columns=name find bridge external_ids:c5c3-fabric=true); do
+      case "$want_bridges" in *" $br "*) ;; *) $V --if-exists del-br "$br" ;; esac
+    done
+    # Uplink ports this script added earlier that the entry no longer pairs with
+    # the bridge they are on.
+    for p in $($V --bare --columns=name find port external_ids:c5c3-fabric=true); do
+      case " ${FABRIC_UPLINKS//,/ } " in *" ${p}:$($V port-to-br "$p") "*) ;; *) $V --if-exists del-port "$p" ;; esac
+    done
+    # The VRF this script created earlier, when the entry names another or none.
+    old_vrf="$($V --if-exists get open . external_ids:c5c3-fabric-vrf | tr -d '"')"
+    if [ -n "$old_vrf" ] && [ "$old_vrf" != "$FABRIC_VRF" ]; then
+      ip link del "$old_vrf" 2>/dev/null || true
+      $V remove open . external_ids c5c3-fabric-vrf
+    fi
+    if [ -z "$FABRIC_VRF" ]; then
+      $V remove open . external_ids dynamic-routing-port-mapping
+      exit 0
+    fi
+    # The guard left only the recorded VRF under this name. A concurrent run may
+    # have re-created it on the new table already, so the delete may find nothing.
+    if ip link show dev "$FABRIC_VRF" >/dev/null 2>&1 &&
+       ! ip -d link show dev "$FABRIC_VRF" | grep -q "vrf table ${FABRIC_TABLE} "; then
+      ip link del "$FABRIC_VRF" 2>/dev/null || true
+    fi
+    if ! ip link show dev "$FABRIC_VRF" >/dev/null 2>&1; then
+      $V set open . external_ids:c5c3-fabric-vrf="$FABRIC_VRF"
+      if ! ip link add "$FABRIC_VRF" type vrf table "$FABRIC_TABLE" &&
+         ! ip -d link show dev "$FABRIC_VRF" 2>/dev/null | grep -q "vrf table ${FABRIC_TABLE} "; then
+        echo "ERROR: cannot create the VRF device ${FABRIC_VRF} on ${NODE_NAME}; the node kernel has no vrf module" >&2; exit 1
+      fi
+    fi
+    ip link set "$FABRIC_VRF" up
+    for a in $(ip -o addr show dev "$FABRIC_VRF" scope global | awk '{print $4}'); do
+      case "$a" in "${FABRIC_LOOPBACK_V4}/32"|"${FABRIC_LOOPBACK_V6}/128") ;; *) ip addr del "$a" dev "$FABRIC_VRF" 2>/dev/null || true ;; esac
+    done
+    ip addr replace "${FABRIC_LOOPBACK_V4}/32" dev "$FABRIC_VRF"
+    ip -6 addr replace "${FABRIC_LOOPBACK_V6}/128" dev "$FABRIC_VRF"
+    mapping=""
+    for u in ${FABRIC_UPLINKS//,/ }; do
+      nic="${u%%:*}" br="${u#*:}"
+      $V --may-exist add-br "$br" -- set bridge "$br" external_ids:c5c3-fabric=true \
+        -- --may-exist add-port "$br" "$nic" -- set port "$nic" external_ids:c5c3-fabric=true \
+        -- set interface "$br" mtu_request="$FABRIC_MTU"
+      n=0
+      until [ -e "/proc/sys/net/ipv6/conf/${br}/accept_ra" ]; do
+        n=$((n+1))
+        if [ "$n" -gt 30 ]; then
+          echo "ERROR: peer bridge $br did not appear on ${NODE_NAME}" >&2; exit 1
+        fi
+        sleep 1
+      done
+      echo 0 > "/proc/sys/net/ipv6/conf/${nic}/accept_ra"
+      echo 1 > "/proc/sys/net/ipv6/conf/${nic}/disable_ipv6"
+      echo 0 > "/proc/sys/net/ipv6/conf/${br}/accept_ra"
+      ip link set "$nic" mtu "$FABRIC_MTU"
+      ip link set "$br" master "$FABRIC_VRF"
+      ip link set "$nic" up
+      ip link set "$br" up
+      mapping="${mapping:+${mapping},}${br}=${br}"
+    done
+    $V set open . external_ids:dynamic-routing-port-mapping="$mapping"
   host-prepare.sh: |
     #!/bin/bash
     set -eu
@@ -186,6 +279,57 @@ func TestPinNodesConfigMap(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(string(got)).To(Equal(pinNodesConfigMapGolden),
 		"the rendered nodes ConfigMap must stay byte-identical")
+}
+
+const pinFabricNodesConfigMapGolden = `data:
+  node-a: |
+    SYSTEM_ID=aaaaaaaa-1111-2222-3333-444444444444
+    GATEWAY=false
+    BRIDGE_MAPPINGS=physnet1:br-ex,physnet2:br-data
+    ENCAP_TYPE=geneve
+    FABRIC_VRF=fabric
+    FABRIC_TABLE=100
+    FABRIC_MTU=9000
+    FABRIC_UPLINKS=fab1:br-fab1,fab2:br-fab2
+    FABRIC_LOOPBACK_V4=192.0.2.1
+    FABRIC_LOOPBACK_V6=2001:db8::1
+  node-b: |
+    SYSTEM_ID=bbbbbbbb-1111-2222-3333-444444444444
+    GATEWAY=true
+    BRIDGE_MAPPINGS=physnet1:br-ex,physnet2:br-data
+    ENCAP_TYPE=geneve
+metadata:
+  labels:
+    app.kubernetes.io/component: nodes
+    app.kubernetes.io/instance: chassis
+    app.kubernetes.io/managed-by: ovnchassis-operator
+    app.kubernetes.io/name: ovnchassis
+  name: chassis-nodes
+  namespace: openstack
+`
+
+// TestPinNodesConfigMapFabric pins the nodes ConfigMap of a fabric chassis: the
+// node with a row in spec.fabric.nodes carries the six FABRIC_ keys after
+// ENCAP_TYPE, and the node without one renders exactly as on a chassis without
+// the block.
+func TestPinNodesConfigMapFabric(t *testing.T) {
+	g := NewWithT(t)
+	cr := pinNodesChassis()
+	cr.Spec.Fabric = testFabric()
+
+	nodes := []corev1.Node{
+		{ObjectMeta: metav1.ObjectMeta{Name: testNodeA, Labels: selectedLabels()}},
+		{ObjectMeta: metav1.ObjectMeta{Name: testNodeB, Labels: gatewayLabels()}},
+	}
+	live := map[string]nodeEntry{
+		testNodeA: {systemID: pinSystemIDNodeA},
+		testNodeB: {systemID: pinSystemIDNodeB},
+	}
+
+	got, err := yaml.Marshal(nodesConfigMap(cr, renderNodeEntries(cr, nodes, live)))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(string(got)).To(Equal(pinFabricNodesConfigMapGolden),
+		"the rendered nodes ConfigMap of a fabric chassis must stay byte-identical")
 }
 
 // TestPinChassisScriptsConfigMap pins the scripts the chassis containers and the
