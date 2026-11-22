@@ -304,7 +304,144 @@ spec:
 status: {}
 `
 
-// TestPinMaintenanceJobs pins the three Jobs the maintenance step projects.
+// pinFabricApplyJobGolden is the apply Job of a node that carries, or last
+// applied, a fabric assignment.
+const pinFabricApplyJobGolden = `metadata:
+  labels:
+    app.kubernetes.io/component: maintenance
+    app.kubernetes.io/instance: chassis
+    app.kubernetes.io/managed-by: ovnchassis-operator
+    app.kubernetes.io/name: ovnchassis
+  name: chassis-apply-66570ff0
+  namespace: openstack
+spec:
+  activeDeadlineSeconds: 300
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: maintenance
+        app.kubernetes.io/instance: chassis
+        app.kubernetes.io/managed-by: ovnchassis-operator
+        app.kubernetes.io/name: ovnchassis
+    spec:
+      containers:
+      - command:
+        - /bin/bash
+        - /etc/ovn-chassis/bin/fabric-node.sh
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: NODE_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP
+        - name: OVN_REMOTE
+          value: ssl:10.96.0.31:6642
+        - name: OVN_REMOTE_PROBE_INTERVAL_MS
+          value: "60000"
+        image: ghcr.io/c5c3/ovn:26.03.2
+        imagePullPolicy: Always
+        name: maintenance
+        resources:
+          limits:
+            memory: 368Mi
+          requests:
+            cpu: 70m
+            memory: 368Mi
+        securityContext:
+          allowPrivilegeEscalation: true
+          privileged: true
+          readOnlyRootFilesystem: true
+          runAsUser: 0
+        volumeMounts:
+        - mountPath: /etc/ovn-chassis/bin
+          name: scripts
+        - mountPath: /tmp
+          name: tmp
+        - mountPath: /run/openvswitch
+          name: run-ovs
+        - mountPath: /etc/ovn-chassis/nodes
+          name: nodes
+      dnsPolicy: ClusterFirstWithHostNet
+      hostNetwork: true
+      initContainers:
+      - command:
+        - /bin/bash
+        - /etc/ovn-chassis/bin/apply-node.sh
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: NODE_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP
+        - name: OVN_REMOTE
+          value: ssl:10.96.0.31:6642
+        - name: OVN_REMOTE_PROBE_INTERVAL_MS
+          value: "60000"
+        image: ghcr.io/c5c3/ovn:26.03.2
+        imagePullPolicy: Always
+        name: apply-node
+        resources:
+          limits:
+            memory: 368Mi
+          requests:
+            cpu: 70m
+            memory: 368Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsGroup: 42424
+          runAsNonRoot: true
+          runAsUser: 42424
+          seccompProfile:
+            type: RuntimeDefault
+        volumeMounts:
+        - mountPath: /etc/ovn-chassis/bin
+          name: scripts
+        - mountPath: /tmp
+          name: tmp
+        - mountPath: /run/openvswitch
+          name: run-ovs
+        - mountPath: /etc/ovn-chassis/nodes
+          name: nodes
+      nodeName: node-a
+      restartPolicy: Never
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      tolerations:
+      - effect: NoSchedule
+        key: openstack.c5c3.io/network
+        operator: Exists
+      volumes:
+      - configMap:
+          defaultMode: 365
+          name: chassis-chassis-scripts
+        name: scripts
+      - emptyDir: {}
+        name: tmp
+      - hostPath:
+          path: /run/openvswitch
+          type: DirectoryOrCreate
+        name: run-ovs
+      - configMap:
+          name: chassis-nodes
+        name: nodes
+  ttlSecondsAfterFinished: 86400
+status: {}
+`
+
+// TestPinMaintenanceJobs pins the three Jobs the maintenance step projects, and
+// the apply Job in fabric mode.
 func TestPinMaintenanceJobs(t *testing.T) {
 	entry := nodeEntry{systemID: testFixedSystemID, encapType: "geneve"}
 
@@ -315,8 +452,15 @@ func TestPinMaintenanceJobs(t *testing.T) {
 	}{
 		{
 			name:   "apply",
-			build:  func(cr *ovnv1alpha1.OVNChassis) any { return applyJob(cr, pinMaintenanceCentral, testNodeA) },
+			build:  func(cr *ovnv1alpha1.OVNChassis) any { return applyJob(cr, pinMaintenanceCentral, testNodeA, false) },
 			golden: pinApplyJobGolden,
+		},
+		{
+			name: "apply-fabric",
+			build: func(cr *ovnv1alpha1.OVNChassis) any {
+				return applyJob(cr, pinMaintenanceCentral, testNodeA, true)
+			},
+			golden: pinFabricApplyJobGolden,
 		},
 		{
 			name:   "evacuate",

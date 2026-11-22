@@ -248,3 +248,39 @@ func TestChassisInitContainers_RenderTheirContainersResources(t *testing.T) {
 	g.Expect(initResources(buildOVSDaemonSet(set), "host-prepare")).To(Equal(ovs))
 	g.Expect(initResources(buildControllerDaemonSet(set, testResolvedCentral()), "apply-node")).To(Equal(controller))
 }
+
+// A chassis with spec.fabric runs fabric-node after apply-node, privileged and
+// as uid 0, with the environment of apply-node, the resources of
+// spec.controller and the three mounts the script reads: the local OVS socket,
+// the scripts and the node entries. apply-node keeps its Restricted posture.
+func TestBuildControllerDaemonSet_FabricNodeInitContainer(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cr := testOVNChassis()
+	cr.Spec.Fabric = testFabric()
+	controller := corev1.ResourceRequirements{Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")}}
+	cr.Spec.Controller = &ovnv1alpha1.OVNChassisContainerSpec{Resources: &controller}
+
+	inits := buildControllerDaemonSet(cr, testResolvedCentral()).Spec.Template.Spec.InitContainers
+
+	g.Expect(inits).To(HaveLen(2))
+	g.Expect(inits[0].Name).To(Equal("apply-node"))
+	g.Expect(inits[0].SecurityContext.Privileged).To(BeNil(), "apply-node stays unprivileged")
+	g.Expect(inits[1].Name).To(Equal("fabric-node"))
+	g.Expect(inits[1].Command).To(Equal([]string{"/bin/bash", "/etc/ovn-chassis/bin/fabric-node.sh"}))
+	g.Expect(inits[1].SecurityContext.Privileged).To(HaveValue(BeTrue()))
+	g.Expect(inits[1].SecurityContext.RunAsUser).To(HaveValue(BeEquivalentTo(0)))
+	g.Expect(inits[1].Env).To(Equal(inits[0].Env))
+	g.Expect(inits[1].Resources).To(Equal(controller))
+	g.Expect(inits[1].VolumeMounts).To(Equal(inits[0].VolumeMounts))
+}
+
+// Without spec.fabric the pod has apply-node alone, so a chassis that never
+// had the block keeps the DaemonSet it had and no ovn-controller restarts.
+func TestBuildControllerDaemonSet_NoFabricNoFabricNode(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	inits := buildControllerDaemonSet(testOVNChassis(), testResolvedCentral()).Spec.Template.Spec.InitContainers
+
+	g.Expect(inits).To(HaveLen(1))
+	g.Expect(inits[0].Name).To(Equal("apply-node"))
+}

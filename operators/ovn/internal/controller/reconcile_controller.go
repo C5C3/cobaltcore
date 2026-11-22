@@ -13,6 +13,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -122,9 +123,27 @@ func chassisEnv(cr *ovnv1alpha1.OVNChassis, central resolvedCentral) []corev1.En
 	}
 }
 
+// fabricNodeSecurityContext is the posture of the container that runs
+// fabricNodeScript, in the fabric-node init container and in the apply Job of
+// a fabric node: privileged and uid 0, the posture of host-prepare. The script
+// creates and deletes network devices, enslaves them to the fabric VRF and
+// writes /proc/sys/net/ipv6/conf, which no capability short of the full set
+// covers in a container with a read-only /proc/sys.
+func fabricNodeSecurityContext() *corev1.SecurityContext {
+	sc := deployment.PrivilegedSecurityContext()
+	sc.RunAsUser = ptr.To(int64(0))
+	return sc
+}
+
 // buildControllerDaemonSet builds the ovn-controller DaemonSet: the init
 // container that writes this node's values into the local Open vSwitch database
 // and the daemon that turns the Southbound logical flows into datapath flows.
+//
+// A chassis with spec.fabric gets a second init container, fabric-node, after
+// apply-node. It prepares the node's fabric devices and is the only privileged
+// container of the pod; apply-node keeps its Restricted posture. A chassis
+// without the block renders without it, byte for byte as before, so an operator
+// upgrade restarts no ovn-controller.
 //
 // There is no liveness probe. A chassis that lost its Southbound connection
 // keeps forwarding on the flows it has, and restarting it would drop them for
@@ -150,6 +169,14 @@ func buildControllerDaemonSet(cr *ovnv1alpha1.OVNChassis, central resolvedCentra
 			{Name: nodesVolumeName, MountPath: chassisNodesDir},
 		},
 	}}
+	if cr.Spec.Fabric != nil {
+		// A copy of apply-node: only the name, the script and the posture differ.
+		fabricNode := initContainers[0].DeepCopy()
+		fabricNode.Name = "fabric-node"
+		fabricNode.Command = []string{"/bin/bash", path.Join(chassisScriptDir, fabricNodeScriptKey)}
+		fabricNode.SecurityContext = fabricNodeSecurityContext()
+		initContainers = append(initContainers, *fabricNode)
+	}
 
 	containers := []corev1.Container{{
 		Name:            componentOVNController,

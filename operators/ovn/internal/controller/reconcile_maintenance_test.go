@@ -538,7 +538,7 @@ func TestMaintenanceJobs_PodSettings(t *testing.T) {
 		Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("368Mi")},
 	}
 
-	apply := applyJob(cr, pinMaintenanceCentral, testNodeA).Spec.Template.Spec
+	apply := applyJob(cr, pinMaintenanceCentral, testNodeA, false).Spec.Template.Spec
 	g.Expect(apply.NodeName).To(Equal(testNodeA))
 	g.Expect(apply.HostNetwork).To(BeTrue())
 
@@ -556,5 +556,158 @@ func TestMaintenanceJobs_PodSettings(t *testing.T) {
 
 	// Unset, the Jobs carry no priority class.
 	cr.Spec.Jobs = nil
-	g.Expect(applyJob(cr, pinMaintenanceCentral, testNodeA).Spec.Template.Spec.PriorityClassName).To(BeEmpty())
+	g.Expect(applyJob(cr, pinMaintenanceCentral, testNodeA, false).Spec.Template.Spec.PriorityClassName).To(BeEmpty())
+}
+
+// In fabric mode the apply Job runs apply-node.sh in an init container of that
+// name, in the Restricted posture of the plain Job, and fabric-node.sh in the
+// maintenance container, privileged and as uid 0. Both carry the same
+// environment, mounts and spec.jobs resources.
+func TestApplyJob_FabricMode(t *testing.T) {
+	g := NewWithT(t)
+	cr := pinMaintenanceChassis()
+
+	plain := applyJob(cr, pinMaintenanceCentral, testNodeA, false).Spec.Template.Spec
+	fabric := applyJob(cr, pinMaintenanceCentral, testNodeA, true).Spec.Template.Spec
+
+	g.Expect(plain.InitContainers).To(BeEmpty())
+	g.Expect(fabric.InitContainers).To(HaveLen(1))
+	applyNode := fabric.InitContainers[0]
+	g.Expect(applyNode.Name).To(Equal("apply-node"))
+	g.Expect(applyNode.Command).To(Equal(plain.Containers[0].Command))
+	g.Expect(applyNode.SecurityContext).To(Equal(plain.Containers[0].SecurityContext))
+	g.Expect(applyNode.Env).To(Equal(plain.Containers[0].Env))
+	g.Expect(applyNode.VolumeMounts).To(Equal(plain.Containers[0].VolumeMounts))
+	g.Expect(applyNode.Resources).To(Equal(plain.Containers[0].Resources))
+
+	main := fabric.Containers[0]
+	g.Expect(main.Name).To(Equal(componentMaintenance))
+	g.Expect(main.Command).To(Equal([]string{"/bin/bash", "/etc/ovn-chassis/bin/fabric-node.sh"}))
+	g.Expect(main.SecurityContext.Privileged).To(HaveValue(BeTrue()))
+	g.Expect(main.SecurityContext.RunAsUser).To(HaveValue(BeEquivalentTo(0)))
+	g.Expect(main.VolumeMounts).To(Equal(plain.Containers[0].VolumeMounts))
+	g.Expect(fabric.NodeName).To(Equal(testNodeA))
+	g.Expect(fabric.HostNetwork).To(BeTrue())
+}
+
+// A node whose fabric row was removed renders an entry without a fabric
+// assignment, and its apply Job still runs fabric-node.sh, because the node
+// last applied one: that run is the teardown. status.nodes[].fabric turns
+// false only once the Job has succeeded.
+func TestReconcileMaintenance_RemovedFabricRowRunsTheTeardown(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cr := maintenanceChassis()
+	entry := chassisEntry(testFixedSystemID, false)
+	nodes := renderedNodes{testNodeA: entry}
+	cr.Status.Nodes = []ovnv1alpha1.OVNChassisNodeStatus{
+		{Name: testNodeA, SystemID: testFixedSystemID, ConfigHash: testStaleHash, Fabric: true},
+	}
+	r := newTestOVNChassisReconciler(t, cr)
+
+	_, err := r.reconcileMaintenance(ctx, r.Client, cr,
+		renderMaintenanceStatus(cr, nodes), maintenanceCentral(), nodes)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	applyJobObj := readMaintenanceJob(ctx, t, r.Client, testApplyJobNodeA)
+	g.Expect(applyJobObj.Spec.Template.Spec.Containers[0].Command).
+		To(Equal([]string{"/bin/bash", "/etc/ovn-chassis/bin/fabric-node.sh"}))
+	g.Expect(nodeStatusByName(cr, testNodeA).Fabric).To(BeTrue(),
+		"the devices are still there while the teardown runs")
+
+	g.Expect(simulators.SimulateJobComplete(ctx, r.Client, chassisKey(testApplyJobNodeA))).To(Succeed())
+	_, err = r.reconcileMaintenance(ctx, r.Client, cr,
+		renderMaintenanceStatus(cr, nodes), maintenanceCentral(), nodes)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(nodeStatusByName(cr, testNodeA).Fabric).To(BeFalse())
+	g.Expect(nodeStatusByName(cr, testNodeA).ConfigHash).To(Equal(entry.hash()))
+}
+
+// A fabric row that is added and removed again before its apply Job succeeded
+// brings the entry back to the recorded hash. The Job may have created devices
+// before it failed, so status.nodes[].fabric went up with the row, and the
+// node still gets a fabric-mode Job, under a rerun key of its own, that tears
+// them down. Its success takes the flag down and changes nothing else.
+func TestReconcileMaintenance_RevertedFabricRowRunsTheTeardown(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cr := maintenanceChassis()
+	plain := chassisEntry(testFixedSystemID, false)
+	withFabric := plain
+	withFabric.fabric = testNodeFabric()
+	cr.Status.Nodes = []ovnv1alpha1.OVNChassisNodeStatus{
+		{Name: testNodeA, SystemID: testFixedSystemID, ConfigHash: plain.hash()},
+	}
+	r := newTestOVNChassisReconciler(t, cr)
+
+	// The row is added and its fabric-mode Job fails.
+	added := renderedNodes{testNodeA: withFabric}
+	_, err := r.reconcileMaintenance(ctx, r.Client, cr, renderMaintenanceStatus(cr, added), maintenanceCentral(), added)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(nodeStatusByName(cr, testNodeA).Fabric).To(BeTrue(), "the Job may create devices before it ends")
+	fabricJob := readMaintenanceJob(ctx, t, r.Client, testApplyJobNodeA)
+	fabricJob.Status.Conditions = []batchv1.JobCondition{{
+		Type: batchv1.JobFailed, Status: corev1.ConditionTrue, LastTransitionTime: metav1.Now(),
+	}}
+	g.Expect(r.Client.Status().Update(ctx, fabricJob)).To(Succeed())
+	_, err = r.reconcileMaintenance(ctx, r.Client, cr, renderMaintenanceStatus(cr, added), maintenanceCentral(), added)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(nodeStatusByName(cr, testNodeA).ConfigHash).To(Equal(plain.hash()))
+
+	// The row is removed: the entry hashes as the recorded one again.
+	reverted := renderedNodes{testNodeA: plain}
+	_, err = r.reconcileMaintenance(ctx, r.Client, cr, renderMaintenanceStatus(cr, reverted), maintenanceCentral(), reverted)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	teardown := readMaintenanceJob(ctx, t, r.Client, testApplyJobNodeA)
+	g.Expect(teardown.Annotations).To(HaveKeyWithValue(job.PodSpecHashAnnotation, plain.hash()+":fabric-teardown"))
+	g.Expect(teardown.Spec.Template.Spec.Containers[0].Command).
+		To(Equal([]string{"/bin/bash", "/etc/ovn-chassis/bin/fabric-node.sh"}))
+	g.Expect(nodeStatusByName(cr, testNodeA).Fabric).To(BeTrue())
+
+	g.Expect(simulators.SimulateJobComplete(ctx, r.Client, chassisKey(testApplyJobNodeA))).To(Succeed())
+	_, err = r.reconcileMaintenance(ctx, r.Client, cr, renderMaintenanceStatus(cr, reverted), maintenanceCentral(), reverted)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(nodeStatusByName(cr, testNodeA).Fabric).To(BeFalse())
+	g.Expect(nodeStatusByName(cr, testNodeA).ConfigHash).To(Equal(plain.hash()))
+	g.Expect(ovnChassisCondition(cr, conditionTypeMaintenanceReady).Status).To(Equal(metav1.ConditionTrue))
+}
+
+// A node that gains a fabric assignment gets an apply Job in fabric mode, and
+// status.nodes[].fabric is true once it has succeeded. A node that never had
+// one keeps the plain apply Job.
+func TestReconcileMaintenance_AddedFabricRowRunsTheFabricScript(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cr := maintenanceChassis()
+	entry := chassisEntry(testFixedSystemID, false)
+	entry.fabric = testNodeFabric()
+	other := chassisEntry(testFixedSystemID, false)
+	nodes := renderedNodes{testNodeA: entry, testNodeB: other}
+	cr.Status.Nodes = []ovnv1alpha1.OVNChassisNodeStatus{
+		{Name: testNodeA, SystemID: testFixedSystemID, ConfigHash: testStaleHash},
+		{Name: testNodeB, SystemID: testFixedSystemID, ConfigHash: testStaleHash},
+	}
+	r := newTestOVNChassisReconciler(t, cr)
+
+	_, err := r.reconcileMaintenance(ctx, r.Client, cr,
+		renderMaintenanceStatus(cr, nodes), maintenanceCentral(), nodes)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	fabricJob := readMaintenanceJob(ctx, t, r.Client, testApplyJobNodeA)
+	g.Expect(fabricJob.Spec.Template.Spec.InitContainers).To(HaveLen(1))
+	plainJob := readMaintenanceJob(ctx, t, r.Client, testOVNChassisName+"-apply-"+pinNodeBHash)
+	g.Expect(plainJob.Spec.Template.Spec.InitContainers).To(BeEmpty())
+	g.Expect(plainJob.Spec.Template.Spec.Containers[0].Command).
+		To(Equal([]string{"/bin/bash", "/etc/ovn-chassis/bin/apply-node.sh"}))
+
+	g.Expect(simulators.SimulateJobComplete(ctx, r.Client, chassisKey(testApplyJobNodeA))).To(Succeed())
+	_, err = r.reconcileMaintenance(ctx, r.Client, cr,
+		renderMaintenanceStatus(cr, nodes), maintenanceCentral(), nodes)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(nodeStatusByName(cr, testNodeA).Fabric).To(BeTrue())
+	g.Expect(nodeStatusByName(cr, testNodeB).Fabric).To(BeFalse())
 }
