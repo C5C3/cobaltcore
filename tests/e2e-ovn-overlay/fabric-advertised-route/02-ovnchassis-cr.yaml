@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# OVNChassis fixture for the fabric-advertised-route E2E test. The suite
+# replaces NODE_NAME with the worker it labels.
+#
+# The chassis selects that one worker through the suite's marker. Its fabric
+# block attaches it with the two uplinks fab1 and fab2 the peer Pods create,
+# the node row of the fabric contract's lab node, one announceable range per
+# family, the routes of VRF id 42 announced and the leaf defaults learned into
+# VRF id 10. The VRF, the MTU and the BFD timers take their defaults.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNChassis
+metadata:
+  name: ovn-fabric
+  namespace: openstack
+spec:
+  centralRef:
+    name: ovn-fabric-central
+  nodeSelector:
+    e2e.c5c3.io/ovn-fabric: "true"
+  fabric:
+    uplinks:
+    - interface: fab1
+      bridge: br-fab1
+    - interface: fab2
+      bridge: br-fab2
+    nodes:
+    - name: NODE_NAME
+      asn: 4200000001
+      loopbackIPv4: 192.0.2.1
+      loopbackIPv6: "2001:db8::1"
+    announceableRanges:
+    - 198.51.100.0/24
+    - 2001:db8::/64
+    advertiseVRFIDs: [42]
+    learnVRFIDs: [10]
