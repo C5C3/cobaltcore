@@ -9,6 +9,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -641,19 +642,24 @@ func TestReconcileChassis_FabricErrorHoldsReadyAndIsCounted(t *testing.T) {
 	cr := fabricChassis()
 	node := chassisNode(testNodeA, map[string]string{testChassisNodeLabel: "true", frrK8sNodeLabel: "true"})
 	listErr := errors.New("frr-k8s-system is unreachable")
+	var failList atomic.Bool
 	r, _ := newFabricReconciler(t, true, interceptor.Funcs{
-		List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
-			return listErr
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if failList.Load() {
+				return listErr
+			}
+			return c.List(ctx, list, opts...)
 		},
 	}, cr, readyCentral(), node)
 
 	// The first pass projects the DaemonSets, which the fake runs no controller
-	// for. Once both are ready, a pass reaches the Fabric step, installs the
-	// finalizer and returns, and the next one lists.
+	// for, and the Fabric step lists and installs the finalizer. Once both are
+	// ready and the namespace stops answering, the next pass fails at the list.
 	_, err := r.Reconcile(ctx, ovnChassisRequest)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(simulators.MarkDaemonSetReady(ctx, r.Client, chassisOVSDaemonSet)).To(Succeed())
 	g.Expect(simulators.MarkDaemonSetReady(ctx, r.Client, chassisControllerDaemonSet)).To(Succeed())
+	failList.Store(true)
 	for range 3 {
 		if _, err = r.Reconcile(ctx, ovnChassisRequest); err != nil {
 			break

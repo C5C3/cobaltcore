@@ -232,6 +232,13 @@ const pinChassisScriptsConfigMapGolden = `data:
     if [ -e /run/openvswitch/.conf.db.~lock~ ]; then
       chown 42424:42424 /run/openvswitch/.conf.db.~lock~
     fi
+  route-probe.sh: |
+    #!/bin/bash
+    set -eu
+    T="--db=${SB_ADDR} -p /etc/ovn/tls/tls.key -c /etc/ovn/tls/tls.crt -C /etc/ovn/tls/ca.crt --timeout=30"
+    adv="$(ovn-sbctl $T --bare --columns=_uuid list Advertised_Route)"
+    lrn="$(ovn-sbctl $T --bare --columns=_uuid list Learned_Route)"
+    printf 'advertised=%s learned=%s\n' "$(grep -c . <<< "$adv" || true)" "$(grep -c . <<< "$lrn" || true)" > /dev/termination-log
   run-ovsdb.sh: |
     #!/bin/bash
     set -eu

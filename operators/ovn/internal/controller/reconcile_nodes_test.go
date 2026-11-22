@@ -477,7 +477,7 @@ func TestReconcileNodes_ConfigMapApplyErrorIsNodesError(t *testing.T) {
 // The scripts ConfigMap carries every script the chassis containers and the
 // maintenance Jobs run. A missing key is a container that cannot start or a Job
 // that cannot deregister a chassis.
-func TestReconcileNodes_ScriptsConfigMapCarriesSevenKeys(t *testing.T) {
+func TestReconcileNodes_ScriptsConfigMapCarriesEightKeys(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ctx := context.Background()
 	cr := testOVNChassis()
@@ -488,11 +488,11 @@ func TestReconcileNodes_ScriptsConfigMapCarriesSevenKeys(t *testing.T) {
 
 	var cm corev1.ConfigMap
 	g.Expect(r.Get(ctx, chassisKey(testOVNChassisName+"-chassis-scripts"), &cm)).To(Succeed())
-	g.Expect(cm.Data).To(HaveLen(7))
+	g.Expect(cm.Data).To(HaveLen(8))
 	for _, key := range []string{
 		hostPrepareScriptKey, applyNodeScriptKey, runOVSDBScriptKey,
 		runVswitchdScriptKey, evacuateScriptKey, chassisDelScriptKey,
-		fabricNodeScriptKey,
+		fabricNodeScriptKey, routeProbeScriptKey,
 	} {
 		g.Expect(cm.Data).To(HaveKey(key))
 		g.Expect(cm.Data[key]).To(HavePrefix("#!/bin/bash\n"), key)

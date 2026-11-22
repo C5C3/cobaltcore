@@ -184,7 +184,7 @@ FIGURES = {
             seq("Controller", "sets ControllerReady", "reads the central", "sets status.installedImage"),
             seq("ChassisVPA", "sets VPAReady"),
             seq("Maintenance", "sets MaintenanceReady", "reads the central and the nodes"),
-            seq("Fabric", "sets FabricReady", "reads the nodes"),
+            seq("Fabric", "sets FabricReady", "reads the central and the nodes", "sets RoutesAdvertised"),
         ],
         footer=[FOOT_LABEL, "There is no parallel group: every step runs in order."],
     ),

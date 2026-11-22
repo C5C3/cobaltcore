@@ -9,13 +9,16 @@ import (
 	"fmt"
 	"maps"
 	"net/netip"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -28,6 +31,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/apply"
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	"github.com/c5c3/cobaltcore/internal/common/gateway"
+	"github.com/c5c3/cobaltcore/internal/common/job"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	"github.com/c5c3/cobaltcore/internal/common/naming"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
@@ -48,6 +52,26 @@ const (
 	conditionReasonFRRK8sNotInstalled     = "FRRK8sNotInstalled"
 	conditionReasonFabricError            = "FabricError"
 )
+
+// conditionTypeRoutesAdvertised is the condition the route probe reports
+// under: whether the Southbound database of the chassis's OVNCentral holds
+// advertised routes. It is no sub-condition of Ready, and its name carries no
+// Ready suffix for that reason: a fabric without a floating IP advertises
+// nothing and is still ready.
+const conditionTypeRoutesAdvertised = "RoutesAdvertised"
+
+// The condition reasons of the route probe.
+const (
+	conditionReasonRoutesAdvertised     = "RoutesAdvertised"
+	conditionReasonNoAdvertisedRoutes   = "NoAdvertisedRoutes"
+	conditionReasonRouteProbeFailed     = "RouteProbeFailed"
+	conditionReasonRouteProbeUnreadable = "RouteProbeUnreadable"
+	conditionReasonRouteProbeDeferred   = "RouteProbeDeferred"
+	conditionReasonRouteProbePending    = "RouteProbePending"
+)
+
+// routeProbeReport is the shape of the route probe's termination message.
+var routeProbeReport = regexp.MustCompile(`^advertised=(\d+) learned=(\d+)$`)
 
 // fabricFinalizer holds an OVNChassis while FRRConfigurations of it exist. They
 // live in frr-k8s-system rather than in the CR's namespace, so no owner
@@ -328,11 +352,30 @@ func fabricNodes(nodes renderedNodes) (attached int, frrK8s, unattached []string
 	return attached, frrK8s, unattached
 }
 
-// reconcileFabric generates one FRRConfiguration per fabric node that runs
-// frr-k8s, in frr-k8s-system on the cluster the children land on, and reports
-// in FabricReady whether the node side of the fabric is configured.
+// reconcileFabric runs the Fabric step: the FRRConfigurations of the fabric
+// nodes, reported in FabricReady, and while spec.fabric is set the route probe,
+// reported in RoutesAdvertised. A pass that gets through the first half ends
+// with RequeueRouteProbe, the schedule of the probe; with spec.fabric unset it
+// removes RoutesAdvertised and ends with a zero result.
+func (r *OVNChassisReconciler) reconcileFabric(ctx context.Context, children client.Client,
+	cr *ovnv1alpha1.OVNChassis, central resolvedCentral, nodes renderedNodes,
+) (ctrl.Result, error) {
+	if res, err := r.reconcileFRRConfigurations(ctx, children, cr, nodes); err != nil || !res.IsZero() {
+		return res, err
+	}
+	if cr.Spec.Fabric == nil {
+		meta.RemoveStatusCondition(&cr.Status.Conditions, conditionTypeRoutesAdvertised)
+		return ctrl.Result{}, nil
+	}
+	r.probeRoutes(ctx, children, cr, central)
+	return ctrl.Result{RequeueAfter: RequeueRouteProbe}, nil
+}
+
+// reconcileFRRConfigurations generates one FRRConfiguration per fabric node
+// that runs frr-k8s, in frr-k8s-system on the cluster the children land on, and
+// reports in FabricReady whether the node side of the fabric is configured.
 //
-// The step is the last of the pipeline. Its objects carry the ownership labels
+// Its objects carry the ownership labels
 // rather than an owner reference, because they live in another namespace than
 // the CR, and fabricFinalizer holds the CR until they are gone. There is no
 // watch on the kind: it is optional on every cluster, so a drifted object is
@@ -340,7 +383,7 @@ func fabricNodes(nodes renderedNodes) (attached int, frrK8s, unattached []string
 //
 // A chassis that never had a fabric node on frr-k8s and carries no finalizer
 // issues no request for the kind at all.
-func (r *OVNChassisReconciler) reconcileFabric(ctx context.Context, children client.Client,
+func (r *OVNChassisReconciler) reconcileFRRConfigurations(ctx context.Context, children client.Client,
 	cr *ovnv1alpha1.OVNChassis, nodes renderedNodes,
 ) (ctrl.Result, error) {
 	var (
@@ -354,6 +397,11 @@ func (r *OVNChassisReconciler) reconcileFabric(ctx context.Context, children cli
 	if len(wanted) == 0 && !controllerutil.ContainsFinalizer(cr, fabricFinalizer) {
 		setFabricCondition(cr, attached, 0, unattached)
 		return ctrl.Result{}, nil
+	}
+
+	fail := func(err error) (ctrl.Result, error) {
+		chassisSkeleton.MarkFailed(cr, conditionTypeFabricReady, conditionReasonFabricError, err)
+		return ctrl.Result{}, err
 	}
 
 	if len(wanted) > 0 {
@@ -375,24 +423,26 @@ func (r *OVNChassisReconciler) reconcileFabric(ctx context.Context, children cli
 			})
 			return ctrl.Result{}, nil
 		}
+	}
 
+	// The list goes ahead of the finalizer: a cluster that refuses it, such as
+	// a target whose access chart grants no FRRConfiguration access, gets no
+	// finalizer, which would hold the CR's deletion on the same refusal while
+	// guarding no object. The finalizer still goes on before the first write.
+	live, err := listFRRConfigurations(ctx, children)
+	if err != nil {
+		return fail(err)
+	}
+	if len(wanted) > 0 {
 		if added, err := r.addFabricFinalizer(ctx, cr); err != nil {
-			chassisSkeleton.MarkFailed(cr, conditionTypeFabricReady, conditionReasonFabricError, err)
-			return ctrl.Result{}, err
+			return fail(err)
 		} else if added {
 			return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
 		}
 	}
-
-	live, err := listFRRConfigurations(ctx, children)
-	if err != nil {
-		chassisSkeleton.MarkFailed(cr, conditionTypeFabricReady, conditionReasonFabricError, err)
-		return ctrl.Result{}, err
-	}
 	ownerLabels, err := commonmulticluster.OwnerLabels(r.Scheme, cr)
 	if err != nil {
-		chassisSkeleton.MarkFailed(cr, conditionTypeFabricReady, conditionReasonFabricError, err)
-		return ctrl.Result{}, err
+		return fail(err)
 	}
 
 	desired := make(map[string]struct{}, len(wanted))
@@ -400,8 +450,7 @@ func (r *OVNChassisReconciler) reconcileFabric(ctx context.Context, children cli
 	for _, node := range wanted {
 		obj, err := buildFRRConfiguration(cr, node, nodes[node], ownerLabels)
 		if err != nil {
-			chassisSkeleton.MarkFailed(cr, conditionTypeFabricReady, conditionReasonFabricError, err)
-			return ctrl.Result{}, err
+			return fail(err)
 		}
 		desired[obj.GetName()] = struct{}{}
 
@@ -416,9 +465,7 @@ func (r *OVNChassisReconciler) reconcileFabric(ctx context.Context, children cli
 			continue
 		}
 		if err := apply.EnsureUnownedObject(ctx, children, r.Scheme, obj, apply.FieldManager); err != nil {
-			err = fmt.Errorf("applying FRRConfiguration %s: %w", obj.GetName(), err)
-			chassisSkeleton.MarkFailed(cr, conditionTypeFabricReady, conditionReasonFabricError, err)
-			return ctrl.Result{}, err
+			return fail(fmt.Errorf("applying FRRConfiguration %s: %w", obj.GetName(), err))
 		}
 	}
 
@@ -427,15 +474,13 @@ func (r *OVNChassisReconciler) reconcileFabric(ctx context.Context, children cli
 			continue
 		}
 		if err := deleteFRRConfiguration(ctx, children, live[name]); err != nil {
-			chassisSkeleton.MarkFailed(cr, conditionTypeFabricReady, conditionReasonFabricError, err)
-			return ctrl.Result{}, err
+			return fail(err)
 		}
 	}
 
 	if len(desired) == 0 {
 		if err := r.removeFabricFinalizer(ctx, cr); err != nil {
-			chassisSkeleton.MarkFailed(cr, conditionTypeFabricReady, conditionReasonFabricError, err)
-			return ctrl.Result{}, err
+			return fail(err)
 		}
 	}
 
@@ -651,4 +696,99 @@ func (r *OVNChassisReconciler) reconcileDeleteFabric(ctx context.Context, childr
 		return fmt.Errorf("removing finalizer %q: %w", fabricFinalizer, err)
 	}
 	return nil
+}
+
+// routeProbeJob builds the Job that counts the Southbound routes. It is a
+// central client Job like chassis-del, with the client Secret mounted, no node
+// pin and no host network, and it addresses the Southbound database rather
+// than the relay.
+func routeProbeJob(cr *ovnv1alpha1.OVNChassis, central resolvedCentral) *batchv1.Job {
+	return maintenanceJob(cr, cr.Name+"-route-probe", routeProbeScriptKey,
+		[]corev1.EnvVar{{Name: "SB_ADDR", Value: central.sbAddress}},
+		[]corev1.Volume{{Name: tlsVolumeName, VolumeSource: corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{SecretName: central.clientSecretName},
+		}}},
+		[]corev1.VolumeMount{{Name: tlsVolumeName, MountPath: ovnTLSDir, ReadOnly: true}},
+		"", false)
+}
+
+// routeProbeRerunKey is the rerun key of the route probe Job: the index of the
+// RequeueRouteProbe-long window now falls into. Every pass inside one window
+// reads the same Job, and the first pass of the next window runs a new one.
+func routeProbeRerunKey(now time.Time) string {
+	return strconv.FormatInt(now.Unix()/int64(RequeueRouteProbe/time.Second), 10)
+}
+
+// now is the reconciler's clock.
+func (r *OVNChassisReconciler) now() time.Time {
+	if r.Now != nil {
+		return r.Now()
+	}
+	return time.Now()
+}
+
+// probeRoutes runs the route probe Job of the current window and reports its
+// finding in RoutesAdvertised. No outcome of the probe is an error of the pass:
+// a failed Job is reported on the condition, and the next window runs a new
+// one. While a Job runs, the condition keeps its previous value.
+func (r *OVNChassisReconciler) probeRoutes(ctx context.Context, children client.Client,
+	cr *ovnv1alpha1.OVNChassis, central resolvedCentral,
+) {
+	set := func(status metav1.ConditionStatus, reason, message string) {
+		conditions.SetCondition(&cr.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeRoutesAdvertised,
+			Status:             status,
+			ObservedGeneration: cr.Generation,
+			Reason:             reason,
+			Message:            message,
+		})
+	}
+
+	if central.sbAddress == "" {
+		set(metav1.ConditionUnknown, conditionReasonRouteProbeDeferred,
+			fmt.Sprintf("Waiting for OVNCentral %s to publish its Southbound address", cr.Spec.CentralRef.Name))
+		return
+	}
+
+	done, observed, err := job.RunJobWithRerunKey(ctx, children, r.Scheme, cr, routeProbeJob(cr, central),
+		routeProbeRerunKey(r.now()))
+	switch {
+	case err != nil:
+		set(metav1.ConditionFalse, conditionReasonRouteProbeFailed,
+			fmt.Sprintf("The route probe Job failed: %v; inspect its pod logs", err))
+		return
+	case !done:
+		if meta.FindStatusCondition(cr.Status.Conditions, conditionTypeRoutesAdvertised) == nil {
+			set(metav1.ConditionUnknown, conditionReasonRouteProbePending, "No route probe Job has finished yet")
+		}
+		return
+	}
+
+	message, err := job.TerminationMessage(ctx, commonmulticluster.LiveReader(children), observed)
+	if err != nil {
+		set(metav1.ConditionFalse, conditionReasonRouteProbeFailed,
+			fmt.Sprintf("Reading the report of the route probe Job failed: %v", err))
+		return
+	}
+	match := routeProbeReport.FindStringSubmatch(message)
+	var advertised, learned int64
+	if match != nil {
+		advertised, err = strconv.ParseInt(match[1], 10, 64)
+		if err == nil {
+			learned, err = strconv.ParseInt(match[2], 10, 64)
+		}
+	}
+	if match == nil || err != nil {
+		set(metav1.ConditionUnknown, conditionReasonRouteProbeUnreadable,
+			fmt.Sprintf("The route probe Job reported %q, not \"advertised=<n> learned=<n>\"", message))
+		return
+	}
+
+	counts := fmt.Sprintf("The Southbound database of OVNCentral %s holds %d advertised and %d learned routes",
+		cr.Spec.CentralRef.Name, advertised, learned)
+	if advertised > 0 {
+		set(metav1.ConditionTrue, conditionReasonRoutesAdvertised, counts)
+		return
+	}
+	set(metav1.ConditionFalse, conditionReasonNoAdvertisedRoutes, counts)
 }

@@ -117,16 +117,18 @@ func maintenanceJobName(cr *ovnv1alpha1.OVNChassis, kind, node string) string {
 	return cr.Name + "-" + kind + "-" + hex.EncodeToString(sum[:])[:maintenanceNameHashLength]
 }
 
-// maintenanceJob builds one maintenance Job. The three kinds differ in the
-// script they run, the values they are handed and where they may land; the
-// hardening, the retry posture and the shared scripts mount are the same for
-// all of them and live here.
+// maintenanceJob builds one maintenance Job: apply, evacuate and chassis-del,
+// and on a fabric chassis the route probe. They differ in the script they run,
+// the values they are handed and where they may land; the retry posture, the
+// shared scripts mount and the Restricted posture of the container are the same
+// for all of them and live here. applyJob raises the container of a fabric
+// node's Job to fabricNodeSecurityContext.
 //
 // A pinned nodeName bypasses the scheduler, so the apply Job runs on the node
 // whose local database it writes rather than wherever there is room. The
 // tolerations come from the CR either way: a NoExecute taint evicts a pinned pod
-// that does not tolerate it, and the two unpinned Jobs need a node that admits
-// them at all on a cluster whose networking nodes are tainted. The resources
+// that does not tolerate it, and the unpinned Jobs need a node that admits them
+// at all on a cluster whose networking nodes are tainted. The resources
 // and the priority class come from spec.jobs; there is no node selector, which
 // a pinned pod on a node it does not match would fail kubelet admission with.
 func maintenanceJob(cr *ovnv1alpha1.OVNChassis, name, script string, env []corev1.EnvVar,
@@ -156,9 +158,10 @@ func maintenanceJob(cr *ovnv1alpha1.OVNChassis, name, script string, env []corev
 			Name:            componentMaintenance,
 			Image:           effectiveImage(cr.Spec.Image).Reference(),
 			ImagePullPolicy: effectiveImage(cr.Spec.Image).EffectivePullPolicy(),
-			// The unprivileged posture is enough for all three: the apply Job
+			// The unprivileged posture is enough for every script but
+			// fabric-node.sh, which applyJob runs privileged: the apply Job
 			// reaches the local database through /run/openvswitch/db.sock, which
-			// host-prepare.sh hands to uid 42424, and the other two speak to a
+			// host-prepare.sh hands to uid 42424, and the others speak to a
 			// central database over TLS.
 			SecurityContext: deployment.RestrictedSecurityContext(),
 			Command:         []string{"/bin/bash", path.Join(chassisScriptDir, script)},
@@ -273,8 +276,8 @@ func chassisDelJob(cr *ovnv1alpha1.OVNChassis, central resolvedCentral, node str
 		corev1.EnvVar{Name: "SB_ADDR", Value: central.sbAddress}, entry.systemID)
 }
 
-// centralClientJob is the shape the two Jobs that talk to a central database
-// share: no node pin and no host network, because neither touches the node, and
+// centralClientJob is the shape the two per-node Jobs that talk to a central
+// database share: no node pin and no host network, because neither touches the node, and
 // the client keypair the central publishes mounted read-only. The chassis is
 // named by its system-id, which is the only handle a database has on it once the
 // node itself is gone.

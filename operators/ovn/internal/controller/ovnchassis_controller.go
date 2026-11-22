@@ -7,6 +7,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -115,6 +116,10 @@ type OVNChassisReconciler struct {
 	// management cluster, which is what single-cluster tests and deployments
 	// want.
 	Resolver commonmulticluster.ClusterResolver
+
+	// Now returns the current time. The route probe's rerun key is derived
+	// from it, so a test pins the clock here; nil falls back to time.Now.
+	Now func() time.Time
 
 	// vpaAvailable is set during SetupWithManager from the management
 	// cluster's RESTMapper and reports whether it serves the
@@ -350,7 +355,7 @@ func (r *OVNChassisReconciler) pipelineSteps(children client.Client, cr *ovnv1al
 			return r.reconcileMaintenance(ctx, children, cr, statusBefore, central, nodes)
 		}},
 		{Name: "Fabric", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcileFabric(ctx, children, cr, nodes)
+			return r.reconcileFabric(ctx, children, cr, central, nodes)
 		}},
 	}
 }

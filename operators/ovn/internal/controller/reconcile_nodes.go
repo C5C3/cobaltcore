@@ -63,6 +63,7 @@ const (
 	evacuateScriptKey    = "evacuate.sh"
 	chassisDelScriptKey  = "chassis-del.sh"
 	fabricNodeScriptKey  = "fabric-node.sh"
+	routeProbeScriptKey  = "route-probe.sh"
 )
 
 // frrK8sNodeLabel is the per-node opt-in of the frr-k8s DaemonSet. A node that
@@ -440,6 +441,21 @@ for u in ${FABRIC_UPLINKS//,/ }; do
   mapping="${mapping:+${mapping},}${br}=${br}"
 done
 $V set open . external_ids:dynamic-routing-port-mapping="$mapping"
+`
+
+// routeProbeScript counts the rows of the Southbound Advertised_Route and
+// Learned_Route tables and reports both counts in the pod's termination
+// message, which the Fabric step reads into RoutesAdvertised. The counts are
+// those of the whole database: the two tables carry no chassis column.
+//
+// Both queries are captured into a variable first, so a query that fails fails
+// the script under set -e instead of counting as zero rows.
+const routeProbeScript = `#!/bin/bash
+set -eu
+T="--db=${SB_ADDR} -p ` + ovnTLSDir + `/tls.key -c ` + ovnTLSDir + `/tls.crt -C ` + ovnTLSDir + `/ca.crt --timeout=30"
+adv="$(ovn-sbctl $T --bare --columns=_uuid list Advertised_Route)"
+lrn="$(ovn-sbctl $T --bare --columns=_uuid list Learned_Route)"
+printf 'advertised=%s learned=%s\n' "$(grep -c . <<< "$adv" || true)" "$(grep -c . <<< "$lrn" || true)" > /dev/termination-log
 `
 
 // nodeEntry is everything one node needs to configure itself. The chassis pod
@@ -909,6 +925,7 @@ func chassisScriptsConfigMap(cr *ovnv1alpha1.OVNChassis) *corev1.ConfigMap {
 			evacuateScriptKey:    evacuateScript,
 			chassisDelScriptKey:  chassisDelScript,
 			fabricNodeScriptKey:  fabricNodeScript,
+			routeProbeScriptKey:  routeProbeScript,
 		},
 	}
 }

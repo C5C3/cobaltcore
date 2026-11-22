@@ -62,7 +62,7 @@ primary CR by hand in `parallelSteps`: `status.installedImage` from Northd, and
 
 ### OVNChassis
 
-![The pipeline of the OVNChassis controller. A pass runs its eight steps one after another and ends at the first that returns a requeue or an error: Central, ClientSecret, Nodes, OVS, Controller, ChassisVPA, Maintenance and Fabric. There is no parallel group. Each step sets one condition; ClientSecret reports through CentralReady. Central hands on the resolved central, ClientSecret the name of the client Secret, and Nodes the rendered nodes. Controller reads the central and sets status.installedImage, Maintenance reads the central and the nodes, and Fabric reads the nodes. The early exit and the full pass both end in updateStatus, which aggregates Ready from the sub-conditions and writes the status only when it changed.](../../diagrams/compute-ovnchassis-pipeline.svg)
+![The pipeline of the OVNChassis controller. A pass runs its eight steps one after another and ends at the first that returns a requeue or an error: Central, ClientSecret, Nodes, OVS, Controller, ChassisVPA, Maintenance and Fabric. There is no parallel group. Each step sets one condition; ClientSecret reports through CentralReady. Central hands on the resolved central, ClientSecret the name of the client Secret, and Nodes the rendered nodes. Controller reads the central and sets status.installedImage, Maintenance reads the central and the nodes, and Fabric reads both and sets RoutesAdvertised. The early exit and the full pass both end in updateStatus, which aggregates Ready from the sub-conditions and writes the status only when it changed.](../../diagrams/compute-ovnchassis-pipeline.svg)
 
 The figure draws the steps in call order. The table lists what each one does.
 
@@ -75,7 +75,7 @@ The figure draws the steps in call order. The table lists what each one does.
 | Controller | Projects the `{name}-ovn-controller` DaemonSet, mirrors its node counters into status, and stamps `status.installedImage` | `ControllerReady` |
 | ChassisVPA | [`reconcileVPA`](../keystone/keystone-reconciler.md#reconcilevpa) applies or removes the VerticalPodAutoscalers of the two DaemonSets through the shared VPA flow | `VPAReady` |
 | Maintenance | Runs the per-node `apply`, `evacuate` and `chassis-del` Jobs that are due | `MaintenanceReady` |
-| Fabric | Applies one `FRRConfiguration` per fabric node that runs frr-k8s into `frr-k8s-system` and deletes the ones no node wants; see [`reconcileFabric`](#reconcilefabric) | `FabricReady` |
+| Fabric | Applies one `FRRConfiguration` per fabric node that runs frr-k8s into `frr-k8s-system` and deletes the ones no node wants, then runs the route probe Job; see [`reconcileFabric`](#reconcilefabric) | `FabricReady`, `RoutesAdvertised` |
 
 The `OVNCentral` is the first gate: its Southbound address and its client Secret
 parameterise every later step, so a chassis whose central has published neither
@@ -646,7 +646,8 @@ the `chassis-del` Jobs run before deleting the CR.
 
 **File:** `operators/ovn/internal/controller/reconcile_fabric.go`
 
-**Purpose:** Generate the frr-k8s side of `spec.fabric`. The desired set is one
+**Purpose:** Generate the frr-k8s side of `spec.fabric` and report whether the
+Southbound database holds advertised routes. The desired set is one
 `FRRConfiguration` per node whose entry is not leaving, carries a fabric
 assignment and belongs to a Node labelled `openstack.c5c3.io/frr-k8s=true`. Each
 object is named `{name}-fabric-<8 hex>` after the SHA-256 of the node name and
@@ -668,13 +669,16 @@ unstructured and takes no Go dependency on frr-k8s. See
    every pass through the manager's RESTMapper, because frr-k8s can be installed
    after the operator started; a target cluster is asked through its own mapper.
    A cluster that does not serve the kind gets no write.
-3. It adds the finalizer and ends the pass with `RequeueNextPass` when it was
-   added. The write goes through a copy of the CR, so the status the pass has set
-   so far survives it.
-4. It lists the `FRRConfiguration` objects of `frr-k8s-system` once, through the
+3. It lists the `FRRConfiguration` objects of `frr-k8s-system` once, through the
    live reader of the children's cluster. No manager of this repository caches
    unstructured objects, so this is a live read on the local cluster too. A
-   cluster that does not serve the kind has none.
+   cluster that does not serve the kind has none. The list goes first, so a
+   cluster that refuses it, such as a target whose access chart leaves
+   `frrConfigurations` off, gets no finalizer that would hold the CR's deletion
+   on the same refusal.
+4. With a non-empty desired set, it adds the finalizer and ends the pass with
+   `RequeueNextPass` when it was added. The write goes through a copy of the CR,
+   so the status the pass has set so far survives it.
 5. For each desired object, a live object of the same name that the CR does not
    control is left untouched and reported. Otherwise the object is applied under
    the operator's field manager, and only when the live object does not already
@@ -699,6 +703,31 @@ unstructured and takes no Go dependency on frr-k8s. See
 The first matching row wins. `FabricReady` is a sub-condition of `Ready`, so a
 fabric chassis with an unattached node or without frr-k8s is not ready.
 
+**Route probe:** While `spec.fabric` is set, a pass that got through the steps
+above runs the Job `{name}-route-probe` and ends with `RequeueRouteProbe`. The
+Job is a central client Job like `chassis-del`: `route-probe.sh` with
+`SB_ADDR` from the resolved central and the client Secret mounted, no node pin
+and no host network. It counts the rows of the Southbound `Advertised_Route` and
+`Learned_Route` tables and writes `advertised=<a> learned=<l>` to its pod's
+termination message. Its rerun key is the index of the current 5-minute window,
+`now.Unix()/300`, so every pass inside one window reads the same Job and the
+first pass of the next window runs a new one. The counts are those of the whole
+database: the tables carry no chassis column. With `spec.fabric` unset the step
+removes `RoutesAdvertised` and creates no Job; a leftover Job goes with its TTL.
+
+| Status | Reason | When |
+| --- | --- | --- |
+| `True` | `RoutesAdvertised` | The Job is done and reports `advertised` above 0. Message: "The Southbound database of OVNCentral \<name\> holds \<a\> advertised and \<l\> learned routes" |
+| `False` | `NoAdvertisedRoutes` | The Job is done and reports `advertised=0`; same message |
+| `False` | `RouteProbeFailed` | The Job failed, or running it or reading its message failed; the message carries the error. The step returns no error for it |
+| `Unknown` | `RouteProbeUnreadable` | The Job is done and its message is not `advertised=<n> learned=<n>`, an empty message included |
+| `Unknown` | `RouteProbeDeferred` | The `OVNCentral` has not published its Southbound address; no Job is created |
+| `Unknown` | `RouteProbePending` | No Job has finished yet and the CR carries no earlier `RoutesAdvertised` |
+
+While a Job runs, the condition keeps its previous value. `RoutesAdvertised` is
+no sub-condition of `Ready`: a fabric without a floating IP advertises nothing
+and is still ready.
+
 **Deletion:** `reconcileDeleteFabric` runs before the remote-children sweep,
 which does not reach `frr-k8s-system`. Without the finalizer it does nothing.
 With a nil children client, a target cluster the CR was given up on, it removes
@@ -714,6 +743,7 @@ finalizer. A failed list or delete keeps the finalizer and is returned.
 | `RequeueRaftWait` (`requeue_intervals.go`) | 15s | Every OVN wait state: a Raft cluster that has not elected a leader, a member endpoint without an address, a central that has not published one, and a maintenance Job that is still running |
 | `RequeueSecretPolling` (`internal/common/reconcile/intervals.go`) | 15s | cert-manager polling in the TLS step, the missing-`OVNCentral` poll, the client-Secret waits of the chassis, the rejected snapshot claim, and the target-cluster hold on both controllers |
 | `RequeueDeploymentPolling` (`internal/common/reconcile/intervals.go`) | 10s | Deployment and DaemonSet readiness polling: northd, the relay, and the two chassis DaemonSets |
+| `RequeueRouteProbe` (`requeue_intervals.go`) | 5m | Every pass of a fabric chassis that reaches the end of the Fabric step: the route probe window, which also bounds how long a drifted `FRRConfiguration` stays drifted |
 | `RequeueNextPass` (`internal/common/reconcile/intervals.go`) | 1s | The single pass after the remote-children finalizer or the fabric finalizer was added, so the next reconcile observes the persisted finalizer and not the in-memory copy |
 
 None of the wait states reaches the workqueue as an error, so these intervals are
@@ -783,4 +813,4 @@ Neither controller watches `FRRConfiguration`. The kind is optional on every
 cluster, so an unconditional watch would fail the controller's start where
 frr-k8s is not installed, and the objects live in `frr-k8s-system`, which no
 other leg covers. A drifted object is written back on the next pass of its
-chassis.
+chassis, at the latest after `RequeueRouteProbe`.
