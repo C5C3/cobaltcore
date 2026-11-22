@@ -201,8 +201,21 @@ func maintenanceJob(cr *ovnv1alpha1.OVNChassis, name, script string, env []corev
 // same script the ovn-controller pod's init container runs, in the same posture:
 // pinned to the node and in the node's own network namespace, so what it writes
 // describes the machine it writes on.
-func applyJob(cr *ovnv1alpha1.OVNChassis, central resolvedCentral, node string) *batchv1.Job {
-	return maintenanceJob(cr, maintenanceJobName(cr, maintenanceKindApply, node), applyNodeScriptKey,
+//
+// With fabric set, the Job runs fabricNodeScript too, which is what the
+// fabric-node init container of the DaemonSet runs. apply-node.sh moves into an
+// init container of the same name and keeps the Restricted posture, and the
+// maintenance container runs fabric-node.sh in the privileged uid-0 posture.
+// The caller sets fabric for a node whose entry carries a fabric assignment and
+// for one whose last applied entry did, so the Job that follows a removed row or
+// block still runs the script that tears the devices down. Without fabric the
+// Job is the one maintenanceJob builds for apply-node.sh alone.
+func applyJob(cr *ovnv1alpha1.OVNChassis, central resolvedCentral, node string, fabric bool) *batchv1.Job {
+	script := applyNodeScriptKey
+	if fabric {
+		script = fabricNodeScriptKey
+	}
+	j := maintenanceJob(cr, maintenanceJobName(cr, maintenanceKindApply, node), script,
 		// The downward-API fieldRefs resolve on the pinned node, so the Job is
 		// handed the same environment the DaemonSet pod on that node has.
 		chassisEnv(cr, central),
@@ -224,6 +237,21 @@ func applyJob(cr *ovnv1alpha1.OVNChassis, central resolvedCentral, node string) 
 			{Name: nodesVolumeName, MountPath: chassisNodesDir},
 		},
 		node, true)
+	if !fabric {
+		return j
+	}
+
+	// The init container is a copy of the container maintenanceJob built, so it
+	// carries the environment, the mounts and the spec.jobs resources that
+	// container got. Only the script differs, and the posture of the copy that
+	// runs fabric-node.sh.
+	podSpec := &j.Spec.Template.Spec
+	applyNode := podSpec.Containers[0].DeepCopy()
+	applyNode.Name = "apply-node"
+	applyNode.Command = []string{"/bin/bash", path.Join(chassisScriptDir, applyNodeScriptKey)}
+	podSpec.InitContainers = []corev1.Container{*applyNode}
+	podSpec.Containers[0].SecurityContext = fabricNodeSecurityContext()
+	return j
 }
 
 // evacuateJob builds the Job that moves the gateway duties off a node. It edits
@@ -334,12 +362,26 @@ func (r *OVNChassisReconciler) reconcileMaintenance(ctx context.Context, childre
 
 		hash := entry.hash()
 		applyPending := false
+		// A node that may carry fabric devices and whose entry no longer names
+		// them is due the teardown even when the entry hashes as the recorded one
+		// again: a fabric Job that failed or was superseded, or the fabric-node
+		// init container, may have created the devices while the recorded hash
+		// never moved. Its own rerun key tells that run from the apply of the
+		// same hash.
+		teardownDue := prev.Fabric && entry.fabric == nil
 		// An empty recorded hash is a node seen for the first time. Its values are
 		// applied by the init container of its own ovn-controller pod, so there is
 		// nothing for a Job to do.
-		if prev.ConfigHash != "" && prev.ConfigHash != hash {
+		if prev.ConfigHash != "" && (prev.ConfigHash != hash || teardownDue) {
+			rerunKey := hash
+			if prev.ConfigHash == hash {
+				rerunKey = hash + ":fabric-teardown"
+			}
+			// prev.Fabric keeps the teardown in the Job that follows a removed
+			// fabric row or block: the entry no longer carries the assignment,
+			// but the devices may still be there.
 			outcome, err := r.runMaintenanceJob(ctx, children, cr, maintenanceKindApply, name,
-				applyJob(cr, central, name), hash)
+				applyJob(cr, central, name, entry.fabric != nil || prev.Fabric), rerunKey)
 			switch {
 			case err != nil, outcome == maintenanceJobFailed:
 				return ctrl.Result{}, err
@@ -350,6 +392,7 @@ func (r *OVNChassisReconciler) reconcileMaintenance(ctx context.Context, childre
 				pending = append(pending, name)
 			default:
 				status.ConfigHash = hash
+				status.Fabric = entry.fabric != nil
 			}
 		}
 

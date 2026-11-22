@@ -74,9 +74,11 @@ func CapabilitySecurityContext(caps ...corev1.Capability) *corev1.SecurityContex
 }
 
 // PrivilegedSecurityContext returns a container-level SecurityContext for a
-// container that cannot run any other way. Its one caller in this tree is the
-// host-prepare init container of the OVN chassis, which loads kernel modules
-// from the host's module tree before ovs-vswitchd starts. A container that only
+// container that cannot run any other way. Its callers in this tree are the
+// containers of the OVN chassis that change the host: the host-prepare init
+// container, which loads kernel modules from the host's module tree before
+// ovs-vswitchd starts, and the container that runs the fabric node script,
+// which creates network devices and writes /proc/sys. A container that only
 // needs a named capability takes CapabilitySecurityContext.
 //
 // Capabilities, SeccompProfile and RunAsNonRoot stay nil. A privileged

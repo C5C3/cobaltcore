@@ -173,7 +173,7 @@ func TestOVNChassisWorkloads_ImagePullPolicy(t *testing.T) {
 			expectPullPolicy(g, map[string]corev1.PodSpec{
 				"ovs":            buildOVSDaemonSet(cr).Spec.Template.Spec,
 				"ovn-controller": buildControllerDaemonSet(cr, central).Spec.Template.Spec,
-				"apply":          applyJob(cr, central, "node-a").Spec.Template.Spec,
+				"apply":          applyJob(cr, central, "node-a", false).Spec.Template.Spec,
 				"chassis-del":    chassisDelJob(cr, central, "node-a", nodeEntry{systemID: "system-id"}).Spec.Template.Spec,
 			}, tc.want)
 		})
