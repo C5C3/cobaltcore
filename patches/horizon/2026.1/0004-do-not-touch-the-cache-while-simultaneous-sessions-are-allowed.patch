@@ -1,0 +1,128 @@
+SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+SPDX-License-Identifier: Apache-2.0
+
+Do not touch the cache while simultaneous sessions are allowed
+
+SimultaneousSessionsMiddleware._process_request in
+horizon/middleware/simultaneous_sessions.py runs on every request,
+because openstack_dashboard/settings.py lists the middleware for all of
+them, and it runs whatever SIMULTANEOUS_SESSIONS says. It reads
+user_pk_<pk>_restrict from caches['default'] and, in every case but a
+disconnect mismatch, writes the session key of the request to the same
+key with SESSION_TIMEOUT as expiry. Only the disconnect branch reads
+the entry; with the default allow the two calls serve nothing.
+
+The calls cost twice. They are two Memcached round trips per request:
+with Memcached delayed by 100 ms, the p50 of GET /auth/login/ went from
+23 ms to 921 ms and that of POST /auth/logout/, which renders no
+template, from 4 ms to 304 ms (C5C3/playground#165). And with Django's
+signed-cookie session store the session key is the value of the
+session cookie the request sent. The cookie is signed, not encrypted,
+and decodes without SECRET_KEY, so the session cookie of every
+logged-in user, Keystone token included, sits in the shared Memcached
+for SESSION_TIMEOUT, readable by any client of that Memcached (#1847).
+
+The patch returns at the top of _process_request unless
+SIMULTANEOUS_SESSIONS is disconnect. The guard is != 'disconnect', not
+== 'allow': upstream documents the two values allow and disconnect,
+and only the disconnect branch uses the entry, so no other value needs
+it. disconnect behaves as before, both calls and the stored session key
+included. With the template_fragments cache alias the horizon-operator
+renders, the login page then makes no Memcached call. The patch adds no
+setting and needs no operator configuration.
+
+Tests: test_simultaneous_sessions and
+test_disconnect_simultaneous_sessions in
+horizon/test/unit/middleware/test_simultaneous_sessions.py call
+_process_request directly and stay unchanged and green. The patch adds
+four tests there: test_allow_leaves_the_cache_alone and
+test_unknown_value_leaves_the_cache_alone assert that allow and an
+undocumented value leave a mocked caches untouched,
+test_disconnect_records_the_session_key asserts that disconnect still
+writes the session key to user_pk_<pk>_restrict, and
+test_allow_passes_the_request_on asserts that the middleware hands the
+request on and returns the inner response.
+
+Proof: test_login_page_makes_no_memcached_call in
+tests/container-images/verify_horizon.sh requests the login page of the
+built image with the CACHES the operator renders, against a listener
+that records every Memcached command, and asserts no command; under
+SIMULTANEOUS_SESSIONS = "disconnect" it asserts the get and the set of
+user_pk_None_restrict.
+
+The 2026.2 twin carries the same hunks: both files are identical in
+25.7.0 and 27.0.0.
+
+Applies to horizon 25.7.0 (2026.1).
+
+Upstream status: not yet proposed.
+
+diff --git a/horizon/middleware/simultaneous_sessions.py b/horizon/middleware/simultaneous_sessions.py
+index 5ee217a..f2765d5 100644
+--- a/horizon/middleware/simultaneous_sessions.py
++++ b/horizon/middleware/simultaneous_sessions.py
+@@ -32,6 +32,8 @@ class SimultaneousSessionsMiddleware(object):
+         return response
+ 
+     def _process_request(self, request):
++        if self.simultaneous_sessions != 'disconnect':
++            return
+         cache = caches['default']
+         cache_key = ('user_pk_{}_restrict').format(request.user.pk)
+         cache_value = cache.get(cache_key)
+diff --git a/horizon/test/unit/middleware/test_simultaneous_sessions.py b/horizon/test/unit/middleware/test_simultaneous_sessions.py
+index 371f54f..025ac5e 100644
+--- a/horizon/test/unit/middleware/test_simultaneous_sessions.py
++++ b/horizon/test/unit/middleware/test_simultaneous_sessions.py
+@@ -16,6 +16,7 @@ from unittest import mock
+ 
+ from django.conf import settings
+ from django.contrib.sessions.backends import signed_cookies
++from django.core.cache import caches
+ from django import test as django_test
+ from django.test.utils import override_settings
+ 
+@@ -59,3 +60,43 @@ class SimultaneousSessionsMiddlewareTest(django_test.TestCase):
+         self.request.session._set_session_key('987654321')
+         mw._process_request(self.request)
+         mock_delete.assert_called_once_with()
++
++    @override_settings(SIMULTANEOUS_SESSIONS='allow')
++    @mock.patch('horizon.middleware.simultaneous_sessions.caches')
++    def test_allow_leaves_the_cache_alone(self, mock_caches):
++        mw = middleware.SimultaneousSessionsMiddleware(
++            self.get_response)
++
++        self.request.session._set_session_key('123456789')
++        mw._process_request(self.request)
++        mock_caches.__getitem__.assert_not_called()
++
++    @override_settings(SIMULTANEOUS_SESSIONS='deny')
++    @mock.patch('horizon.middleware.simultaneous_sessions.caches')
++    def test_unknown_value_leaves_the_cache_alone(self, mock_caches):
++        mw = middleware.SimultaneousSessionsMiddleware(
++            self.get_response)
++
++        self.request.session._set_session_key('123456789')
++        mw._process_request(self.request)
++        mock_caches.__getitem__.assert_not_called()
++
++    @override_settings(SIMULTANEOUS_SESSIONS='disconnect')
++    def test_disconnect_records_the_session_key(self):
++        mw = middleware.SimultaneousSessionsMiddleware(
++            self.get_response)
++
++        self.request.user.pk = '456'
++        self.request.session._set_session_key('123456789')
++        mw._process_request(self.request)
++        self.assertEqual('123456789',
++                         caches['default'].get('user_pk_456_restrict'))
++
++    @override_settings(SIMULTANEOUS_SESSIONS='allow')
++    def test_allow_passes_the_request_on(self):
++        mw = middleware.SimultaneousSessionsMiddleware(
++            self.get_response)
++
++        response = mw(self.request)
++        self.assertIs(self.get_response.return_value, response)
++        self.get_response.assert_called_once_with(self.request)
