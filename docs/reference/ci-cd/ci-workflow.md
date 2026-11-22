@@ -469,7 +469,7 @@ The shellcheck binary is pre-installed on `ubuntu-latest` runners.
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
-| 2 | `make shellcheck` | Runs `shellcheck --severity=warning` over `hack/*.sh`, the operator rotation scripts (`operators/*/internal/controller/scripts/*.sh`), the BGP fabric lab (`tests/lab/bgp-fabric/`) and the fixture scripts of the BGP fabric suite (`tests/e2e-bgp-fabric/*/*.sh`) |
+| 2 | `make shellcheck` | Runs `shellcheck --severity=warning` over `hack/*.sh`, the operator rotation scripts (`operators/*/internal/controller/scripts/*.sh`), the BGP fabric lab (`tests/lab/bgp-fabric/`), the fixture scripts of the BGP fabric suite (`tests/e2e-bgp-fabric/*/*.sh`) and those of the OVN overlay suites (`tests/e2e-ovn-overlay/*/*.sh`) |
 
 Timeout: 8 minutes.
 
@@ -1533,6 +1533,15 @@ device, and on a kernel without it the Pod prints
 suite fails in its second step. The job takes the non-blocking entry described
 above.
 
+**The OVN fabric suite.** `fabric-advertised-route` in `e2e-ovn-overlay` needs
+the `vrf` module beside `openvswitch` and `geneve`. Its `OVNChassis` creates the
+VRF `fabric` through the `fabric-node` container, and `ovn-controller` creates
+`ovnvrf42` and `ovnvrf10`. No `setup-e2e-infra` flag loads the module either: the
+kernel loads it at the first `ip link add ... type vrf`, and on a kernel without
+it `fabric-node` exits with
+`ERROR: cannot create the VRF device fabric on <node>; the node kernel has no vrf module`
+and the chassis never turns Ready. The job is non-blocking already.
+
 ### e2e-chaos-random
 
 The random chaos run of #1395: faults drawn from
@@ -1629,9 +1638,10 @@ the `multinode` entry, `e2e-chaos (multinode, ...`, and its artifact
 
 ### e2e-ovn-overlay
 
-Runs the two Chainsaw suites under `tests/e2e-ovn-overlay/` on a two-worker
-kind cluster, `default-spread` first. A single node answers none of their
-questions, so they live outside `tests/e2e/` and get a job of their own.
+Runs the three Chainsaw suites under `tests/e2e-ovn-overlay/` on a two-worker
+kind cluster with the frr-k8s overlay, in directory order. A single node answers
+the questions of the first and the last, and `make e2e` deploys no frr-k8s for
+the second, so they live outside `tests/e2e/` and get a job of their own.
 
 - `default-spread` checks the nodes the pods run on. Its first step fails
   unless the cluster has two schedulable workers and neither carries a
@@ -1645,6 +1655,14 @@ questions, so they live outside `tests/e2e/` and get a job of their own.
   spread the replicas. With it, the resource scorers put all four northd
   replicas on the second worker, so the suite passes only with a node spread
   the scheduler scores on nodes without a zone label.
+- `fabric-advertised-route` labels the first worker for frr-k8s, starts two FRR
+  Pods as its leaf pair and applies an `OVNChassis` whose `spec.fabric`
+  attaches the worker. It asserts the VRF, the peer bridges and the port mapping
+  on the node, both sessions with BFD, a static route of a test logical router
+  in `ovnvrf42` and at both peers while two baits reach neither, both leaf
+  defaults once per uplink in `Learned_Route`, the untouched main table,
+  `RoutesAdvertised`, and the teardown once the block is removed (see
+  [OVN Dynamic Routing](../networking/ovn-dynamic-routing.md)).
 - `geneve-datapath` brings up an `OVNCentral`, an `OVNChassis` selecting both
   workers, one logical switch port per worker, and a ping between two network
   namespaces that can only reach each other across the Geneve tunnel. The
@@ -1661,21 +1679,23 @@ kernel-module rule above, and creates its cluster from
 `config: hack/kind-config-multinode.yaml`. `default-spread` needs no kernel
 module, but it needs the two workers, so it runs in this job and is
 non-blocking with it. `setup-e2e-infra` receives
-`WITH_OVN_KERNEL_MODULES: "true"`, `hack/ci-deploy-operator.sh` installs the
+`WITH_OVN_KERNEL_MODULES: "true"` and `WITH_FRR_K8S: "true"`, the second for
+the frr-k8s overlay the fabric suite peers through, `hack/ci-deploy-operator.sh` installs the
 ovn-operator into `ovn-system`, and the suite runs through
 `make e2e-ovn-overlay`, the same target a developer calls locally. The OVN
 daemon image is loaded at the tag `hack/ci-resolve-ovn-version.sh` reads from
 `images/ovn/source.json`, so the workflow spells no version of its own.
 Diagnostics run with `OPERATOR: ovn`, and `_output/reports/` is uploaded as the
 `e2e-ovn-overlay-junit-report` artifact (14-day retention), which carries the
-result of both suites. The job is non-blocking, so its result is in that
-report. The config sets `failFast: true`: a failed
-`default-spread` skips `geneve-datapath` in the same run. `cleanup-e2e-tags`
+result of all three suites. The job is non-blocking, so its result is in that
+report. The config sets `failFast: true`: a failed suite skips the ones after
+it in the same run, so a red `fabric-advertised-route`, on a runner without the
+`vrf` module for example, leaves `geneve-datapath` unrun. `cleanup-e2e-tags`
 lists the job in its `needs`, so the run-scoped image tags survive until it
 finishes.
 
-**Path filter:** `tests/e2e-ovn-overlay/**` (the `tests_ovn_overlay` class),
-`operators/ovn/**` (`ovn`), and `images/ovn/**` and `images/backup-shifter/**`
+**Path filter:** `tests/e2e-ovn-overlay/**` and `deploy/overlays/kind/frr-k8s/**`
+(the `tests_ovn_overlay` class), `operators/ovn/**` (`ovn`), and `images/ovn/**` and `images/backup-shifter/**`
 (`image_ovn`). A shared Go change does not schedule the job, and `ci:full` forces it on.
 That includes `internal/common/deployment`, which renders the default spread
 `default-spread` checks: the byte-identity pin goldens of every operator fail
@@ -3480,6 +3500,7 @@ The CI workflow depends on the following artifacts:
 | `hack/*.sh` | `shellcheck` job | Shell scripts validated by shellcheck |
 | `tests/lab/bgp-fabric/*.sh`, `tests/lab/bgp-fabric/*/setup.sh` | `shellcheck` job | The BGP fabric lab's runner and box entrypoints, validated by shellcheck |
 | `tests/e2e-bgp-fabric/*/*.sh` | `shellcheck` job | The node and peer scripts of the BGP fabric suite, validated by shellcheck |
+| `tests/e2e-ovn-overlay/*/*.sh` | `shellcheck` job | The peer and router scripts of the OVN overlay suites, validated by shellcheck |
 | `.codecov.yml` | Codecov integration | Component-level coverage thresholds |
 | `hack/ci-dump-diagnostics.sh` | every `e2e-*` job and the `tempest` job | Shared diagnostic dump |
 | `hack/ci-nix-build-e2e-images.sh` | `build-e2e-images` job, in the `nixos/nix` container | Builds the Nix-built operator, service, nova-compute, Tempest, ovn, libvirt and federation proxy images and writes their streams to `.nix-e2e/` |
