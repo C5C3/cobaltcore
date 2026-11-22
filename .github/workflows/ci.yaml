@@ -428,6 +428,8 @@ jobs:
               - 'deploy/bases/target-cluster-access/**'
             tests_ovn_overlay:
               - 'tests/e2e-ovn-overlay/**'
+              # The fabric suite peers through the frr-k8s overlay.
+              - 'deploy/overlays/kind/frr-k8s/**'
             # The libvirt suite and the compute-node-pool fixtures it applies by
             # path. The operator and the images reach the job through the nova,
             # image_nova and image_libvirt filters.
@@ -4845,16 +4847,20 @@ jobs:
         run: hack/ci-delete-kind-cluster.sh
 
   # Multi-node OVN overlay E2E on kind. Brings up the one-control-plane,
-  # two-worker cluster of hack/kind-config-multinode.yaml, deploys the
-  # ovn-operator, and runs the two suites of tests/e2e-ovn-overlay/ across both
-  # workers. default-spread checks where the replicas of an OVNCentral that
-  # names no spread land on workers without a zone label: northd two on each,
-  # the Northbound members on both. geneve-datapath puts one logical switch port
-  # on each node, pings across the Geneve tunnel between them, and reads the
-  # Southbound rows that say which chassis carried it.
+  # two-worker cluster of hack/kind-config-multinode.yaml with the frr-k8s
+  # overlay (WITH_FRR_K8S=true), deploys the ovn-operator, and runs the three
+  # suites of tests/e2e-ovn-overlay/. default-spread checks where the replicas
+  # of an OVNCentral that names no spread land on workers without a zone label:
+  # northd two on each, the Northbound members on both. fabric-advertised-route
+  # attaches one worker to two FRR Pods through an OVNChassis spec.fabric and
+  # follows a route of a test logical router to both peers. geneve-datapath
+  # puts one logical switch port on each node, pings across the Geneve tunnel
+  # between them, and reads the Southbound rows that say which chassis carried
+  # it.
   #
   # continue-on-error: true because geneve-datapath needs the openvswitch and
-  # geneve kernel modules on the runner host, which puts the job under the
+  # geneve kernel modules on the runner host, and fabric-advertised-route the
+  # vrf module as well, which puts the job under the
   # non-blocking entry rule of `### Kernel-module-dependent suites` in
   # docs/reference/ci-cd/ci-workflow.md. default-spread needs no kernel module,
   # but it needs the two workers, so it runs in this job and is non-blocking
@@ -4920,6 +4926,7 @@ jobs:
         uses: ./.github/actions/setup-e2e-infra
         env:
           WITH_OVN_KERNEL_MODULES: "true"
+          WITH_FRR_K8S: "true"
       - name: Deploy ovn-operator
         run: hack/ci-deploy-operator.sh
         env:
