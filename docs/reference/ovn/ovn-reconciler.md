@@ -622,7 +622,7 @@ needs the other CR to move; both poll at the same interval.
 
 | Trigger | Job | What it does |
 | --- | --- | --- |
-| The rendered entry hashes differently than `status.nodes[].configHash`, and that hash is not empty | `apply` | Reruns `apply-node.sh` on the node, pinned to it and in its network namespace. A node seen for the first time runs no Job: its own init container applies the values |
+| The rendered entry hashes differently than `status.nodes[].configHash`, and that hash is not empty; or `status.nodes[].fabric` is set and the entry carries no fabric assignment | `apply` | Reruns `apply-node.sh` on the node, pinned to it and in its network namespace. A node seen for the first time runs no Job: its own init container applies the values. When the entry carries a fabric assignment, or `status.nodes[].fabric` says the node may carry fabric devices, `apply-node.sh` runs in an init container and `fabric-node.sh` in the privileged main container, so the Job after a removed fabric row or block tears the devices down. A teardown of an entry that hashes as the recorded one takes the rerun key `<hash>:fabric-teardown`. Its success sets `status.nodes[].fabric` from the entry |
 | The node lost the gateway role (`prev.gateway` and not `entry.gateway`) and `gatewayEvacuated` is not set | `evacuate` | Collects the `Gateway_Chassis` and `HA_Chassis` rows naming this chassis and removes them from the `Logical_Router_Port` and `HA_Chassis_Group` rows holding them, against the Northbound database. Each half joins its owning rows from one listing and submits every removal as one `ovn-nbctl` call, so a rerun after a partial pass finds nothing left to collect. The run closes by asking the Northbound what still names the chassis and fails when a row survives, so `gatewayEvacuated` records a confirmed drain |
 | The entry is marked `leaving` | `chassis-del` | Runs `chassis-del` against the Southbound database, then the step drops the node's ConfigMap key and its `status.nodes` entry together |
 
@@ -640,7 +640,9 @@ configuration of a node, not the node itself: the DaemonSet pods go, and
 with them `ovn-controller`, while the Southbound `Chassis` rows they registered
 stay behind, the same way deleting a Deployment leaves the rows its pods wrote
 (`ovnchassis_controller.go`). Drop the nodes out of `spec.nodeSelector` and let
-the `chassis-del` Jobs run before deleting the CR.
+the `chassis-del` Jobs run before deleting the CR. The fabric devices of a node
+stay behind the same way, and so do those of a node that leaves the selector;
+remove `spec.fabric` first and let the `apply` Jobs tear them down.
 
 ### reconcileFabric
 

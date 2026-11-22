@@ -43,6 +43,7 @@ its registration in the old Southbound database.
 | `jobs` | [`*commonv1.JobBaseSpec`](../keystone/keystone-crd.md#jobspec) | no | `nil` | Sizes and prioritizes the maintenance Jobs: `apply`, `evacuate` and `chassis-del`, and on a chassis with `fabric` the route probe. It carries `resources` and `priorityClassName` only. Unset resources default to a `70m` CPU request and `368Mi` memory as request and limit, and an unset priority class renders none; there is no fallback Deployment. The Jobs take `spec.tolerations`. The block has no placement fields: the apply Job is pinned to its node, and a node selector that node does not match fails the pinned pod's kubelet admission |
 | `gateway` | [`*OVNGatewaySpec`](#ovngatewayspec) | no | `nil` | Marks the subset of the selected nodes that announce `enable-chassis-as-gw`, the flag that makes a chassis eligible to host a distributed router's gateway port. When nil no node in this CR is a gateway |
 | `bridgeMappings` | [`[]OVNBridgeMapping`](#ovnbridgemapping) | no | none | Maps each OpenStack physical network onto the local OVS bridge that reaches it. List-map keyed by `physicalNetwork`. Every node this CR selects gets the same mapping |
+| `fabric` | [`*OVNFabricSpec`](#ovnfabricspec) | no | `nil` | Attaches the selected nodes to the BGP fabric of the [BGP Fabric Contract](../networking/bgp-fabric-contract.md). Every node with a row in `fabric.nodes` gets the fabric VRF, the fabric loopbacks, one OVS peer bridge per uplink and the port mapping `ovn-controller` reads; every such node labelled `openstack.c5c3.io/frr-k8s=true` also gets an `FRRConfiguration`. The router and port options that make OVN advertise or learn routes are the CMS's to write (see [OVN Dynamic Routing](../networking/ovn-dynamic-routing.md)). When nil no node is attached |
 | `encapType` | `string` (Enum `geneve`, `vxlan`) | no | `geneve` | The tunnel protocol between chassis. Geneve carries the variable-length option header OVN uses for its logical metadata; VXLAN has no room for it and so caps the logical topology. VXLAN exists for hardware that cannot terminate Geneve |
 | `updateStrategy` | [`OVNChassisUpdateStrategy`](#ovnchassisupdatestrategy) | no | `{}` | Paces the DaemonSet rollout. Restarting `ovn-controller` interrupts the dataplane programming on that node, so the pace is a per-deployment tradeoff |
 | `remoteProbeIntervalMs` | `int32` (Minimum=0) | no | `60000` | How long `ovn-controller` lets its Southbound connection sit idle before probing it. Zero disables the probe, which is what a chassis behind a connection-tracking middlebox needs when the probe is what tears the connection down |
@@ -71,6 +72,60 @@ Ties one OpenStack physical network to one local OVS bridge.
 | --- | --- | --- | --- | --- |
 | `physicalNetwork` | `string` (Pattern `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`, MaxLength=63) | yes | none | The provider-network name Neutron knows the segment by. The grammar is the DNS-1123 label the Neutron network name is bounded to |
 | `bridge` | `string` (Pattern `^[a-zA-Z0-9_.-]{1,15}$`) | yes | none | The local OVS bridge name, bounded to 15 characters: the bridge appears as a Linux interface and the kernel's `IFNAMSIZ` leaves 15 usable bytes |
+
+### OVNFabricSpec
+
+Attaches a class of chassis nodes to the BGP fabric. The node network stays
+untouched: BGP runs unnumbered over dedicated uplinks inside a VRF of its own,
+and the uplinks belong to OVS peer bridges. The clause numbers refer to the
+[BGP Fabric Contract](../networking/bgp-fabric-contract.md).
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `vrf` | [`OVNFabricVRFSpec`](#ovnfabricvrfspec) | no | `{}` | The Linux VRF that holds the uplinks, the loopbacks and the BGP sessions (C10), which keeps them out of the main table |
+| `uplinks` | [`[]OVNFabricUplink`](#ovnfabricuplink) (MinItems=1, MaxItems=4) | yes | none | The dedicated uplinks, the same on every selected node. List-map keyed by `interface` |
+| `mtu` | `int32` (Minimum=1280, Maximum=9216) | no | `9000` | The MTU of every uplink and peer bridge (C6). The leaves set the same MTU on their node ports |
+| `nodes` | [`[]OVNFabricNode`](#ovnfabricnode) (MaxItems=1000) | no | none | The per-node table the network team owns: the ASN and the loopbacks of each node. List-map keyed by `name`. A selected node without a row stays unattached, and `FabricReady` names it |
+| `announceableRanges` | `[]string` (MaxItems=64, items Format `cidr`) | no | none | The ranges a node may announce host routes from, besides its loopbacks (C4, C8). A route OVN installs outside them never leaves the node, because the node's outbound prefix lists permit nothing else. List-set |
+| `advertiseVRFIDs` | `[]int64` (MaxItems=8, items 1 to 4294967295) | no | none | The `dynamic-routing-vrf-id` of every router whose routes the node announces. The fabric router imports each `ovnvrf<id>`. List-set |
+| `learnVRFIDs` | `[]int64` (MaxItems=8, items 1 to 4294967295) | no | none | The `dynamic-routing-vrf-id` of every router that learns the leaf defaults. Each `ovnvrf<id>` imports the fabric VRF. List-set |
+| `bfd` | [`OVNFabricBFDSpec`](#ovnfabricbfdspec) | no | `{}` | The BFD timers of every fabric session (C5) |
+
+An `OVNChassis` author decides which ranges its nodes may announce. The guard on
+the fabric side is the inbound prefix list of the leaf.
+
+### OVNFabricVRFSpec
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `name` | `string` (Pattern `^[a-zA-Z0-9_.-]{1,15}$`) | no | `fabric` | The VRF device, bounded to 15 characters like every interface name |
+| `table` | `int64` (Minimum=1, Maximum=4294967295) | no | `100` | The VRF's routing table. Neither one of the kernel's tables nor a listed VRF id, which `ovn-controller` uses as the table of `ovnvrf<id>` |
+
+### OVNFabricUplink
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `interface` | `string` (Pattern `^[a-zA-Z0-9_.-]{1,15}$`) | yes | none | The NIC on the node. It carries link-local addresses only (C2); the node preparation refuses one with a global address |
+| `bridge` | `string` (Pattern `^[a-zA-Z0-9_.-]{1,15}$`) | yes | none | The OVS peer bridge that takes the NIC. FRR peers over the bridge's own interface in the fabric VRF, and the bridge name is the port name a router port names in `dynamic-routing-port-name` |
+
+### OVNFabricNode
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `name` | `string` (DNS subdomain, MaxLength=253) | yes | none | The Node's name |
+| `asn` | `int64` (Minimum=4200000000, Maximum=4294967294) | yes | none | The node's private 4-byte ASN (C3). The operator uses it in the generated `FRRConfiguration`; on a node with a host FRR it records the value the host stanza carries |
+| `loopbackIPv4` | `string` (Format `ipv4`) | yes | none | The /32 fabric loopback, which is also the BGP router id (C2) |
+| `loopbackIPv6` | `string` (Format `ipv6`) | yes | none | The /128 fabric loopback |
+
+### OVNFabricBFDSpec
+
+The bounds are frr-k8s's own.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `receiveIntervalMs` | `int32` (Minimum=10, Maximum=60000) | no | `300` | The minimum interval at which the node accepts BFD control packets |
+| `transmitIntervalMs` | `int32` (Minimum=10, Maximum=60000) | no | `300` | The minimum interval at which the node sends them |
+| `detectMultiplier` | `int32` (Minimum=2, Maximum=255) | no | `3` | How many packets may be lost before the session is declared down |
 
 ### OVNChassisUpdateStrategy
 
@@ -160,7 +215,12 @@ carries the ordinary field markers: `MinProperties=1` on both selectors, the
 `Minimum=1` on `spec.ovs.revalidatorThreads`, the two
 patterns on a bridge mapping, and `MinLength=1` on `spec.centralRef.name`.
 `spec.bridgeMappings` is a list-map keyed by `physicalNetwork`, so the API server
-already refuses a repeated physical network.
+already refuses a repeated physical network. Under `spec.fabric` the schema
+carries the bounds of the type tables above: the uplink count, the name
+patterns, the table, MTU, ASN, VRF id and BFD ranges, the `ipv4`, `ipv6` and
+`cidr` formats, and the list-map keys `interface` on the uplinks and `name` on
+the node table. These markers have no webhook twin: the API server enforces them
+whether or not the webhook runs.
 
 ### Webhook rules
 
@@ -186,6 +246,22 @@ The validating webhook accumulates every violation into one admission response.
 | `%s request must not exceed limit (%s)` | A request in `spec.jobs.resources` above its own limit |
 | `field.NotFound` on `spec.jobs.priorityClassName` | The named PriorityClass does not exist. Skipped when no lookup client is injected, and for `""` |
 | `revalidatorThreads must be at least 1` | `spec.ovs.revalidatorThreads` is set below 1, mirroring the `Minimum=1` marker |
+| `Duplicate value` on `spec.fabric.uplinks[i].bridge` | Two uplinks name one peer bridge. The list-map key covers the interface side alone |
+| `a peer bridge cannot carry the name of an uplink interface` | A bridge carries the name of an uplink interface, which the bridge would take in the kernel |
+| `br-int is the integration bridge of ovn-controller` | A bridge is named `br-int` |
+| `the name is taken by the fabric VRF device` | A bridge or an interface carries `spec.fabric.vrf.name`; the error names that field |
+| `the prefix ovnvrf is reserved for the VRFs ovn-controller maintains` | `spec.fabric.vrf.name` starts with `ovnvrf` |
+| `tables 253, 254 and 255 are the kernel's default, main and local tables` | `spec.fabric.vrf.table` is one of them |
+| `ovn-controller uses a VRF id as the table of ovnvrf<id>` | `spec.fabric.vrf.table` is a listed VRF id |
+| `a VRF id is either advertised from or learned into, not both` | An id is in both `advertiseVRFIDs` and `learnVRFIDs`; the error is on the `learnVRFIDs` entry. Importing in both directions between one `ovnvrf<id>` and the fabric VRF is untested |
+| `Duplicate value` on `spec.fabric.nodes[i].asn` | Two rows share an ASN. A BGP speaker drops a route whose AS path carries its own ASN, so the two nodes would drop each other's routes |
+| `Duplicate value` on `spec.fabric.nodes[i].loopbackIPv4` or `loopbackIPv6` | Two rows share a loopback, compared as parsed addresses, so `2001:db8::1` and `2001:DB8:0::1` are one |
+| `must be a network address; did you mean <masked prefix>` | An announceable range has host bits set. The `FRRConfiguration` prints every range masked |
+| `advertiseVRFIDs needs at least one announceable range` | `advertiseVRFIDs` is set and `announceableRanges` is empty, so the outbound lists would let no OVN route through |
+
+The fabric rules parse loopbacks with `netip.ParseAddr` and ranges with
+`netip.ParsePrefix`, and skip a value that does not parse: the schema format has
+rejected it already.
 
 The percentage in `maxUnavailable` is scaled against 100, not against the node
 count, and rounded up the way the DaemonSet controller rounds it. The nodes a
@@ -240,6 +316,7 @@ has to outlive the selection.
 | `gateway` | `bool` | Whether the node currently announces `enable-chassis-as-gw`. It reports what the node last applied, so the flip to `false` is held back until the evacuation has landed |
 | `configHash` | `string` | Eight hex characters of the SHA-256 of the entry the node last applied. Comparing it against the rendered entry tells a configuration change from a node that has not reported back yet |
 | `gatewayEvacuated` | `bool` | The evacuation Job moved the gateway ports off this node and succeeded. It resets when the node takes the gateway role back, so a re-promoted node is not treated as still drained |
+| `fabric` | `bool` | The node may carry the devices of a fabric assignment. Set from the first pass that renders an assignment for the node, because its `fabric-node` init container can apply the entry before any `apply` Job runs, and cleared only by the `apply` Job that tore the devices down. While it is set and the entry carries no assignment, the node gets that Job |
 | `leaving` | `bool` | The node is no longer selected, or no longer in the cluster, and its chassis registration has still to be deleted. Until that deletion lands the stale chassis keeps claiming the ports of workloads that have moved elsewhere |
 
 ### Conditions
@@ -275,6 +352,18 @@ sets them see [Reconciler Architecture](./ovn-reconciler.md).
 | `MaintenanceReady` | True | `MaintenanceDeferred` | A node needs an address the `OVNCentral` has not published. It outranks `MaintenanceRunning` in the message, because this one waits on another CR |
 | `MaintenanceReady` | False | `MaintenanceJobFailed` | A per-node Job reached a terminal failure. The message names the kind, the Job and the node. No error is returned: a rerun under an unchanged key produces the same failure |
 | `MaintenanceReady` | False | `MaintenanceError` | Running a Job, or dropping a deregistered node from the ConfigMap, failed |
+| `FabricReady` | True | `FabricConfigured` | Every selected node has a fabric assignment, and every one of them labelled `openstack.c5c3.io/frr-k8s=true` carries its `FRRConfiguration`. The message counts both |
+| `FabricReady` | True | `FabricNotConfigured` | `spec.fabric` is not set. Any `FRRConfiguration` the CR wrote before is deleted and the fabric finalizer released |
+| `FabricReady` | False | `NodeWithoutFabricEntry` | `spec.fabric` is set and a selected node has no usable row in `spec.fabric.nodes`. The message names the nodes, sorted |
+| `FabricReady` | False | `FRRK8sNotInstalled` | A fabric node carries the frr-k8s label, but its cluster does not serve `frrk8s.metallb.io/v1beta1` `FRRConfiguration`. The message names the nodes. Nothing is written |
+| `FabricReady` | False | `CapabilityProbeFailed` | The cluster could not be probed for the kind; the error is returned |
+| `FabricReady` | False | `FabricError` | Listing, applying or deleting an `FRRConfiguration`, or writing the fabric finalizer, failed; the error is returned. Also an `FRRConfiguration` of a wanted name that this CR does not own, which is left untouched and named |
+| `RoutesAdvertised` | True | `RoutesAdvertised` | The route probe reports advertised routes. Message: "The Southbound database of OVNCentral \<name\> holds \<a\> advertised and \<l\> learned routes" |
+| `RoutesAdvertised` | False | `NoAdvertisedRoutes` | The route probe reports none; same message |
+| `RoutesAdvertised` | False | `RouteProbeFailed` | The probe Job failed, or running it or reading its report failed; the message carries the error |
+| `RoutesAdvertised` | Unknown | `RouteProbeUnreadable` | The Job's termination message is not `advertised=<n> learned=<n>` |
+| `RoutesAdvertised` | Unknown | `RouteProbeDeferred` | The `OVNCentral` has not published its Southbound address; no Job runs |
+| `RoutesAdvertised` | Unknown | `RouteProbePending` | No probe Job has finished yet |
 | `Ready` | True | `AllReady` | All seven sub-conditions are True |
 | `Ready` | False | `NotAllReady` | At least one is not |
 | `VPAReady` | True | `VPAReady` | The VerticalPodAutoscaler of every opted-in workload is applied; the message names them. See [VerticalAutoscalingSpec](../keystone/keystone-crd.md#vpaready-condition) |
@@ -282,6 +371,13 @@ sets them see [Reconciler Architecture](./ovn-reconciler.md).
 | `VPAReady` | False | `VPANotInstalled` | A workload opts in, but the cluster the children land on does not serve `autoscaling.k8s.io/v1` `VerticalPodAutoscaler`. Nothing is created, and the other conditions still converge |
 | `VPAReady` | False | `CapabilityProbeFailed` | The target cluster the CR names could not be probed for the kind |
 | `VPAReady` | False | `VPAError` | Listing, applying or deleting a VPA failed; the message carries the error |
+
+`RoutesAdvertised` is set only while `spec.fabric` is set and is no
+sub-condition of `Ready`: a fabric without a floating IP advertises nothing and
+is still ready. The probe Job behind it runs once per 5-minute window, so the
+condition is up to 5 minutes old, and the counts are those of the whole
+Southbound database, which carries no chassis column. While a Job runs, the
+condition keeps its previous value.
 
 ## Sub-Resource Naming Convention
 
@@ -293,11 +389,13 @@ Every child takes the CR name plus a component suffix. For an `OVNChassis` named
 | DaemonSet | `{name}-ovs` | `ovsdb-server` and `ovs-vswitchd` on the selected nodes, in the node's network namespace |
 | DaemonSet | `{name}-ovn-controller` | `ovn-controller`, connected to the Southbound address the central published |
 | ConfigMap | `{name}-nodes` | One key per node this CR is responsible for, carrying that node's values. One object serves every node: the pod on a node reads the file named after it and ignores the rest |
-| ConfigMap | `{name}-chassis-scripts` | The scripts both DaemonSets and the three Jobs run. The suffix names the kind, so a chassis and a central of the same name keep separate scripts ConfigMaps in one namespace |
+| ConfigMap | `{name}-chassis-scripts` | The scripts both DaemonSets and the four Jobs run. The suffix names the kind, so a chassis and a central of the same name keep separate scripts ConfigMaps in one namespace |
 | Secret | `{name}-ovn-client` | Only while the central projects onto another cluster. The copy of the central's client identity (`tls.crt`, `tls.key`, `ca.crt`) the pods mount, kept equal to the source across renewals. Swept with the DaemonSets on a placed chassis, garbage-collected through its controller reference on a local one |
 | Job | `{name}-apply-<8 hex>` | Re-applies one node's values after they changed. Pinned to that node and in its network namespace |
 | Job | `{name}-evacuate-<8 hex>` | Moves the gateway duties off one node, against the Northbound database |
 | Job | `{name}-chassis-del-<8 hex>` | Deletes one node's Southbound `Chassis` row, against the Southbound database |
+| Job | `{name}-route-probe` | Only while `spec.fabric` is set. Counts the rows of the Southbound `Advertised_Route` and `Learned_Route` tables once per 5-minute window and reports them in its termination message for `RoutesAdvertised` |
+| FRRConfiguration | `{name}-fabric-<8 hex>` | Only for a fabric node labelled `openstack.c5c3.io/frr-k8s=true`. Lives in `frr-k8s-system`, the namespace frr-k8s reads, so it carries the ownership labels instead of an owner reference, and the finalizer `ovn.openstack.c5c3.io/fabric-frrconfigurations` holds the CR until it is deleted. The annotation `ovn.openstack.c5c3.io/node` names its node. See [The FRRConfiguration](#the-frrconfiguration) |
 
 The eight hex characters are the first four bytes of the SHA-256 of the node
 name. A node name is a DNS subdomain of up to 253 characters and a Job name has
@@ -334,15 +432,16 @@ the node's interfaces. Three host paths are mounted:
 | `/run/ovn` | both DaemonSets | `ovn-controller`'s socket and pid file, for the same reason |
 | `/lib/modules` | the `ovs` DaemonSet, read-only | The node's kernel module tree, which the init container loads the datapath modules from. It is mounted as it is, with no `DirectoryOrCreate`, so a node that has no module tree fails on the mount instead of on a `modprobe` |
 
-The one privileged container is the `host-prepare` init of the `{name}-ovs`
-DaemonSet. It runs `modprobe openvswitch && modprobe geneve`, creates the two run
+Without `spec.fabric`, the one privileged container is the `host-prepare` init
+of the `{name}-ovs` DaemonSet. It runs `modprobe openvswitch && modprobe geneve`, creates the two run
 directories group-writable under uid and gid 42424, creates the local database
 when the node carries none, and converts an existing one to the schema of the
 image that is now running. Everything else runs unprivileged or with two named
 capabilities: `NET_ADMIN` and `SYS_NICE` on `ovs-vswitchd`, `NET_ADMIN` on
 `ovn-controller`. `SYS_NICE` is what lets `ovs-vswitchd` raise the priority of
 its own polling threads; without it every start logs the failure and the daemon
-runs at ordinary priority.
+runs at ordinary priority. A chassis with `spec.fabric` adds the `fabric-node`
+container described below, privileged and as uid 0.
 
 The `apply-node` init container of the `{name}-ovn-controller` pod is what writes
 the node's identity into the local database, and the `apply` Job runs the same
@@ -368,6 +467,133 @@ on that physical network.
 The `ovs-vswitchd` container writes one `other_config` key on the same table
 itself, before its daemon starts: `n-revalidator-threads`, from
 [`spec.ovs.revalidatorThreads`](#ovnchassisovsspec).
+
+### Fabric devices
+
+A chassis with `spec.fabric` runs a second init container, `fabric-node`, after
+`apply-node` in the `{name}-ovn-controller` pod, privileged and as uid 0 with the
+resources of `spec.controller`. Its script, `fabric-node.sh`, reads the six
+`FABRIC_` keys of the node's entry, which only a node with a usable row in
+`spec.fabric.nodes` carries. The `apply` Job of such a node runs `apply-node.sh`
+in an init container and `fabric-node.sh` in its privileged main container. A
+chassis without the block renders its DaemonSet and its Jobs as before, so an
+operator upgrade restarts no `ovn-controller`.
+
+Before its first change the script refuses two uplinks and exits 1: one that does
+not exist (`ERROR: fabric uplink <nic> does not exist on <node>`), and one that
+carries a global address (`ERROR: fabric uplink <nic> carries a global address on
+<node>; a fabric uplink carries link-local addresses only`). The second guard
+keeps a mistyped interface name from pulling the node network's port into a
+bridge. It then creates or keeps:
+
+| Device or key | What the script sets |
+| --- | --- |
+| The VRF `spec.fabric.vrf.name` | Table `spec.fabric.vrf.table`, up, the two loopbacks as /32 and /128 and no other global address. A VRF on another table is re-created. A kernel without the `vrf` module fails the run with `ERROR: cannot create the VRF device <name> on <node>; the node kernel has no vrf module` |
+| One OVS bridge per uplink | Marked `external_ids:c5c3-fabric=true`, with the NIC as its port, marked the same way, and `mtu_request` set to `spec.fabric.mtu`; its interface enslaved to the VRF and up. The script waits up to 30 seconds for the bridge device and fails with `ERROR: peer bridge <bridge> did not appear on <node>` after that |
+| The NIC | `accept_ra` 0, IPv6 off (`disable_ipv6` 1), MTU `spec.fabric.mtu`, up. As an OVS port it carries no address, so no link-local address or `fe80::/64` route of its own lands in the node's main table. The bridge gets `accept_ra` 0 too and keeps IPv6 for the session, both before either comes up |
+| `external_ids:c5c3-fabric-vrf` | The VRF the script created, on the `Open_vSwitch` row |
+| `external_ids:dynamic-routing-port-mapping` | `<bridge>=<bridge>` per uplink, the mapping `ovn-controller` reads for `dynamic-routing-port-name` |
+
+The markers are how a later run removes its own devices and nothing else:
+marked bridges the entry no longer names, marked ports the entry no longer
+pairs with their bridge, so an uplink can move to another NIC or two bridges can
+swap their NICs, and the recorded VRF when the entry names another one or none.
+An entry without `FABRIC_` keys is the teardown: the marked bridges, the
+recorded VRF and the port-mapping key go, the NICs stay. The init container and
+an `apply` Job can run the script on one node at the same moment, so every step
+either sets a state or accepts that the other run was first.
+
+Removing a node's row, or the whole block, changes the node's entry, and the
+`apply` Job that follows runs the teardown, because `status.nodes[].fabric`
+records that the node may carry fabric devices. The flag goes up with the
+first entry that carries an assignment, so a row removed before its `apply` Job
+succeeded, whose entry hashes as the recorded one again, still gets the
+teardown Job. A node that leaves the
+selector, and every node of a deleted CR, keeps its devices until it reboots: no
+pod of the chassis runs there any more. Remove the node's row or the block first,
+wait for `status.nodes[].fabric` to turn false, and then deselect the node or
+delete the CR.
+
+### The FRRConfiguration
+
+For a fabric node labelled `openstack.c5c3.io/frr-k8s=true`, the Fabric step
+writes `{name}-fabric-<8 hex>` into `frr-k8s-system`, selected to the node by
+its `kubernetes.io/hostname` label. A node with a host FRR never carries the
+label and gets no object; its stanza is written by hand as
+[BGP Node Substrate](../networking/bgp-node-substrate.md) describes. For a node
+with ASN 4200000001, the loopbacks `192.0.2.1` and `2001:db8::1`, the uplinks of
+the example below and its VRF ids and ranges, the spec is:
+
+```yaml
+spec:
+  nodeSelector:
+    matchLabels:
+      kubernetes.io/hostname: node-a
+  bgp:
+    bfdProfiles:
+    - name: fabric
+      receiveInterval: 300
+      transmitInterval: 300
+      detectMultiplier: 3
+    routers:
+    - asn: 4200000001
+      id: 192.0.2.1
+      vrf: fabric
+      prefixes: [192.0.2.1/32, 2001:db8::1/128]
+      imports:
+      - vrf: ovnvrf42
+      neighbors:
+      - interface: br-fab1
+        dynamicASN: external
+        bfdProfile: fabric
+        toAdvertise:
+          allowed:
+            mode: all
+        toReceive:
+          allowed:
+            mode: filtered
+            prefixes:
+            - prefix: 0.0.0.0/0
+            - prefix: ::/0
+      # the same neighbor for br-fab2
+    - asn: 4200000001
+      vrf: ovnvrf42
+    - asn: 4200000001
+      vrf: ovnvrf10
+      imports:
+      - vrf: fabric
+  raw:
+    priority: 10
+    rawConfig: |
+      router bgp 4200000001 vrf ovnvrf42
+       address-family ipv4 unicast
+        redistribute kernel
+       exit-address-family
+       address-family ipv6 unicast
+        redistribute kernel
+       exit-address-family
+      exit
+      ip prefix-list br-fab1-fabric-allowed-ipv4 seq 100 permit 198.51.100.0/24 ge 32
+      ip prefix-list br-fab2-fabric-allowed-ipv4 seq 100 permit 198.51.100.0/24 ge 32
+      ipv6 prefix-list br-fab1-fabric-allowed-ipv6 seq 100 permit 2001:db8::/64 ge 128
+      ipv6 prefix-list br-fab2-fabric-allowed-ipv6 seq 100 permit 2001:db8::/64 ge 128
+```
+
+There is one import, one router and one `redistribute kernel` block per
+advertised VRF id, and one router importing the fabric VRF per learned id. The
+n-th range of a family takes `seq 100+n-1` in every list of that family, under
+the list names of frr-k8s v0.0.27. Without an advertised id the object has no
+`raw` block. Every value of the raw block is an integer, a pattern-bound name or
+a prefix the operator parsed and printed again.
+
+The operator applies the object only when the live one does not already contain
+it, so a steady pass costs one list, and a field edited by hand is written back
+on the next pass. Turning the frr-k8s label off a node deletes its object. On a
+target cluster the operator's account needs the opt-in grant of the
+target-cluster access chart (see
+[Target Clusters](../target-clusters.md)).
+
+### Label conventions
 
 The CRD fixes no label keys. The suites and the guides use
 `openstack.c5c3.io/chassis=true` for the nodes an `OVNChassis` selects and
@@ -395,3 +621,40 @@ mappings and no gateway: a kind node has no provider network to map, and a
 gateway chassis without an uplink would announce connectivity it does not have.
 `spec.image` is left unset so the operator resolves the same OVN image the
 control plane runs.
+
+A chassis attached to the BGP fabric adds the `fabric` block. This is the
+fixture of the `fabric-advertised-route` suite
+(`tests/e2e-ovn-overlay/fabric-advertised-route/02-ovnchassis-cr.yaml`), with
+the node name the suite fills in:
+
+```yaml
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNChassis
+metadata:
+  name: ovn-fabric
+  namespace: openstack
+spec:
+  centralRef:
+    name: ovn-fabric-central
+  nodeSelector:
+    e2e.c5c3.io/ovn-fabric: "true"
+  fabric:
+    uplinks:
+    - interface: fab1
+      bridge: br-fab1
+    - interface: fab2
+      bridge: br-fab2
+    nodes:
+    - name: node-a
+      asn: 4200000001
+      loopbackIPv4: 192.0.2.1
+      loopbackIPv6: "2001:db8::1"
+    announceableRanges:
+    - 198.51.100.0/24
+    - 2001:db8::/64
+    advertiseVRFIDs: [42]
+    learnVRFIDs: [10]
+```
+
+The VRF, the MTU and the BFD timers take their defaults: `fabric` on table 100,
+9000, and 300 ms, 300 ms, 3.
