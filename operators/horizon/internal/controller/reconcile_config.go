@@ -220,6 +220,10 @@ func defaultSettings(horizon *horizonv1alpha1.Horizon, cacheServers string) (map
 	// calls to "default" per request on an image without horizon patch
 	// 0004 and under SIMULTANEOUS_SESSIONS "disconnect"; an older operator
 	// with a patched image leaves the fragment's one.
+	//
+	// test_login_page_makes_no_memcached_call in
+	// tests/container-images/verify_horizon.sh writes a copy of these CACHES
+	// into the image's local_settings.py; change it with this map.
 	caches := map[string]any{
 		"default":                   cacheDefault,
 		templateFragmentsCacheAlias: map[string]any{"BACKEND": templateFragmentsCacheBackend},

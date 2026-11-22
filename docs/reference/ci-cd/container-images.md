@@ -568,6 +568,42 @@ both cookies and logs one ERROR record with its size, and that the login page
 shows the message in its `alert-danger` box once the session cookie is gone.
 The patches need no operator configuration. Upstream status: not yet proposed.
 
+**Source patch:**
+`patches/horizon/2026.1/0004-do-not-touch-the-cache-while-simultaneous-sessions-are-allowed.patch`
+and its 2026.2 twin
+`patches/horizon/2026.2/0004-do-not-touch-the-cache-while-simultaneous-sessions-are-allowed.patch`
+keep `SimultaneousSessionsMiddleware` off the cache unless
+`SIMULTANEOUS_SESSIONS` is `disconnect` (#1847). Upstream Horizon lists the
+middleware for every request, and `_process_request` in
+`horizon/middleware/simultaneous_sessions.py` reads `user_pk_<pk>_restrict`
+from `caches['default']` and writes the session key back under that key,
+whatever the setting says. Only the `disconnect` branch reads the entry. The two
+calls cost a Memcached round trip each: with Memcached delayed by 100 ms, the
+p50 of `GET /auth/login/` went from 23 ms to 921 ms and that of
+`POST /auth/logout/` from 4 ms to 304 ms (C5C3/playground#165). With Django's
+signed-cookie store the session key is the session cookie itself. That cookie
+is signed and decodes without `SECRET_KEY`, so the session cookie of every
+logged-in user, Keystone token included, sits in the shared Memcached for
+`SESSION_TIMEOUT`, readable by any client of that Memcached. The patches return
+at the top of `_process_request` unless the setting is `disconnect`. Upstream
+documents `allow` and `disconnect`, and only `disconnect` uses the entry, so
+the guard skips the cache for every other value too. `disconnect` keeps both
+calls and the stored session key. Together with the per-process
+`template_fragments` alias the horizon-operator renders, the login page makes
+no Memcached call. The two upstream tests of
+`horizon/test/unit/middleware/test_simultaneous_sessions.py` stay unchanged,
+and the patches add four there: `test_allow_leaves_the_cache_alone`,
+`test_unknown_value_leaves_the_cache_alone`,
+`test_disconnect_records_the_session_key` and
+`test_allow_passes_the_request_on`. `test_login_page_makes_no_memcached_call`
+in `tests/container-images/verify_horizon.sh` requests the login page of the
+built image with the `CACHES` the operator renders, against a listener on
+`127.0.0.1:11211` that records every Memcached command. It asserts that a set
+and a get reach the listener, that two login page requests record no command,
+and that one request under `SIMULTANEOUS_SESSIONS = "disconnect"` records the
+get and the set of `user_pk_None_restrict`. The patches need no operator
+configuration. Upstream status: not yet proposed.
+
 **Build and verify:**
 
 ```bash

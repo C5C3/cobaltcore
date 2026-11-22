@@ -628,6 +628,134 @@ EOF
   assert_eq "an oversized session cookie is logged and announced at the login" "0" "$exit_code"
 }
 
+# --- Test 12: the login page makes no Memcached call ---
+test_login_page_makes_no_memcached_call() {
+  echo "Test: the login page makes no Memcached call"
+  # Proves the image build applied
+  # patches/horizon/2026.1/0004-do-not-touch-the-cache-while-simultaneous-sessions-are-allowed.patch
+  # and its twin
+  # patches/horizon/2026.2/0004-do-not-touch-the-cache-while-simultaneous-sessions-are-allowed.patch
+  # (#1847). local_settings.py carries the CACHES that defaultSettings in
+  # operators/horizon/internal/controller/reconcile_config.go renders: the
+  # pymemcache "default" alias and the per-process "template_fragments"
+  # alias. The probe answers Memcached's get and set on 127.0.0.1:11211 and
+  # records every command. A self-check first sends one set and one get
+  # through "default" and expects both on the wire: ignore_exc turns a
+  # failed call into a miss, so a listener that records nothing would pass
+  # the next step. Two login page requests must then record no command; an
+  # unpatched image records the get and the set of user_pk_None_restrict
+  # that SimultaneousSessionsMiddleware makes on every request. Last, under
+  # SIMULTANEOUS_SESSIONS = "disconnect" one request must record that get
+  # and set, so the patch keeps the feature. COMPRESS_OFFLINE and
+  # STATIC_ROOT let the login page render from the manifest built into the
+  # image; ALLOWED_HOSTS admits the test client. Stderr is echoed on failure
+  # so the reason is named.
+  local probe err="" exit_code=0
+  probe=$(
+    cat <<'EOF'
+import signal
+import socket
+import sys
+import threading
+
+import django
+
+
+def hung(signum, frame):
+    sys.exit("the probe did not finish within 120 s")
+
+
+signal.signal(signal.SIGALRM, hung)
+signal.alarm(120)
+
+# A Memcached that misses every get, stores nothing and records every
+# command with its key before it answers.
+calls = []
+listener = socket.socket()
+listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+listener.bind(("127.0.0.1", 11211))
+listener.listen(8)
+
+
+def serve(conn):
+    stream = conn.makefile("rb")
+    for line in stream:
+        words = line.decode().split()
+        if not words:
+            continue
+        calls.append((words[0], words[1] if len(words) > 1 else ""))
+        if words[0] == "get":
+            conn.sendall(b"END\r\n")
+        elif words[0] == "set" and len(words) >= 5:
+            stream.read(int(words[4]) + 2)
+            conn.sendall(b"STORED\r\n")
+        else:
+            conn.sendall(b"ERROR\r\n")
+
+
+def accept():
+    while True:
+        conn = listener.accept()[0]
+        threading.Thread(target=serve, args=(conn,), daemon=True).start()
+
+
+threading.Thread(target=accept, daemon=True).start()
+
+django.setup()
+
+from django.core.cache import caches
+from django.test import Client
+from django.test.utils import override_settings
+
+caches["default"].set("verify-self-check", "1", 30)
+caches["default"].get("verify-self-check")
+expected = [("set", "horizon-verify:1:verify-self-check"),
+            ("get", "horizon-verify:1:verify-self-check")]
+if calls != expected:
+    sys.exit("the listener recorded %r for one set and one get, expected %r"
+             % (calls, expected))
+calls.clear()
+
+client = Client()
+for n in (1, 2):
+    r = client.get("/auth/login/")
+    if r.status_code != 200:
+        sys.exit("login page request %d answered HTTP %d" % (n, r.status_code))
+    if calls:
+        sys.exit("login page request %d made %d Memcached calls: %r"
+                 % (n, len(calls), calls))
+
+# The middleware reads SIMULTANEOUS_SESSIONS when the handler loads it, so
+# the setting needs a new client.
+with override_settings(SIMULTANEOUS_SESSIONS="disconnect"):
+    r = Client().get("/auth/login/")
+expected = [("get", "horizon-verify:1:user_pk_None_restrict"),
+            ("set", "horizon-verify:1:user_pk_None_restrict")]
+if r.status_code != 200:
+    sys.exit("login page request under disconnect answered HTTP %d"
+             % r.status_code)
+if calls != expected:
+    sys.exit("login page request under disconnect recorded %r, expected %r"
+             % (calls, expected))
+EOF
+  )
+  err=$(docker run --rm --tmpfs /etc/openstack-dashboard:uid=42424,gid=42424 \
+    -e DJANGO_SETTINGS_MODULE=openstack_dashboard.settings -e MEMCACHED_PROBE="$probe" "$IMAGE" sh -c \
+    'printf "%s\n" \
+       "SECRET_KEY = \"verify\"" \
+       "SESSION_ENGINE = \"django.contrib.sessions.backends.signed_cookies\"" \
+       "CACHES = {\"default\": {\"BACKEND\": \"django.core.cache.backends.memcached.PyMemcacheCache\", \"KEY_PREFIX\": \"horizon-verify\", \"LOCATION\": [\"127.0.0.1:11211\"], \"OPTIONS\": {\"connect_timeout\": 1, \"ignore_exc\": True, \"timeout\": 1}}, \"template_fragments\": {\"BACKEND\": \"django.core.cache.backends.locmem.LocMemCache\"}}" \
+       "COMPRESS_OFFLINE = True" \
+       "STATIC_ROOT = \"/var/lib/openstack/horizon-static\"" \
+       "ALLOWED_HOSTS = [\"testserver\"]" \
+       > /etc/openstack-dashboard/local_settings.py &&
+     exec /var/lib/openstack/bin/python -W ignore -c "$MEMCACHED_PROBE"' \
+    2>&1 > /dev/null) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "    $err"
+
+  assert_eq "the login page makes no Memcached call" "0" "$exit_code"
+}
+
 # --- Run all tests ---
 echo "=== horizon container verification tests ==="
 echo "Image: $IMAGE"
@@ -653,6 +781,8 @@ echo ""
 test_request_timeout_reaches_every_client
 echo ""
 test_session_cookie_size_is_announced
+echo ""
+test_login_page_makes_no_memcached_call
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 
