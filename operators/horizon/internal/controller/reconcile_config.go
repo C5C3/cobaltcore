@@ -44,11 +44,17 @@ const (
 	// sessionCacheKeyPrefixStem starts the rendered
 	// CACHES["sessions"]["KEY_PREFIX"].
 	sessionCacheKeyPrefixStem = "horizon-sessions-"
+	// templateFragmentsCacheAlias is the CACHES alias Django's {% cache %}
+	// tag prefers over "default" (issue #1847).
+	templateFragmentsCacheAlias = "template_fragments"
+	// templateFragmentsCacheBackend is Django's per-process local-memory
+	// cache, the BACKEND of CACHES["template_fragments"].
+	templateFragmentsCacheBackend = "django.core.cache.backends.locmem.LocMemCache"
 	// cacheKeyPrefixHashLen is the number of hex characters of the SHA-256 in
 	// both rendered KEY_PREFIXes: the image reference's for CACHES["default"]
 	// and "<namespace>/<name>" for CACHES["sessions"]. It is longer than the
-	// ConfigMap suffix's 8 because a collision between two releases would
-	// bring back the template-cache poisoning the prefix exists to prevent.
+	// ConfigMap suffix's 8 because two releases whose prefixes collide would
+	// share the entries of the "default" alias (see cacheKeyPrefix).
 	// Changing it moves the sessions prefix too and logs every cache-session
 	// user out.
 	cacheKeyPrefixHashLen = 12
@@ -193,13 +199,39 @@ func defaultSettings(horizon *horizonv1alpha1.Horizon, cacheServers string) (map
 		}
 	}
 
-	caches := map[string]any{"default": cacheDefault}
+	// Horizon wraps its Angular template-cache preload, about 265 KB, in a
+	// {% cache %} tag on every page, the login page the kubelet's probes
+	// request included. In "default" every render read it from Memcached,
+	// and a Memcached delayed by 100 ms raised the p50 of the login page
+	// from 23 ms to 921 ms (issue #1847). The tag prefers the
+	// "template_fragments" alias, so each uWSGI process keeps the fragment
+	// itself: one pickled fragment per theme it rendered, rendered once
+	// after the process starts, in about 22 ms. The tag passes its own
+	// expiry (NG_TEMPLATE_CACHE_AGE), one local-memory alias needs no
+	// LOCATION, and a store no other process reads needs no KEY_PREFIX and
+	// cannot hand one release another release's fragment (issue #1305).
+	// Fragments older pods left in Memcached expire after 30 days unread.
+	//
+	// The alias renders for every spec.cache.backend and spec.session; an
+	// extraConfig CACHES override drops it and is reported. It changes the
+	// ConfigMap of every Horizon, so the operator upgrade rolls each
+	// dashboard once; SECRET_KEY and the "sessions" prefix stay, so the
+	// sessions are kept. SimultaneousSessionsMiddleware still makes two
+	// calls to "default" per request on an image without horizon patch
+	// 0004 and under SIMULTANEOUS_SESSIONS "disconnect"; an older operator
+	// with a patched image leaves the fragment's one.
+	caches := map[string]any{
+		"default":                   cacheDefault,
+		templateFragmentsCacheAlias: map[string]any{"BACKEND": templateFragmentsCacheBackend},
+	}
 	values := map[string]any{
-		// Signed-cookie sessions by default: no session state in Memcached or
-		// a database, so cache loss degrades hit-rate without logging users
-		// out and no database sub-reconcilers exist at all (design decision
-		// D1). spec.session.backend Cache moves the sessions into the
-		// "sessions" alias of CACHES (see sessionSettings).
+		// Signed-cookie sessions by default: no session store in Memcached or
+		// a database, so losing Memcached logs no user out and no database
+		// sub-reconcilers exist at all (design decision D1). An image without
+		// horizon patch 0004 still copies the session key, which for signed
+		// cookies is the whole session cookie, into "default" on every
+		// request (issue #1847). spec.session.backend Cache moves the
+		// sessions into the "sessions" alias of CACHES (see sessionSettings).
 		horizonv1alpha1.SettingSessionEngine: defaultDjangoSessionEngine,
 		horizonv1alpha1.SettingCaches:        caches,
 		"OPENSTACK_KEYSTONE_URL":             horizon.Spec.KeystoneEndpoint,
@@ -339,7 +371,8 @@ func webSSOSettings(horizon *horizonv1alpha1.Horizon) map[string]any {
 // SESSION_ENGINE and the CACHES of defaultSettings stay, byte for byte.
 // Backend Cache replaces both: SESSION_ENGINE names Django's cache engine,
 // SESSION_CACHE_ALIAS names the "sessions" alias, and CACHES is a copy of
-// caches, the CACHES of defaultSettings, with that alias added. The alias
+// caches, the "default" and "template_fragments" aliases of defaultSettings,
+// with the "sessions" alias added. The alias
 // copies the BACKEND, LOCATION and OPTIONS of cacheDefault, ignore_exc
 // included, and carries its own KEY_PREFIX (see sessionCacheKeyPrefix).
 func sessionSettings(horizon *horizonv1alpha1.Horizon, caches, cacheDefault map[string]any) map[string]any {
@@ -509,14 +542,19 @@ func cacheLocations(cacheServers string) []any {
 // constant stem "horizon-" followed by the first 12 hex characters of the
 // SHA-256 of spec.image's reference ("repository:tag" or "repository@digest").
 // It prefixes the "default" alias only; the "sessions" alias of cache sessions
-// carries the name-scoped prefix of sessionCacheKeyPrefix instead.
-// Django prepends it to every cache key, template fragments included, so two
+// carries the name-scoped prefix of sessionCacheKeyPrefix instead, and the
+// template fragments live in the per-process "template_fragments" alias
+// (issue #1847). Django prepends the prefix to every key of "default": the
+// session key of SimultaneousSessionsMiddleware on an image without horizon
+// patch 0004 or under SIMULTANEOUS_SESSIONS "disconnect", a cache
+// SESSION_ENGINE set through extraConfig, the entries of a plugin. Two
 // Horizon releases sharing one Memcached never read each other's entries
-// (OfflineGenerationError, HTTP 500: see issue #1305) and an image change
-// starts with a cold cache. The prefix is scoped per image, not per CR: two
-// CRs running the same image share a warm cache by design. It follows the
-// spec, not the running digest, so two builds pushed behind one tag share a
-// prefix; only a digest pin isolates them.
+// (issue #1305: a shared template fragment raised OfflineGenerationError,
+// HTTP 500), and an image change starts with a cold cache. The prefix is
+// scoped per image, not per CR: two CRs running the same image share a warm
+// cache by design. It follows the spec, not the running digest, so two
+// builds pushed behind one tag share a prefix; only a digest pin isolates
+// them.
 func cacheKeyPrefix(horizon *horizonv1alpha1.Horizon) string {
 	sum := sha256.Sum256([]byte(horizon.Spec.Image.Reference()))
 	return cacheKeyPrefixStem + hex.EncodeToString(sum[:])[:cacheKeyPrefixHashLen]

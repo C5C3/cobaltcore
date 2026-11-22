@@ -970,7 +970,7 @@ func TestValidateUpdate_SessionCollision(t *testing.T) {
 
 // TestDefault_SessionUntouched pins that the defaulter writes no session block:
 // a stored CR without one keeps none, so the renderer resolves it to signed
-// cookies and the operator upgrade rolls no dashboard.
+// cookies.
 func TestDefault_SessionUntouched(t *testing.T) {
 	g := gomega.NewWithT(t)
 	w := &HorizonWebhook{}
