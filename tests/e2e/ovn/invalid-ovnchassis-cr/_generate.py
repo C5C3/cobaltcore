@@ -82,6 +82,62 @@ VALID_NODE_SELECTOR = """\
   nodeSelector:
     openstack.c5c3.io/chassis: "true\""""
 
+# The parts of an otherwise valid spec.fabric block, one per field. A fabric
+# fixture overrides the one part its rule reads and keeps the rest, so the block
+# breaks no rule but the one under test. vrf, mtu and bfd are omitted by default
+# and take their schema defaults (fabric, table 100, MTU 9000, BFD 300/300/3).
+VALID_FABRIC_UPLINKS = """\
+    uplinks:
+    - interface: fab1
+      bridge: br-fab1
+    - interface: fab2
+      bridge: br-fab2"""
+
+VALID_FABRIC_NODE = """\
+    - name: node-1
+      asn: 4200000001
+      loopbackIPv4: 192.0.2.1
+      loopbackIPv6: "2001:db8::1\""""
+
+# A second node row that collides with nothing in VALID_FABRIC_NODE.
+SECOND_FABRIC_NODE = """\
+    - name: node-2
+      asn: 4200000002
+      loopbackIPv4: 192.0.2.2
+      loopbackIPv6: "2001:db8::2\""""
+
+VALID_FABRIC_RANGES = """\
+    announceableRanges:
+    - 198.51.100.0/24
+    - 2001:db8::/64"""
+
+VALID_FABRIC_ADVERTISE = "    advertiseVRFIDs: [42]"
+
+VALID_FABRIC_LEARN = "    learnVRFIDs: [10]"
+
+
+def fabric(
+    *,
+    vrf: str = "",
+    uplinks: str = VALID_FABRIC_UPLINKS,
+    mtu: str = "",
+    nodes: str = VALID_FABRIC_NODE,
+    ranges: str = VALID_FABRIC_RANGES,
+    advertise: str = VALID_FABRIC_ADVERTISE,
+    learn: str = VALID_FABRIC_LEARN,
+    bfd: str = "",
+) -> str:
+    """Render a spec.fabric block for the {extra} placeholder.
+
+    Every keyword is one part of the block; an empty string leaves the part
+    out, and ``nodes`` holds the list entries without the ``nodes:`` key.
+    """
+    parts = ["  fabric:", vrf, uplinks, mtu]
+    if nodes:
+        parts += ["    nodes:", nodes]
+    parts += [ranges, advertise, learn, bfd]
+    return "\n".join(part for part in parts if part) + "\n"
+
 
 @dataclass(frozen=True)
 class Fixture:
@@ -359,6 +415,339 @@ FIXTURES: tuple[Fixture, ...] = (
             "    updateMode: Auto\n"
             "    minReplicas: 0\n"
         ),
+    ),
+    Fixture(
+        filename="19-fabric-uplinks-empty.yaml",
+        comment=(
+            "spec.fabric.uplinks empty violates the MinItems=1 marker. A fabric\n"
+            "block attaches a node through its uplinks, so a block without one\n"
+            "has nothing to peer over."
+        ),
+        extra=fabric(uplinks="    uplinks: []"),
+    ),
+    Fixture(
+        filename="20-fabric-uplinks-too-many.yaml",
+        comment=(
+            "Five spec.fabric.uplinks entries violate the MaxItems=4 marker. The\n"
+            "schema is the only layer that bounds the list."
+        ),
+        extra=fabric(uplinks=(
+            "    uplinks:\n"
+            "    - interface: fab1\n"
+            "      bridge: br-fab1\n"
+            "    - interface: fab2\n"
+            "      bridge: br-fab2\n"
+            "    - interface: fab3\n"
+            "      bridge: br-fab3\n"
+            "    - interface: fab4\n"
+            "      bridge: br-fab4\n"
+            "    - interface: fab5\n"
+            "      bridge: br-fab5"
+        )),
+    ),
+    Fixture(
+        filename="21-fabric-uplink-interface-pattern.yaml",
+        comment=(
+            "A spec.fabric.uplinks interface of 16 characters violates the CRD\n"
+            "pattern (^[a-zA-Z0-9_.-]{1,15}$): the kernel's IFNAMSIZ leaves 15\n"
+            "usable bytes, so no NIC carries a longer name."
+        ),
+        extra=fabric(uplinks=(
+            "    uplinks:\n"
+            "    - interface: fab-sixteen-char\n"
+            "      bridge: br-fab1"
+        )),
+    ),
+    Fixture(
+        filename="22-fabric-uplink-bridge-pattern.yaml",
+        comment=(
+            "A spec.fabric.uplinks bridge of 16 characters violates the same\n"
+            "pattern: the peer bridge appears as a Linux interface too."
+        ),
+        extra=fabric(uplinks=(
+            "    uplinks:\n"
+            "    - interface: fab1\n"
+            "      bridge: br-sixteen-chars"
+        )),
+    ),
+    Fixture(
+        filename="23-fabric-uplink-duplicate-interface.yaml",
+        comment=(
+            "Two spec.fabric.uplinks entries naming one interface are rejected by\n"
+            "the schema: interface is the +listMapKey of the list, so the API\n"
+            "server answers before the webhook is called."
+        ),
+        extra=fabric(uplinks=(
+            "    uplinks:\n"
+            "    - interface: fab1\n"
+            "      bridge: br-fab1\n"
+            "    - interface: fab1\n"
+            "      bridge: br-fab2"
+        )),
+    ),
+    Fixture(
+        filename="24-fabric-uplink-duplicate-bridge.yaml",
+        comment=(
+            "Two spec.fabric.uplinks entries sharing one bridge are rejected by the\n"
+            "validating webhook alone: the list-map key covers the interface side\n"
+            "only, and a bridge cannot take two NICs as two peerings."
+        ),
+        extra=fabric(uplinks=(
+            "    uplinks:\n"
+            "    - interface: fab1\n"
+            "      bridge: br-fab1\n"
+            "    - interface: fab2\n"
+            "      bridge: br-fab1"
+        )),
+    ),
+    Fixture(
+        filename="25-fabric-uplink-bridge-is-interface.yaml",
+        comment=(
+            "A spec.fabric.uplinks bridge named after an uplink interface is\n"
+            "rejected by the validating webhook alone: the bridge would take the\n"
+            "NIC's own name in the kernel."
+        ),
+        extra=fabric(uplinks=(
+            "    uplinks:\n"
+            "    - interface: fab1\n"
+            "      bridge: br-fab1\n"
+            "    - interface: fab2\n"
+            "      bridge: fab1"
+        )),
+    ),
+    Fixture(
+        filename="26-fabric-uplink-bridge-br-int.yaml",
+        comment=(
+            "A spec.fabric.uplinks bridge named br-int is rejected by the validating\n"
+            "webhook alone. br-int is the integration bridge ovn-controller owns,\n"
+            "and the fabric script would enslave it to the fabric VRF."
+        ),
+        extra=fabric(uplinks=(
+            "    uplinks:\n"
+            "    - interface: fab1\n"
+            "      bridge: br-int"
+        )),
+    ),
+    Fixture(
+        filename="27-fabric-vrf-name-pattern.yaml",
+        comment=(
+            "A spec.fabric.vrf.name of 16 characters violates the CRD pattern\n"
+            "(^[a-zA-Z0-9_.-]{1,15}$): the VRF is a Linux interface."
+        ),
+        extra=fabric(vrf=(
+            "    vrf:\n"
+            "      name: fabric-sixteen-c"
+        )),
+    ),
+    Fixture(
+        filename="28-fabric-vrf-name-ovnvrf-prefix.yaml",
+        comment=(
+            "A spec.fabric.vrf.name starting with ovnvrf is rejected by the\n"
+            "validating webhook alone: ovn-controller maintains its VRFs under\n"
+            "that prefix and deletes one it no longer needs."
+        ),
+        extra=fabric(vrf=(
+            "    vrf:\n"
+            "      name: ovnvrf1"
+        )),
+    ),
+    Fixture(
+        filename="29-fabric-vrf-name-taken-by-uplink.yaml",
+        comment=(
+            "A spec.fabric.vrf.name an uplink interface also carries is rejected by\n"
+            "the validating webhook alone, on the interface: the VRF device, the\n"
+            "bridges and the NICs share one kernel namespace."
+        ),
+        extra=fabric(vrf=(
+            "    vrf:\n"
+            "      name: fab1"
+        )),
+    ),
+    Fixture(
+        filename="30-fabric-vrf-table-zero.yaml",
+        comment=(
+            "spec.fabric.vrf.table of 0 violates the Minimum=1 marker: the kernel\n"
+            "has no table 0 to bind a VRF to."
+        ),
+        extra=fabric(vrf=(
+            "    vrf:\n"
+            "      table: 0"
+        )),
+    ),
+    Fixture(
+        filename="31-fabric-vrf-table-kernel.yaml",
+        comment=(
+            "spec.fabric.vrf.table of 254 is rejected by the validating webhook\n"
+            "alone: 253, 254 and 255 are the kernel's default, main and local\n"
+            "tables, and the fabric routes must stay out of them."
+        ),
+        extra=fabric(vrf=(
+            "    vrf:\n"
+            "      table: 254"
+        )),
+    ),
+    Fixture(
+        filename="32-fabric-vrf-table-is-ovn-vrf-id.yaml",
+        comment=(
+            "spec.fabric.vrf.table equal to a listed VRF id is rejected by the\n"
+            "validating webhook alone: ovn-controller creates ovnvrf<id> with\n"
+            "table <id>, so the two VRFs would share one table."
+        ),
+        extra=fabric(vrf=(
+            "    vrf:\n"
+            "      table: 42"
+        )),
+    ),
+    Fixture(
+        filename="33-fabric-mtu-below-minimum.yaml",
+        comment=(
+            "spec.fabric.mtu of 1279 violates the Minimum=1280 marker, the\n"
+            "smallest MTU an IPv6 link may carry."
+        ),
+        extra=fabric(mtu="    mtu: 1279"),
+    ),
+    Fixture(
+        filename="34-fabric-node-asn-below-range.yaml",
+        comment=(
+            "spec.fabric.nodes[].asn of 4199999999 violates the Minimum=4200000000\n"
+            "marker: a node takes a private 4-byte ASN."
+        ),
+        extra=fabric(nodes=VALID_FABRIC_NODE.replace("4200000001", "4199999999")),
+    ),
+    Fixture(
+        filename="35-fabric-node-asn-above-range.yaml",
+        comment=(
+            "spec.fabric.nodes[].asn of 4294967295 violates the Maximum=4294967294\n"
+            "marker: the last 4-byte ASN is reserved."
+        ),
+        extra=fabric(nodes=VALID_FABRIC_NODE.replace("4200000001", "4294967295")),
+    ),
+    Fixture(
+        filename="36-fabric-node-duplicate-asn.yaml",
+        comment=(
+            "Two spec.fabric.nodes rows sharing one ASN are rejected by the\n"
+            "validating webhook alone: a BGP speaker drops a route whose AS path\n"
+            "carries its own ASN, so the two nodes would drop each other's routes."
+        ),
+        extra=fabric(nodes=VALID_FABRIC_NODE + "\n" + SECOND_FABRIC_NODE.replace("4200000002", "4200000001")),
+    ),
+    Fixture(
+        filename="37-fabric-node-loopback-ipv4-format.yaml",
+        comment=(
+            "A spec.fabric.nodes[].loopbackIPv4 that is no IPv4 address violates the\n"
+            "Format=ipv4 marker."
+        ),
+        extra=fabric(nodes=VALID_FABRIC_NODE.replace("192.0.2.1", "192.0.2.256")),
+    ),
+    Fixture(
+        filename="38-fabric-node-loopback-ipv6-format.yaml",
+        comment=(
+            "A spec.fabric.nodes[].loopbackIPv6 that is no IPv6 address violates the\n"
+            "Format=ipv6 marker."
+        ),
+        extra=fabric(nodes=VALID_FABRIC_NODE.replace("2001:db8::1", "2001:db8::g")),
+    ),
+    Fixture(
+        filename="39-fabric-node-duplicate-loopback.yaml",
+        comment=(
+            "Two spec.fabric.nodes rows sharing one IPv4 loopback are rejected by\n"
+            "the validating webhook alone: both nodes would announce the same\n"
+            "host route."
+        ),
+        extra=fabric(nodes=VALID_FABRIC_NODE + "\n" + SECOND_FABRIC_NODE.replace("192.0.2.2", "192.0.2.1")),
+    ),
+    Fixture(
+        filename="40-fabric-announceable-range-format.yaml",
+        comment=(
+            "A spec.fabric.announceableRanges entry that is no CIDR violates the\n"
+            "Format=cidr marker on the list items."
+        ),
+        extra=fabric(ranges=(
+            "    announceableRanges:\n"
+            "    - not-a-cidr"
+        )),
+    ),
+    Fixture(
+        filename="41-fabric-announceable-range-host-bits.yaml",
+        comment=(
+            "A spec.fabric.announceableRanges entry with host bits set passes the\n"
+            "cidr format and is rejected by the validating webhook alone, which\n"
+            "names the network address the range masks to."
+        ),
+        extra=fabric(ranges=(
+            "    announceableRanges:\n"
+            "    - 198.51.100.7/24"
+        )),
+    ),
+    Fixture(
+        filename="42-fabric-advertise-without-ranges.yaml",
+        comment=(
+            "spec.fabric.advertiseVRFIDs without an announceable range is rejected\n"
+            "by the validating webhook alone: the node's outbound prefix lists\n"
+            "would permit no route OVN advertises."
+        ),
+        extra=fabric(ranges=""),
+    ),
+    Fixture(
+        filename="43-fabric-vrf-id-zero.yaml",
+        comment=(
+            "A spec.fabric.advertiseVRFIDs entry of 0 violates the Minimum=1 marker\n"
+            "on the list items: ovn-controller names no VRF ovnvrf0."
+        ),
+        extra=fabric(advertise="    advertiseVRFIDs: [0]"),
+    ),
+    Fixture(
+        filename="44-fabric-vrf-id-advertised-and-learned.yaml",
+        comment=(
+            "A VRF id in both spec.fabric.advertiseVRFIDs and learnVRFIDs is\n"
+            "rejected by the validating webhook alone: importing in both\n"
+            "directions between one ovnvrf<id> and the fabric VRF is untested."
+        ),
+        extra=fabric(learn="    learnVRFIDs: [10, 42]"),
+    ),
+    Fixture(
+        filename="45-fabric-bfd-interval-below-minimum.yaml",
+        comment=(
+            "spec.fabric.bfd.receiveIntervalMs of 9 violates the Minimum=10 marker,\n"
+            "the bound frr-k8s puts on the interval."
+        ),
+        extra=fabric(bfd=(
+            "    bfd:\n"
+            "      receiveIntervalMs: 9"
+        )),
+    ),
+    Fixture(
+        filename="46-fabric-bfd-multiplier-below-minimum.yaml",
+        comment=(
+            "spec.fabric.bfd.detectMultiplier of 1 violates the Minimum=2 marker,\n"
+            "the bound frr-k8s puts on the multiplier."
+        ),
+        extra=fabric(bfd=(
+            "    bfd:\n"
+            "      detectMultiplier: 1"
+        )),
+    ),
+    Fixture(
+        filename="47-fabric-node-duplicate-name.yaml",
+        comment=(
+            "Two spec.fabric.nodes rows naming one node are rejected by the schema:\n"
+            "name is the +listMapKey of the list, so the API server answers before\n"
+            "the webhook is called."
+        ),
+        extra=fabric(nodes=VALID_FABRIC_NODE + "\n" + SECOND_FABRIC_NODE.replace("node-2", "node-1")),
+    ),
+    Fixture(
+        filename="48-fabric-uplink-bridge-is-vrf.yaml",
+        comment=(
+            "A spec.fabric.uplinks bridge named after the fabric VRF is rejected by\n"
+            "the validating webhook alone, on the bridge: the VRF device, the\n"
+            "bridges and the NICs share one kernel namespace."
+        ),
+        extra=fabric(uplinks=(
+            "    uplinks:\n"
+            "    - interface: fab1\n"
+            "      bridge: fabric"
+        )),
     ),
 )
 

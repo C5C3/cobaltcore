@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.fabric.vrf.table of 254 is rejected by the validating webhook
+# alone: 253, 254 and 255 are the kernel's default, main and local
+# tables, and the fabric routes must stay out of them.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNChassis
+metadata:
+  name: chassis
+spec:
+  centralRef:
+    name: ovn
+  nodeSelector:
+    openstack.c5c3.io/chassis: "true"
+  fabric:
+    vrf:
+      table: 254
+    uplinks:
+    - interface: fab1
+      bridge: br-fab1
+    - interface: fab2
+      bridge: br-fab2
+    nodes:
+    - name: node-1
+      asn: 4200000001
+      loopbackIPv4: 192.0.2.1
+      loopbackIPv6: "2001:db8::1"
+    announceableRanges:
+    - 198.51.100.0/24
+    - 2001:db8::/64
+    advertiseVRFIDs: [42]
+    learnVRFIDs: [10]

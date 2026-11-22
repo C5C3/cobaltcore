@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Five spec.fabric.uplinks entries violate the MaxItems=4 marker. The
+# schema is the only layer that bounds the list.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNChassis
+metadata:
+  name: chassis
+spec:
+  centralRef:
+    name: ovn
+  nodeSelector:
+    openstack.c5c3.io/chassis: "true"
+  fabric:
+    uplinks:
+    - interface: fab1
+      bridge: br-fab1
+    - interface: fab2
+      bridge: br-fab2
+    - interface: fab3
+      bridge: br-fab3
+    - interface: fab4
+      bridge: br-fab4
+    - interface: fab5
+      bridge: br-fab5
+    nodes:
+    - name: node-1
+      asn: 4200000001
+      loopbackIPv4: 192.0.2.1
+      loopbackIPv6: "2001:db8::1"
+    announceableRanges:
+    - 198.51.100.0/24
+    - 2001:db8::/64
+    advertiseVRFIDs: [42]
+    learnVRFIDs: [10]

@@ -14,8 +14,10 @@
 # answered by the schema and the assertions below quote the schema message. The
 # webhook message is asserted only where the rule has no schema counterpart:
 # the duplicate bridge (the +listMapKey covers the network side only), the two
-# three maxUnavailable shapes (an int-or-string field carries no marker), and the
-# metadata.name bound, which comes from the name of a child object.
+# three maxUnavailable shapes (an int-or-string field carries no marker), the
+# metadata.name bound, which comes from the name of a child object, and the
+# thirteen spec.fabric rules of validateFabric, each of which compares two
+# fields or reads a value as an address or a prefix.
 #
 # The test runs in an ephemeral namespace: the fixtures reference an OVNCentral
 # that does not exist there, which admission deliberately tolerates (GitOps
@@ -231,3 +233,292 @@ spec:
             ($error != null): true
             (contains($error, 'spec.verticalAutoscaling.minReplicas')): true
             (contains($error, 'should be greater than or equal to 1')): true
+  # spec.fabric.uplinks empty must be rejected by the MinItems=1 marker.
+  - try:
+    - apply:
+        file: 19-fabric-uplinks-empty.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.fabric.uplinks')): true
+            (contains($error, 'should have at least 1 items')): true
+  # Five fabric uplinks must be rejected by the MaxItems=4 marker.
+  - try:
+    - apply:
+        file: 20-fabric-uplinks-too-many.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.fabric.uplinks')): true
+            (contains($error, 'must have at most 4 items')): true
+  # A fabric uplink interface past 15 characters must be rejected by the
+  # CRD pattern.
+  - try:
+    - apply:
+        file: 21-fabric-uplink-interface-pattern.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.fabric.uplinks[0].interface')): true
+            (contains($error, 'should match')): true
+  # A fabric peer bridge past 15 characters must be rejected by the CRD
+  # pattern.
+  - try:
+    - apply:
+        file: 22-fabric-uplink-bridge-pattern.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.fabric.uplinks[0].bridge')): true
+            (contains($error, 'should match')): true
+  # Two fabric uplinks naming one interface must be rejected by the
+  # list-map key of the schema.
+  - try:
+    - apply:
+        file: 23-fabric-uplink-duplicate-interface.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.fabric.uplinks[1]')): true
+            (contains($error, 'Duplicate value')): true
+  # Two fabric uplinks sharing one bridge must be rejected by the webhook:
+  # the list-map key covers the interface side only.
+  - try:
+    - apply:
+        file: 24-fabric-uplink-duplicate-bridge.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.fabric.uplinks[1].bridge')): true
+            (contains($error, 'Duplicate value')): true
+  # A fabric peer bridge named after an uplink interface must be rejected
+  # by the webhook.
+  - try:
+    - apply:
+        file: 25-fabric-uplink-bridge-is-interface.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.fabric.uplinks[1].bridge')): true
+            (contains($error, 'a peer bridge cannot carry the name of an uplink interface')): true
+  # A fabric peer bridge named br-int must be rejected by the webhook.
+  - try:
+    - apply:
+        file: 26-fabric-uplink-bridge-br-int.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.fabric.uplinks[0].bridge')): true
+            (contains($error, 'br-int is the integration bridge of ovn-controller')): true
+  # A fabric VRF name past 15 characters must be rejected by the CRD
+  # pattern.
+  - try:
+    - apply:
+        file: 27-fabric-vrf-name-pattern.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.fabric.vrf.name')): true
+            (contains($error, 'should match')): true
+  # A fabric VRF name with the ovnvrf prefix must be rejected by the
+  # webhook.
+  - try:
+    - apply:
+        file: 28-fabric-vrf-name-ovnvrf-prefix.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.fabric.vrf.name')): true
+            (contains($error, 'the prefix ovnvrf is reserved for the VRFs ovn-controller maintains')): true
+  # A fabric VRF name an uplink interface carries must be rejected by the
+  # webhook, on the interface.
+  - try:
+    - apply:
+        file: 29-fabric-vrf-name-taken-by-uplink.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.fabric.uplinks[0].interface')): true
+            (contains($error, 'the name is taken by the fabric VRF device')): true
+  # A fabric VRF table of 0 must be rejected by the Minimum=1 marker.
+  - try:
+    - apply:
+        file: 30-fabric-vrf-table-zero.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.fabric.vrf.table')): true
+            (contains($error, 'should be greater than or equal to 1')): true
+  # The kernel's main table as the fabric VRF table must be rejected by
+  # the webhook.
+  - try:
+    - apply:
+        file: 31-fabric-vrf-table-kernel.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.fabric.vrf.table')): true
+            (contains($error, 'default, main and local tables')): true
+  # A fabric VRF table equal to a listed VRF id must be rejected by the
+  # webhook.
+  - try:
+    - apply:
+        file: 32-fabric-vrf-table-is-ovn-vrf-id.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.fabric.vrf.table')): true
+            (contains($error, 'ovn-controller uses a VRF id as the table of ovnvrf<id>')): true
+  # A fabric MTU of 1279 must be rejected by the Minimum=1280 marker.
+  - try:
+    - apply:
+        file: 33-fabric-mtu-below-minimum.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.fabric.mtu')): true
+            (contains($error, 'should be greater than or equal to 1280')): true
+  # A node ASN below the private 4-byte range must be rejected by the
+  # Minimum marker.
+  - try:
+    - apply:
+        file: 34-fabric-node-asn-below-range.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.fabric.nodes[0].asn')): true
+            (contains($error, 'should be greater than or equal to 4200000000')): true
+  # A node ASN of 4294967295 must be rejected by the Maximum marker.
+  - try:
+    - apply:
+        file: 35-fabric-node-asn-above-range.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.fabric.nodes[0].asn')): true
+            (contains($error, 'should be less than or equal to 4294967294')): true
+  # Two node rows sharing one ASN must be rejected by the webhook.
+  - try:
+    - apply:
+        file: 36-fabric-node-duplicate-asn.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.fabric.nodes[1].asn')): true
+            (contains($error, 'Duplicate value')): true
+  # A node IPv4 loopback that is no IPv4 address must be rejected by the
+  # Format=ipv4 marker.
+  - try:
+    - apply:
+        file: 37-fabric-node-loopback-ipv4-format.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.fabric.nodes[0].loopbackIPv4')): true
+            (contains($error, 'must be of type ipv4')): true
+  # A node IPv6 loopback that is no IPv6 address must be rejected by the
+  # Format=ipv6 marker.
+  - try:
+    - apply:
+        file: 38-fabric-node-loopback-ipv6-format.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.fabric.nodes[0].loopbackIPv6')): true
+            (contains($error, 'must be of type ipv6')): true
+  # Two node rows sharing one IPv4 loopback must be rejected by the
+  # webhook.
+  - try:
+    - apply:
+        file: 39-fabric-node-duplicate-loopback.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.fabric.nodes[1].loopbackIPv4')): true
+            (contains($error, 'Duplicate value')): true
+  # An announceable range that is no CIDR must be rejected by the
+  # Format=cidr marker.
+  - try:
+    - apply:
+        file: 40-fabric-announceable-range-format.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.fabric.announceableRanges[0]')): true
+            (contains($error, 'must be of type cidr')): true
+  # An announceable range with host bits must be rejected by the webhook,
+  # which names the masked network.
+  - try:
+    - apply:
+        file: 41-fabric-announceable-range-host-bits.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.fabric.announceableRanges[0]')): true
+            (contains($error, 'must be a network address; did you mean 198.51.100.0/24')): true
+  # Advertised VRF ids without an announceable range must be rejected by
+  # the webhook.
+  - try:
+    - apply:
+        file: 42-fabric-advertise-without-ranges.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.fabric.announceableRanges')): true
+            (contains($error, 'advertiseVRFIDs needs at least one announceable range')): true
+  # An advertised VRF id of 0 must be rejected by the Minimum=1 marker.
+  - try:
+    - apply:
+        file: 43-fabric-vrf-id-zero.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.fabric.advertiseVRFIDs[0]')): true
+            (contains($error, 'should be greater than or equal to 1')): true
+  # A VRF id both advertised and learned must be rejected by the webhook.
+  - try:
+    - apply:
+        file: 44-fabric-vrf-id-advertised-and-learned.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.fabric.learnVRFIDs[1]')): true
+            (contains($error, 'a VRF id is either advertised from or learned into, not both')): true
+  # A BFD receive interval of 9 must be rejected by the Minimum=10 marker.
+  - try:
+    - apply:
+        file: 45-fabric-bfd-interval-below-minimum.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.fabric.bfd.receiveIntervalMs')): true
+            (contains($error, 'should be greater than or equal to 10')): true
+  # A BFD detect multiplier of 1 must be rejected by the Minimum=2 marker.
+  - try:
+    - apply:
+        file: 46-fabric-bfd-multiplier-below-minimum.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.fabric.bfd.detectMultiplier')): true
+            (contains($error, 'should be greater than or equal to 2')): true
+  # Two node rows naming one node must be rejected by the list-map key of
+  # the schema.
+  - try:
+    - apply:
+        file: 47-fabric-node-duplicate-name.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.fabric.nodes[1]')): true
+            (contains($error, 'Duplicate value')): true
+  # An uplink bridge named after the fabric VRF must be rejected by the
+  # validating webhook.
+  - try:
+    - apply:
+        file: 48-fabric-uplink-bridge-is-vrf.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.fabric.uplinks[0].bridge')): true
+            (contains($error, 'the name is taken by the fabric VRF device')): true
