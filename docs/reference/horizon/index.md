@@ -23,35 +23,74 @@ uniquely among the services — HTTP ingress by default.
 The v1 operator resolves the onboarding decisions as follows:
 
 - **Sessions: signed cookies by default, no database.** Without
-  `spec.session`, `SESSION_ENGINE` is Django's `signed_cookies` backend and
-  Memcached only backs the Django cache (`CACHES`, `PyMemcacheCache`).
+  `spec.session`, `SESSION_ENGINE` is Django's `signed_cookies` backend.
   `spec.session.backend: Cache` is the opt-in that moves the sessions into
-  Memcached (see [Cache sessions](#cache-sessions)). With signed cookies,
-  losing Memcached degrades cache hit-rate; it neither logs users out nor
-  flips any condition. The operator therefore has
-  no database sub-reconcilers at all. A Memcached that hangs or restarts only
-  lowers the hit-rate too, because the operator renders 1 s pymemcache
-  timeouts and `ignore_exc` into `CACHES["default"]["OPTIONS"]`, which turn
-  every failed cache call into a miss (#1560). DB-backed sessions are
-  revisited only if signed cookies plus Memcached prove insufficient. The
-  whole session, the scoped token and its service catalog included, travels
-  in the `sessionid` cookie (see [Session size limits](#session-size-limits)).
-- **Cache keys: scoped per image.** The operator derives
-  `CACHES["default"]["KEY_PREFIX"]` from `spec.image`: `horizon-` plus the
-  first 12 hex characters of the SHA-256 of the image reference. Horizon
-  keeps its Angular template-cache preload in the Django fragment cache, and
-  django-compressor hashes that fragment against the offline manifest built
+  Memcached (see [Cache sessions](#cache-sessions)). With signed cookies, the
+  operator's default settings and an image that carries horizon patch 0004,
+  no request calls Memcached
+  ([#1847](https://github.com/C5C3/cobaltcore/issues/1847)). Losing Memcached
+  then neither logs users out nor flips any condition, and the operator has
+  no database sub-reconcilers at all. `CACHES["default"]` (`PyMemcacheCache`)
+  stays on Memcached for what a deployment adds: a cache `SESSION_ENGINE`
+  through `spec.extraConfig`, `SIMULTANEOUS_SESSIONS: disconnect`, a plugin.
+  The operator renders 1 s pymemcache timeouts and `ignore_exc` into
+  `CACHES["default"]["OPTIONS"]`, which bound those calls and turn every
+  failed one into a miss (#1560). An image without patch 0004 keeps the
+  session cookie of every logged-in user in `default`: Horizon's
+  `SimultaneousSessionsMiddleware` stores the session key under
+  `user_pk_<pk>_restrict` on every request for `SESSION_TIMEOUT` (3600 s),
+  and the session key of a signed-cookie session is the cookie. The cookie is
+  signed and decodes without `SECRET_KEY`, so any client of that Memcached
+  can read the Keystone token in it. `SIMULTANEOUS_SESSIONS: disconnect` keeps
+  doing so on a patched image. DB-backed sessions are revisited only if
+  signed cookies plus Memcached prove insufficient. The whole session, the
+  scoped token and its service catalog included, travels in the `sessionid`
+  cookie (see [Session size limits](#session-size-limits)).
+- **Cache keys: fragments per process, the rest scoped per image.** Horizon
+  keeps its Angular template-cache preload, about 265 KB, in the Django
+  fragment cache of every page. The operator renders a
+  `template_fragments` alias on Django's `LocMemCache`, which the
+  `{% cache %}` tag prefers over `default`, so each uWSGI process keeps the
+  fragment itself
+  ([#1847](https://github.com/C5C3/cobaltcore/issues/1847)). Kept in
+  `default`, the fragment costs one of three Memcached calls per request: a
+  Memcached delayed by 100 ms raised the p50 of the login page from 23 ms to
+  921 ms
+  ([C5C3/playground#165](https://github.com/C5C3/playground/issues/165)).
+  django-compressor hashes the fragment against the offline manifest built
   into each image. A fragment written by another release has no entry in
-  that manifest, so every page render raises `OfflineGenerationError` and
-  the dashboard answers HTTP 500, the login page included. With the prefix,
-  Horizon CRs on different images never read each other's entries. An image
-  change starts with a cold cache, and two CRs on one image share a warm one
-  ([#1305](https://github.com/C5C3/cobaltcore/issues/1305)). The
+  that manifest, so a shared fragment makes every page render raise
+  `OfflineGenerationError` and the dashboard answer HTTP 500, the login page
+  included ([#1305](https://github.com/C5C3/cobaltcore/issues/1305)). A
+  fragment no other process reads cannot carry that failure. The operator
+  derives `CACHES["default"]["KEY_PREFIX"]` from `spec.image`:
+  `horizon-` plus the first 12 hex characters of the SHA-256 of the image
+  reference. With the prefix, Horizon CRs on different images never read
+  each other's entries in `default`. An image change starts with a cold
+  cache, and two CRs on one image share a warm one. The
   `tests/e2e/horizon/release-upgrade/` suite moves a Horizon from 2026.1 to
   2026.2 and asserts that the prefix the Deployment mounts changes with the
   image, and that the login page renders on both sides of the hop. The
   `sessions` alias of [cache sessions](#cache-sessions) has a prefix of its
   own that does not follow the image.
+
+  The alias changes the ConfigMap of every Horizon, so the operator upgrade
+  that brings it rolls each dashboard once. `SECRET_KEY` and the `sessions`
+  prefix do not change, so signed-cookie and cache sessions are kept. The
+  new operator with an image without horizon patch 0004 leaves two Memcached
+  calls per request, those of `SimultaneousSessionsMiddleware`. An older
+  operator with a patched image leaves one, the fragment's. Neither
+  combination fails. Each uWSGI process, two per pod, keeps one fragment per
+  theme it rendered, about 265 KB for the theme `default`, and renders it
+  once after its start in about 22 ms. Fragments older pods left in
+  Memcached stay until their 30-day expiry or an eviction, and nothing reads
+  them. The `user_pk_<pk>_restrict` entries that pods on an image without
+  patch 0004 wrote stay as well, and nothing deletes them: after the move to
+  a patched image, each still holds the session cookie, Keystone token
+  included, of a user who was active before the move, until
+  `SESSION_TIMEOUT` (3600 s) has passed since that user's last request to an
+  unpatched pod. On a signed-cookie Horizon with a dedicated Memcached, a
+  restart of that Memcached after the rollout clears them at once.
 - **Requests to the services: bounded at 30 seconds.** The operator renders
   `OPENSTACK_REQUEST_TIMEOUT = 30`, which horizon patch 0002 passes as
   `timeout` to every keystoneauth session and service client the dashboard
@@ -229,6 +268,7 @@ SESSION_CACHE_ALIAS = "sessions"
 CACHES = {
     "default": {...},
     "sessions": {...},  # BACKEND, LOCATION and OPTIONS of "default"
+    "template_fragments": {...},  # per-process LocMemCache
 }
 ```
 
@@ -280,14 +320,14 @@ Switching the store to `Cache` or back renders a new ConfigMap and rolls the
 dashboard once. The old and the new pods do not accept each other's cookies,
 so the switch logs every user out, and again each time a request moves
 between an old and a new pod, until the rollout completes. A nil block and
-`backend: SignedCookies` render the same module. The operator upgrade that
-brings the field renders that module for a CR without the block, so it rolls
-no dashboard.
+`backend: SignedCookies` render the same module.
 
 With cache sessions, Memcached holds the session keys and the Keystone
 tokens of every logged-in user in clear. A client that reaches its port
-11211 can list the keys, read the tokens and take over the sessions. The
-c5c3-operator sets no NetworkPolicy, SASL or TLS on the Memcached CRs it
+11211 can list the keys, read the tokens and take over the sessions. With
+signed cookies, an image without horizon patch 0004 puts the same tokens
+into Memcached under `user_pk_<pk>_restrict` (see
+[Design decisions](#design-decisions)). The c5c3-operator sets no NetworkPolicy, SASL or TLS on the Memcached CRs it
 creates, the shared one and a dedicated one alike, so restricting access to
 them is left to the cluster's own NetworkPolicies.
 `services.horizon.dedicatedBackingServices.cache` gives the dashboard a

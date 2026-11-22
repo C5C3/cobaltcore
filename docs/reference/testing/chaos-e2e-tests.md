@@ -325,9 +325,12 @@ ten operator pod kills, `cronjob-rotation-failure`, `openbao-pod-kill`,
 suites of #1390: `cert-manager-outage`, `eso-down`, `eso-pod-kill`,
 `openbao-sealed`, `openbao-tenant-policy-narrowed`, `envoy-gateway-outage`,
 `korc-provisioning-outage` and `korc-network-partition`. `memcached-pod-kill` and
-`horizon-memcached-pod-kill` measured zero as well: their fault reaches the request
-path, and the bounded pymemcache client turns it into cache misses (#1560). A failure
-in one of them is a defect to find, and raising the budget does not fix it.
+`horizon-memcached-pod-kill` measured zero as well. The fault of `memcached-pod-kill`
+reaches its request path, and the bounded pymemcache client turns it into cache
+misses (#1560). The login page of `horizon-memcached-pod-kill` makes no Memcached call
+on an image that carries horizon patch 0004 (#1847), and on an older image the same
+client bounds its two calls. A failure in one of them is a defect to find, and raising
+the budget does not fix it.
 
 ### Consistency checks
 
@@ -2182,10 +2185,12 @@ from `nova-system`, `keystone-system`, `ovn-system`, `neutron-system`,
 **File:** `tests/e2e-chaos/horizon-memcached-pod-kill/chainsaw-test.yaml`
 
 **Purpose:** A `PodChaos` kills one Memcached pod under a Horizon. Horizon keeps its
-sessions in signed cookies, so Memcached only backs the Django cache. Losing it lowers
-the cache hit rate. It logs no user out and changes no condition. The suite therefore
-asserts recovery without a restart: `Ready` stays `True` and no dashboard container
-restarts.
+sessions in signed cookies, and with the operator's default settings and an image that
+carries horizon patch 0004 the login page makes no Memcached call (#1847): each uWSGI
+process keeps the template fragment in its `template_fragments` alias. Losing Memcached
+logs no user out and changes no condition. The suite therefore asserts that the
+dashboard does not depend on Memcached: `Ready` stays `True` and no dashboard
+container restarts.
 
 **Steps:**
 
@@ -2201,7 +2206,7 @@ restarts.
 
 **Fixtures:** `00-horizon-cr.yaml`, `01-podchaos.yaml`
 
-**Workload:** the `http` stream against `http://horizon-chaos-mc.openstack.svc:8080/auth/login/`, started in step 2 and judged in step 7 against `failures=0 recovery=0s`, what three kind runs measured. The horizon-operator renders 1-second pymemcache timeouts and `ignore_exc` into the `CACHES` `OPTIONS` (#1560), so a closed or unreachable Memcached is a cache miss: every `GET` answered, none in the fault window slower than 40 ms. Every step from 2 to 7 also dumps the workload in its catch block.
+**Workload:** the `http` stream against `http://horizon-chaos-mc.openstack.svc:8080/auth/login/`, started in step 2 and judged in step 7 against `failures=0 recovery=0s`, what three kind runs measured: every `GET` answered, none in the fault window slower than 40 ms. An image without patch 0004 still makes the two calls of `SimultaneousSessionsMiddleware` per request. The horizon-operator renders 1-second pymemcache timeouts and `ignore_exc` into the `CACHES` `OPTIONS` (#1560), so for those calls a closed or unreachable Memcached is a cache miss. Every step from 2 to 7 also dumps the workload in its catch block.
 
 **Catch blocks:** Step 2 calls `../diagnostics.sh baseline horizon-chaos-mc --cr-kind=horizon`.
 Steps 4 and 6 call `../diagnostics.sh chaos horizon-chaos-mc --cr-kind=horizon` with
