@@ -490,3 +490,238 @@ func validFabric() *OVNFabricSpec {
 		BFD:                OVNFabricBFDSpec{ReceiveIntervalMs: 300, TransmitIntervalMs: 300, DetectMultiplier: 3},
 	}
 }
+
+// secondFabricNode is a node row that collides with nothing in validFabric.
+func secondFabricNode() OVNFabricNode {
+	return OVNFabricNode{Name: "node-2", ASN: 4200000002, LoopbackIPv4: "192.0.2.2", LoopbackIPv6: "2001:db8::2"}
+}
+
+// Each case breaks exactly one rule of validateFabric, so the assertion pins
+// the field path and the message of the rule that fired rather than merely that
+// something did.
+func TestOVNChassisValidateCreate_FabricRejections(t *testing.T) {
+	tests := []struct {
+		name     string
+		mutate   func(*OVNFabricSpec)
+		wantPath string
+		wantMsg  string
+	}{
+		{
+			name: "a bridge named twice",
+			mutate: func(f *OVNFabricSpec) {
+				f.Uplinks[1].Bridge = "br-fab1"
+			},
+			wantPath: "spec.fabric.uplinks[1].bridge",
+			wantMsg:  `Duplicate value: "br-fab1"`,
+		},
+		{
+			name: "a bridge that is also an uplink interface",
+			mutate: func(f *OVNFabricSpec) {
+				f.Uplinks[1].Bridge = "fab1"
+			},
+			wantPath: "spec.fabric.uplinks[1].bridge",
+			wantMsg:  "a peer bridge cannot carry the name of an uplink interface",
+		},
+		{
+			name: "a bridge named br-int",
+			mutate: func(f *OVNFabricSpec) {
+				f.Uplinks[0].Bridge = "br-int"
+			},
+			wantPath: "spec.fabric.uplinks[0].bridge",
+			wantMsg:  "br-int is the integration bridge of ovn-controller",
+		},
+		{
+			name: "a bridge named as the VRF",
+			mutate: func(f *OVNFabricSpec) {
+				f.Uplinks[0].Bridge = "fabric"
+			},
+			wantPath: "spec.fabric.uplinks[0].bridge",
+			wantMsg:  "the name is taken by the fabric VRF device",
+		},
+		{
+			name: "an interface named as the VRF",
+			mutate: func(f *OVNFabricSpec) {
+				f.Uplinks[1].Interface = "fabric"
+			},
+			wantPath: "spec.fabric.uplinks[1].interface",
+			wantMsg:  "the name is taken by the fabric VRF device",
+		},
+		{
+			name: "a VRF name with the ovnvrf prefix",
+			mutate: func(f *OVNFabricSpec) {
+				f.VRF.Name = "ovnvrf7"
+			},
+			wantPath: "spec.fabric.vrf.name",
+			wantMsg:  "the prefix ovnvrf is reserved for the VRFs ovn-controller maintains",
+		},
+		{
+			name: "the kernel's main table",
+			mutate: func(f *OVNFabricSpec) {
+				f.VRF.Table = 254
+			},
+			wantPath: "spec.fabric.vrf.table",
+			wantMsg:  "tables 253, 254 and 255 are the kernel's default, main and local tables",
+		},
+		{
+			name: "the kernel's default table",
+			mutate: func(f *OVNFabricSpec) {
+				f.VRF.Table = 253
+			},
+			wantPath: "spec.fabric.vrf.table",
+			wantMsg:  "tables 253, 254 and 255 are the kernel's default, main and local tables",
+		},
+		{
+			name: "the kernel's local table",
+			mutate: func(f *OVNFabricSpec) {
+				f.VRF.Table = 255
+			},
+			wantPath: "spec.fabric.vrf.table",
+			wantMsg:  "tables 253, 254 and 255 are the kernel's default, main and local tables",
+		},
+		{
+			name: "a table that is an advertised VRF id",
+			mutate: func(f *OVNFabricSpec) {
+				f.VRF.Table = 42
+			},
+			wantPath: "spec.fabric.vrf.table",
+			wantMsg:  "ovn-controller uses a VRF id as the table of ovnvrf<id>",
+		},
+		{
+			name: "a table that is a learned VRF id",
+			mutate: func(f *OVNFabricSpec) {
+				f.VRF.Table = 10
+			},
+			wantPath: "spec.fabric.vrf.table",
+			wantMsg:  "ovn-controller uses a VRF id as the table of ovnvrf<id>",
+		},
+		{
+			name: "an id in both lists",
+			mutate: func(f *OVNFabricSpec) {
+				f.LearnVRFIDs = []int64{10, 42}
+			},
+			wantPath: "spec.fabric.learnVRFIDs[1]",
+			wantMsg:  "a VRF id is either advertised from or learned into, not both",
+		},
+		{
+			name: "an ASN named twice",
+			mutate: func(f *OVNFabricSpec) {
+				node := secondFabricNode()
+				node.ASN = f.Nodes[0].ASN
+				f.Nodes = append(f.Nodes, node)
+			},
+			wantPath: "spec.fabric.nodes[1].asn",
+			wantMsg:  "Duplicate value: 4200000001",
+		},
+		{
+			name: "an IPv4 loopback named twice",
+			mutate: func(f *OVNFabricSpec) {
+				node := secondFabricNode()
+				node.LoopbackIPv4 = f.Nodes[0].LoopbackIPv4
+				f.Nodes = append(f.Nodes, node)
+			},
+			wantPath: "spec.fabric.nodes[1].loopbackIPv4",
+			wantMsg:  `Duplicate value: "192.0.2.1"`,
+		},
+		{
+			// The second spelling is the same address, so the comparison is on
+			// the parsed value rather than on the string.
+			name: "an IPv6 loopback named twice in another spelling",
+			mutate: func(f *OVNFabricSpec) {
+				node := secondFabricNode()
+				node.LoopbackIPv6 = "2001:DB8:0::1"
+				f.Nodes = append(f.Nodes, node)
+			},
+			wantPath: "spec.fabric.nodes[1].loopbackIPv6",
+			wantMsg:  `Duplicate value: "2001:DB8:0::1"`,
+		},
+		{
+			name: "a range with host bits set",
+			mutate: func(f *OVNFabricSpec) {
+				f.AnnounceableRanges = []string{"198.51.100.7/24", "2001:db8::/64"}
+			},
+			wantPath: "spec.fabric.announceableRanges[0]",
+			wantMsg:  "must be a network address; did you mean 198.51.100.0/24",
+		},
+		{
+			name: "advertised ids without an announceable range",
+			mutate: func(f *OVNFabricSpec) {
+				f.AnnounceableRanges = nil
+			},
+			wantPath: "spec.fabric.announceableRanges",
+			wantMsg:  "advertiseVRFIDs needs at least one announceable range",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			w := &OVNChassisWebhook{}
+
+			obj := validOVNChassis()
+			obj.Spec.Fabric = validFabric()
+			tt.mutate(obj.Spec.Fabric)
+
+			_, err := w.ValidateCreate(context.Background(), obj)
+			g.Expect(err).To(gomega.HaveOccurred())
+			g.Expect(err.Error()).To(gomega.ContainSubstring(tt.wantPath + ": "))
+			g.Expect(err.Error()).To(gomega.ContainSubstring(tt.wantMsg))
+		})
+	}
+}
+
+// The accepted shapes: the full fixture, a block without the block itself, a
+// block that advertises nothing and so needs no range, and values the schema
+// answers for (an unparsable loopback or range), which the webhook leaves to it
+// rather than reporting a second time.
+func TestOVNChassisValidateCreate_FabricAccepted(t *testing.T) {
+	tests := []struct {
+		name   string
+		fabric func() *OVNFabricSpec
+	}{
+		{name: "nil block", fabric: func() *OVNFabricSpec { return nil }},
+		{name: "valid block", fabric: validFabric},
+		{
+			name: "two distinct node rows",
+			fabric: func() *OVNFabricSpec {
+				f := validFabric()
+				f.Nodes = append(f.Nodes, secondFabricNode())
+				return f
+			},
+		},
+		{
+			name: "no advertised id and no range",
+			fabric: func() *OVNFabricSpec {
+				f := validFabric()
+				f.AdvertiseVRFIDs = nil
+				f.AnnounceableRanges = nil
+				return f
+			},
+		},
+		{
+			name: "unparsable values are left to the schema",
+			fabric: func() *OVNFabricSpec {
+				f := validFabric()
+				second := secondFabricNode()
+				second.LoopbackIPv4 = "not-an-address"
+				f.Nodes = append(f.Nodes, second)
+				f.Nodes[0].LoopbackIPv4 = "not-an-address"
+				f.AnnounceableRanges = []string{"not-a-cidr"}
+				return f
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			w := &OVNChassisWebhook{}
+
+			obj := validOVNChassis()
+			obj.Spec.Fabric = tt.fabric()
+
+			_, err := w.ValidateCreate(context.Background(), obj)
+			g.Expect(err).NotTo(gomega.HaveOccurred())
+			g.Expect(validateFabric(nil, obj.Spec.Fabric)).To(gomega.BeEmpty())
+		})
+	}
+}
