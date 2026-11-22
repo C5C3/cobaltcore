@@ -8,7 +8,7 @@
 #   - Aggregate Ready=True with reason AllReady
 #   - Owned resources exist (Deployment, Service, PDB, ConfigMap), and the
 #     ConfigMap the Deployment mounts carries the image-scoped cache
-#     KEY_PREFIX
+#     KEY_PREFIX and the per-process template_fragments cache alias
 #   - The dashboard login page renders (HTTP 200) — this exercises Django
 #     URL routing, templates, and the offline-compression manifest without
 #     a live Keystone
@@ -16,6 +16,8 @@
 #     uWSGI keeps open with --http-keepalive
 #   - The login page answers a request with a 6000-byte cookie and one with
 #     a 60000-byte cookie, which uWSGI accepts only with --buffer-size 65535
+#   - The login page leaves the Angular template fragment out of Memcached:
+#     each uWSGI process keeps it in the template_fragments alias (#1847)
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -118,14 +120,15 @@ spec:
               matchLabels:
                 app.kubernetes.io/name: horizon
                 app.kubernetes.io/instance: horizon-basic-2026-2
-  # ── Step 4: Assert the rendered ConfigMap and its cache KEY_PREFIX ─────
+  # ── Step 4: Assert the rendered ConfigMap and its CACHES ───────────────
   # The prefix is "horizon-" plus the first 12 hex characters of
   # sha256("ghcr.io/c5c3/horizon:2026.2"); the plain suite pins its own
   # (2026.1), so the leg shows two releases on one Memcached render two
   # prefixes (#1305). The script reads the ConfigMap the Deployment mounts,
   # because the retention sweep keeps up to three historical ones beside
-  # it. Plain grep -F, no -q: an early exit would break the pipe under
-  # pipefail.
+  # it. The second grep finds the per-process alias Django's {% cache %}
+  # tag prefers over "default" (#1847). Plain grep -F, no -q: an early exit
+  # would break the pipe under pipefail.
   - try:
     - script:
         shell: bash
@@ -135,6 +138,7 @@ spec:
           cm=$(kubectl get deploy horizon-basic-2026-2 -n openstack -o jsonpath='{.spec.template.spec.volumes[?(@.name=="config")].configMap.name}')
           test -n "$cm"
           kubectl get cm -n openstack "$cm" -o jsonpath='{.data.local_settings\.py}' | grep -F '"KEY_PREFIX": "horizon-bf42999233c3"'
+          kubectl get cm -n openstack "$cm" -o jsonpath='{.data.local_settings\.py}' | grep -F '"template_fragments": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}'
   # ── Step 5: Assert the login page renders over HTTP ────────────────────
   # HTTP-level dashboard coverage: tempest-horizon is retired upstream, so
   # the login-page fetch is the Chainsaw-level substitute for a tempest run.
@@ -234,3 +238,75 @@ spec:
           done
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 5b: Assert the template fragment stays out of Memcached ───────
+  # Horizon wraps its Angular template-cache preload in a {% cache %} tag on
+  # every page, and each uWSGI process keeps it in the per-process
+  # template_fragments alias (#1847). The fragment name "angular" and the
+  # vary_on ["template_cache_preloads", THEME] mirror that tag in upstream
+  # openstack_dashboard/templates/horizon/_scripts.html, and a request
+  # without a theme cookie renders THEME as DEFAULT_THEME. The script runs
+  # Django in the newest dashboard pod with the mounted local_settings.py.
+  # It first sets and reads back a canary key in CACHES["default"]:
+  # ignore_exc turns an unreachable Memcached into a miss, and a miss would
+  # pass the absence check. It then renders the login page in its own
+  # process and fails unless the tag wrote the computed key to that
+  # process's template_fragments alias, so a key the tag no longer writes
+  # cannot pass the absence check either. Last, it deletes the key from
+  # "default", requests the login page four times on the pod's own port
+  # under the probes' Host, and fails when the key is back in "default".
+  # The step reads no settings.CACHES: step 4 covers the ConfigMap, this
+  # step what Django does with it.
+  - try:
+    - script:
+        shell: bash
+        timeout: 90s
+        content: |
+          set -euo pipefail
+          pod=$(kubectl get pods -n openstack -l app.kubernetes.io/instance=horizon-basic-2026-2 \
+            --sort-by=.metadata.creationTimestamp -o name | tail -n 1)
+          test -n "$pod"
+          kubectl exec -n openstack "$pod" -c horizon -- \
+            env DJANGO_SETTINGS_MODULE=openstack_dashboard.settings PYTHONWARNINGS=ignore python3 -c '
+          import sys
+          import urllib.error
+          import urllib.request
+          import django; django.setup()
+          from django.conf import settings
+          from django.core.cache import caches
+          from django.core.cache.utils import make_template_fragment_key
+          from django.test import Client
+          cache = caches["default"]
+          cache.set("horizon-e2e-fragment-canary", "1", 60)
+          if cache.get("horizon-e2e-fragment-canary") != "1":
+              sys.exit("FAIL: Memcached does not answer, the absence check would prove nothing")
+          key = make_template_fragment_key("angular", ["template_cache_preloads", settings.DEFAULT_THEME])
+          code = Client().get("/auth/login/", HTTP_HOST="localhost").status_code
+          if code != 200:
+              sys.exit("FAIL: GET /auth/login/ in the script process answered HTTP %d" % code)
+          if caches["template_fragments"].get(key) is None:
+              sys.exit("FAIL: the login page wrote no fragment under %s, the absence check would prove nothing" % key)
+          cache.delete(key)
+          for _ in range(4):
+              request = urllib.request.Request("http://127.0.0.1:8080/auth/login/", headers={"Host": "localhost"})
+              try:
+                  code = urllib.request.urlopen(request, timeout=30).status
+              except urllib.error.HTTPError as exc:
+                  code = exc.code
+              if code != 200:
+                  sys.exit("FAIL: GET /auth/login/ answered HTTP %d" % code)
+          if cache.get(key) is not None:
+              sys.exit("FAIL: the Angular template fragment is in Memcached under %s" % key)
+          print("OK: four login pages left the Angular template fragment of theme %s out of Memcached" % settings.DEFAULT_THEME)'
+    catch:
+    - script:
+        content: |
+          echo "=== Horizon CR status ==="
+          kubectl get horizon horizon-basic-2026-2 -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Dashboard pods ==="
+          kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=horizon-basic-2026-2 -o wide 2>&1 || true
+          echo "=== Dashboard pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=horizon-basic-2026-2 -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
