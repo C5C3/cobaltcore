@@ -684,3 +684,69 @@ func TestFabricScript_ConcurrentRunsConverge(t *testing.T) {
 		g.Expect(rig.state(t)).To(Equal(want))
 	}
 }
+
+// routeProbeScriptStub stands in for ovn-sbctl: each list answers with the
+// payload of its table, --bare printing one UUID per line, and fails when
+// SBCTL_RC is set.
+const routeProbeScriptStub = `ovn-sbctl() {
+  if [ -n "${SBCTL_RC:-}" ]; then return "$SBCTL_RC"; fi
+  case " $* " in
+  *" list Advertised_Route "*) printf '%s' "${ADVERTISED:-}" ;;
+  *" list Learned_Route "*) printf '%s' "${LEARNED:-}" ;;
+  esac
+}
+. "$ROUTE_PROBE_SCRIPT"
+`
+
+// runRouteProbe runs route-probe.sh against the stub with its termination log
+// pointed at a scratch file, and returns the exit code and what it reported.
+func runRouteProbe(t *testing.T, env ...string) (int, string) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+	if _, err := exec.LookPath(bashPath); err != nil {
+		t.Skipf("%s is unavailable; the route probe script cannot be exercised here: %v", bashPath, err)
+	}
+	dir := t.TempDir()
+	report := filepath.Join(dir, "termination-log")
+	g.Expect(strings.Count(routeProbeScript, "/dev/termination-log")).To(Equal(1))
+	script := filepath.Join(dir, "route-probe.sh")
+	g.Expect(os.WriteFile(script,
+		[]byte(strings.ReplaceAll(routeProbeScript, "/dev/termination-log", report)), fabricRigFileMode)).To(Succeed())
+
+	cmd := exec.CommandContext(t.Context(), bashPath, "-c", routeProbeScriptStub)
+	cmd.Env = append(os.Environ(), "SB_ADDR=ssl:10.96.0.21:6642", "ROUTE_PROBE_SCRIPT="+script)
+	cmd.Env = append(cmd.Env, env...)
+	code := exitCode(t, cmd.Run())
+	content, err := os.ReadFile(filepath.Clean(report))
+	if errors.Is(err, os.ErrNotExist) {
+		return code, ""
+	}
+	g.Expect(err).NotTo(HaveOccurred())
+	return code, string(content)
+}
+
+// The probe reports the row counts of both tables in the form the Fabric step
+// parses, an empty table as 0.
+func TestRouteProbeScript_ReportsTheRowCounts(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	code, report := runRouteProbe(t, "ADVERTISED=a\nb\nc\n", "LEARNED=d\ne\nf\ng\n")
+	g.Expect(code).To(Equal(0))
+	g.Expect(report).To(Equal("advertised=3 learned=4\n"))
+	g.Expect(routeProbeReport.MatchString(strings.TrimRight(report, "\n"))).To(BeTrue())
+
+	code, report = runRouteProbe(t)
+	g.Expect(code).To(Equal(0))
+	g.Expect(report).To(Equal("advertised=0 learned=0\n"))
+}
+
+// A query that fails fails the script, rather than reading as a database
+// without routes.
+func TestRouteProbeScript_FailedQueryFailsTheRun(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	code, report := runRouteProbe(t, "SBCTL_RC=1")
+
+	g.Expect(code).NotTo(Equal(0))
+	g.Expect(report).To(BeEmpty(), "a failed probe writes no report")
+}

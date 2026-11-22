@@ -96,11 +96,12 @@ type OVNChassisSpec struct {
 	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
 
 	// Jobs sizes and prioritizes the pods of the maintenance Jobs: apply,
-	// evacuate and chassis-del. Unset resources default to a 70m CPU request
-	// and 368Mi memory as request and limit, and an unset priority class
-	// renders none. The Jobs take spec.tolerations. The block has no placement
-	// fields: the apply Job is pinned to its node, and a node selector that
-	// node does not match fails the pinned pod's kubelet admission.
+	// evacuate and chassis-del, and on a chassis with spec.fabric the route
+	// probe. Unset resources default to a 70m CPU request and 368Mi memory as
+	// request and limit, and an unset priority class renders none. The Jobs
+	// take spec.tolerations. The block has no placement fields: the apply Job
+	// is pinned to its node, and a node selector that node does not match
+	// fails the pinned pod's kubelet admission.
 	// +optional
 	Jobs *commonv1.JobBaseSpec `json:"jobs,omitempty"`
 

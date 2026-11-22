@@ -10,8 +10,11 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	. "github.com/onsi/gomega"
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/meta/testrestmapper"
@@ -26,9 +29,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
+	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	"github.com/c5c3/cobaltcore/internal/common/job"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
 	mctestutil "github.com/c5c3/cobaltcore/internal/common/testutil/multicluster"
+	"github.com/c5c3/cobaltcore/internal/common/testutil/simulators"
 	ovnv1alpha1 "github.com/c5c3/cobaltcore/operators/ovn/api/v1alpha1"
 )
 
@@ -122,6 +128,9 @@ func countingFuncs(calls *frrCalls, override interceptor.Funcs) interceptor.Func
 		Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
 			if isFRR(obj) {
 				calls.deletes.Add(1)
+				if override.Delete != nil {
+					return override.Delete(ctx, c, obj, opts...)
+				}
 			}
 			return c.Delete(ctx, obj, opts...)
 		},
@@ -173,9 +182,9 @@ func passFabric(ctx context.Context, t *testing.T, r *OVNChassisReconciler, cr *
 	nodes renderedNodes,
 ) (ctrl.Result, error) {
 	t.Helper()
-	res, err := r.reconcileFabric(ctx, r.Client, cr, nodes)
+	res, err := r.reconcileFRRConfigurations(ctx, r.Client, cr, nodes)
 	if err == nil && res.RequeueAfter == commonreconcile.RequeueNextPass {
-		return r.reconcileFabric(ctx, r.Client, cr, nodes)
+		return r.reconcileFRRConfigurations(ctx, r.Client, cr, nodes)
 	}
 	return res, err
 }
@@ -266,7 +275,7 @@ func TestReconcileFabric_AppliesOnlyOnADifference(t *testing.T) {
 
 	calls.lists.Store(0)
 	calls.applies.Store(0)
-	_, err = r.reconcileFabric(ctx, r.Client, cr, nodes)
+	_, err = r.reconcileFRRConfigurations(ctx, r.Client, cr, nodes)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(calls.lists.Load()).To(BeEquivalentTo(1))
 	g.Expect(calls.applies.Load()).To(BeZero(), "an unchanged object is not applied again")
@@ -274,7 +283,7 @@ func TestReconcileFabric_AppliesOnlyOnADifference(t *testing.T) {
 	edited := readFRRConfiguration(ctx, t, r.Client, testFRRConfigurationNodeA)
 	g.Expect(unstructured.SetNestedField(edited.Object, int64(999), "spec", "raw", "priority")).To(Succeed())
 	g.Expect(r.Update(ctx, edited)).To(Succeed())
-	_, err = r.reconcileFabric(ctx, r.Client, cr, nodes)
+	_, err = r.reconcileFRRConfigurations(ctx, r.Client, cr, nodes)
 	g.Expect(err).NotTo(HaveOccurred())
 	priority, _, _ := unstructured.NestedInt64(readFRRConfiguration(ctx, t, r.Client, testFRRConfigurationNodeA).Object,
 		"spec", "raw", "priority")
@@ -282,7 +291,7 @@ func TestReconcileFabric_AppliesOnlyOnADifference(t *testing.T) {
 
 	cr.Spec.Fabric.Uplinks = cr.Spec.Fabric.Uplinks[:1]
 	calls.applies.Store(0)
-	_, err = r.reconcileFabric(ctx, r.Client, cr, nodes)
+	_, err = r.reconcileFRRConfigurations(ctx, r.Client, cr, nodes)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(calls.applies.Load()).To(BeEquivalentTo(1), "a removed uplink must reach the object")
 	routers, _, _ := unstructured.NestedSlice(readFRRConfiguration(ctx, t, r.Client, testFRRConfigurationNodeA).Object,
@@ -326,7 +335,7 @@ func TestReconcileFabric_PrunesAndReleasesTheFinalizer(t *testing.T) {
 	g.Expect(readFRRConfiguration(ctx, t, r.Client, testFRRConfigurationNodeA)).NotTo(BeNil())
 
 	// The node loses the frr-k8s label.
-	_, err = r.reconcileFabric(ctx, r.Client, cr, renderedNodes{testNodeA: fabricEntry(false)})
+	_, err = r.reconcileFRRConfigurations(ctx, r.Client, cr, renderedNodes{testNodeA: fabricEntry(false)})
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(readFRRConfiguration(ctx, t, r.Client, testFRRConfigurationNodeA)).To(BeNil())
@@ -337,9 +346,37 @@ func TestReconcileFabric_PrunesAndReleasesTheFinalizer(t *testing.T) {
 		To(Equal("Rendered 1 fabric nodes; 0 carry an FRRConfiguration in frr-k8s-system"))
 }
 
-// The finalizer is installed before the first object, and the pass returns to
-// let the next one observe it. The status this pass set so far survives the
-// write: an Update decodes the persisted object into what it is handed.
+// Removing the whole block from a chassis that wrote an FRRConfiguration
+// deletes the object and releases the finalizer, and FabricReady reports the
+// block as unset.
+func TestReconcileFabric_RemovedBlockPrunesAndReleasesTheFinalizer(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cr := fabricChassis()
+	r, _ := newFabricReconciler(t, true, interceptor.Funcs{}, cr)
+	_, err := passFabric(ctx, t, r, cr, renderedNodes{testNodeA: fabricEntry(true)})
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(readFRRConfiguration(ctx, t, r.Client, testFRRConfigurationNodeA)).NotTo(BeNil())
+
+	cr.Spec.Fabric = nil
+	res, err := r.reconcileFabric(ctx, r.Client, cr, maintenanceCentral(),
+		renderedNodes{testNodeA: chassisEntry(testFixedSystemID, false)})
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.IsZero()).To(BeTrue())
+	g.Expect(readFRRConfiguration(ctx, t, r.Client, testFRRConfigurationNodeA)).To(BeNil())
+	g.Expect(cr.Finalizers).NotTo(ContainElement(fabricFinalizer))
+	g.Expect(getOVNChassis(t, r.Client, testOVNChassisName).Finalizers).NotTo(ContainElement(fabricFinalizer))
+	cond := ovnChassisCondition(cr, conditionTypeFabricReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(conditionReasonFabricNotConfigured))
+	g.Expect(ovnChassisCondition(cr, conditionTypeRoutesAdvertised)).To(BeNil())
+}
+
+// The finalizer is installed before the first object, after the list, and the
+// pass returns to let the next one observe it. The status this pass set so far
+// survives the write: an Update decodes the persisted object into what it is
+// handed.
 func TestReconcileFabric_FinalizerFirstKeepsThePassStatus(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ctx := context.Background()
@@ -347,7 +384,7 @@ func TestReconcileFabric_FinalizerFirstKeepsThePassStatus(t *testing.T) {
 	r, calls := newFabricReconciler(t, true, interceptor.Funcs{}, cr)
 	cr.Status.Nodes = []ovnv1alpha1.OVNChassisNodeStatus{{Name: testNodeA, Fabric: true, ConfigHash: "abcdef01"}}
 
-	res, err := r.reconcileFabric(ctx, r.Client, cr, renderedNodes{testNodeA: fabricEntry(true)})
+	res, err := r.reconcileFRRConfigurations(ctx, r.Client, cr, renderedNodes{testNodeA: fabricEntry(true)})
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueNextPass))
@@ -355,7 +392,34 @@ func TestReconcileFabric_FinalizerFirstKeepsThePassStatus(t *testing.T) {
 	g.Expect(getOVNChassis(t, r.Client, testOVNChassisName).Finalizers).To(ContainElement(fabricFinalizer))
 	g.Expect(cr.Status.Nodes).To(HaveLen(1), "the in-memory status of the pass must survive the finalizer write")
 	g.Expect(cr.Status.Nodes[0].Fabric).To(BeTrue())
-	g.Expect(calls.lists.Load()).To(BeZero(), "nothing is listed before the finalizer is persisted")
+	g.Expect(calls.lists.Load()).To(BeEquivalentTo(1), "the list goes ahead of the finalizer")
+	g.Expect(calls.applies.Load()).To(BeZero(), "nothing is written before the finalizer is persisted")
+}
+
+// A cluster that refuses the list, such as a target whose access chart grants
+// no FRRConfiguration access, gets no finalizer: it would guard no object and
+// hold the CR's deletion on the same refusal. The deletion then asks nothing.
+func TestReconcileFabric_RefusedListAddsNoFinalizer(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cr := fabricChassis()
+	r, calls := newFabricReconciler(t, true, interceptor.Funcs{
+		List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+			return apierrors.NewForbidden(frrConfigurationGVK.GroupVersion().WithResource("frrconfigurations").GroupResource(),
+				"", errors.New("no grant"))
+		},
+	}, cr)
+
+	_, err := r.reconcileFRRConfigurations(ctx, r.Client, cr, renderedNodes{testNodeA: fabricEntry(true)})
+
+	g.Expect(apierrors.IsForbidden(err)).To(BeTrue())
+	g.Expect(ovnChassisCondition(cr, conditionTypeFabricReady).Reason).To(Equal(conditionReasonFabricError))
+	g.Expect(cr.Finalizers).NotTo(ContainElement(fabricFinalizer))
+	g.Expect(getOVNChassis(t, r.Client, testOVNChassisName).Finalizers).NotTo(ContainElement(fabricFinalizer))
+
+	calls.lists.Store(0)
+	g.Expect(r.reconcileDeleteFabric(ctx, r.Client, cr)).To(Succeed())
+	g.Expect(calls.any()).To(BeFalse())
 }
 
 // An object of the wanted name that this CR does not own is somebody else's:
@@ -391,7 +455,7 @@ func TestReconcileFabric_KindNotServedAndProbeError(t *testing.T) {
 		cr := fabricChassis()
 		r, calls := newFabricReconciler(t, false, interceptor.Funcs{}, cr)
 
-		res, err := r.reconcileFabric(ctx, r.Client, cr, renderedNodes{testNodeA: fabricEntry(true)})
+		res, err := r.reconcileFRRConfigurations(ctx, r.Client, cr, renderedNodes{testNodeA: fabricEntry(true)})
 
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(res.IsZero()).To(BeTrue())
@@ -410,7 +474,7 @@ func TestReconcileFabric_KindNotServedAndProbeError(t *testing.T) {
 		r, _ := newFabricReconciler(t, true, interceptor.Funcs{}, cr)
 		children := mctestutil.RemoteChildren(t, r.Client, mctestutil.TargetFake(ovnChassisFakeClientBuilder(t)))
 
-		_, err := r.reconcileFabric(ctx, children, cr, renderedNodes{testNodeA: fabricEntry(true)})
+		_, err := r.reconcileFRRConfigurations(ctx, children, cr, renderedNodes{testNodeA: fabricEntry(true)})
 
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(ovnChassisCondition(cr, conditionTypeFabricReady).Reason).To(Equal(conditionReasonFRRK8sNotInstalled))
@@ -423,7 +487,7 @@ func TestReconcileFabric_KindNotServedAndProbeError(t *testing.T) {
 		r, _ := newFabricReconciler(t, true, interceptor.Funcs{}, cr)
 		children := mctestutil.UnprobeableChildren(ovnChassisFakeClientBuilder(t).Build())
 
-		_, err := r.reconcileFabric(ctx, children, cr, renderedNodes{testNodeA: fabricEntry(true)})
+		_, err := r.reconcileFRRConfigurations(ctx, children, cr, renderedNodes{testNodeA: fabricEntry(true)})
 
 		g.Expect(err).To(MatchError(ContainSubstring("discovery is unavailable")))
 		cond := ovnChassisCondition(cr, conditionTypeFabricReady)
@@ -508,7 +572,7 @@ func TestReconcileFabric_NilBlockIssuesNoRequest(t *testing.T) {
 	cr := maintenanceChassis()
 	r, calls := newFabricReconciler(t, true, interceptor.Funcs{}, cr)
 
-	res, err := r.reconcileFabric(ctx, r.Client, cr, renderedNodes{testNodeA: fabricEntry(true)})
+	res, err := r.reconcileFRRConfigurations(ctx, r.Client, cr, renderedNodes{testNodeA: fabricEntry(true)})
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
@@ -528,10 +592,10 @@ func TestReconcileFabric_TargetCluster(t *testing.T) {
 	target := fabricClientBuilder(t, true).Build()
 	children := mctestutil.RemoteChildren(t, r.Client, target)
 
-	res, err := r.reconcileFabric(ctx, children, cr, renderedNodes{testNodeA: fabricEntry(true)})
+	res, err := r.reconcileFRRConfigurations(ctx, children, cr, renderedNodes{testNodeA: fabricEntry(true)})
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueNextPass))
-	_, err = r.reconcileFabric(ctx, children, cr, renderedNodes{testNodeA: fabricEntry(true)})
+	_, err = r.reconcileFRRConfigurations(ctx, children, cr, renderedNodes{testNodeA: fabricEntry(true)})
 
 	g.Expect(err).NotTo(HaveOccurred())
 	obj := readFRRConfiguration(ctx, t, target, testFRRConfigurationNodeA)
@@ -596,6 +660,50 @@ func TestReconcileDeleteFabric(t *testing.T) {
 		g.Expect(apierrors.IsForbidden(err)).To(BeTrue())
 		g.Expect(getOVNChassis(t, r.Client, testOVNChassisName).Finalizers).To(ContainElement(fabricFinalizer))
 	})
+
+	t.Run("kind no longer served releases the finalizer", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cr := fabricChassis()
+		cr.Finalizers = []string{fabricFinalizer}
+		r, calls := newFabricReconciler(t, true, interceptor.Funcs{
+			List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+				return &meta.NoKindMatchError{
+					GroupKind: frrConfigurationGVK.GroupKind(), SearchedVersions: []string{frrConfigurationGVK.Version},
+				}
+			},
+		}, cr)
+
+		g.Expect(r.reconcileDeleteFabric(context.Background(), r.Client, cr)).To(Succeed())
+		g.Expect(calls.deletes.Load()).To(BeZero())
+		g.Expect(getOVNChassis(t, r.Client, testOVNChassisName).Finalizers).To(BeEmpty())
+	})
+
+	t.Run("failed delete keeps the finalizer, a gone object releases it", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ctx := context.Background()
+		cr := fabricChassis()
+		boom := errors.New("etcd is unhappy")
+		var deleteErr error
+		r, _ := newFabricReconciler(t, true, interceptor.Funcs{
+			Delete: func(context.Context, client.WithWatch, client.Object, ...client.DeleteOption) error {
+				return deleteErr
+			},
+		}, cr)
+		_, err := passFabric(ctx, t, r, cr, renderedNodes{testNodeA: fabricEntry(true)})
+		g.Expect(err).NotTo(HaveOccurred())
+
+		deleteErr = boom
+		err = r.reconcileDeleteFabric(ctx, r.Client, cr)
+
+		g.Expect(errors.Is(err, boom)).To(BeTrue())
+		g.Expect(getOVNChassis(t, r.Client, testOVNChassisName).Finalizers).To(ContainElement(fabricFinalizer))
+		g.Expect(readFRRConfiguration(ctx, t, r.Client, testFRRConfigurationNodeA)).NotTo(BeNil())
+
+		deleteErr = apierrors.NewNotFound(frrConfigurationGVK.GroupVersion().WithResource("frrconfigurations").GroupResource(),
+			testFRRConfigurationNodeA)
+		g.Expect(r.reconcileDeleteFabric(ctx, r.Client, cr)).To(Succeed())
+		g.Expect(getOVNChassis(t, r.Client, testOVNChassisName).Finalizers).To(BeEmpty())
+	})
 }
 
 // A name that would not fit a label value or the kind's own name rules never
@@ -607,4 +715,266 @@ func TestFabricFRRConfigurationName_FitsTheNameCap(t *testing.T) {
 
 	g.Expect(len(fabricFRRConfigurationName(cr, strings.Repeat("n", 253)))).To(BeNumerically("<=", 63))
 	g.Expect(fabricFRRConfigurationName(testOVNChassis(), testNodeA)).To(Equal(testFRRConfigurationNodeA))
+}
+
+// --- route probe ------------------------------------------------------------
+
+// testRouteProbeJob is the name of the fixture's route probe Job.
+const testRouteProbeJob = testOVNChassisName + "-route-probe"
+
+// probeClock is a clock a test moves by hand.
+type probeClock struct{ t time.Time }
+
+func (c *probeClock) now() time.Time { return c.t }
+
+// probeReconciler is newFabricReconciler for a chassis whose FRR half has
+// nothing to do (no node runs frr-k8s), with the clock pinned to clock.
+func probeReconciler(t *testing.T, clock *probeClock, override interceptor.Funcs,
+	objs ...client.Object,
+) *OVNChassisReconciler {
+	t.Helper()
+	r, _ := newFabricReconciler(t, true, override, objs...)
+	r.Now = clock.now
+	return r
+}
+
+// finishProbe completes the probe Job and leaves the pod a termination message,
+// the way the kubelet does for a container that wrote /dev/termination-log.
+func finishProbe(ctx context.Context, t *testing.T, c client.Client, message string) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+	g.Expect(simulators.SimulateJobComplete(ctx, c, chassisKey(testRouteProbeJob))).To(Succeed())
+	probe := readMaintenanceJob(ctx, t, c, testRouteProbeJob)
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name: testRouteProbeJob + "-pod", Namespace: testNamespace,
+		Labels: map[string]string{
+			"batch.kubernetes.io/job-name":       testRouteProbeJob,
+			"batch.kubernetes.io/controller-uid": string(probe.UID),
+		},
+	}}
+	g.Expect(c.Create(ctx, pod)).To(Succeed())
+	pod.Status = corev1.PodStatus{
+		Phase: corev1.PodSucceeded,
+		ContainerStatuses: []corev1.ContainerStatus{{
+			Name:  componentMaintenance,
+			State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Message: message}},
+		}},
+	}
+	g.Expect(c.Status().Update(ctx, pod)).To(Succeed())
+}
+
+// probeFabric runs the whole Fabric step for a fabric chassis whose only node
+// does not run frr-k8s, so the FRR half writes nothing and the pass reaches the
+// probe.
+func probeFabric(ctx context.Context, r *OVNChassisReconciler, cr *ovnv1alpha1.OVNChassis,
+	central resolvedCentral,
+) (ctrl.Result, error) {
+	return r.reconcileFabric(ctx, r.Client, cr, central, renderedNodes{testNodeA: fabricEntry(false)})
+}
+
+// The report of a finished probe Job becomes RoutesAdvertised: True with the
+// counts when anything is advertised, False with the same message when nothing
+// is, and Unknown when the message is not the probe's report. None of them
+// touches Ready, and every pass of a fabric chassis requeues after the probe
+// interval.
+func TestProbeRoutes_Report(t *testing.T) {
+	for _, tc := range []struct {
+		name, message, status, reason, text string
+	}{
+		{
+			"advertised", "advertised=3 learned=4", "True", conditionReasonRoutesAdvertised,
+			"The Southbound database of OVNCentral ovn holds 3 advertised and 4 learned routes",
+		},
+		{
+			"nothing advertised", "advertised=0 learned=0", "False", conditionReasonNoAdvertisedRoutes,
+			"The Southbound database of OVNCentral ovn holds 0 advertised and 0 learned routes",
+		},
+		{"empty message", "", "Unknown", conditionReasonRouteProbeUnreadable, ""},
+		{"garbage", "garbage", "Unknown", conditionReasonRouteProbeUnreadable, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ctx := context.Background()
+			cr := fabricChassis()
+			r := probeReconciler(t, &probeClock{t: time.Unix(3000, 0)}, interceptor.Funcs{}, cr)
+			_, err := probeFabric(ctx, r, cr, maintenanceCentral())
+			g.Expect(err).NotTo(HaveOccurred())
+			finishProbe(ctx, t, r.Client, tc.message)
+
+			res, err := probeFabric(ctx, r, cr, maintenanceCentral())
+
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(res.RequeueAfter).To(Equal(5 * time.Minute))
+			cond := ovnChassisCondition(cr, conditionTypeRoutesAdvertised)
+			g.Expect(string(cond.Status)).To(Equal(tc.status))
+			g.Expect(cond.Reason).To(Equal(tc.reason))
+			if tc.text != "" {
+				g.Expect(cond.Message).To(Equal(tc.text))
+			}
+
+			// RoutesAdvertised is no sub-condition of Ready.
+			for _, ct := range chassisSubConditionTypes {
+				conditions.SetCondition(&cr.Status.Conditions, metav1.Condition{
+					Type: ct, Status: metav1.ConditionTrue, Reason: "OK",
+				})
+			}
+			setChassisReadyCondition(cr)
+			g.Expect(ovnChassisCondition(cr, "Ready").Status).To(Equal(metav1.ConditionTrue))
+		})
+	}
+}
+
+// A failed probe Job and a report that cannot be read are reported as
+// RouteProbeFailed, and neither fails the pass: the next window runs a new Job.
+func TestProbeRoutes_Failures(t *testing.T) {
+	t.Run("failed Job", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ctx := context.Background()
+		cr := fabricChassis()
+		clock := &probeClock{t: time.Unix(3000, 0)}
+		failed := &batchv1.Job{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: testRouteProbeJob, Namespace: testNamespace,
+				Annotations: map[string]string{job.PodSpecHashAnnotation: routeProbeRerunKey(clock.t)},
+			},
+			Status: batchv1.JobStatus{Conditions: []batchv1.JobCondition{{
+				Type: batchv1.JobFailed, Status: corev1.ConditionTrue, LastTransitionTime: metav1.Now(),
+			}}},
+		}
+		r := probeReconciler(t, clock, interceptor.Funcs{}, cr, failed)
+
+		res, err := probeFabric(ctx, r, cr, maintenanceCentral())
+
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(res.RequeueAfter).To(Equal(RequeueRouteProbe))
+		cond := ovnChassisCondition(cr, conditionTypeRoutesAdvertised)
+		g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(cond.Reason).To(Equal(conditionReasonRouteProbeFailed))
+		g.Expect(cond.Message).To(ContainSubstring(job.ErrJobFailed.Error()))
+	})
+
+	t.Run("unreadable report", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ctx := context.Background()
+		cr := fabricChassis()
+		// countingFuncs hands non-FRR lists straight through, so the pod list
+		// fails on a client of its own.
+		c := fabricClientBuilder(t, true, cr).WithInterceptorFuncs(interceptor.Funcs{
+			List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+				if _, pods := list.(*corev1.PodList); pods {
+					return errors.New("pods are not listable")
+				}
+				return c.List(ctx, list, opts...)
+			},
+		}).Build()
+		r := &OVNChassisReconciler{
+			Client: c, Scheme: newTestScheme(t), Recorder: record.NewFakeRecorder(10),
+			Now: (&probeClock{t: time.Unix(3000, 0)}).now,
+		}
+		_, err := probeFabric(ctx, r, cr, maintenanceCentral())
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(simulators.SimulateJobComplete(ctx, r.Client, chassisKey(testRouteProbeJob))).To(Succeed())
+
+		_, err = probeFabric(ctx, r, cr, maintenanceCentral())
+
+		g.Expect(err).NotTo(HaveOccurred())
+		cond := ovnChassisCondition(cr, conditionTypeRoutesAdvertised)
+		g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(cond.Reason).To(Equal(conditionReasonRouteProbeFailed))
+		g.Expect(cond.Message).To(ContainSubstring("pods are not listable"))
+	})
+}
+
+// A central that has not published its Southbound address defers the probe,
+// and no Job is created for it.
+func TestProbeRoutes_DeferredWithoutAddress(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cr := fabricChassis()
+	r := probeReconciler(t, &probeClock{t: time.Unix(3000, 0)}, interceptor.Funcs{}, cr)
+	central := maintenanceCentral()
+	central.sbAddress = ""
+
+	_, err := probeFabric(ctx, r, cr, central)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	cond := ovnChassisCondition(cr, conditionTypeRoutesAdvertised)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionUnknown))
+	g.Expect(cond.Reason).To(Equal(conditionReasonRouteProbeDeferred))
+	g.Expect(maintenanceJobNames(ctx, t, r.Client)).To(BeEmpty())
+}
+
+// Before the first Job finishes the condition is Pending; while a later Job
+// runs it keeps the finding of the one before.
+func TestProbeRoutes_PendingKeepsThePreviousFinding(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cr := fabricChassis()
+	clock := &probeClock{t: time.Unix(3000, 0)}
+	r := probeReconciler(t, clock, interceptor.Funcs{}, cr)
+
+	_, err := probeFabric(ctx, r, cr, maintenanceCentral())
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ovnChassisCondition(cr, conditionTypeRoutesAdvertised).Reason).To(Equal(conditionReasonRouteProbePending))
+
+	finishProbe(ctx, t, r.Client, "advertised=1 learned=2")
+	_, err = probeFabric(ctx, r, cr, maintenanceCentral())
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ovnChassisCondition(cr, conditionTypeRoutesAdvertised).Reason).To(Equal(conditionReasonRoutesAdvertised))
+
+	// The next window re-creates the Job, which is still running.
+	clock.t = clock.t.Add(RequeueRouteProbe)
+	_, err = probeFabric(ctx, r, cr, maintenanceCentral())
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ovnChassisCondition(cr, conditionTypeRoutesAdvertised).Reason).To(Equal(conditionReasonRoutesAdvertised))
+}
+
+// The rerun key is the probe window: two passes inside one window read one
+// Job, and the first pass of the next window runs a new one.
+func TestProbeRoutes_OneJobPerWindow(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cr := fabricChassis()
+	clock := &probeClock{t: time.Unix(3000, 0)}
+	r := probeReconciler(t, clock, interceptor.Funcs{}, cr)
+
+	_, err := probeFabric(ctx, r, cr, maintenanceCentral())
+	g.Expect(err).NotTo(HaveOccurred())
+	first := readMaintenanceJob(ctx, t, r.Client, testRouteProbeJob)
+	g.Expect(first.Annotations).To(HaveKeyWithValue(job.PodSpecHashAnnotation, "10"))
+	g.Expect(simulators.SimulateJobComplete(ctx, r.Client, chassisKey(testRouteProbeJob))).To(Succeed())
+
+	clock.t = time.Unix(3299, 0)
+	_, err = probeFabric(ctx, r, cr, maintenanceCentral())
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(readMaintenanceJob(ctx, t, r.Client, testRouteProbeJob).Annotations).
+		To(HaveKeyWithValue(job.PodSpecHashAnnotation, "10"), "the same window reads the same Job")
+
+	clock.t = time.Unix(3300, 0)
+	_, err = probeFabric(ctx, r, cr, maintenanceCentral())
+	g.Expect(err).NotTo(HaveOccurred())
+	_, err = probeFabric(ctx, r, cr, maintenanceCentral())
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(readMaintenanceJob(ctx, t, r.Client, testRouteProbeJob).Annotations).
+		To(HaveKeyWithValue(job.PodSpecHashAnnotation, "11"), "the next window runs a new Job")
+}
+
+// Removing spec.fabric removes RoutesAdvertised and runs no probe.
+func TestProbeRoutes_RemovedBlockRemovesTheCondition(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cr := fabricChassis()
+	r := probeReconciler(t, &probeClock{t: time.Unix(3000, 0)}, interceptor.Funcs{}, cr)
+	_, err := probeFabric(ctx, r, cr, maintenanceCentral())
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ovnChassisCondition(cr, conditionTypeRoutesAdvertised)).NotTo(BeNil())
+	g.Expect(r.Delete(ctx, readMaintenanceJob(ctx, t, r.Client, testRouteProbeJob))).To(Succeed())
+
+	cr.Spec.Fabric = nil
+	res, err := probeFabric(ctx, r, cr, maintenanceCentral())
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.IsZero()).To(BeTrue())
+	g.Expect(ovnChassisCondition(cr, conditionTypeRoutesAdvertised)).To(BeNil())
+	g.Expect(maintenanceJobNames(ctx, t, r.Client)).To(BeEmpty())
 }
