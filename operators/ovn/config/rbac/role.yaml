@@ -100,6 +100,16 @@ rules:
   - update
   - watch
 - apiGroups:
+  - frrk8s.metallb.io
+  resources:
+  - frrconfigurations
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+- apiGroups:
   - ovn.openstack.c5c3.io
   resources:
   - ovncentrals

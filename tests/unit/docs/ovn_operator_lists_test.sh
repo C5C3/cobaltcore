@@ -357,7 +357,7 @@ test_repository_pages_restate_the_lists() {
   cp "$PROJECT_ROOT/docs/$METRICS_GUIDE" "$copy/$METRICS_GUIDE"
   cp "$PROJECT_ROOT/docs/$CENTRAL_PAGE" "$copy/$CENTRAL_PAGE"
   cp "$PROJECT_ROOT/docs/$CHASSIS_PAGE" "$copy/$CHASSIS_PAGE"
-  rewrite "$copy/$METRICS_GUIDE" 's/`ChassisVPA` and/and/'
+  rewrite "$copy/$METRICS_GUIDE" 's/`ChassisVPA`, //'
   rewrite "$copy/$CENTRAL_PAGE" 's/All eight sub-conditions/All seven sub-conditions/'
   assert_eq "a copy without ChassisVPA and with seven" \
     "AllReady count: ${CENTRAL_PAGE##*/} says seven, centralSubConditionTypes has 8"$'\n'"not in the metrics guide: ChassisVPA" \

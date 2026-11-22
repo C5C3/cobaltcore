@@ -32,8 +32,10 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	"k8s.io/utils/ptr"
@@ -824,4 +826,75 @@ func TestIntegrationOVNChassis_ProjectsDaemonSetsAndReachesReady(t *testing.T) {
 		ig.Expect(c.Get(ctx, chassisKey, cr)).To(Succeed())
 		ig.Expect(cr.Status.Nodes).To(BeEmpty())
 	}, eventuallyLongTimeout, pollInterval).Should(Succeed())
+}
+
+// TestIntegrationOVNChassis_FabricGeneratesAnFRRConfiguration walks a fabric
+// chassis on a live API server that serves FRRConfiguration: a selected node
+// with a table row and the frr-k8s label gets its object in frr-k8s-system
+// under the ownership labels, the CR carries the fabric finalizer, and deleting
+// the CR deletes the object before the CR itself goes.
+func TestIntegrationOVNChassis_FabricGeneratesAnFRRConfiguration(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+	ns := createTestNamespace(t, ctx, c)
+	g.Expect(client.IgnoreAlreadyExists(c.Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: frrK8sNamespace},
+	}))).To(Succeed(), "create the frr-k8s namespace")
+	driveCentralToReady(t, ctx, c, c, ns, integrationCentralName, nil)
+
+	nodeName := "ovn-it-fabric-node"
+	g.Expect(c.Create(ctx, &corev1.Node{ObjectMeta: metav1.ObjectMeta{
+		Name: nodeName,
+		Labels: map[string]string{
+			integrationChassisLabel: "true", frrK8sNodeLabel: "true", corev1.LabelHostname: nodeName,
+		},
+	}})).To(Succeed(), "create the fabric node")
+
+	chassis := integrationChassisCR(integrationChassisName, ns, integrationCentralName, nil)
+	chassis.Spec.Fabric = &ovnv1alpha1.OVNFabricSpec{
+		Uplinks: []ovnv1alpha1.OVNFabricUplink{{Interface: "fab1", Bridge: "br-fab1"}},
+		Nodes: []ovnv1alpha1.OVNFabricNode{{
+			Name: nodeName, ASN: 4200000001, LoopbackIPv4: "192.0.2.1", LoopbackIPv6: "2001:db8::1",
+		}},
+		AnnounceableRanges: []string{"198.51.100.0/24"},
+		AdvertiseVRFIDs:    []int64{42},
+	}
+	g.Expect(c.Create(ctx, chassis)).To(Succeed(), "create the fabric OVNChassis CR")
+	chassisKey := types.NamespacedName{Name: integrationChassisName, Namespace: ns}
+
+	// The Fabric step is the last of the pipeline, behind both DaemonSets, and
+	// envtest runs no DaemonSet controller.
+	ovsKey := client.ObjectKey{Namespace: ns, Name: chassisOVSName(chassis)}
+	eventuallyExists(t, ctx, c, ovsKey, &appsv1.DaemonSet{}, "ovs DaemonSet", eventuallyTimeout)
+	g.Expect(simulators.MarkDaemonSetReady(ctx, c, ovsKey)).To(Succeed(), "mark the ovs DaemonSet ready")
+	controllerKey := client.ObjectKey{Namespace: ns, Name: chassisControllerName(chassis)}
+	eventuallyExists(t, ctx, c, controllerKey, &appsv1.DaemonSet{}, "ovn-controller DaemonSet", eventuallyLongTimeout)
+	g.Expect(simulators.MarkDaemonSetReady(ctx, c, controllerKey)).To(Succeed(), "mark the ovn-controller DaemonSet ready")
+
+	frrKey := client.ObjectKey{Namespace: frrK8sNamespace, Name: fabricFRRConfigurationName(chassis, nodeName)}
+	frr := &unstructured.Unstructured{}
+	frr.SetGroupVersionKind(frrConfigurationGVK)
+	eventuallyExists(t, ctx, c, frrKey, frr, "FRRConfiguration", eventuallyLongTimeout)
+	g.Expect(frr.GetLabels()).To(HaveKeyWithValue(commonmulticluster.OwnerNameLabel, integrationChassisName))
+	g.Expect(frr.GetLabels()).To(HaveKeyWithValue(commonmulticluster.OwnerNamespaceLabel, ns))
+	g.Expect(frr.GetAnnotations()).To(HaveKeyWithValue(fabricNodeAnnotation, nodeName))
+
+	cond := waitForChassisCondition(t, ctx, c, chassisKey, conditionTypeFabricReady, metav1.ConditionTrue,
+		eventuallyLongTimeout)
+	g.Expect(cond.Reason).To(Equal(conditionReasonFabricConfigured))
+	cr := &ovnv1alpha1.OVNChassis{}
+	g.Expect(c.Get(ctx, chassisKey, cr)).To(Succeed())
+	g.Expect(cr.Finalizers).To(ContainElement(fabricFinalizer))
+	g.Expect(cr.Status.Nodes).To(HaveLen(1))
+	g.Expect(cr.Status.Nodes[0].Fabric).To(BeTrue(), "the init container applies the node's first entry")
+
+	g.Expect(c.Delete(ctx, cr)).To(Succeed(), "delete the fabric OVNChassis CR")
+	g.Eventually(func() bool {
+		return apierrors.IsNotFound(c.Get(ctx, frrKey, frr.DeepCopy()))
+	}, eventuallyLongTimeout, pollInterval).Should(BeTrue(), "the FRRConfiguration should be deleted with the CR")
+	g.Eventually(func() bool {
+		return apierrors.IsNotFound(c.Get(ctx, chassisKey, &ovnv1alpha1.OVNChassis{}))
+	}, eventuallyLongTimeout, pollInterval).Should(BeTrue(), "the CR should go once its finalizer is released")
 }

@@ -244,9 +244,9 @@ has to outlive the selection.
 
 ### Conditions
 
-Seven sub-reconcilers set six condition types: the client-Secret step reports
+Eight sub-reconcilers set seven condition types: the client-Secret step reports
 under `CentralReady`, the condition of the central step before it. The
-aggregate `Ready` is `True` only when all six are. For the pipeline that sets them see
+aggregate `Ready` is `True` only when all seven are. For the pipeline that sets them see
 [Reconciler Architecture](./ovn-reconciler.md).
 
 | Type | Status | Reason | Meaning |
@@ -274,7 +274,7 @@ aggregate `Ready` is `True` only when all six are. For the pipeline that sets th
 | `MaintenanceReady` | True | `MaintenanceDeferred` | A node needs an address the `OVNCentral` has not published. It outranks `MaintenanceRunning` in the message, because this one waits on another CR |
 | `MaintenanceReady` | False | `MaintenanceJobFailed` | A per-node Job reached a terminal failure. The message names the kind, the Job and the node. No error is returned: a rerun under an unchanged key produces the same failure |
 | `MaintenanceReady` | False | `MaintenanceError` | Running a Job, or dropping a deregistered node from the ConfigMap, failed |
-| `Ready` | True | `AllReady` | All six sub-conditions are True |
+| `Ready` | True | `AllReady` | All seven sub-conditions are True |
 | `Ready` | False | `NotAllReady` | At least one is not |
 | `VPAReady` | True | `VPAReady` | The VerticalPodAutoscaler of every opted-in workload is applied; the message names them. See [VerticalAutoscalingSpec](../keystone/keystone-crd.md#vpaready-condition) |
 | `VPAReady` | True | `VPANotRequired` | No workload opts in (`spec.verticalAutoscaling` unset); a VPA the CR created before is deleted |

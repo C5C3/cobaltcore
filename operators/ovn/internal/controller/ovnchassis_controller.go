@@ -53,8 +53,8 @@ const chassisAppName = "ovnchassis"
 // first, because its Southbound address and client Secret are what every later
 // step is parameterised by (the client-Secret step reports under the same
 // condition), the per-node values next, then the two DaemonSets
-// that mount them, and the maintenance Jobs last, since they act on nodes the
-// node step has already marked as leaving or as evacuating.
+// that mount them, the maintenance Jobs, since they act on nodes the node step
+// has already marked as leaving or as evacuating, and the fabric last.
 var chassisSubConditionTypes = []string{
 	conditionTypeCentralReady,
 	conditionTypeNodesReady,
@@ -62,6 +62,7 @@ var chassisSubConditionTypes = []string{
 	conditionTypeControllerReady,
 	"VPAReady",
 	conditionTypeMaintenanceReady,
+	conditionTypeFabricReady,
 }
 
 // chassisSkeleton bundles the shared controller-skeleton glue (Ready
@@ -159,6 +160,10 @@ type OVNChassisReconciler struct {
 // relay and the chassis DaemonSets.
 // +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch;create;patch;delete
 // +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get
+// frrconfigurations carry the per-node BGP configuration of a fabric chassis.
+// The Fabric step lists them as a live read and sets no watch, so the rule has
+// no watch verb.
+// +kubebuilder:rbac:groups=frrk8s.metallb.io,resources=frrconfigurations,verbs=get;list;create;patch;delete
 
 // Reconcile is the main reconciliation loop for the OVNChassis CR. It fetches
 // the CR, drives the teardown of a terminating one, ensures the remote-children
@@ -208,6 +213,12 @@ func (r *OVNChassisReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			return r.updateStatus(ctx, &cr, statusBefore,
 				ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil)
 		}
+		// The FRRConfigurations of a fabric chassis live in frr-k8s-system, which
+		// the sweep does not reach, and are deleted first under their own
+		// finalizer.
+		if err := r.reconcileDeleteFabric(ctx, children, &cr); err != nil {
+			return ctrl.Result{}, err
+		}
 		if err := r.reconcileDeleteRemoteChildren(ctx, children, &cr); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -235,16 +246,19 @@ func (r *OVNChassisReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	// The remote-children finalizer goes on only when the CR projects onto a
-	// target cluster, and it is the only finalizer this operator installs. A CR
-	// that keeps its children on the management cluster keeps the garbage
-	// collection cascade, which reaps them from their owner references, so it has
-	// nothing for a finalizer to hold it open for. spec.targetClusterRef is
-	// immutable, so the condition cannot flip under a live CR.
+	// target cluster. A CR that keeps its children on the management cluster
+	// keeps the garbage collection cascade, which reaps them from their owner
+	// references, so it needs no sweep. spec.targetClusterRef is immutable, so
+	// the condition cannot flip under a live CR.
 	//
 	// It is installed before any sub-reconciler runs, so a deletion issued
 	// between this pass and the next still funnels through the sweep. Requeuing
 	// after the Update guarantees the next reconcile observes the persisted
 	// finalizer rather than the in-memory copy.
+	//
+	// The Fabric step installs a finalizer of its own, fabricFinalizer, on local
+	// and placed chassis alike: the FRRConfigurations live in frr-k8s-system,
+	// which no owner reference reaches.
 	if cr.Spec.TargetClusterRef != nil {
 		if added, err := commonreconcile.EnsureFinalizer(ctx, r.Client, &cr,
 			commonmulticluster.RemoteChildrenFinalizer); err != nil {
@@ -278,9 +292,11 @@ func (r *OVNChassisReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 // published them yet projects nothing at all. The client-Secret step follows
 // it and settles which Secret the pods mount, copying the central's onto this
 // chassis's cluster when the two differ. The per-node values come next,
-// because both DaemonSets mount the ConfigMap holding them, and the maintenance
-// Jobs last, since they act on nodes the node step has already marked as
-// leaving or as giving up the gateway role.
+// because both DaemonSets mount the ConfigMap holding them, then the
+// maintenance Jobs, since they act on nodes the node step has already marked as
+// leaving or as giving up the gateway role. The fabric comes last: RunPipeline
+// ends a pass at the first non-zero result, and a step that requeues on a
+// schedule of its own must not stand before the maintenance walk.
 //
 // There is no parallel group. The two DaemonSets look independent, but Open
 // vSwitch owns the local database ovn-controller writes its chassis record
@@ -332,6 +348,9 @@ func (r *OVNChassisReconciler) pipelineSteps(children client.Client, cr *ovnv1al
 		}},
 		{Name: "Maintenance", Fn: func(ctx context.Context) (ctrl.Result, error) {
 			return r.reconcileMaintenance(ctx, children, cr, statusBefore, central, nodes)
+		}},
+		{Name: "Fabric", Fn: func(ctx context.Context) (ctrl.Result, error) {
+			return r.reconcileFabric(ctx, children, cr, nodes)
 		}},
 	}
 }

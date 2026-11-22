@@ -1,7 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="1078" viewBox="0 0 1808 1078" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Pipeline of the OVNChassis controller">
+<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="1170" viewBox="0 0 1808 1170" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Pipeline of the OVNChassis controller">
 <title>Pipeline of the OVNChassis controller</title>
-<rect width="1808" height="1078" fill="#F6F5F1"/>
-<rect x="100" y="40" width="1290" height="764" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<rect width="1808" height="1170" fill="#F6F5F1"/>
+<rect x="100" y="40" width="1290" height="856" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
 <text x="119" y="79.36" font-size="26" font-weight="700" fill="#2B3440">Pipeline</text>
 <text x="119" y="111.2" font-size="20" font-weight="400" fill="#55606E">one entry after another; the first that returns a requeue or an error ends the pass</text>
 <circle cx="50" cy="178" r="10" fill="#17202B"/>
@@ -46,16 +46,22 @@
 <text x="375" y="760.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Maintenance</text>
 <text x="530" y="746.2" font-size="20" font-weight="400" fill="#55606E">sets MaintenanceReady</text>
 <text x="530" y="772.2" font-size="20" font-weight="400" fill="#55606E">reads the central and the nodes</text>
-<rect x="1330" y="844" width="220" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
-<text x="1440" y="880.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">updateStatus</text>
-<text x="1330" y="929.2" font-size="20" font-weight="400" fill="#55606E">aggregates Ready from the sub-conditions</text>
-<text x="1330" y="955.2" font-size="20" font-weight="400" fill="#55606E">writes the status only when it changed</text>
-<polyline points="375,780 375,872 1319.5,872" fill="none" stroke="#3A4452" stroke-width="3"/>
-<polygon points="1330,872 1315,879.2 1315,864.8" fill="#3A4452"/>
-<text x="820" y="855.2" font-size="20" font-weight="400" fill="#2B3440">every entry returned zero</text>
-<polyline points="1390,178 1440,178 1440,833.5" fill="none" stroke="#3A4452" stroke-width="3"/>
-<polygon points="1440,844 1432.8,829 1447.2,829" fill="#3A4452"/>
+<polyline points="375,780 375,805.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,816 367.8,801 382.2,801" fill="#3A4452"/>
+<rect x="240" y="816" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="852.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Fabric</text>
+<text x="530" y="838.2" font-size="20" font-weight="400" fill="#55606E">sets FabricReady</text>
+<text x="530" y="864.2" font-size="20" font-weight="400" fill="#55606E">reads the nodes</text>
+<rect x="1330" y="936" width="220" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1440" y="972.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">updateStatus</text>
+<text x="1330" y="1021.2" font-size="20" font-weight="400" fill="#55606E">aggregates Ready from the sub-conditions</text>
+<text x="1330" y="1047.2" font-size="20" font-weight="400" fill="#55606E">writes the status only when it changed</text>
+<polyline points="375,872 375,964 1319.5,964" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1330,964 1315,971.2 1315,956.8" fill="#3A4452"/>
+<text x="820" y="947.2" font-size="20" font-weight="400" fill="#2B3440">every entry returned zero</text>
+<polyline points="1390,178 1440,178 1440,925.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1440,936 1432.8,921 1447.2,921" fill="#3A4452"/>
 <text x="1456" y="237.2" font-size="20" font-weight="400" fill="#2B3440">first requeue or error</text>
-<text x="40" y="1005.2" font-size="20" font-weight="400" fill="#55606E">A step label is the sub_reconciler value of the operator's metrics.</text>
-<text x="40" y="1031.2" font-size="20" font-weight="400" fill="#55606E">There is no parallel group: every step runs in order.</text>
+<text x="40" y="1097.2" font-size="20" font-weight="400" fill="#55606E">A step label is the sub_reconciler value of the operator's metrics.</text>
+<text x="40" y="1123.2" font-size="20" font-weight="400" fill="#55606E">There is no parallel group: every step runs in order.</text>
 </svg>
