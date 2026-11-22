@@ -1,0 +1,83 @@
+# frr-k8s-system Role and RoleBinding unit tests.
+#
+# The grant is opt-in: an OVNChassis placed here with spec.fabric writes one
+# FRRConfiguration per fabric node into frr-k8s-system, and nothing else this
+# account reaches lives there.
+suite: FRRConfigurations
+templates:
+  - templates/role-frr-k8s.yaml
+tests:
+  - it: should render nothing by default
+    set:
+      namespaces:
+        - openstack
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: should render the Role and its RoleBinding in frr-k8s-system when enabled
+    set:
+      namespaces:
+        - openstack
+      frrConfigurations: true
+    asserts:
+      - hasDocuments:
+          count: 2
+      - isKind:
+          of: Role
+        documentIndex: 0
+      - equal:
+          path: metadata.name
+          value: RELEASE-NAME-target-cluster-access-frr-k8s
+        documentIndex: 0
+      - equal:
+          path: metadata.namespace
+          value: frr-k8s-system
+        documentIndex: 0
+      - equal:
+          path: rules
+          value:
+            - apiGroups:
+                - frrk8s.metallb.io
+              resources:
+                - frrconfigurations
+              verbs:
+                - get
+                - list
+                - create
+                - patch
+                - delete
+        documentIndex: 0
+      - isKind:
+          of: RoleBinding
+        documentIndex: 1
+      - equal:
+          path: metadata.namespace
+          value: frr-k8s-system
+        documentIndex: 1
+      - equal:
+          path: roleRef
+          value:
+            apiGroup: rbac.authorization.k8s.io
+            kind: Role
+            name: RELEASE-NAME-target-cluster-access-frr-k8s
+        documentIndex: 1
+
+  - it: should bind the chart's ServiceAccount in the release namespace
+    release:
+      namespace: c5c3-access
+    set:
+      namespaces:
+        - openstack
+      frrConfigurations: true
+      serviceAccount:
+        name: c5c3-operators
+    asserts:
+      - equal:
+          path: subjects
+          value:
+            - kind: ServiceAccount
+              name: c5c3-operators
+              namespace: c5c3-access
+        documentIndex: 1
+
