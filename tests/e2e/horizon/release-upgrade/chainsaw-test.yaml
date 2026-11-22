@@ -10,8 +10,11 @@
 # the first 12 hex characters of sha256(spec.image reference), applies the
 # Deployment with the new image and the new config volume, and keeps the
 # previous ConfigMap as history. What the hop can break is the dashboard: a
-# 2026.2 pod that reads the 2026.1 template fragment from the shared Memcached
-# raises OfflineGenerationError and answers HTTP 500 on every page (#1305).
+# 2026.2 pod that read the 2026.1 template fragment from the shared Memcached
+# raised OfflineGenerationError and answered HTTP 500 on every page (#1305).
+# Each uWSGI process keeps its own fragment in the per-process
+# template_fragments alias (#1847), and the image-scoped prefix still
+# separates what else reaches CACHES["default"].
 # Because there is no installedRelease to gate on, the settled end state is
 # asserted in the siblings' order: the Deployment first, the CR second.
 #   (1) A fresh Horizon at :2026.1 with cache sessions reaches
@@ -149,9 +152,10 @@ spec:
   # HTTP-level dashboard coverage: the probe pod runs the service image
   # (python3, no curl) and retries connection-level failures, because
   # kube-proxy's endpoint programming can trail the CR's Ready flip by a
-  # second or two. HTTP errors fail hard. Rendering the page also writes the
-  # 2026.1 template-cache fragment under this image's KEY_PREFIX, the entry
-  # the 2026.2 pods of step 5 must not read. The pod name is unique in the
+  # second or two. HTTP errors fail hard. Rendering the page puts the 2026.1
+  # template-cache fragment into the template_fragments alias of the uWSGI
+  # process that served it (#1847), so no fragment reaches Memcached for the
+  # 2026.2 pods of step 5 to read. The pod name is unique in the
   # leg because the suites run in parallel; finally deletes it, because a
   # kubectl run --rm killed on the step timeout leaves its pod behind and a
   # re-run on the same cluster would fail with AlreadyExists.
@@ -445,13 +449,13 @@ spec:
         content: |
           kubectl delete cm horizon-release-upgrade-session-probe -n $NAMESPACE --ignore-not-found 2>&1 || true
   # ── Step 6: Assert the login page renders after the hop ─────────────────
-  # A 2026.2 pod that still rendered the 2026.1 prefix would read the
-  # fragment step 3 wrote, find no entry for it in its own offline manifest,
-  # and answer HTTP 500 to every render, its readiness probe included: the
-  # rollout of step 5 then never converges and that step's catch shows
-  # OfflineGenerationError in the new pod's log. This step is the proof on
-  # the other side of the hop: the dashboard answers through the Service on
-  # the new image against a Memcached that still holds the 2026.1 entries.
+  # A 2026.2 pod that read a 2026.1 fragment from Memcached would find no
+  # entry for it in its own offline manifest and answer HTTP 500 to every
+  # render, its readiness probe included (#1305): the rollout of step 5 then
+  # never converges and that step's catch shows OfflineGenerationError in
+  # the new pod's log. Each uWSGI process keeps its own fragment (#1847), so
+  # this step proves the login page on the new image: the dashboard answers
+  # through the Service against the Memcached the 2026.1 pods used.
   - try:
     - script:
         timeout: 90s

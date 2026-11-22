@@ -4,20 +4,24 @@
 
 # Chainsaw chaos E2E test for Memcached pod kill against Horizon.
 # Verifies the Horizon operator maintains Ready=True when a Memcached pod is
-# killed, and that the dashboard pods never restart: with signed-cookie
-# sessions (design decision D1) Memcached only backs the Django cache, so
-# losing it degrades cache hit-rate — it neither logs users out nor flips
-# any condition. Recovery-without-restart is therefore the observable
-# contract here (deliberate deviation from a "degraded condition" model,
-# which would require a dedicated cache-health probe the operator does not
-# have).
+# killed, and that the dashboard pods never restart. With signed-cookie
+# sessions (design decision D1), the operator's default settings and an
+# image that carries horizon patch 0004, the login page makes no Memcached
+# call (#1847): each uWSGI process keeps the template fragment in its
+# template_fragments alias. The suite therefore asserts that the dashboard
+# does not depend on Memcached: losing it neither logs users out nor flips
+# any condition. Recovery-without-restart is the observable contract here
+# (deliberate deviation from a "degraded condition" model, which would
+# require a dedicated cache-health probe the operator does not have).
 #
 # Workload: the http stream of ../lib/workload.sh GETs
 # http://horizon-chaos-mc.openstack.svc:8080/auth/login/ while the fault is
 # active. The budget is what three kind runs measured: every GET answered,
-# none in the fault window slower than 40 ms. The horizon-operator renders 1 s
-# pymemcache timeouts and ignore_exc into the CACHES OPTIONS (#1560), so a
-# closed or unreachable Memcached is a cache miss while the pod is replaced.
+# none in the fault window slower than 40 ms. An image without patch 0004
+# still makes the two calls of SimultaneousSessionsMiddleware per request;
+# the horizon-operator renders 1 s pymemcache timeouts and ignore_exc into
+# the CACHES OPTIONS (#1560), so a closed or unreachable Memcached is a
+# cache miss for them while the pod is replaced.
 # Chaos matrix: horizon cache pod-kill
 # Chaos matrix: memcached self pod-kill
 # Chaos random: memcached-pod-kill
