@@ -282,7 +282,7 @@ type SyncFlowParams struct {
 	// RequeueAfter is the requeue interval while a migration Job is in progress.
 	RequeueAfter time.Duration
 	// InstalledRelease, when non-nil, is set to ImageTag after a successful sync
-	// (and schema check). ImageTag is empty for digest-pinned images, which
+	// (and schema check). ImageTag is empty for an image without a tag, which
 	// disables release tracking, so the marker is left untouched then.
 	InstalledRelease *string
 	ImageTag         string
@@ -385,9 +385,9 @@ func ReconcileSyncJobs(ctx context.Context, p SyncFlowParams) (ctrl.Result, erro
 		}
 	}
 
-	// Track installed release after successful db_sync and schema check. A
-	// digest-pinned image has no tag, so leave the marker untouched — digest
-	// mode disables release tracking/upgrades (Decision E).
+	// Track installed release after successful db_sync and schema check. An
+	// image without a tag names no release, so leave the marker untouched — a
+	// digest alone disables release tracking/upgrades (Decision E).
 	if p.InstalledRelease != nil && p.ImageTag != "" {
 		*p.InstalledRelease = p.ImageTag
 	}

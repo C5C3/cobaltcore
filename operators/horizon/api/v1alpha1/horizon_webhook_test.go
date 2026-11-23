@@ -104,6 +104,19 @@ func TestValidateCreate_ValidSpecAccepted(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 }
 
+// TestValidateCreate_ImageTagAndDigestAccepted pins the at-least-one image
+// rule from the admitting side: a tag beside a digest is admitted, so the tag
+// names the release while the digest pins the build.
+func TestValidateCreate_ImageTagAndDigestAccepted(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &HorizonWebhook{}
+	h := validHorizon()
+	h.Spec.Image.Digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+	_, err := w.ValidateCreate(context.Background(), h)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+}
+
 // TestValidateCreate_ValidExtraConfigKeyAccepted guards against the
 // identifier check over-rejecting: a well-formed Django setting name must
 // still pass admission.
@@ -131,16 +144,9 @@ func TestValidateCreate_RejectionTable(t *testing.T) {
 			wantSub: "replicas must be at least 1",
 		},
 		{
-			name: "image tag and digest both set rejected",
-			mutate: func(h *Horizon) {
-				h.Spec.Image.Digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-			},
-			wantSub: "exactly one of image.tag or image.digest",
-		},
-		{
 			name:    "image tag and digest both empty rejected",
 			mutate:  func(h *Horizon) { h.Spec.Image.Tag = "" },
-			wantSub: "exactly one of image.tag or image.digest",
+			wantSub: "at least one of image.tag or image.digest must be set",
 		},
 		{
 			name: "cache clusterRef and servers both set rejected",
@@ -498,6 +504,17 @@ func TestValidate_ImageTagReleaseFloor(t *testing.T) {
 		g.Expect(err).NotTo(gomega.HaveOccurred())
 	})
 
+	t.Run("create with a tag below the floor beside a digest rejected", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		h := validHorizon()
+		h.Spec.Image.Tag = "2025.2"
+		h.Spec.Image.Digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		_, err := w.ValidateCreate(context.Background(), h)
+		g.Expect(err).To(gomega.HaveOccurred())
+		g.Expect(err.Error()).To(gomega.ContainSubstring("spec.image.tag"))
+		g.Expect(err.Error()).To(gomega.ContainSubstring("2026.1 or later"))
+	})
+
 	t.Run("update keeping a tag below the floor warns", func(t *testing.T) {
 		g := gomega.NewWithT(t)
 		oldObj := validHorizon()
@@ -577,7 +594,7 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	g.Expect(err).To(gomega.HaveOccurred())
 	for _, sub := range []string{
 		"replicas must be at least 1",
-		"exactly one of image.tag or image.digest",
+		"at least one of image.tag or image.digest",
 		"cache",
 		"scheme must be http or https",
 		"secretKeyRef.name must be set",

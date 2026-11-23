@@ -8,7 +8,7 @@
 //
 // DECISION (CEL-vs-webhook split): several of these rules also exist as CEL
 // XValidation markers on the shared commonv1 types (the database, cache and
-// messaging XORs, Dynamic-requires-clusterRef, the image tag/digest XOR). The
+// messaging XORs, Dynamic-requires-clusterRef, the image tag-or-digest rule). The
 // CEL rules stay — they are the schema-layer gate the API server enforces even
 // when the webhook is unavailable. The webhooks keep a defense-in-depth copy
 // for objects that bypass schema validation (old objects, direct etcd writes),
@@ -294,7 +294,7 @@ func TargetClusterRefImmutable(fldPath *field.Path, oldRef, newRef *commonv1.Tar
 // OpenStackReleaseFloor enforces release.MinimumSupported on a release-bearing
 // field. An empty newValue, or one release.ParseRelease returns an error for,
 // yields neither an error nor a warning: the field's pattern rule owns the
-// format, and a digest-pinned or "latest" image tag names no release. A value
+// format, and an image without a tag or with "latest" names no release. A value
 // below the floor is one field.Invalid error on create (oldValue is "") and
 // whenever oldValue differs from newValue; an unchanged value is admitted with
 // one warning, so an unrelated edit never wedges a resource that predates the

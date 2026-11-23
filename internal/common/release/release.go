@@ -120,8 +120,8 @@ func (r Release) IsSupported() bool {
 
 // ImageTagMismatch reports whether an image tag names a different OpenStack
 // release (year and minor) than spec.openStackRelease, and the message a
-// reconciler surfaces when it does. A digest-pinned image (empty tag) or a tag
-// that does not parse as a release carries no comparable release and reports no
+// reconciler surfaces when it does. An image without a tag, or a tag that does
+// not parse as a release, carries no comparable release and reports no
 // mismatch; the patch suffix is ignored, so a patched build such as 2026.1-p1
 // still matches release 2026.1.
 func ImageTagMismatch(imageTag, openStackRelease string) (string, bool) {

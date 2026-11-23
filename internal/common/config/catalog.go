@@ -84,8 +84,8 @@ func MustParseEmbeddedCatalogs(fsys fs.FS) map[string]*OptionCatalog {
 // named by tag. The tag is parsed as a release version (YYYY.N with an optional
 // -pN patch suffix); the patch suffix is stripped before lookup, so a patch
 // release shares its base release's catalog. It returns (nil, false) when the tag
-// does not name a release (an empty tag, a digest pin, or "latest") or when
-// catalogs holds no entry for the resolved YYYY.N base.
+// does not name a release (empty for an image without a tag, or "latest") or
+// when catalogs holds no entry for the resolved YYYY.N base.
 func LookupCatalog(catalogs map[string]*OptionCatalog, tag string) (*OptionCatalog, bool) {
 	rel, err := release.ParseRelease(tag)
 	if err != nil {

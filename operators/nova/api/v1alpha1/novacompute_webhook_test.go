@@ -100,6 +100,22 @@ func TestNovaComputeWebhook_ValidateCreate_AdmitsAValidPool(t *testing.T) {
 	g.Expect(warnings).To(BeEmpty())
 }
 
+// TestNovaComputeWebhook_ValidateCreate_AdmitsAnImageWithTagAndDigest pins the
+// at-least-one image rule from the admitting side: an image override that
+// carries a tag beside a digest is admitted.
+func TestNovaComputeWebhook_ValidateCreate_AdmitsAnImageWithTagAndDigest(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w, _ := novaComputeWebhookWith(referencedNova())
+	nc := validNovaCompute()
+	nc.Spec.Image = &commonv1.ImageSpec{
+		Repository: "ghcr.io/c5c3/nova-compute",
+		Tag:        "2026.1",
+		Digest:     "sha256:" + strings.Repeat("a", 64),
+	}
+	_, err := w.ValidateCreate(context.Background(), nc)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
 // TestNovaComputeWebhook_ValidateCreate_RejectsEachRule walks every rule
 // validate() enforces, one mutation at a time, so each rule is known to fire on
 // its own and to carry its own message.
@@ -240,15 +256,11 @@ func TestNovaComputeWebhook_ValidateCreate_RejectsEachRule(t *testing.T) {
 			want: "must not contain a newline or carriage return",
 		},
 		{
-			name: "image with tag and digest",
+			name: "image with neither tag nor digest",
 			edit: func(nc *NovaCompute) {
-				nc.Spec.Image = &commonv1.ImageSpec{
-					Repository: "ghcr.io/c5c3/nova-compute",
-					Tag:        "2026.1",
-					Digest:     "sha256:" + strings.Repeat("a", 64),
-				}
+				nc.Spec.Image = &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/nova-compute"}
 			},
-			want: "exactly one of image.tag or image.digest must be set",
+			want: "at least one of image.tag or image.digest must be set",
 		},
 		{
 			name: "targetClusterRef with an empty name",

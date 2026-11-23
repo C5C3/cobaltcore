@@ -77,8 +77,9 @@ type JobSetParams struct {
 //
 // image is the fully-qualified reference the Job runs: the steady-state Jobs use
 // p.Image (which honors a pinned digest), while the upgrade phases pass a
-// specific "repo:tag" so they can pin the old/new release image independently of
-// p.Image. Every Job carries p.ImagePullPolicy, whichever image it runs.
+// specific "repo:tag", or the spec's "repository@digest" when a digest is
+// pinned, so they can pin the old/new release image independently of p.Image.
+// Every Job carries p.ImagePullPolicy, whichever image it runs.
 // nameSuffix is both the Job-name suffix ("<InstanceName>-<suffix>")
 // and the single container's name.
 func BuildJob(p JobSetParams, image, nameSuffix string, command []string, backoffLimit int32) *batchv1.Job {
