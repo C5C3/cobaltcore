@@ -93,12 +93,13 @@ revisions do not change the database schema.
 
 ## Status Fields
 
-Three status fields track the upgrade lifecycle. All are updated atomically via the
+Four status fields track the upgrade lifecycle. All are updated atomically via the
 status subresource.
 
 | Field | Type | During Upgrade | Outside Upgrade |
 | --- | --- | --- | --- |
 | `status.installedRelease` | `string` | The release version **before** the upgrade began | The currently deployed release version |
+| `status.installedImage` | `string` | The `spec.image` reference that migrated the installed schema | The `spec.image` reference whose `db_sync` last completed |
 | `status.targetRelease` | `string` | The release version being upgraded **to** | Empty (`""`) |
 | `status.upgradePhase` | `UpgradePhase` | Current phase (see below) | Empty (`""`) |
 
@@ -106,8 +107,21 @@ status subresource.
 
 Set after the first successful `db_sync` Job completion. For fresh deployments
 (no prior `installedRelease`), the value is initialized to `spec.image.tag` after
-`db_sync` completes. This field is visible as the `Release` printer column in
+`db_sync` completes. An image without a tag leaves it untouched, because a digest
+alone names no release. This field is visible as the `Release` printer column in
 `kubectl get keystones` output.
+
+### installedImage
+
+Set to `spec.image.Reference()` (`repository:tag`, or `repository@digest` when a
+digest is pinned) after every `db_sync` and schema check that completed, and in
+the pass in which the contract Job completes an upgrade. A running or failed Job
+leaves it alone, and so does an aborted upgrade. A Keystone created before the
+field existed gets it on its first such pass, without a Job re-running. The
+field feeds the unchanged-image check of
+[Pinning the Image by Digest](#pinning-the-image-by-digest) and the digest
+check of [Aborting an Upgrade](#aborting-an-upgrade); while it is empty,
+neither check applies.
 
 ### targetRelease
 
@@ -147,7 +161,8 @@ failure leaves, and the two ways out of an upgrade in flight.
 #### Expanding
 
 - **Job name:** `{name}-db-expand`
-- **Image:** NEW release (`spec.image.tag`) — expand migrations are owned by
+- **Image:** NEW release, `repository:<spec.image.tag>`, or `repository@<spec.image.digest>`
+  when a digest is pinned — expand migrations are owned by
   the target release's alembic tree; running them with the old binary would
   leave the contract step ahead of expand (`_validate_upgrade_order` fails).
 - **Command:** `keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ db_sync --expand`
@@ -157,7 +172,7 @@ failure leaves, and the two ways out of an upgrade in flight.
 #### Migrating
 
 - **Job name:** `{name}-db-migrate`
-- **Image:** NEW release (`spec.image.tag`) — same rationale as Expanding.
+- **Image:** NEW release, the same reference as Expanding, for the same reason.
 - **Command:** `keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ db_sync --migrate`
 - **On completion:** Phase transitions to `RollingUpdate`, requeues after `RequeueNextPass` (1s).
 - **On failure:** `DatabaseReady=False` with reason `MigrateFailed`.
@@ -166,7 +181,7 @@ failure leaves, and the two ways out of an upgrade in flight.
 
 - **No Job created.** The `reconcileDatabase` sub-reconciler returns `ctrl.Result{}`
   (empty result), allowing the reconciler chain to continue to `reconcileDeployment`.
-- `reconcileDeployment` ensures the Deployment is configured with `spec.image.tag` (the NEW image).
+- `reconcileDeployment` ensures the Deployment runs `spec.image` (the NEW image).
   Kubernetes performs a rolling update of the pods.
 - **On a finished rollout:** once every replica is updated, ready and counted,
   `reconcileDeployment` transitions the phase to `Contracting` and requeues.
@@ -177,7 +192,7 @@ failure leaves, and the two ways out of an upgrade in flight.
 #### Contracting
 
 - **Job name:** `{name}-db-contract`
-- **Image:** NEW release (`spec.image.tag`)
+- **Image:** NEW release, the same reference as Expanding
 - **Command:** `keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ db_sync --contract`
 - **On completion:** Upgrade finalized (see below).
 - **On failure:** `DatabaseReady=False` with reason `ContractFailed`.
@@ -186,7 +201,8 @@ failure leaves, and the two ways out of an upgrade in flight.
 
 When the contract Job completes successfully:
 
-1. `status.installedRelease` is updated to `status.targetRelease` (the new version).
+1. `status.installedRelease` is updated to `status.targetRelease` (the new version),
+   and `status.installedImage` to the reference the phase Jobs ran.
 2. `status.targetRelease` is cleared.
 3. `status.upgradePhase` is cleared.
 4. `DatabaseReady` condition is set to `True` with reason `DatabaseSynced`.
@@ -221,6 +237,8 @@ The `DatabaseReady` condition reflects upgrade state with specific reasons:
 | `VersionParseError` | Pre-upgrade | `installedRelease` or `spec.image.tag` is not a valid `YYYY.N` format |
 | `DowngradeNotSupported` | Pre-upgrade | The target release is older than `installedRelease` |
 | `UpgradePathInvalid` | Pre-upgrade | Upgrade is not sequential (e.g., skip-level) |
+| `ImageReleaseMismatch` | Pre-upgrade | `spec.image.tag` moves one release ahead of `installedRelease` while `spec.image` still names the build of `installedImage`, the image that migrated the installed schema (see [Pinning the Image by Digest](#pinning-the-image-by-digest)) |
+| `ImageReleaseMismatch` | Any active phase | `spec.image.tag` was reverted to `installedRelease` to abort, but a pinned `spec.image.digest` still names another build than `installedImage` (see [Aborting an Upgrade](#aborting-an-upgrade)) |
 | `UpgradeTargetChanged` | Any active phase | `spec.image.tag` was changed during an active upgrade to a value that is neither `targetRelease` nor `installedRelease` |
 
 All condition messages include the source and target release version strings for
@@ -246,11 +264,11 @@ phases. Only the `RollingUpdate` phase passes through to `reconcileDeployment`.
 Each upgrade phase creates a distinctly named Job to avoid interference with the
 existing `db_sync` Job and to provide a clear audit trail.
 
-| Phase | Job Name | Image Tag | db_sync Flag |
+| Phase | Job Name | Image | db_sync Flag |
 | --- | --- | --- | --- |
-| Expanding | `{name}-db-expand` | `spec.image.tag` (NEW) | `--expand` |
-| Migrating | `{name}-db-migrate` | `spec.image.tag` (NEW) | `--migrate` |
-| Contracting | `{name}-db-contract` | `spec.image.tag` (NEW) | `--contract` |
+| Expanding | `{name}-db-expand` | `repository:<spec.image.tag>` (NEW), or `repository@<spec.image.digest>` when pinned | `--expand` |
+| Migrating | `{name}-db-migrate` | `repository:<spec.image.tag>` (NEW), or `repository@<spec.image.digest>` when pinned | `--migrate` |
+| Contracting | `{name}-db-contract` | `repository:<spec.image.tag>` (NEW), or `repository@<spec.image.digest>` when pinned | `--contract` |
 
 All upgrade Jobs share these properties:
 
@@ -320,10 +338,34 @@ upgrade is active (`status.upgradePhase` is set), it:
 4. Requeues, so the next reconcile takes the steady-state `db_sync` path and
    restores `DatabaseReady` against the installed release.
 
+With a digest pinned beside the tag, the same edit also reverts
+`spec.image.digest` to the build `status.installedImage` records. The
+steady-state `db_sync` after the abort runs `spec.image`, so on the target build
+it would apply the target release's expand and contract migrations in one Job.
+The operator refuses such an abort with `DatabaseReady=False`, reason
+`ImageReleaseMismatch`, and keeps the upgrade state and the phase Jobs until the
+digest is reverted too. When `status.installedImage` names a tag, no digest
+matches it, and the refusal names two edits. Removing the digest in the same
+patch as the tag leaves the `db_sync` after the abort and the Deployment on the
+mutable tag. To keep the pin, patch `status.installedImage` to
+`<repository>@<digest of the installed build>` and set `spec.image.digest` to
+that digest.
+
 ```bash
 # Abort an in-flight upgrade by reverting the tag to the installed release.
+# Digest-pinned image: revert "digest" in the same patch. A tag reverted alone
+# beside the target digest is refused with ImageReleaseMismatch.
 kubectl patch keystone <name> --type=merge \
   -p '{"spec":{"image":{"tag":"<installed-release>"}}}'
+
+# Image with tag and digest: revert both to the build status.installedImage names.
+kubectl patch keystone <name> --type=merge \
+  -p '{"spec":{"image":{"tag":"<installed-release>","digest":"<installed-digest>"}}}'
+
+# status.installedImage names a tag: to keep the pin, also record the installed
+# build's digest there. The order of this patch and the one above is free.
+kubectl patch keystone <name> --subresource=status --type=merge \
+  -p '{"status":{"installedImage":"<repository>@<installed-digest>"}}'
 ```
 
 ::: warning Abort is only safe before the contract phase
@@ -338,6 +380,93 @@ active phase, so validate the database before relying on a Contracting-phase
 abort. Once contract completes, the upgrade is finished and reverting the tag is
 a downgrade, which the operator rejects.
 :::
+
+---
+
+## Pinning the Image by Digest
+
+`spec.image` takes one of three forms. The form decides what the pods and Jobs
+run and whether the release machine sees a release:
+
+| Form | The pods and Jobs run | Release tracking |
+| --- | --- | --- |
+| `tag` only | `repository:tag` | On: the tag names the release |
+| `digest` only | `repository@digest` | Off: `installedRelease` is left untouched and no upgrade is detected |
+| `tag` and `digest` | `repository@digest` | On: the tag names the release |
+
+The operator never rolls a pod when a mutable tag moves, so a deployment that
+follows a moving release tag pins the digest. With the tag beside the digest,
+that Keystone keeps its release detection. A release change runs the expand,
+migrate and contract phases, `status.installedRelease` reports the release, and
+admission checks the tag against the release floor and the `extraConfig` option
+catalog. No operator checks that the digest is a build of the release the tag
+names.
+
+### Upgrading a Digest-Pinned Keystone
+
+Move `tag` and `digest` to the next release in one patch:
+
+```bash
+kubectl patch keystone <name> --type=merge \
+  -p '{"spec":{"image":{"tag":"2026.2","digest":"sha256:<2026.2 build>"}}}'
+```
+
+The expand, migrate and contract Jobs and the Deployment run
+`repository@<new digest>`. When the contract Job completes,
+`status.installedRelease` becomes `2026.2` and `status.installedImage` the new
+reference. A digest change under the target tag during an active upgrade is
+admitted: the Job of the current phase is re-created on the new reference, as it
+is for a re-pushed tag.
+
+### Unchanged-Image Refusal
+
+A release bump of `spec.image.tag` that leaves `spec.image` on the build
+`status.installedImage` records is refused. With a digest on both sides only the
+digests are compared, so moving `spec.image.repository` to a mirror of the same
+build is no change. With a digest pinned, the phase Jobs would run the installed
+build, migrate nothing, and still mark the new release installed. The operator
+sets `DatabaseReady=False` with reason `ImageReleaseMismatch`, records a Warning
+event of the same reason, and returns the error. The condition and the event
+carry the same message:
+
+```text
+upgrade from 2026.1 to 2026.2 leaves spec.image unchanged (ghcr.io/c5c3/keystone@sha256:<digest>), so the phase Jobs would run the installed build: either bump spec.image.digest in lockstep with spec.image.tag, or, if that image already migrated the schema because its digest was bumped before spec.image.tag was, patch status.installedRelease to 2026.2 to record the migration that has already run
+```
+
+The refusal sets no `upgradePhase` and no `targetRelease`, creates no Job and
+leaves the Deployment alone, so the next reconcile repeats it. It ends when the
+digest changes, when the tag returns to `status.installedRelease`, or when
+`status.installedRelease` is patched. The check applies to a sequential bump
+only: a downgrade, a skipped release and a release that does not parse keep
+`DowngradeNotSupported`, `UpgradePathInvalid` and `VersionParseError`. An empty
+`status.installedImage` skips it.
+
+Do not move `spec.image.digest` to a build of another release without moving
+`spec.image.tag` in the same edit. The operator cannot tell such a digest from a
+rebuild of the installed release, so it takes the steady-state path. The plain
+`db_sync` Job runs before the Deployment rolls and applies the new release's
+expand and contract migrations in one run while the old-release pods still
+serve, and the new image is recorded under the old release. The tag bump that
+follows is refused, because the image no longer changes. Once this has
+happened, the migration has run, so record it:
+
+```bash
+kubectl patch keystone <name> --subresource=status --type=merge \
+  -p '{"status":{"installedRelease":"<release>"}}'
+```
+
+### What Each Edit Does
+
+| Edit of a Ready Keystone | Result |
+| --- | --- |
+| `tag` and `digest` both move to the next release | The expand, migrate and contract Jobs run `repository@<new digest>`; `installedRelease` and `installedImage` move |
+| `digest` moves to a rebuild of the same release, `tag` keeps its release | `db_sync` re-runs and the Deployment rolls; no phases |
+| `tag` moves to the next release, `digest` stays | Refused with `ImageReleaseMismatch` |
+| `digest` moves to the next release first, `tag` follows | Not supported. The first edit runs the next release's plain `db_sync`, contract migrations included, while the old-release pods serve, and records it under the old release; the second is refused with the advice to patch `status.installedRelease` |
+| A tag-only image gains the digest of its release | The reference changes from `repository:tag` to `repository@digest`: `db_sync` re-runs and the Deployment rolls once; no phases |
+| A digest-only image with an empty `installedRelease` gains a tag | The next sync pass sets `installedRelease` to the tag. The reference is unchanged, so no Job re-runs for a tag below `2026.2`. From `2026.2` on the rendered configuration drops `[oslo_policy] enforce_scope`, so `db_sync` re-runs and the Deployment rolls once |
+| A digest-only image with a stale `installedRelease` gains the tag of the release it runs | One release ahead: refused with `ImageReleaseMismatch`. Any other distance: `UpgradePathInvalid` or `DowngradeNotSupported`. Patching `status.installedRelease` ends both |
+| An image with both fields loses the tag | Release tracking stops and `installedRelease` keeps its value. A tag of `2026.2` or later took `[oslo_policy] enforce_scope` out of the configuration, so dropping it re-renders the configuration once. During an active upgrade the target-changed guard reports `UpgradeTargetChanged` |
 
 ---
 
@@ -531,6 +660,33 @@ spec:
   image:
     tag: "2027.1"
 ```
+
+#### ImageReleaseMismatch
+
+**Symptom:** `DatabaseReady=False`, reason `ImageReleaseMismatch`, and a Warning
+event of the same reason. On a refused release bump `upgradePhase` and
+`targetRelease` stay empty; on a refused abort they keep the upgrade in flight.
+
+**Cause:** `spec.image.tag` moved one release ahead of `status.installedRelease`,
+but `spec.image` still names the build of `status.installedImage`: a digest
+pinned beside the tag did not move with it. A message that starts with
+`abort of upgrade` has the opposite cause: the tag was reverted to
+`status.installedRelease` to abort, and the digest still names the target build.
+
+**Resolution:** For a refused abort, revert `spec.image.digest` to the build
+`status.installedImage` records in the same patch as the tag. When
+`status.installedImage` names a tag, either remove the digest, which leaves the
+Keystone on the mutable tag, or patch `status.installedImage` to the installed
+build's digest and pin that digest (see
+[Aborting an Upgrade](#aborting-an-upgrade)). For a refused release bump, choose
+one of:
+
+- Bump `spec.image.digest` to the build of the new release in the same edit as
+  the tag (see [Upgrading a Digest-Pinned Keystone](#upgrading-a-digest-pinned-keystone)).
+- If that digest already migrated the schema, because it was bumped before the
+  tag, patch `status.installedRelease` to the new release:
+  `kubectl patch keystone <name> --subresource=status --type=merge -p '{"status":{"installedRelease":"<release>"}}'`.
+- Revert `spec.image.tag` to `status.installedRelease`.
 
 #### VersionParseError
 
