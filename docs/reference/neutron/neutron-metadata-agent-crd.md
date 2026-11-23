@@ -222,7 +222,7 @@ These hold even when the webhook is down.
 | --- | --- |
 | `targetClusterRef is immutable` | Two CEL transition rules on `NeutronMetadataAgentSpec`, one for adding or removing the ref and one for renaming it |
 | `chassisRef is immutable` | A third transition rule on the same spec. An agent re-pointed at another chassis lands on another set of nodes, whose local Open vSwitch databases carry none of the ports it was answering for |
-| `exactly one of image.tag or image.digest must be set` | Inherited from `commonv1.ImageSpec` on `spec.image` |
+| `at least one of image.tag or image.digest must be set` | Inherited from `commonv1.ImageSpec` on `spec.image` |
 | `exactly one of clusterRef or secretRef must be set` | Inherited from `commonv1.MessagingSpec` on `spec.messaging` |
 | `caBundleSecretRef requires protocol https` | A CEL rule on `NovaMetadataSpec`, `!has(self.caBundleSecretRef) \|\| (has(self.protocol) && self.protocol == 'https')`. The agent verifies the Nova metadata API's certificate only over TLS, so a bundle beside `http` would be mounted and never read |
 
@@ -259,7 +259,7 @@ Image, messaging and the target cluster, through the shared helpers:
 | Message | Trigger |
 | --- | --- |
 | `repository must be set` | `spec.image.repository` is empty |
-| `exactly one of image.tag or image.digest must be set` | Both or neither are set on `spec.image`, re-checked outside the schema |
+| `at least one of image.tag or image.digest must be set` | Neither is set on `spec.image`, re-checked outside the schema |
 | `exactly one of clusterRef or secretRef must be set` | A present `spec.messaging` names both modes or neither. The block is optional here, so the check runs only once it is set |
 | `target cluster name must be set` | `spec.targetClusterRef` is present with an empty `name` |
 | `targetClusterRef is immutable (adding or removing it after creation is not permitted)` | An update adds or drops the ref. Both strand the children already created on the previously selected cluster |

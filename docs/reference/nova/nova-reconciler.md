@@ -176,7 +176,7 @@ else enforces that they agree: an image whose tag names a different release
 would run the wrong `nova-manage` binary against a schema already at its own
 head, and the phase Jobs would exit 0 as no-ops while `installedRelease` was
 promoted to a release the pods do not run. A mismatch sets `DatabaseReady=False`
-under `ImageReleaseMismatch` and requeues. A digest-pinned image and an
+under `ImageReleaseMismatch` and requeues. An image without a tag and an
 unparseable tag carry no comparable release and are left to the explicit
 `spec.openStackRelease` declaration; a patch suffix such as `2026.1-p1` still
 matches `2026.1`.

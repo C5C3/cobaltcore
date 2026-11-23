@@ -199,8 +199,8 @@ warning, so the resource stays editable:
 Warning: spec.openStackRelease "2025.2" is below 2026.1, the oldest OpenStack release this operator version supports; the unchanged value is admitted, but the operator renders the 2026.1 configuration for it. Set spec.openStackRelease to 2026.1 or later.
 ```
 
-For `Keystone` and `Horizon` the field in both messages is `spec.image.tag`. A
-digest-pinned image, or a tag that names no release, is not checked.
+For `Keystone` and `Horizon` the field in both messages is `spec.image.tag`. An
+image without a tag, or a tag that names no release, is not checked.
 
 From this operator version on, the controllers render the `2026.1` launch and
 paste layout for any release: Glance runs under uWSGI, and Barbican's paste file

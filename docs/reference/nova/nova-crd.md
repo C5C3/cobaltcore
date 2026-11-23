@@ -29,7 +29,7 @@ Suspended (`.spec.suspend`) and Age.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `openStackRelease` | `string` | yes | The OpenStack release the operator deploys and drives; pattern `^\d{4}\.[12]$` (the `YYYY.N` cadence, `N` in {1,2}). It governs install and upgrade tracking: `status.installedRelease` is promoted to it after a successful migration. Kept separate from the image tag so a digest-pinned image still resolves a schema. The validating webhook rejects a value below `2026.1`, the oldest supported release, on create and on change, and warns on an unchanged one. |
-| `image` | `ImageSpec` | yes | The container image every process runs: the five Deployments, the migration Jobs and the archive CronJob. Exactly one of `tag` or `digest` (shared CEL rule, re-checked by the webhook) |
+| `image` | `ImageSpec` | yes | The container image every process runs: the five Deployments, the migration Jobs and the archive CronJob. At least one of `tag` or `digest` (shared CEL rule, re-checked by the webhook); with both, the digest decides what runs |
 | `apiDatabase` | `DatabaseSpec` | yes | The MariaDB connection of the `nova_api` schema: the cell map, the flavors, the instance-to-cell mappings and the API-level quotas. The operator names its managed instance `{name}-api`. Exactly one of `clusterRef` (managed) or `host` (brownfield); `credentialsMode` (`Static` \| `Dynamic`, where `Dynamic` requires `clusterRef`), `secretRef`, and optional `tls`. The rules are inherited from `commonv1.DatabaseSpec`. The schema name and the managed/brownfield mode are immutable (two CEL transition rules, mirrored by the webhook): the schema holds the cell map and every instance mapping |
 | `database` | `DatabaseSpec` | yes | The MariaDB connection of the cell schema: the instances, their migrations, their block-device mappings. The operator names its managed instance `{name}` and grants the same user on `{database}_cell0` as well, so the name is bounded at 58 characters. It must name a different schema than `apiDatabase`, `apiDatabase` must not name its cell0, and both use the same `credentialsMode` (three CEL rules on the spec). The schema name and the managed/brownfield mode are immutable (two CEL transition rules, mirrored by the webhook): the cell mappings store the schema name |
 | `cache` | `CacheSpec` | yes | Memcached. Exactly one of `clusterRef` (managed) or `servers` (brownfield). It backs both `[keystone_authtoken] memcached_servers` and the `[cache]` block Nova keeps its resolved cell mappings in |
@@ -279,8 +279,8 @@ credentials in the URL, and the messaging CA bundle is the only trust anchor
 either contract carries.
 
 The validating webhook accumulates every violation into one admission response.
-It repeats the schema-layer rules as defense in depth (the image tag/digest
-XOR, both databases' mutual-exclusivity and Dynamic-requires-clusterRef rules,
+It repeats the schema-layer rules as defense in depth (the image tag-or-digest
+rule, both databases' mutual-exclusivity and Dynamic-requires-clusterRef rules,
 the database rules and transition rules above, the console rule, the remote-compute
 rule as a `Required` error on `spec.messaging.tls`, the `https` scheme of
 `spec.remoteCompute.keystoneEndpoint`, the cache and messaging rules,

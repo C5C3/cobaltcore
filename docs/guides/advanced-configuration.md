@@ -294,7 +294,7 @@ CRD-schema backstop; both checks live only in the webhook.
 
 When the c5c3-operator cannot map an image or release to an embedded catalog, it
 skips the option-name check and returns a warning instead of rejecting the CR.
-This can happen with a digest-pinned image, a tag that does not identify a
+This can happen with an image without a tag, a tag that does not identify a
 release, or a release missing from the operator build. In those cases admission
 does not verify whether the option or section exists.
 
@@ -609,8 +609,8 @@ and `os_glance_tasks_store` are additionally allowed.
 
 When the operator cannot match the configured release or image tag to an
 embedded catalog, admission skips the option-name check and returns a warning
-instead of rejecting the CR. This can happen with a digest-pinned Keystone
-image, a tag that does not identify a release, or a release without a catalog in
+instead of rejecting the CR. This can happen with a Keystone image without a
+tag, a tag that does not identify a release, or a release without a catalog in
 the operator build. Admission does not verify that the option exists in these
 cases. A deprecated option that the service still accepts is admitted with a
 warning naming its replacement, such as `[DEFAULT] logfile`, superseded by
