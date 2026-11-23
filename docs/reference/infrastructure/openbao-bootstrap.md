@@ -750,14 +750,15 @@ reconciliation and only write when the secret has actually changed.
 
 **Note:** `eso-tenant` carries the per-ControlPlane grants for the c5c3
 operator's admin Application Credential
-(`kv-v2/{data,metadata}/openstack/keystone/{ns}/+/admin/app-credential`) and its
+(`kv-v2/{data,metadata}/openstack/keystone/{ns}/+/admin/app-credential`), its
 declarative service-account passwords
-(`kv-v2/{data,metadata}/openstack/keystone/{ns}/+/service-accounts/+`), with
-`delete` on the data leaves so the `DeletionPolicy: Delete` PushSecrets can purge
-the KV leaf on teardown. It carries the backup of every
-[`RabbitMQVhost`](../c5c3/rabbitmqvhost-crd.md) order on the same terms
-(`kv-v2/{data,metadata}/openstack/rabbitmq/{ns}/+/credentials`, no `delete` on the
-metadata leaf). These paths are namespace-templated — `{ns}` resolves to
+(`kv-v2/{data,metadata}/openstack/keystone/{ns}/+/service-accounts/+`) and the
+backup of every [`RabbitMQVhost`](../c5c3/rabbitmqvhost-crd.md) order
+(`kv-v2/{data,metadata}/openstack/rabbitmq/{ns}/+/credentials`). `delete` sits on
+the data and the metadata leaves of all three path pairs. When a
+`DeletionPolicy: Delete` PushSecret is torn down, ESO soft-deletes the data leaf
+and then deletes the metadata leaf, which removes the key with every version.
+These paths are namespace-templated — `{ns}` resolves to
 the caller's own `service_account_namespace` — so a tenant's PushSecret cannot
 write another tenant's KV leaf. See the
 [infrastructure manifests reference](./infrastructure-manifests.md).
