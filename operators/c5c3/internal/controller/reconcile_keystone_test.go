@@ -7,6 +7,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -276,6 +277,31 @@ func TestReconcileKeystone_ImageOverrideWins(t *testing.T) {
 	k := getProjectedKeystone(t, c, cp)
 	g.Expect(k.Spec.Image.Repository).To(Equal("registry.internal/keystone"))
 	g.Expect(k.Spec.Image.Tag).To(Equal("custom-tag"), "explicit image override must win over release-derived default")
+}
+
+// TestReconcileKeystone_ImageOverrideWithTagAndDigest pins that an image
+// override carrying a tag beside a digest reaches the Keystone child whole: the
+// child keeps the digest that pins the build and the tag that names its
+// release.
+func TestReconcileKeystone_ImageOverrideWithTagAndDigest(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := keystoneTestScheme(t)
+	cp := keystoneControlPlane()
+	override := &commonv1.ImageSpec{
+		Repository: "registry.internal/keystone",
+		Tag:        "2026.1",
+		Digest:     "sha256:" + strings.Repeat("a", 64),
+	}
+	cp.Spec.Services.Keystone.Image = override
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileKeystone(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	k := getProjectedKeystone(t, c, cp)
+	g.Expect(k.Spec.Image).To(Equal(*override))
 }
 
 func TestReconcileKeystone_ClusterRefsDerivedFromInfrastructure(t *testing.T) {

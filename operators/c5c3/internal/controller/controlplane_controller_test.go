@@ -890,6 +890,38 @@ func TestObservedServiceReleases_HorizonReportsTagOfConvergedGeneration(t *testi
 	}
 }
 
+// TestObservedServiceReleases_HorizonTagAndDigestReportsTag pins that a Horizon
+// image with a tag beside a digest reports its tag: the digest pins the build,
+// and the tag still names the release.
+func TestObservedServiceReleases_HorizonTagAndDigestReportsTag(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := &c5c3v1alpha1.ControlPlane{
+		ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "openstack"},
+		Spec: c5c3v1alpha1.ControlPlaneSpec{
+			OpenStackRelease: "2026.2",
+			Services:         c5c3v1alpha1.ServicesSpec{Horizon: &c5c3v1alpha1.ServiceHorizonSpec{}},
+		},
+		Status: c5c3v1alpha1.ControlPlaneStatus{
+			Services: []c5c3v1alpha1.ServiceStatus{{Name: horizonServiceKey, Release: "2026.1"}},
+		},
+	}
+	hz := &horizonv1alpha1.Horizon{
+		ObjectMeta: metav1.ObjectMeta{Name: horizonName(cp), Namespace: cp.Namespace, Generation: 3},
+		Spec: horizonv1alpha1.HorizonSpec{Image: commonv1.ImageSpec{
+			Repository: "ghcr.io/c5c3/horizon",
+			Tag:        "2026.2",
+			Digest:     "sha256:" + strings.Repeat("a", 64),
+		}},
+	}
+	hz.Status.ObservedGeneration = 3
+	hz.Status.Conditions = []metav1.Condition{trueCondition("Ready")}
+	r := serviceReleasesReconciler(t, interceptor.Funcs{}, hz)
+
+	releases := r.observedServiceReleases(context.Background(), cp)
+
+	g.Expect(releases).To(HaveKeyWithValue(horizonServiceKey, "2026.2"))
+}
+
 // TestObservedServiceReleases_ExternalKeystoneReadsNoChild pins that a Keystone
 // in External mode, which has no child, reports no release and is never read,
 // even when a Keystone of the projected name exists.
