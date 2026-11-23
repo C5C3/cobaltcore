@@ -7,6 +7,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -18,6 +19,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	"github.com/c5c3/cobaltcore/internal/common/database"
 	"github.com/c5c3/cobaltcore/internal/common/deployment"
+	"github.com/c5c3/cobaltcore/internal/common/release"
 	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 )
 
@@ -69,7 +71,9 @@ func keystoneMaxUserConnections(keystone *keystonev1alpha1.Keystone) int32 {
 // stay in lockstep with the shared upgrade flow. Only the reasons keystone still
 // emits locally (the target-changed guard in reconcileDatabase) or the tests
 // reference by name are aliased here; every other upgrade reason is emitted by
-// the shared flow directly.
+// the shared flow directly. conditionReasonImageReleaseMismatch below is
+// keystone's own: the two image guards (rejectUnchangedImageUpgrade and
+// rejectAbortOnTargetBuild) emit it.
 const (
 	conditionReasonUpgradeTargetChanged  = database.ReasonUpgradeTargetChanged
 	conditionReasonVersionParseError     = database.ReasonVersionParseError
@@ -80,6 +84,12 @@ const (
 	conditionReasonUpgradeRollingUpdate  = database.ReasonUpgradeRollingUpdate
 )
 
+// conditionReasonImageReleaseMismatch is the DatabaseReady reason and Warning
+// event reason of a release bump of spec.image.tag that leaves spec.image the
+// image that migrated the installed schema, and of an abort that reverts
+// spec.image.tag but leaves spec.image.digest on another build.
+const conditionReasonImageReleaseMismatch = "ImageReleaseMismatch"
+
 // reconcileDatabase ensures the Keystone database schema is provisioned and
 // migrated. In managed mode (ClusterRef set) it creates MariaDB Database, User,
 // and Grant CRs and waits for them to become Ready before running the db_sync
@@ -87,10 +97,11 @@ const (
 // directly. The provisioning, steady-state sync, and expand-migrate-contract
 // upgrade flows are all shared (internal/common/database); only the
 // keystone-specific inputs (assembled by upgradeFlowParams), the target-changed
-// guard below, and the recording of status.installedImage stay local. The
-// image reference is recorded after a sync pass that settled (db-sync and
-// schema check complete) and in the pass whose contract Job completed an
-// upgrade; an aborted upgrade records nothing.
+// guard below, the two image guards (rejectAbortOnTargetBuild and
+// rejectUnchangedImageUpgrade), and the recording of status.installedImage stay
+// local. The image reference is recorded after a sync pass that settled
+// (db-sync and schema check complete) and in the pass whose contract Job
+// completed an upgrade; an aborted upgrade records nothing.
 func (r *KeystoneReconciler) reconcileDatabase(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName string) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -120,7 +131,9 @@ func (r *KeystoneReconciler) reconcileDatabase(ctx context.Context, children cli
 	// generically as "spec release"). The abort case — spec.image.tag reverted
 	// to the installed release — bypasses the guard so the shared AbortUpgrade
 	// runs; it is checked first there because a revert also satisfies
-	// tag != targetRelease and would otherwise trip this guard.
+	// tag != targetRelease and would otherwise trip this guard. An abort whose
+	// pinned digest still names another build than the installed one is refused
+	// by rejectAbortOnTargetBuild before it reaches AbortUpgrade.
 	if keystone.Status.UpgradePhase != "" {
 		if keystone.Spec.Image.Tag != keystone.Status.InstalledRelease &&
 			keystone.Spec.Image.Tag != keystone.Status.TargetRelease {
@@ -140,6 +153,9 @@ func (r *KeystoneReconciler) reconcileDatabase(ctx context.Context, children cli
 			return ctrl.Result{}, fmt.Errorf("image tag changed during active upgrade: current upgrade targets %s but spec.image.tag is %s",
 				keystone.Status.TargetRelease, keystone.Spec.Image.Tag)
 		}
+		if err := r.rejectAbortOnTargetBuild(keystone); err != nil {
+			return ctrl.Result{}, err
+		}
 		target := keystone.Status.TargetRelease
 		res, err := database.ReconcileUpgrade(ctx, r.upgradeFlowParams(ctx, children, keystone, configMapName, domainsSecretName))
 		// The contract Job completed in this pass when the installed release
@@ -152,6 +168,9 @@ func (r *KeystoneReconciler) reconcileDatabase(ctx context.Context, children cli
 
 	// Detect upgrade.
 	if isUpgrade(keystone) {
+		if err := r.rejectUnchangedImageUpgrade(keystone); err != nil {
+			return ctrl.Result{}, err
+		}
 		return database.InitiateUpgrade(ctx, r.upgradeFlowParams(ctx, children, keystone, configMapName, domainsSecretName))
 	}
 
@@ -177,6 +196,111 @@ func (r *KeystoneReconciler) reconcileDatabase(ctx context.Context, children cli
 		keystone.Status.InstalledImage = keystone.Spec.Image.Reference()
 	}
 	return res, err
+}
+
+// rejectUnchangedImageUpgrade refuses a sequential release bump of
+// spec.image.tag that leaves spec.image on the build whose db_sync last
+// completed (status.installedImage, compared by runsInstalledBuild). The phase
+// Jobs would then run the installed build: with a digest pinned they run
+// spec.image.Reference(), which still names that build, so they would migrate
+// nothing and still promote status.installedRelease to a release no migration
+// produced. The guard keeps that marker honest, the way Neutron's
+// gateReleaseTransition does for spec.openStackRelease.
+//
+// It answers only a sequential bump of a parseable release whose image is
+// unchanged. An empty status.installedImage (a Keystone whose first settled
+// pass has not run yet) skips it, and every other transition is left to
+// database.InitiateUpgrade, which reports VersionParseError,
+// DowngradeNotSupported and UpgradePathInvalid.
+//
+// A refusal sets DatabaseReady=False with reason ImageReleaseMismatch, records a
+// Warning event of the same reason, and returns the error. It sets no upgrade
+// phase or target release and creates no Job. The other way into this
+// state is the reverse edit order: a digest bumped before the tag migrated the
+// schema through plain db_sync and credited the new image to the old release,
+// so the message names both recoveries.
+func (r *KeystoneReconciler) rejectUnchangedImageUpgrade(keystone *keystonev1alpha1.Keystone) error {
+	if keystone.Status.InstalledImage == "" {
+		return nil
+	}
+	from, fromErr := release.ParseRelease(keystone.Status.InstalledRelease)
+	to, toErr := release.ParseRelease(keystone.Spec.Image.Tag)
+	// A release that does not parse is InitiateUpgrade's to report.
+	sequential := fromErr == nil && toErr == nil && release.IsSequentialUpgrade(from, to)
+	if !sequential || !runsInstalledBuild(keystone) {
+		return nil
+	}
+
+	return r.refuseImageReleaseMismatch(keystone, fmt.Errorf("upgrade from %s to %s leaves spec.image unchanged (%s), so the phase Jobs would run the installed build: "+
+		"either bump spec.image.digest in lockstep with spec.image.tag, or, if that image already migrated the schema "+
+		"because its digest was bumped before spec.image.tag was, patch status.installedRelease to %s to record the "+
+		"migration that has already run",
+		from.Raw, to.Raw, keystone.Spec.Image.Reference(), to.Raw))
+}
+
+// rejectAbortOnTargetBuild refuses an abort, spec.image.tag reverted to
+// status.installedRelease during an active upgrade, that leaves a pinned
+// spec.image.digest on another build than status.installedImage. The abort
+// hands the next pass to the steady-state db-sync Job, which runs
+// spec.image.Reference(): on the target build its plain db_sync would apply the
+// target release's expand and contract migrations in one Job, outside the
+// phases, and the schema would be credited to the installed release.
+//
+// It needs a pinned digest and a recorded image, so a tag-only Keystone, and
+// one whose first settled pass has not run yet, abort as before. A recorded
+// tag matches no digest, so on such a Keystone the message names two edits
+// instead of the revert: remove the digest, which leaves the Keystone on the
+// mutable tag, or patch status.installedImage to the digest of the installed
+// build and set spec.image.digest to it, which keeps the pin. A refusal sets
+// DatabaseReady=False with reason ImageReleaseMismatch, records a Warning event
+// of the same reason, and returns the error. The upgrade phase, the target
+// release and the phase Jobs stay, so an abort that reverts the digest as well
+// runs the shared AbortUpgrade.
+func (r *KeystoneReconciler) rejectAbortOnTargetBuild(keystone *keystonev1alpha1.Keystone) error {
+	if keystone.Spec.Image.Tag != keystone.Status.InstalledRelease ||
+		keystone.Spec.Image.Digest == "" ||
+		keystone.Status.InstalledImage == "" ||
+		runsInstalledBuild(keystone) {
+		return nil
+	}
+	remedy := "revert spec.image.digest in the same edit, so the db_sync after the abort runs the installed build"
+	if !strings.Contains(keystone.Status.InstalledImage, "@") {
+		remedy = "the installed build is recorded by tag, which no digest matches: either remove spec.image.digest " +
+			`("digest":null in a merge patch) in the same edit, which leaves the db_sync after the abort and the Deployment on the mutable tag ` +
+			keystone.Spec.Image.Repository + ":" + keystone.Spec.Image.Tag + ", or, to keep the pin, patch status.installedImage (status subresource) to " +
+			keystone.Spec.Image.Repository + "@<digest of the installed build> and set spec.image.digest to that digest"
+	}
+	return r.refuseImageReleaseMismatch(keystone, fmt.Errorf("abort of upgrade %s → %s reverts spec.image.tag but leaves spec.image on %s instead of the installed build %s: %s",
+		keystone.Status.InstalledRelease, keystone.Status.TargetRelease, keystone.Spec.Image.Reference(), keystone.Status.InstalledImage, remedy))
+}
+
+// runsInstalledBuild reports whether spec.image names the build recorded in
+// status.installedImage. A digest names a build whichever repository serves
+// it, so when spec.image pins a digest and the recorded reference carries one,
+// only the two digests are compared; otherwise the whole references are.
+func runsInstalledBuild(keystone *keystonev1alpha1.Keystone) bool {
+	installed := keystone.Status.InstalledImage
+	if digest := keystone.Spec.Image.Digest; digest != "" {
+		if i := strings.LastIndex(installed, "@"); i >= 0 {
+			return installed[i+1:] == digest
+		}
+	}
+	return installed == keystone.Spec.Image.Reference()
+}
+
+// refuseImageReleaseMismatch sets DatabaseReady=False with reason
+// ImageReleaseMismatch and the message of err, records a Warning event of the
+// same reason and message, and returns err.
+func (r *KeystoneReconciler) refuseImageReleaseMismatch(keystone *keystonev1alpha1.Keystone, err error) error {
+	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
+		Type:               "DatabaseReady",
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: keystone.Generation,
+		Reason:             conditionReasonImageReleaseMismatch,
+		Message:            err.Error(),
+	})
+	r.Recorder.Event(keystone, corev1.EventTypeWarning, conditionReasonImageReleaseMismatch, err.Error())
+	return err
 }
 
 // isUpgrade reports whether spec.image.tag requires the shared
