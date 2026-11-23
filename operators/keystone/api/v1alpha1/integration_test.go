@@ -100,6 +100,29 @@ func TestIntegration_ValidCRAccepted(t *testing.T) {
 	g.Expect(got.Spec.Database.Host).To(Equal("db.example.com"))
 }
 
+// TestIntegration_CRD_AdmitsImageTagAndDigest pins that the API server, with
+// the CRD schema and the webhook in play, stores a Keystone whose spec.image
+// carries a tag beside a digest, and keeps both fields.
+func TestIntegration_CRD_AdmitsImageTagAndDigest(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTest(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-tag-and-digest-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	const digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	k := validIntegrationKeystone("tag-and-digest", ns.Name)
+	k.Spec.Image.Digest = digest
+	g.Expect(c.Create(ctx, k)).To(Succeed(), "an image with tag and digest should be admitted")
+
+	got := &Keystone{}
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: "tag-and-digest", Namespace: ns.Name}, got)).To(Succeed())
+	g.Expect(got.Spec.Image.Tag).To(Equal("2026.1"))
+	g.Expect(got.Spec.Image.Digest).To(Equal(digest))
+}
+
 func TestIntegration_ValidCRWithClusterRefAccepted(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
