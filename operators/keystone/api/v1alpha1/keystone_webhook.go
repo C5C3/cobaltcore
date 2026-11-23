@@ -217,8 +217,8 @@ func (w *KeystoneWebhook) Default(_ context.Context, obj *Keystone) error {
 //
 // Keystone carries no spec.openStackRelease, so the release floor
 // (validation.OpenStackReleaseFloor) applies to spec.image.tag when the tag
-// parses as a release; a digest-pinned image or a tag such as "latest" names
-// none and is skipped.
+// parses as a release; an image without a tag or a tag such as "latest" names
+// none and is skipped. A tag beside a digest is checked like any tag.
 func (w *KeystoneWebhook) ValidateCreate(ctx context.Context, obj *Keystone) (admission.Warnings, error) {
 	catalogWarnings, createErrs := validateExtraConfigOptions(field.NewPath("spec"), obj)
 	floorErrs, _ := validation.OpenStackReleaseFloor(field.NewPath("spec", "image", "tag"), "", obj.Spec.Image.Tag)
@@ -339,19 +339,19 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone, extra field
 		))
 	}
 
-	// Defense-in-depth image tag/digest XOR check alongside the
-	// +kubebuilder:validation:XValidation rule on commonv1.ImageSpec: exactly
+	// Defense-in-depth image tag-or-digest check alongside the
+	// +kubebuilder:validation:XValidation rule on commonv1.ImageSpec: at least
 	// one of tag or digest must be set.
-	if (k.Spec.Image.Tag != "") == (k.Spec.Image.Digest != "") {
+	if k.Spec.Image.Tag == "" && k.Spec.Image.Digest == "" {
 		allErrs = append(allErrs, field.Invalid(
 			specPath.Child("image"),
 			k.Spec.Image,
-			"exactly one of image.tag or image.digest must be set",
+			"at least one of image.tag or image.digest must be set",
 		))
 	}
 
 	// Defense-in-depth federation proxy-image checks alongside the
-	// commonv1.ImageSpec markers (MinLength on repository, the tag/digest XOR
+	// commonv1.ImageSpec markers (MinLength on repository, the tag-or-digest
 	// CEL rule): the sidecar reference must be resolvable when set.
 	if k.Spec.Federation != nil && k.Spec.Federation.ProxyImage != nil {
 		proxyImage := k.Spec.Federation.ProxyImage
@@ -362,11 +362,11 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone, extra field
 				"federation.proxyImage.repository must be set",
 			))
 		}
-		if (proxyImage.Tag != "") == (proxyImage.Digest != "") {
+		if proxyImage.Tag == "" && proxyImage.Digest == "" {
 			allErrs = append(allErrs, field.Invalid(
 				proxyImagePath,
 				proxyImage,
-				"exactly one of proxyImage.tag or proxyImage.digest must be set",
+				"at least one of proxyImage.tag or proxyImage.digest must be set",
 			))
 		}
 	}
@@ -1052,7 +1052,7 @@ func warnCleartextTrustedDashboards(k *Keystone) admission.Warnings {
 // against the option catalog embedded for the release named by spec.image.tag.
 //
 // It fails open: when the image cannot be resolved to an embedded catalog it
-// returns exactly one warning and no errors, so a digest-pinned image, an
+// returns exactly one warning and no errors, so an image without a tag, an
 // unparseable tag, or a build that ships no catalog for the release never blocks
 // admission. Sections a loaded plugin declares (spec.plugins[].configSection)
 // and the operator-owned keys in OwnedConfigKeys are exempt from the scan, so a
@@ -1068,7 +1068,7 @@ func validateExtraConfigOptions(specPath *field.Path, k *Keystone) (admission.Wa
 	catalog, ok := OptionCatalogForRelease(k.Spec.Image.Tag)
 	if !ok {
 		// Fail open with exactly one warning. Distinguish an image that does not
-		// name a release at all (empty tag, digest pin, "latest") from a
+		// name a release at all (an image without a tag, "latest") from a
 		// parseable release the operator ships no catalog for.
 		rel, err := release.ParseRelease(k.Spec.Image.Tag)
 		if err != nil {

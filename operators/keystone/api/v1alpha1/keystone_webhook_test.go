@@ -1587,9 +1587,10 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	w := &KeystoneWebhook{Client: newFakeClient().Build()}
 	k := validKeystone()
 	k.Spec.Deployment.Replicas = 0
-	// Break image — set BOTH tag and digest so the tag/digest XOR fires. Every
-	// new image validation hook must participate in the aggregated error.
-	k.Spec.Image.Digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	// Break image — clear BOTH tag and digest so the tag-or-digest rule fires.
+	// Every new image validation hook must participate in the aggregated error.
+	k.Spec.Image.Tag = ""
+	k.Spec.Image.Digest = ""
 	k.Spec.Fernet.MaxActiveKeys = 1
 	k.Spec.Fernet.RotationSchedule = "bad-cron"
 	k.Spec.CredentialKeys.MaxActiveKeys = 1
@@ -1714,15 +1715,11 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 		Schedule:       "bad-cron",
 		PasswordLength: 8,
 	}
-	// Break federation.proxyImage — empty repository AND the tag/digest XOR
-	// (both set). Every new federation validation hook must participate in the
-	// aggregated error, matching the regression-guard pattern above.
+	// Break federation.proxyImage — empty repository AND the tag-or-digest
+	// rule (neither set). Every new federation validation hook must participate
+	// in the aggregated error, matching the regression-guard pattern above.
 	k.Spec.Federation = &FederationSpec{
-		ProxyImage: &commonv1.ImageSpec{
-			Repository: "",
-			Tag:        "latest",
-			Digest:     "sha256:2222222222222222222222222222222222222222222222222222222222222222",
-		},
+		ProxyImage: &commonv1.ImageSpec{Repository: ""},
 		// Break federation.trustedDashboards on BOTH hooks — a duplicate origin
 		// and a non-http(s) entry — plus the extraConfig conflict below, so
 		// every trustedDashboards path participates in the aggregated error
@@ -1748,7 +1745,7 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	g.Expect(err).To(HaveOccurred())
 	errMsg := err.Error()
 	g.Expect(errMsg).To(ContainSubstring("replicas"))
-	g.Expect(errMsg).To(ContainSubstring("image"))
+	g.Expect(errMsg).To(ContainSubstring("at least one of image.tag or image.digest"))
 	g.Expect(errMsg).To(ContainSubstring("maxActiveKeys"))
 	g.Expect(errMsg).To(ContainSubstring("rotationSchedule"))
 	g.Expect(errMsg).To(ContainSubstring("configSection"))
@@ -1805,10 +1802,10 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	g.Expect(errMsg).To(ContainSubstring("scheme must be http or https"))
 	g.Expect(errMsg).To(ContainSubstring("trusted_dashboard is managed via spec.federation.trustedDashboards"))
 	// every federation validation path (proxyImage repository +
-	// tag/digest XOR) must participate in the aggregated error.
+	// tag-or-digest rule) must participate in the aggregated error.
 	g.Expect(errMsg).To(ContainSubstring("federation.proxyImage"))
 	g.Expect(errMsg).To(ContainSubstring("proxyImage.repository must be set"))
-	g.Expect(errMsg).To(ContainSubstring("exactly one of proxyImage.tag or proxyImage.digest"))
+	g.Expect(errMsg).To(ContainSubstring("at least one of proxyImage.tag or proxyImage.digest"))
 }
 
 // TestValidate_SecretStoreRef covers the secretStoreRef defense-in-depth checks
@@ -1862,7 +1859,7 @@ func TestValidate_SecretStoreRef(t *testing.T) {
 // TestValidate_FederationProxyImage covers the federation.proxyImage
 // defense-in-depth checks in isolation: a nil federation block and a nil
 // proxyImage are both valid (activation is backend-driven), a set proxyImage
-// needs a repository and exactly one of tag/digest.
+// needs a repository and at least one of tag/digest.
 func TestValidate_FederationProxyImage(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{Client: newFakeClient().Build()}
@@ -1888,6 +1885,18 @@ func TestValidate_FederationProxyImage(t *testing.T) {
 	_, err = w.ValidateCreate(context.Background(), k)
 	g.Expect(err).NotTo(HaveOccurred())
 
+	// tag and digest together: accepted, the digest pins the build.
+	k = validKeystone()
+	k.Spec.Federation = &FederationSpec{
+		ProxyImage: &commonv1.ImageSpec{
+			Repository: "ghcr.io/c5c3/keystone-federation-proxy",
+			Tag:        "latest",
+			Digest:     "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+		},
+	}
+	_, err = w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+
 	// missing repository: rejected.
 	k = validKeystone()
 	k.Spec.Federation = &FederationSpec{
@@ -1897,14 +1906,14 @@ func TestValidate_FederationProxyImage(t *testing.T) {
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("proxyImage.repository must be set"))
 
-	// neither tag nor digest: rejected by the XOR.
+	// neither tag nor digest: rejected by the tag-or-digest rule.
 	k = validKeystone()
 	k.Spec.Federation = &FederationSpec{
 		ProxyImage: &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone-federation-proxy"},
 	}
 	_, err = w.ValidateCreate(context.Background(), k)
 	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("exactly one of proxyImage.tag or proxyImage.digest"))
+	g.Expect(err.Error()).To(ContainSubstring("at least one of proxyImage.tag or proxyImage.digest must be set"))
 }
 
 // managedKeystone returns a valid managed-mode Keystone (ClusterRef set, Host
@@ -3508,16 +3517,17 @@ func TestValidate_TLSValidAccepted(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
-func TestValidate_ImageTagAndDigestBothSetRejected(t *testing.T) {
+// TestValidate_ImageTagAndDigestAdmitted pins that a tag beside a digest is
+// admitted: the digest pins the build and the tag names its release.
+func TestValidate_ImageTagAndDigestAdmitted(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
 	k := validKeystone()
-	// validKeystone() already sets a tag; adding a digest violates the XOR.
+	// validKeystone() already sets a tag; the digest joins it.
 	k.Spec.Image.Digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 
 	_, err := w.ValidateCreate(context.Background(), k)
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("exactly one of image.tag or image.digest"))
+	g.Expect(err).NotTo(HaveOccurred())
 }
 
 func TestValidate_ImageNeitherTagNorDigestRejected(t *testing.T) {
@@ -3529,7 +3539,7 @@ func TestValidate_ImageNeitherTagNorDigestRejected(t *testing.T) {
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("exactly one of image.tag or image.digest"))
+	g.Expect(err.Error()).To(ContainSubstring("at least one of image.tag or image.digest must be set"))
 }
 
 func TestValidate_ImageDigestOnlyAccepted(t *testing.T) {
@@ -3576,6 +3586,22 @@ func TestValidate_ImageTagReleaseFloor(t *testing.T) {
 			g.Expect(err.Error()).To(ContainSubstring("2026.1 or later"))
 		})
 	}
+}
+
+// TestValidateCreate_TagBelowFloorWithDigestRejected pins that the release
+// floor reads the tag of an image that also pins a digest: a digest does not
+// exempt a tag below 2026.1 from the floor.
+func TestValidateCreate_TagBelowFloorWithDigestRejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.Image.Tag = "2025.2"
+	k.Spec.Image.Digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("spec.image.tag"))
+	g.Expect(err.Error()).To(ContainSubstring("must be 2026.1 or later"))
 }
 
 // TestValidateUpdate_ImageTagReleaseFloor pins the release floor on an update:
@@ -3806,10 +3832,10 @@ func TestValidate_ExtraConfigPluginSectionExempt(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
-// TestValidate_ExtraConfigDigestPinFailsOpen pins the fail-open behavior for a
-// digest-pinned image: the option catalog cannot be resolved, so the check
+// TestValidate_ExtraConfigDigestOnlyFailsOpen pins the fail-open behavior for an
+// image without a tag: the option catalog cannot be resolved, so the check
 // emits a single warning and no error even though "providr" is unknown.
-func TestValidate_ExtraConfigDigestPinFailsOpen(t *testing.T) {
+func TestValidate_ExtraConfigDigestOnlyFailsOpen(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
 	k := validKeystone()
@@ -3824,6 +3850,25 @@ func TestValidate_ExtraConfigDigestPinFailsOpen(t *testing.T) {
 	g.Expect(warnings).To(ContainElement(
 		"spec.extraConfig was not validated against an option catalog: spec.image does not name an OpenStack release",
 	))
+}
+
+// TestValidateExtraConfig_TagAndDigestUsesTagCatalog pins that an image with a
+// tag beside a digest is checked against the option catalog of its tag: the
+// digest does not make the check fail open.
+func TestValidateExtraConfig_TagAndDigestUsesTagCatalog(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.Image.Tag = "2026.1"
+	k.Spec.Image.Digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	k.Spec.ExtraConfig = map[string]map[string]string{
+		"token": {"providr": "x"},
+	}
+
+	warnings, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("no such option in the keystone 2026.1 option catalog"))
+	g.Expect(warnings).NotTo(ContainElement(ContainSubstring("does not name an OpenStack release")))
 }
 
 // TestValidate_ExtraConfigUnknownReleaseFailsOpen pins the fail-open behavior for
