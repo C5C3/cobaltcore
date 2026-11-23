@@ -45,6 +45,23 @@ func TestOVNCentralValidateCreate_AcceptsMinimalSpec(t *testing.T) {
 	g.Expect(warnings).To(gomega.BeEmpty())
 }
 
+// TestOVNCentralValidateCreate_AcceptsImageWithTagAndDigest pins the
+// at-least-one image rule from the admitting side: an image that carries a tag
+// beside a digest is admitted.
+func TestOVNCentralValidateCreate_AcceptsImageWithTagAndDigest(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &OVNCentralWebhook{}
+
+	obj := validOVNCentral()
+	obj.Spec.Image = &commonv1.ImageSpec{
+		Repository: "ghcr.io/c5c3/ovn",
+		Tag:        "25.03",
+		Digest:     "sha256:" + strings.Repeat("a", 64),
+	}
+	_, err := w.ValidateCreate(context.Background(), obj)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+}
+
 // The full shape exercises every optional block at once, so a rule that rejects
 // a legitimate combination (the two custom nodePort ranges above all, which the
 // disjointness check sees together) fails here rather than in production.
@@ -143,22 +160,11 @@ func TestOVNCentralValidateCreate_Rejections(t *testing.T) {
 			wantMsg: "credentialsSecretRef.name must be set",
 		},
 		{
-			name: "image pins both a tag and a digest",
-			mutate: func(o *OVNCentral) {
-				o.Spec.Image = &commonv1.ImageSpec{
-					Repository: "ghcr.io/c5c3/ovn",
-					Tag:        "25.03",
-					Digest:     strings.Repeat("a", 64),
-				}
-			},
-			wantMsg: "exactly one of image.tag or image.digest must be set",
-		},
-		{
 			name: "image pins neither a tag nor a digest",
 			mutate: func(o *OVNCentral) {
 				o.Spec.Image = &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/ovn"}
 			},
-			wantMsg: "exactly one of image.tag or image.digest must be set",
+			wantMsg: "at least one of image.tag or image.digest must be set",
 		},
 		{
 			name: "image has no repository",

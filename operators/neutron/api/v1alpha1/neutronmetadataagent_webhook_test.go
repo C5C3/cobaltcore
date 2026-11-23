@@ -156,6 +156,12 @@ func TestNeutronMetadataAgentValidateCreate_AcceptedShapes(t *testing.T) {
 			},
 		},
 		{
+			name: "image with tag and digest",
+			mutate: func(o *NeutronMetadataAgent) {
+				o.Spec.Image.Digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+			},
+		},
+		{
 			name:   "zero metadataWorkers serves requests in the main process",
 			mutate: func(o *NeutronMetadataAgent) { o.Spec.MetadataWorkers = ptr.To(int32(0)) },
 		},
@@ -237,11 +243,9 @@ func TestNeutronMetadataAgentValidateCreate_RejectionTable(t *testing.T) {
 			wantSub: "must not contain a newline or carriage return",
 		},
 		{
-			name: "image tag and digest both set rejected",
-			mutate: func(o *NeutronMetadataAgent) {
-				o.Spec.Image.Digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-			},
-			wantSub: "exactly one of image.tag or image.digest",
+			name:    "image with neither tag nor digest rejected",
+			mutate:  func(o *NeutronMetadataAgent) { o.Spec.Image.Tag = "" },
+			wantSub: "at least one of image.tag or image.digest must be set",
 		},
 		{
 			name:    "image without a repository rejected",

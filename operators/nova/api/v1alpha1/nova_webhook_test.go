@@ -254,6 +254,18 @@ func TestNovaValidateCreate_ValidSpecAccepted(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 }
 
+// TestNovaValidateCreate_ImageTagAndDigestAccepted pins the at-least-one
+// image rule from the admitting side: a tag beside a digest is admitted.
+func TestNovaValidateCreate_ImageTagAndDigestAccepted(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &NovaWebhook{}
+	o := validNova()
+	o.Spec.Image.Digest = "sha256:" + strings.Repeat("a", 64)
+
+	_, err := w.ValidateCreate(context.Background(), o)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+}
+
 func TestNovaValidateCreate_RejectionTable(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -301,10 +313,10 @@ func TestNovaValidateCreate_RejectionTable(t *testing.T) {
 			wantSub:  "database.database must be at most 58 characters",
 		},
 		{
-			name:     "image with both a tag and a digest rejected",
-			mutate:   func(o *Nova) { o.Spec.Image.Digest = "sha256:" + strings.Repeat("a", 64) },
+			name:     "image with neither a tag nor a digest rejected",
+			mutate:   func(o *Nova) { o.Spec.Image.Tag = "" },
 			wantPath: "spec.image",
-			wantSub:  "exactly one of image.tag or image.digest must be set",
+			wantSub:  "at least one of image.tag or image.digest must be set",
 		},
 		{
 			name:     "apiDatabase with both clusterRef and host rejected",

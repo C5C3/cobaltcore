@@ -169,7 +169,7 @@ func DefaultMultiDomain(md *MultiDomainSpec) {
 //
 // Horizon carries no spec.openStackRelease, so the release floor
 // (validation.OpenStackReleaseFloor) applies to spec.image.tag when the tag
-// parses as a release; a digest-pinned image or a tag such as "latest" names
+// parses as a release; an image without a tag or a tag such as "latest" names
 // none and is skipped.
 func (w *HorizonWebhook) ValidateCreate(ctx context.Context, obj *Horizon) (admission.Warnings, error) {
 	floorErrs, _ := validation.OpenStackReleaseFloor(field.NewPath("spec", "image", "tag"), "", obj.Spec.Image.Tag)
@@ -216,14 +216,14 @@ func (w *HorizonWebhook) validate(ctx context.Context, h *Horizon, extra field.E
 		))
 	}
 
-	// Defense-in-depth image tag/digest XOR check alongside the
-	// +kubebuilder:validation:XValidation rule on commonv1.ImageSpec: exactly
+	// Defense-in-depth image tag-or-digest check alongside the
+	// +kubebuilder:validation:XValidation rule on commonv1.ImageSpec: at least
 	// one of tag or digest must be set.
-	if (h.Spec.Image.Tag != "") == (h.Spec.Image.Digest != "") {
+	if h.Spec.Image.Tag == "" && h.Spec.Image.Digest == "" {
 		allErrs = append(allErrs, field.Invalid(
 			specPath.Child("image"),
 			h.Spec.Image,
-			"exactly one of image.tag or image.digest must be set",
+			"at least one of image.tag or image.digest must be set",
 		))
 	}
 

@@ -111,7 +111,7 @@ type UpgradeFlowParams struct {
 // same release, and patch-only changes. On a parse error of either side it
 // returns true so InitiateUpgrade surfaces the error with a proper condition.
 func IsUpgrade(specRelease, installedRelease string) bool {
-	// A digest-pinned image carries no release string, so the release/upgrade
+	// An image without a tag carries no release string, so the release/upgrade
 	// machine has nothing to compare — skip release detection entirely.
 	if specRelease == "" {
 		return false

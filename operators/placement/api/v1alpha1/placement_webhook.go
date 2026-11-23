@@ -196,14 +196,14 @@ func (w *PlacementWebhook) validate(ctx context.Context, p *Placement, extra fie
 		))
 	}
 
-	// Defense-in-depth image tag/digest XOR check alongside the
-	// +kubebuilder:validation:XValidation rule on commonv1.ImageSpec: exactly one
-	// of tag or digest must be set.
-	if (p.Spec.Image.Tag != "") == (p.Spec.Image.Digest != "") {
+	// Defense-in-depth image tag-or-digest check alongside the
+	// +kubebuilder:validation:XValidation rule on commonv1.ImageSpec: at least
+	// one of tag or digest must be set.
+	if p.Spec.Image.Tag == "" && p.Spec.Image.Digest == "" {
 		allErrs = append(allErrs, field.Invalid(
 			specPath.Child("image"),
 			p.Spec.Image,
-			"exactly one of image.tag or image.digest must be set",
+			"at least one of image.tag or image.digest must be set",
 		))
 	}
 
