@@ -747,6 +747,38 @@ func TestReconcileDatabase_StaleDBSyncJob_Recreated(t *testing.T) {
 	g.Expect(newJob.Annotations[job.PodSpecHashAnnotation]).To(Equal(expectedHash))
 }
 
+// Digests of two builds of the Keystone image, for the tests of a spec.image
+// that pins a digest beside its tag.
+const (
+	testDigestOld = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	testDigestNew = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+)
+
+// TestBuildUpgradeJobs_DigestPinned verifies that the three upgrade-phase Jobs
+// of an image with a tag beside a digest run "repository@digest": the digest
+// names the build, so the imageTag parameter does not enter the reference.
+func TestBuildUpgradeJobs_DigestPinned(t *testing.T) {
+	for name, build := range map[string]func(*keystonev1alpha1.Keystone, string, string, string) *batchv1.Job{
+		"db-expand":   buildExpandJob,
+		"db-migrate":  buildMigrateJob,
+		"db-contract": buildContractJob,
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ks := brownfieldKeystone()
+			ks.Spec.Image.Tag = "2026.2"
+			ks.Spec.Image.Digest = testDigestNew
+
+			j := build(ks, "keystone-config-abc123", "", ks.Spec.Image.Tag)
+
+			container := findContainerByName(j.Spec.Template.Spec.Containers, name)
+			g.Expect(container).NotTo(BeNil())
+			g.Expect(container.Image).To(Equal(ks.Spec.Image.Repository + "@" + testDigestNew))
+			g.Expect(container.ImagePullPolicy).To(Equal(corev1.PullIfNotPresent))
+		})
+	}
+}
+
 // TestBuildUpgradeJobs verifies all three upgrade-phase Job builders
 // (buildExpandJob, buildMigrateJob, buildContractJob) produce the correct Job
 // metadata, image, command, security context, and config volume.
@@ -1654,6 +1686,69 @@ func TestReconcileDatabase_TagChangedDuringUpgrade_Blocks(t *testing.T) {
 	g.Expect(ks.Status.UpgradePhase).To(Equal(keystonev1alpha1.UpgradePhaseExpanding))
 	g.Expect(ks.Status.TargetRelease).To(Equal("2026.2"))
 	g.Expect(ks.Status.InstalledRelease).To(Equal("2026.1"))
+
+	expectEvent(g, r, "Warning UpgradeTargetChanged")
+}
+
+// TestReconcileDatabase_DigestChangedDuringUpgrade_RerunsPhaseJob verifies that
+// a digest change under the target tag during an active upgrade is the digest
+// counterpart of re-pushing a mutable tag: the completed expand Job of the old
+// build is re-created on the new reference, and the target-changed guard does
+// not fire, because the tag still names the target release.
+func TestReconcileDatabase_DigestChangedDuringUpgrade_RerunsPhaseJob(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := upgradingKeystone(keystonev1alpha1.UpgradePhaseExpanding)
+	ks.Spec.Image.Digest = testDigestOld
+	completed := completedUpgradeJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag, "expand", "--expand")
+	ks.Spec.Image.Digest = testDigestNew
+
+	r := newDBTestReconciler(s, ks, completed)
+
+	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(RequeueUpgradeWait))
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Reason).To(Equal(conditionReasonExpandInProgress))
+	g.Expect(ks.Status.UpgradePhase).To(Equal(keystonev1alpha1.UpgradePhaseExpanding))
+	g.Expect(ks.Status.TargetRelease).To(Equal("2026.2"))
+
+	var expandJob batchv1.Job
+	g.Expect(r.Client.Get(context.Background(), client.ObjectKey{
+		Name:      "test-keystone-db-expand",
+		Namespace: "default",
+	}, &expandJob)).To(Succeed())
+	g.Expect(expandJob.Status.Succeeded).To(BeZero(), "the completed Job of the old build must be replaced")
+	g.Expect(expandJob.Spec.Template.Spec.Containers[0].Image).To(Equal(ks.Spec.Image.Repository + "@" + testDigestNew))
+
+	expectNoEvent(g, r)
+}
+
+// TestReconcileDatabase_TagRemovedDuringUpgrade_Blocks verifies that dropping
+// the tag from an image with tag and digest during an active upgrade trips the
+// target-changed guard: without a tag the image names no release, which is
+// neither the installed nor the target release.
+func TestReconcileDatabase_TagRemovedDuringUpgrade_Blocks(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := upgradingKeystone(keystonev1alpha1.UpgradePhaseExpanding)
+	ks.Spec.Image.Digest = testDigestNew
+	ks.Spec.Image.Tag = ""
+
+	r := newDBTestReconciler(s, ks)
+
+	_, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("image tag changed during active upgrade"))
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonUpgradeTargetChanged))
+	g.Expect(ks.Status.UpgradePhase).To(Equal(keystonev1alpha1.UpgradePhaseExpanding))
+	g.Expect(ks.Status.TargetRelease).To(Equal("2026.2"))
 
 	expectEvent(g, r, "Warning UpgradeTargetChanged")
 }
