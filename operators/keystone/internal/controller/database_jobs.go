@@ -133,9 +133,10 @@ func keystoneJobSetParams(keystone *keystonev1alpha1.Keystone, configMapName, do
 //
 // The image parameter is the fully-qualified reference the Job runs: the regular
 // db_sync / schema-check jobs use the CR's Image.Reference() (which honors a
-// pinned digest), while the upgrade phases pass a specific "repo:tag" so they
-// can pin the old/new release image independently of spec.image. Every Job
-// carries the pull policy of spec.image, whichever image it runs.
+// pinned digest), while the upgrade phases pass a specific "repo:tag", or
+// spec.image's "repository@digest" when a digest is pinned (see
+// buildUpgradeJob). Every Job carries the pull policy of spec.image, whichever
+// image it runs.
 func buildDBJob(keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName, image, nameSuffix string, command []string) *batchv1.Job {
 	return database.BuildJob(keystoneJobSetParams(keystone, configMapName, domainsSecretName), image, nameSuffix, command, 4)
 }
@@ -145,29 +146,35 @@ func buildDBSyncJob(keystone *keystonev1alpha1.Keystone, configMapName, domainsS
 }
 
 // buildUpgradeJob creates a db_sync Job for one of the expand-migrate-contract
-// upgrade phases. The imageTag parameter pins the image independently of
-// spec.Image.Tag; all three phases run the NEW release image (spec.image.tag)
-// per the OpenStack rolling-upgrade procedure, because the N+1 migration tree
-// owns the schema deltas for the upgrade. Upgrades only run in tag mode, so the
-// "repo:tag" reference is always well-formed here. The Job takes the pull
-// policy of spec.image, because it runs another tag of the same repository.
+// upgrade phases. All three phases run the NEW release image per the OpenStack
+// rolling-upgrade procedure, because the N+1 migration tree owns the schema
+// deltas for the upgrade. Upgrades only run when spec.image carries a tag. A
+// tag-only image runs "repository:imageTag", so its phase Jobs render
+// byte-identical and no completed Job re-runs across an operator upgrade. When
+// spec.image also pins a digest, the Job runs spec.image.Reference()
+// ("repository@digest") and imageTag is not used: the digest names the build
+// and the tag only its release. The Job takes the pull policy of spec.image,
+// because it runs an image of the same repository.
 func buildUpgradeJob(keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName, imageTag, phase, flag string) *batchv1.Job {
 	image := keystone.Spec.Image.Repository + ":" + imageTag
+	if keystone.Spec.Image.Digest != "" {
+		image = keystone.Spec.Image.Reference()
+	}
 	return buildDBJob(keystone, configMapName, domainsSecretName, image, fmt.Sprintf("db-%s", phase),
 		[]string{"keystone-manage", "--config-dir=/etc/keystone/keystone.conf.d/", "db_sync", flag})
 }
 
-// buildExpandJob creates a db_sync --expand Job using the given imageTag.
+// buildExpandJob creates a db_sync --expand Job; buildUpgradeJob picks its image.
 func buildExpandJob(keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName, imageTag string) *batchv1.Job {
 	return buildUpgradeJob(keystone, configMapName, domainsSecretName, imageTag, "expand", "--expand")
 }
 
-// buildMigrateJob creates a db_sync --migrate Job using the given imageTag.
+// buildMigrateJob creates a db_sync --migrate Job; buildUpgradeJob picks its image.
 func buildMigrateJob(keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName, imageTag string) *batchv1.Job {
 	return buildUpgradeJob(keystone, configMapName, domainsSecretName, imageTag, "migrate", "--migrate")
 }
 
-// buildContractJob creates a db_sync --contract Job using the given imageTag.
+// buildContractJob creates a db_sync --contract Job; buildUpgradeJob picks its image.
 func buildContractJob(keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName, imageTag string) *batchv1.Job {
 	return buildUpgradeJob(keystone, configMapName, domainsSecretName, imageTag, "contract", "--contract")
 }
