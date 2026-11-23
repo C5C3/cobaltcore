@@ -17,10 +17,10 @@
 #      Reverting the release alone triggers the abort and then parks the CR on
 #      ImageReleaseMismatch, because the lockstep guard is skipped only while a
 #      phase is set (reconcile_database.go).
-#   8. The same recipe carries the digest caveat. ImageSpec enforces
-#      `has(self.tag) != has(self.digest)` (internal/common/types/types.go), so
-#      on a digest-pinned Nova the copied patch is rejected whole and the
-#      release revert does not land either.
+#   8. The same recipe carries the digest caveat. ImageSpec admits a tag beside
+#      a digest (`has(self.tag) || has(self.digest)`,
+#      internal/common/types/types.go), so on a digest-pinned Nova a patch that
+#      reverts the tag alone is admitted and leaves the new build running.
 #   9. The cell0 pass of the contract phase: online_data_migrations does not
 #      fan out to cell0, so the page has to name the "_cell0" rewrite.
 #
@@ -146,7 +146,7 @@ test_abort_recipe_reverts_image_tag() {
 
 # --- Test 8: the abort recipe warns about a digest-pinned image ---
 test_abort_recipe_carries_digest_caveat() {
-  echo "Test: the abort recipe warns that tag and digest are mutually exclusive"
+  echo "Test: the abort recipe tells a digest-pinned image to revert its digest"
 
   local recipe
   recipe="$(awk '/# Abort an in-flight upgrade/ {inside = 1} inside {print} inside && /^```$/ {exit}' "$UPGRADE_DOC")"
@@ -158,14 +158,14 @@ test_abort_recipe_carries_digest_caveat() {
   fi
 
   # The caveat has to sit inside the block: the prose below it is not copied
-  # under pressure, and a digest-pinned CR rejects the patch as a whole.
+  # under pressure, and a tag reverted alone leaves the new build running.
   local phrase
-  for phrase in 'Digest-pinned image' 'mutually'; do
+  for phrase in 'Digest-pinned image' 'revert "digest"'; do
     if grep -qF -- "$phrase" <<<"$recipe"; then
       echo "  PASS: the abort recipe names '$phrase'"
       PASS=$((PASS + 1))
     else
-      echo "  FAIL: the abort recipe does not name '$phrase'; a digest-pinned Nova rejects the whole patch"
+      echo "  FAIL: the abort recipe does not name '$phrase'; a digest-pinned Nova keeps running the new build"
       FAIL=$((FAIL + 1))
     fi
   done

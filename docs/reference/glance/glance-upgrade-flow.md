@@ -268,14 +268,15 @@ so `2026.1-p1` still matches `2026.1`), `DatabaseReady` goes `False` with reason
 `ImageReleaseMismatch` and neither the upgrade nor the steady-state sync advances
 until the image is bumped in lockstep. This closes the gap where bumping the
 release alone would run the wrong `glance-manage` binary as a no-op and falsely
-promote `installedRelease`. A digest-pinned image, or a tag that does not parse
-as a release, carries no comparable release string and is trusted to match the
-declared `spec.openStackRelease`.
+promote `installedRelease`. A tag beside a digest is compared like any other
+tag. An image without a tag, or a tag that does not parse as a release, carries
+no comparable release string and is trusted to match the declared
+`spec.openStackRelease`.
 
-Keystone keys its upgrade off the image tag and skips release detection for a
-digest-pinned image. Glance keys off `spec.openStackRelease`, which is always
-set, so a digest-pinned Glance still upgrades: on a release bump the phase Jobs
-run by digest.
+Keystone keys its upgrade off the image tag: it skips release detection for an
+image without a tag and keeps it for a tag beside a digest. Glance keys off
+`spec.openStackRelease`, which is always set, so a digest-pinned Glance upgrades
+with or without a tag: on a release bump the phase Jobs run by digest.
 
 ---
 

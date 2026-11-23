@@ -24,7 +24,7 @@ stores are **not** part of this spec — they attach out-of-band through
 | `deployment` | `DeploymentSpec` | no | Shared pod-level knobs: `replicas` (default 3), `resources` (resolved per resource when the pod is rendered: 70m CPU request, no CPU limit, and memory sized at 1Gi per process, 2064Mi as request and limit at the uWSGI defaults, see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)), `terminationGracePeriodSeconds`, `preStopSleepSeconds`, `strategy`, `topologySpreadConstraints`, `priorityClassName`, and the node placement `nodeSelector`, `tolerations` and `affinity` (see [NodePlacementSpec](../keystone/keystone-crd.md#nodeplacementspec)) |
 | `deployment.verticalAutoscaling` | [`*VerticalAutoscalingSpec`](../keystone/keystone-crd.md#verticalautoscalingspec) | no | Opts the Glance API Deployment into a VerticalPodAutoscaler that controls the requests of its containers; see [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec). Rejected beside `spec.autoscaling`, which scales the same Deployment. On a cluster without the VPA, `VPAReady` turns False with reason `VPANotInstalled`. |
 | `jobs` | [`*JobSpec`](../keystone/keystone-crd.md#jobspec) | no | Sizes, prioritizes and places the pods of the db-sync Job, the db-expand, db-migrate and db-contract upgrade phases, and the db-purge CronJob. A field left unset falls back to `spec.deployment`; unset resources default to a `70m` CPU request and `368Mi` memory as request and limit |
-| `image` | `ImageSpec` | yes | Container image; exactly one of `tag` or `digest` (shared CEL rule, re-checked by the webhook) |
+| `image` | `ImageSpec` | yes | Container image; at least one of `tag` or `digest` (shared CEL rule, re-checked by the webhook). With both, the digest decides what runs |
 | `database` | `DatabaseSpec` | yes | MariaDB connection. Exactly one of `clusterRef` (managed) or `host` (brownfield); `credentialsMode` (`Static` \| `Dynamic`, where `Dynamic` requires `clusterRef`), `secretRef`, and optional `tls`. Mutual-exclusivity and the Dynamic-requires-clusterRef rule are inherited from `commonv1.DatabaseSpec` |
 | `cache` | `CacheSpec` | yes | Memcached for the cache of validated tokens (`[keystone_authtoken] memcached_servers`). It has no part in the image cache of `spec.imageCache`. Exactly one of `clusterRef` (managed) or `servers` (brownfield) |
 | `keystoneEndpoint` | `string` | yes | The Keystone auth URL rendered as `[keystone_authtoken] auth_url`; must match `^https?://` and parse with a host. Consumed server-side on every request, so it must be reachable from inside the cluster — use the cluster-local Service URL, not an externally routable address |
@@ -860,7 +860,7 @@ rejects a longer one at create time, and on update when that update is what
 enables Glance.
 
 The validating webhook accumulates every violation into one admission response,
-reusing the shared validators: replicas floor, image tag/digest XOR, the
+reusing the shared validators: replicas floor, image tag-or-digest rule, the
 database mutual-exclusivity and Dynamic-requires-clusterRef rules, cache
 mutual-exclusivity, secret-store-ref shape, both Keystone endpoint URL shapes,
 logging enums (including the per-logger-level map, which has no schema-layer

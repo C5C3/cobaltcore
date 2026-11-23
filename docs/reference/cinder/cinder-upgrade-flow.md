@@ -244,10 +244,14 @@ upgrade is active. The operator then:
 
 ```bash
 # Abort an in-flight upgrade by reverting both fields to the installed release.
-# Digest-pinned image: drop the "image" key — tag and digest are mutually
-# exclusive, and the whole patch is rejected if both are set.
+# Digest-pinned image: revert "digest" in the same patch. A tag alone is
+# admitted beside the digest and leaves the new build running.
 kubectl patch cinder <name> --type=merge \
   -p '{"spec":{"openStackRelease":"<installed-release>","image":{"tag":"<installed-release>"}}}'
+
+# Image with tag and digest: revert all three in one patch.
+kubectl patch cinder <name> --type=merge \
+  -p '{"spec":{"openStackRelease":"<installed-release>","image":{"tag":"<installed-release>","digest":"<installed-digest>"}}}'
 ```
 
 Revert `spec.image` in the same patch. The abort trigger itself needs only the
@@ -260,10 +264,10 @@ a `spec.image.tag` still naming the target release parks the CR at
 steady-state `db sync` run. Reverting the release alone therefore triggers the
 abort and then stalls on it.
 
-A digest-pinned image, or a tag that does not parse as a release, carries no
-release string for the guard to compare, so for those the release field is the
-whole patch — and the Deployments keep running the target image until that
-digest is rolled back too.
+An image without a tag, or a tag that does not parse as a release, carries no
+release string for the guard to compare, so the guard does not stall the abort
+for those. The Deployments still keep running the target image until the patch
+rolls `spec.image.digest` back too.
 
 ::: warning Abort is only safe before the contract phase
 Expand and migrate are additive: they add schema elements and read the database
@@ -293,7 +297,7 @@ ignored, so a patched build tagged `2026.1-p1` still matches release `2026.1`.
 Without the guard, a lone release bump would run the old `cinder-manage` binary
 against a schema already at its own head. The Jobs would exit 0 as no-ops and
 the flow would promote `installedRelease` to a release the pods neither run nor
-migrated to. A digest-pinned image, or a tag that does not parse as a release,
+migrated to. An image without a tag, or a tag that does not parse as a release,
 carries no comparable release string and is trusted to match the declared
 `spec.openStackRelease`.
 

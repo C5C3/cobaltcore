@@ -206,7 +206,7 @@ These hold even when the webhook is down.
 | --- | --- |
 | `targetClusterRef is immutable` | Two CEL transition rules on `OVNChassisSpec`, one for adding or removing the ref and one for renaming it |
 | `centralRef is immutable` | A third transition rule on `OVNChassisSpec`. Repointing a live chassis leaves its registration behind in the old Southbound database, where it keeps claiming the ports of workloads that have moved on |
-| `exactly one of image.tag or image.digest must be set` | Inherited from `commonv1.ImageSpec` on `spec.image` |
+| `at least one of image.tag or image.digest must be set` | Inherited from `commonv1.ImageSpec` on `spec.image` |
 
 The three transition rules are evaluated on UPDATE only. Beside them the schema
 carries the ordinary field markers: `MinProperties=1` on both selectors, the
@@ -239,7 +239,7 @@ The validating webhook accumulates every violation into one admission response.
 | `Duplicate value` on `spec.bridgeMappings[i].bridge` | Two mappings name the same local bridge. The rendered `ovn-bridge-mappings` string would have its second entry shadow the first, and the list-map key covers the physical-network side alone |
 | `Duplicate value` on `spec.bridgeMappings[i].physicalNetwork` | Two mappings name the same physical network. The `+listMapKey` already refuses this at the schema layer; the webhook repeats it so the invariant holds where schema validation is bypassed |
 | `repository must be set` | `spec.image.repository` is empty |
-| `exactly one of image.tag or image.digest must be set` | Both or neither are set on `spec.image`, re-checked outside the schema |
+| `at least one of image.tag or image.digest must be set` | Neither is set on `spec.image`, re-checked outside the schema |
 | `target cluster name must be set` | `spec.targetClusterRef` is present with an empty `name` |
 | `targetClusterRef is immutable (adding or removing it after creation is not permitted)` | An update adds or drops the ref. Both strand the children already created on the previously selected cluster |
 | `targetClusterRef is immutable (the children already exist on the previously named cluster)` | An update renames the ref |

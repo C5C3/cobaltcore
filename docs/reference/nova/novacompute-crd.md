@@ -194,7 +194,7 @@ These hold even when the webhook is down.
 | `targetClusterRef is immutable` | Two CEL transition rules on `NovaComputeSpec`, one for adding or removing the ref and one for renaming it |
 | `novaRef is immutable` | A third transition rule. A pool moved to another Nova leaves its compute services registered with the first one |
 | `cpuModels is required when cpuMode is custom and must be empty otherwise` | A CEL rule on `NovaComputeLibvirtSpec` |
-| `exactly one of image.tag or image.digest must be set` | Inherited from `commonv1.ImageSpec` on `spec.image` |
+| `at least one of image.tag or image.digest must be set` | Inherited from `commonv1.ImageSpec` on `spec.image` |
 | `traits must not be empty unless mode is Replace` | A CEL rule on `NovaComputeHostTraits`: an `Append` entry without traits would change nothing |
 
 Beside them the schema carries `MinLength=1` on `spec.novaRef.name`,
@@ -226,7 +226,7 @@ The validating webhook accumulates every violation into one admission response.
 | `<key> is managed via <source> and must not be set in extraConfig (<impact>)` | A rejected key of the [owned-key registry](#owned-keys) in `spec.extraConfig` |
 | `extraConfig ... must not contain a newline or carriage return` | A control character in a section, key or value of `spec.extraConfig` |
 | `no such option in the nova <release> option catalog` | An option the catalog of the referenced Nova's `spec.openStackRelease` does not carry |
-| `repository must be set`, `exactly one of image.tag or image.digest must be set` | `spec.image` is set and incomplete |
+| `repository must be set`, `at least one of image.tag or image.digest must be set` | `spec.image` is set and incomplete |
 | `target cluster name must be set` | `spec.targetClusterRef` is present with an empty `name` |
 | `targetClusterRef is immutable (...)` | An update adds, drops or renames the ref |
 
