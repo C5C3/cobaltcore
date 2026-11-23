@@ -2,8 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# spec.image with both a tag and a digest violates the CEL rule on the shared
-# ImageSpec: exactly one of the two pins the image.
+# spec.image with neither a tag nor a digest violates the CEL rule on the
+# shared ImageSpec: at least one of the two names the image.
 apiVersion: nova.openstack.c5c3.io/v1alpha1
 kind: NovaCompute
 metadata:
@@ -15,5 +15,3 @@ spec:
     openstack.c5c3.io/nova-compute-pool: a
   image:
     repository: ghcr.io/c5c3/nova-compute
-    tag: "2026.1"
-    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000

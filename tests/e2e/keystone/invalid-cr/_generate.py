@@ -182,12 +182,10 @@ IMAGE_TAG_BELOW_FLOOR = """\
     tag: "2025.2"
 """
 
-# Image that sets BOTH a tag and a digest — rejected by the ImageSpec
-# tag/digest XOR XValidation rule (exactly one must be set).
-IMAGE_TAG_AND_DIGEST = """\
+# Image that sets NEITHER a tag nor a digest — rejected by the ImageSpec
+# XValidation rule (at least one of tag or digest must be set).
+IMAGE_NEITHER_TAG_NOR_DIGEST = """\
     repository: ghcr.io/c5c3/keystone
-    tag: "2026.1"
-    digest: sha256:1111111111111111111111111111111111111111111111111111111111111111
 """
 
 # Image whose pullPolicy is outside the corev1.PullPolicy values — rejected by
@@ -647,15 +645,16 @@ FIXTURES: list[Fixture] = [
 # referencing the substring "perLoggerLevels".""",
     ),
     Fixture(
-        filename="21-image-tag-and-digest.yaml",
-        name="invalid-image-tag-and-digest",
-        image=IMAGE_TAG_AND_DIGEST,
+        filename="21-image-neither-tag-nor-digest.yaml",
+        name="invalid-image-neither-tag-nor-digest",
+        image=IMAGE_NEITHER_TAG_NOR_DIGEST,
         comment="""\
-# Validation-marker wave: Keystone CR whose spec.image sets BOTH tag and digest.
-# The shared ImageSpec carries an XValidation rule requiring exactly one of tag
-# or digest, so setting both is rejected by the CRD schema (and mirrored by the
-# validating webhook). Admission must reject this CR with an $error referencing
-# the substring "digest".""",
+# Validation-marker wave: Keystone CR whose spec.image sets NEITHER tag nor
+# digest. The shared ImageSpec carries an XValidation rule requiring at least
+# one of tag or digest, so a repository alone is rejected by the CRD schema
+# (and mirrored by the validating webhook). Admission must reject this CR with
+# an $error referencing the substring "at least one of image.tag or
+# image.digest".""",
     ),
     Fixture(
         filename="22-trusted-dashboard-not-a-url.yaml",

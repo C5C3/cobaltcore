@@ -24,15 +24,15 @@ metadata:
   name: glance-invalid-cr
 spec:
   steps:
-  # spec.image with both tag and digest must be rejected.
+  # spec.image with neither tag nor digest must be rejected.
   - try:
     - apply:
-        file: 00-image-both-tag-digest.yaml
+        file: 00-image-neither-tag-nor-digest.yaml
         expect:
         - check:
             ($error != null): true
             (contains($error, 'image')): true
-            (contains($error, 'exactly one of image.tag or image.digest')): true
+            (contains($error, 'at least one of image.tag or image.digest')): true
   # spec.openStackRelease with a non-cadence value must be rejected.
   - try:
     - apply:
