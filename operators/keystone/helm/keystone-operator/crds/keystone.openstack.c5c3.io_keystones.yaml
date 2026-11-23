@@ -4186,6 +4186,10 @@ spec:
               endpoint:
                 description: Endpoint is the Keystone API endpoint URL.
                 type: string
+              installedImage:
+                description: InstalledImage is the spec.image reference whose db_sync
+                  last completed.
+                type: string
               installedRelease:
                 description: InstalledRelease is the OpenStack release version currently
                   deployed.

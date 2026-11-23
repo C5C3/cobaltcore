@@ -550,6 +550,9 @@ type KeystoneStatus struct {
 	// InstalledRelease is the OpenStack release version currently deployed.
 	InstalledRelease string `json:"installedRelease,omitempty"`
 
+	// InstalledImage is the spec.image reference whose db_sync last completed.
+	InstalledImage string `json:"installedImage,omitempty"`
+
 	// TargetRelease is the upgrade target release during an active upgrade.
 	TargetRelease string `json:"targetRelease,omitempty"`
 

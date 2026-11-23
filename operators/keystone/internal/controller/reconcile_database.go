@@ -86,8 +86,11 @@ const (
 // Job. In brownfield mode (Host set) it skips the MariaDB CRs and runs db_sync
 // directly. The provisioning, steady-state sync, and expand-migrate-contract
 // upgrade flows are all shared (internal/common/database); only the
-// keystone-specific inputs (assembled by upgradeFlowParams) and the
-// target-changed guard below stay local.
+// keystone-specific inputs (assembled by upgradeFlowParams), the target-changed
+// guard below, and the recording of status.installedImage stay local. The
+// image reference is recorded after a sync pass that settled (db-sync and
+// schema check complete) and in the pass whose contract Job completed an
+// upgrade; an aborted upgrade records nothing.
 func (r *KeystoneReconciler) reconcileDatabase(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName string) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -137,7 +140,14 @@ func (r *KeystoneReconciler) reconcileDatabase(ctx context.Context, children cli
 			return ctrl.Result{}, fmt.Errorf("image tag changed during active upgrade: current upgrade targets %s but spec.image.tag is %s",
 				keystone.Status.TargetRelease, keystone.Spec.Image.Tag)
 		}
-		return database.ReconcileUpgrade(ctx, r.upgradeFlowParams(ctx, children, keystone, configMapName, domainsSecretName))
+		target := keystone.Status.TargetRelease
+		res, err := database.ReconcileUpgrade(ctx, r.upgradeFlowParams(ctx, children, keystone, configMapName, domainsSecretName))
+		// The contract Job completed in this pass when the installed release
+		// reached the target; an abort leaves installedRelease on the old release.
+		if err == nil && target != "" && keystone.Status.InstalledRelease == target {
+			keystone.Status.InstalledImage = keystone.Spec.Image.Reference()
+		}
+		return res, err
 	}
 
 	// Detect upgrade.
@@ -146,8 +156,8 @@ func (r *KeystoneReconciler) reconcileDatabase(ctx context.Context, children cli
 	}
 
 	// Non-upgrade path: db_sync then schema-check, with terminal metrics emitted
-	// per phase and the installed release tracked on success.
-	return database.ReconcileSyncJobs(ctx, database.SyncFlowParams{
+	// per phase and the installed release and image tracked on success.
+	res, err = database.ReconcileSyncJobs(ctx, database.SyncFlowParams{
 		Client:   children,
 		Scheme:   r.Scheme,
 		Recorder: r.Recorder,
@@ -163,6 +173,10 @@ func (r *KeystoneReconciler) reconcileDatabase(ctx context.Context, children cli
 		InstalledRelease: &keystone.Status.InstalledRelease,
 		ImageTag:         keystone.Spec.Image.Tag,
 	})
+	if err == nil && res.IsZero() {
+		keystone.Status.InstalledImage = keystone.Spec.Image.Reference()
+	}
+	return res, err
 }
 
 // isUpgrade reports whether spec.image.tag requires the shared
