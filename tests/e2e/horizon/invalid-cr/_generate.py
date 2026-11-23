@@ -112,14 +112,10 @@ class Fixture:
 
 FIXTURES: tuple[Fixture, ...] = (
     Fixture(
-        filename="00-image-both-tag-digest.yaml",
-        comment="spec.image with both tag and digest violates the ImageSpec XOR CEL rule.",
-        name="horizon-invalid-image-both",
-        image=(
-            "    repository: ghcr.io/c5c3/horizon\n"
-            '    tag: "2026.1"\n'
-            "    digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-        ),
+        filename="00-image-neither-tag-nor-digest.yaml",
+        comment="spec.image with neither tag nor digest violates the ImageSpec CEL rule.",
+        name="horizon-invalid-image-neither",
+        image="    repository: ghcr.io/c5c3/horizon",
     ),
     Fixture(
         filename="01-bad-keystone-endpoint.yaml",

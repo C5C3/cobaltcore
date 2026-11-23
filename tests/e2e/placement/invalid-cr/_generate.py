@@ -183,26 +183,13 @@ FIXTURES: tuple[Fixture, ...] = (
         deployment="    replicas: -1",
     ),
     Fixture(
-        filename="03-image-both-tag-digest.yaml",
-        comment=(
-            "spec.image with both tag and digest violates the ImageSpec XOR CEL rule\n"
-            "(has(self.tag) != has(self.digest)); the webhook mirrors it with the same\n"
-            "message."
-        ),
-        name="placement-invalid-image-both",
-        image=(
-            "    repository: ghcr.io/c5c3/placement\n"
-            f'    tag: "{VALID_RELEASE}"\n'
-            "    digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-        ),
-    ),
-    Fixture(
         filename="04-image-neither-tag-nor-digest.yaml",
         comment=(
-            "spec.image with neither tag nor digest violates the same ImageSpec XOR CEL\n"
-            "rule from the other side: a repository alone names no reproducible image,\n"
-            "and the reconciler would render a bare repository reference that resolves\n"
-            "to :latest. Both fields are omitted rather than set to an empty string,\n"
+            "spec.image with neither tag nor digest violates the ImageSpec CEL rule\n"
+            "(has(self.tag) || has(self.digest)); the webhook mirrors it with the same\n"
+            "message. A repository alone names no reproducible image, and the\n"
+            "reconciler would render a bare repository reference that resolves to\n"
+            ":latest. Both fields are omitted rather than set to an empty string,\n"
             "which the tag/digest patterns would reject first."
         ),
         name="placement-invalid-image-neither",

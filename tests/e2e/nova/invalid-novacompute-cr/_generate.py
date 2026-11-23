@@ -261,16 +261,14 @@ FIXTURES: tuple[Fixture, ...] = (
         ),
     ),
     Fixture(
-        filename="12-image-tag-and-digest.yaml",
+        filename="12-image-neither-tag-nor-digest.yaml",
         comment=(
-            "spec.image with both a tag and a digest violates the CEL rule on the shared\n"
-            "ImageSpec: exactly one of the two pins the image."
+            "spec.image with neither a tag nor a digest violates the CEL rule on the\n"
+            "shared ImageSpec: at least one of the two names the image."
         ),
         extra=(
             "  image:\n"
             "    repository: ghcr.io/c5c3/nova-compute\n"
-            "    tag: \"2026.1\"\n"
-            "    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000\n"
         ),
     ),
     Fixture(

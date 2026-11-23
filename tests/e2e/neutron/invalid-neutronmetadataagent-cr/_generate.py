@@ -130,17 +130,15 @@ FIXTURES: tuple[Fixture, ...] = (
         ),
     ),
     Fixture(
-        filename="01-image-tag-and-digest.yaml",
+        filename="01-image-neither-tag-nor-digest.yaml",
         comment=(
-            "spec.image with both tag and digest violates the ImageSpec XOR CEL rule\n"
-            "(has(self.tag) != has(self.digest)); validateImage mirrors it in the\n"
+            "spec.image with neither tag nor digest violates the ImageSpec CEL rule\n"
+            "(has(self.tag) || has(self.digest)); validateImage mirrors it in the\n"
             "webhook with the same message, but the schema answers first."
         ),
         image=(
             "  image:\n"
-            "    repository: ghcr.io/c5c3/neutron\n"
-            f'    tag: "{VALID_RELEASE}"\n'
-            "    digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            "    repository: ghcr.io/c5c3/neutron"
         ),
     ),
     Fixture(

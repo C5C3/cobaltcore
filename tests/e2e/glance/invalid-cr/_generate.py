@@ -127,17 +127,13 @@ class Fixture:
 
 FIXTURES: tuple[Fixture, ...] = (
     Fixture(
-        filename="00-image-both-tag-digest.yaml",
+        filename="00-image-neither-tag-nor-digest.yaml",
         comment=(
-            "spec.image with both tag and digest violates the ImageSpec XOR CEL\n"
-            "rule (has(self.tag) != has(self.digest)); the webhook mirrors it."
+            "spec.image with neither tag nor digest violates the ImageSpec CEL\n"
+            "rule (has(self.tag) || has(self.digest)); the webhook mirrors it."
         ),
-        name="glance-invalid-image-both",
-        image=(
-            "    repository: ghcr.io/c5c3/glance\n"
-            f'    tag: "{VALID_RELEASE}"\n'
-            "    digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-        ),
+        name="glance-invalid-image-neither",
+        image="    repository: ghcr.io/c5c3/glance",
     ),
     Fixture(
         filename="01-openstackrelease-pattern.yaml",

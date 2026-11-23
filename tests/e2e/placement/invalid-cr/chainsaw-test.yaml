@@ -65,16 +65,7 @@ spec:
             ($error != null): true
             (contains($error, 'replicas')): true
             (contains($error, 'should be greater than or equal to 1')): true
-  # spec.image with both tag and digest must be rejected.
-  - try:
-    - apply:
-        file: 03-image-both-tag-digest.yaml
-        expect:
-        - check:
-            ($error != null): true
-            (contains($error, 'image')): true
-            (contains($error, 'exactly one of image.tag or image.digest')): true
-  # spec.image with neither tag nor digest must be rejected by the same rule.
+  # spec.image with neither tag nor digest must be rejected.
   - try:
     - apply:
         file: 04-image-neither-tag-nor-digest.yaml
@@ -82,7 +73,7 @@ spec:
         - check:
             ($error != null): true
             (contains($error, 'image')): true
-            (contains($error, 'exactly one of image.tag or image.digest')): true
+            (contains($error, 'at least one of image.tag or image.digest')): true
   # spec.database with both clusterRef and host must be rejected.
   - try:
     - apply:
