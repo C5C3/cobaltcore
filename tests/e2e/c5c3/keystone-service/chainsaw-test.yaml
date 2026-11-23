@@ -376,41 +376,48 @@ spec:
               sleep 5
             done
           }
-          # Probe for LIVE data: a kv-v2 soft delete leaves the metadata behind, so
-          # `kv get` keeps exiting 0 with data:null after the value is purged.
-          # The exec itself is a failure path of its own: openbao-0 restarting or
-          # a broken stream must not read as a purged leaf, which is what
-          # discarding its output would do. Only data:null, or OpenBao saying the
-          # path is not there, ends the loop.
+          # ESO's DeletionPolicy=Delete soft-deletes the data path first and then
+          # deletes the metadata path, so a `kv get` that answers data:null is a
+          # key still in OpenBao. The key is gone only with its metadata, so the
+          # loop waits for `kv metadata get` to fail. The exec itself is a
+          # failure path of its own: openbao-0 restarting or a broken stream must
+          # not read as a deleted key, which is what counting any failure would
+          # do. Only OpenBao saying the path is not there ends the loop.
           #
           # kubectl's own transport errors therefore stay OUT of the match: with
           # 2>&1 they land in the same buffer as OpenBao's, and openbao-0 is one
           # replica of a Raft StatefulSet, so `pods "openbao-0" not found` and
           # `container not found ("openbao")` are the two likeliest failures in
           # this window. Matching a bare `not found` would read either of them as
-          # a purged leaf. stderr goes to a file of its own and only OpenBao's own
+          # a deleted key. stderr goes to a file of its own and only OpenBao's own
           # missing-path wording ends the loop; anything else retries.
           wait_kv_purged() { # <kv path> <timeoutSeconds> <what the purge follows>
-            local path="$1" timeout="$2" after="$3" deadline err kv_json
+            local path="$1" timeout="$2" after="$3" deadline err
             deadline=$(( $(date +%s) + timeout ))
             err="$(mktemp)"
             while true; do
-              if kv_json="$(bao_exec bao kv get -format=json -mount=kv-v2 "${path}" 2>"${err}")"; then
-                jq -e '.data.data == null' <<<"${kv_json}" >/dev/null 2>&1 && break
-              elif grep -qiE 'no value found|no secret found' "${err}"; then
-                break
-              else
+              if ! bao_exec bao kv metadata get -format=json -mount=kv-v2 "${path}" >/dev/null 2>"${err}"; then
+                if grep -qiE 'no value found|no secret found' "${err}"; then
+                  break
+                fi
                 echo "WARN: could not read ${path} ($(cat "${err}")); retrying"
               fi
               if [ "$(date +%s)" -ge "${deadline}" ]; then
-                echo "ERROR: ${path} still holds a live value, or could not be read, ${timeout}s after ${after}"
+                echo "ERROR: ${path} is still in OpenBao (live, or soft-deleted with its metadata), or could not be read, ${timeout}s after ${after}"
+                # Tells a regressed grant (Code: 403 on the metadata DELETE) from
+                # a one-off failure of that DELETE, which ESO does not retry once
+                # the data is soft-deleted. Neither prints key material.
+                bao_exec bao kv metadata get -format=json -mount=kv-v2 "${path}" |
+                  jq -c '{current_version: .data.current_version, deletion_time: .data.versions[(.data.current_version | tostring)].deletion_time, custom_metadata: .data.custom_metadata}' || true
+                kubectl -n external-secrets logs deploy/external-secrets --since=10m |
+                  grep -F "could not delete secret metadata ${path}" || true
                 rm -f "${err}"
                 exit 1
               fi
               sleep 5
             done
             rm -f "${err}"
-            echo "OK: ${path} holds no live value."
+            echo "OK: ${path} is gone from OpenBao."
           }
           # The counterpart, for a path a purge check is about to watch: a purge
           # check passes on a path that was never written, so the path has to

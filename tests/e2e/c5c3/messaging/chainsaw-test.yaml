@@ -426,31 +426,36 @@ spec:
               sleep 5
             done
           }
-          # Probe for LIVE data: a kv-v2 soft delete leaves the metadata behind,
-          # so `kv get` keeps exiting 0 with data:null after the value is purged.
-          # Only data:null, or OpenBao saying the path is not there, ends the
-          # loop; kubectl's own transport errors retry (see keystone-service).
+          # ESO's DeletionPolicy=Delete soft-deletes the data path first and then
+          # deletes the metadata path, so a `kv get` that answers data:null is a
+          # key still in OpenBao. The loop waits for the metadata to go: only
+          # `kv metadata get` failing with OpenBao's own missing-path wording ends
+          # it, and kubectl's own transport errors retry (see keystone-service).
           wait_kv_purged() { # <kv path> <timeoutSeconds> <what the purge follows>
-            local path="$1" timeout="$2" after="$3" deadline err kv_json
+            local path="$1" timeout="$2" after="$3" deadline err
             deadline=$(( $(date +%s) + timeout ))
             err="$(mktemp)"
             while true; do
-              if kv_json="$(bao_exec bao kv get -format=json -mount=kv-v2 "${path}" 2>"${err}")"; then
-                jq -e '.data.data == null' <<<"${kv_json}" >/dev/null 2>&1 && break
-              elif grep -qiE 'no value found|no secret found' "${err}"; then
-                break
-              else
+              if ! bao_exec bao kv metadata get -format=json -mount=kv-v2 "${path}" >/dev/null 2>"${err}"; then
+                if grep -qiE 'no value found|no secret found' "${err}"; then
+                  break
+                fi
                 echo "WARN: could not read ${path} ($(cat "${err}")); retrying"
               fi
               if [ "$(date +%s)" -ge "${deadline}" ]; then
-                echo "ERROR: ${path} still holds a live value, or could not be read, ${timeout}s after ${after}"
+                echo "ERROR: ${path} is still in OpenBao (live, or soft-deleted with its metadata), or could not be read, ${timeout}s after ${after}"
+                # Shows whether the metadata DELETE got 403 or failed once (see keystone-service).
+                bao_exec bao kv metadata get -format=json -mount=kv-v2 "${path}" |
+                  jq -c '{current_version: .data.current_version, deletion_time: .data.versions[(.data.current_version | tostring)].deletion_time, custom_metadata: .data.custom_metadata}' || true
+                kubectl -n external-secrets logs deploy/external-secrets --since=10m |
+                  grep -F "could not delete secret metadata ${path}" || true
                 rm -f "${err}"
                 exit 1
               fi
               sleep 5
             done
             rm -f "${err}"
-            echo "OK: ${path} holds no live value."
+            echo "OK: ${path} is gone from OpenBao."
           }
           # The counterpart, so the purge check later watches a path that was
           # written. The JSON is key material, so nothing of it is printed.
