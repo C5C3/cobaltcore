@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1540" height="2488" viewBox="0 0 1540 2488" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Event flow of the Keystone operator">
+<svg xmlns="http://www.w3.org/2000/svg" width="1540" height="2552" viewBox="0 0 1540 2552" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Event flow of the Keystone operator">
 <title>Event flow of the Keystone operator</title>
-<rect width="1540" height="2488" fill="#F6F5F1"/>
+<rect width="1540" height="2552" fill="#F6F5F1"/>
 <rect x="60" y="40" width="438" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
 <text x="279" y="76.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">KeystoneReconciler.Reconcile()</text>
 <rect x="130" y="114" width="426" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
@@ -88,171 +88,181 @@
 <polyline points="160,860 200,860" fill="none" stroke="#7D8794" stroke-width="2"/>
 <polyline points="230,918 258,918" fill="none" stroke="#7D8794" stroke-width="2"/>
 <text x="270" y="925.2" font-size="20" font-weight="400" fill="#2B3440">Tag changed mid-upgrade</text>
-<rect x="553" y="904" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="602" y="924.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="665" y="925.2" font-size="20" font-weight="700" fill="#2B3440">UpgradeTargetChanged</text>
+<rect x="617" y="904" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="666" y="924.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="729" y="925.2" font-size="20" font-weight="700" fill="#2B3440">UpgradeTargetChanged</text>
 <polyline points="230,950 258,950" fill="none" stroke="#7D8794" stroke-width="2"/>
 <text x="270" y="957.2" font-size="20" font-weight="400" fill="#2B3440">Tag reverted mid-upgrade</text>
-<rect x="553" y="936" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="596" y="956.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
-<text x="653" y="957.2" font-size="20" font-weight="700" fill="#2B3440">UpgradeAborted</text>
+<rect x="617" y="936" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="660" y="956.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
+<text x="717" y="957.2" font-size="20" font-weight="700" fill="#2B3440">UpgradeAborted</text>
 <polyline points="230,982 258,982" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="270" y="989.2" font-size="20" font-weight="400" fill="#2B3440">Version parse error</text>
-<rect x="553" y="968" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="602" y="988.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="665" y="989.2" font-size="20" font-weight="700" fill="#2B3440">VersionParseError</text>
+<text x="270" y="989.2" font-size="20" font-weight="400" fill="#2B3440">Tag reverted, digest kept</text>
+<rect x="617" y="968" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="666" y="988.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="729" y="989.2" font-size="20" font-weight="700" fill="#2B3440">ImageReleaseMismatch</text>
 <polyline points="230,1014 258,1014" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="270" y="1021.2" font-size="20" font-weight="400" fill="#2B3440">Downgrade attempted</text>
-<rect x="553" y="1000" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="602" y="1020.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="665" y="1021.2" font-size="20" font-weight="700" fill="#2B3440">DowngradeNotSupported</text>
+<text x="270" y="1021.2" font-size="20" font-weight="400" fill="#2B3440">Version parse error</text>
+<rect x="617" y="1000" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="666" y="1020.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="729" y="1021.2" font-size="20" font-weight="700" fill="#2B3440">VersionParseError</text>
 <polyline points="230,1046 258,1046" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="270" y="1053.2" font-size="20" font-weight="400" fill="#2B3440">Non-sequential upgrade</text>
-<rect x="553" y="1032" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="602" y="1052.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="665" y="1053.2" font-size="20" font-weight="700" fill="#2B3440">UpgradePathInvalid</text>
+<text x="270" y="1053.2" font-size="20" font-weight="400" fill="#2B3440">Downgrade attempted</text>
+<rect x="617" y="1032" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="666" y="1052.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="729" y="1053.2" font-size="20" font-weight="700" fill="#2B3440">DowngradeNotSupported</text>
 <polyline points="230,1078 258,1078" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="270" y="1085.2" font-size="20" font-weight="400" fill="#2B3440">Upgrade validated</text>
-<rect x="553" y="1064" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="596" y="1084.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
-<text x="653" y="1085.2" font-size="20" font-weight="700" fill="#2B3440">UpgradeInitiated</text>
+<text x="270" y="1085.2" font-size="20" font-weight="400" fill="#2B3440">Non-sequential upgrade</text>
+<rect x="617" y="1064" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="666" y="1084.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="729" y="1085.2" font-size="20" font-weight="700" fill="#2B3440">UpgradePathInvalid</text>
 <polyline points="230,1110 258,1110" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="270" y="1117.2" font-size="20" font-weight="400" fill="#2B3440">Expand succeeds</text>
-<rect x="553" y="1096" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="596" y="1116.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
-<text x="653" y="1117.2" font-size="20" font-weight="700" fill="#2B3440">ExpandComplete</text>
+<text x="270" y="1117.2" font-size="20" font-weight="400" fill="#2B3440">Release bump, image unchanged</text>
+<rect x="617" y="1096" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="666" y="1116.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="729" y="1117.2" font-size="20" font-weight="700" fill="#2B3440">ImageReleaseMismatch</text>
 <polyline points="230,1142 258,1142" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="270" y="1149.2" font-size="20" font-weight="400" fill="#2B3440">Expand fails</text>
-<rect x="553" y="1128" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="602" y="1148.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="665" y="1149.2" font-size="20" font-weight="700" fill="#2B3440">ExpandFailed</text>
+<text x="270" y="1149.2" font-size="20" font-weight="400" fill="#2B3440">Upgrade validated</text>
+<rect x="617" y="1128" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="660" y="1148.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
+<text x="717" y="1149.2" font-size="20" font-weight="700" fill="#2B3440">UpgradeInitiated</text>
 <polyline points="230,1174 258,1174" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="270" y="1181.2" font-size="20" font-weight="400" fill="#2B3440">Migrate succeeds</text>
-<rect x="553" y="1160" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="596" y="1180.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
-<text x="653" y="1181.2" font-size="20" font-weight="700" fill="#2B3440">MigrateComplete</text>
+<text x="270" y="1181.2" font-size="20" font-weight="400" fill="#2B3440">Expand succeeds</text>
+<rect x="617" y="1160" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="660" y="1180.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
+<text x="717" y="1181.2" font-size="20" font-weight="700" fill="#2B3440">ExpandComplete</text>
 <polyline points="230,1206 258,1206" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="270" y="1213.2" font-size="20" font-weight="400" fill="#2B3440">Migrate fails</text>
-<rect x="553" y="1192" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="602" y="1212.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="665" y="1213.2" font-size="20" font-weight="700" fill="#2B3440">MigrateFailed</text>
+<text x="270" y="1213.2" font-size="20" font-weight="400" fill="#2B3440">Expand fails</text>
+<rect x="617" y="1192" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="666" y="1212.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="729" y="1213.2" font-size="20" font-weight="700" fill="#2B3440">ExpandFailed</text>
 <polyline points="230,1238 258,1238" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="270" y="1245.2" font-size="20" font-weight="400" fill="#2B3440">Contract succeeds</text>
-<rect x="553" y="1224" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="596" y="1244.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
-<text x="653" y="1245.2" font-size="20" font-weight="700" fill="#2B3440">UpgradeComplete</text>
+<text x="270" y="1245.2" font-size="20" font-weight="400" fill="#2B3440">Migrate succeeds</text>
+<rect x="617" y="1224" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="660" y="1244.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
+<text x="717" y="1245.2" font-size="20" font-weight="700" fill="#2B3440">MigrateComplete</text>
 <polyline points="230,1270 258,1270" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="270" y="1277.2" font-size="20" font-weight="400" fill="#2B3440">Contract fails</text>
-<rect x="553" y="1256" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="602" y="1276.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="665" y="1277.2" font-size="20" font-weight="700" fill="#2B3440">ContractFailed</text>
-<polyline points="230,884 230,1270" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="270" y="1277.2" font-size="20" font-weight="400" fill="#2B3440">Migrate fails</text>
+<rect x="617" y="1256" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="666" y="1276.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="729" y="1277.2" font-size="20" font-weight="700" fill="#2B3440">MigrateFailed</text>
+<polyline points="230,1302 258,1302" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="270" y="1309.2" font-size="20" font-weight="400" fill="#2B3440">Contract succeeds</text>
+<rect x="617" y="1288" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="660" y="1308.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
+<text x="717" y="1309.2" font-size="20" font-weight="700" fill="#2B3440">UpgradeComplete</text>
+<polyline points="230,1334 258,1334" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="270" y="1341.2" font-size="20" font-weight="400" fill="#2B3440">Contract fails</text>
+<rect x="617" y="1320" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="666" y="1340.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="729" y="1341.2" font-size="20" font-weight="700" fill="#2B3440">ContractFailed</text>
+<polyline points="230,884 230,1334" fill="none" stroke="#7D8794" stroke-width="2"/>
 <polyline points="160,610 160,860" fill="none" stroke="#7D8794" stroke-width="2"/>
-<rect x="130" y="1314" width="290" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
-<text x="275" y="1345.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileFernetKeys()</text>
-<polyline points="90,1338 130,1338" fill="none" stroke="#7D8794" stroke-width="2"/>
-<polyline points="160,1396 188,1396" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="1403.2" font-size="20" font-weight="400" fill="#2B3440">Initial Secret created</text>
-<rect x="547" y="1382" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="590" y="1402.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
-<text x="647" y="1403.2" font-size="20" font-weight="700" fill="#2B3440">FernetKeysGenerated</text>
-<polyline points="160,1428 188,1428" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="1435.2" font-size="20" font-weight="400" fill="#2B3440">Staged rotation applied</text>
-<rect x="547" y="1414" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="590" y="1434.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
-<text x="647" y="1435.2" font-size="20" font-weight="700" fill="#2B3440">FernetKeysRotated</text>
+<rect x="130" y="1378" width="290" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="275" y="1409.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileFernetKeys()</text>
+<polyline points="90,1402 130,1402" fill="none" stroke="#7D8794" stroke-width="2"/>
 <polyline points="160,1460 188,1460" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="1467.2" font-size="20" font-weight="400" fill="#2B3440">Malformed completion annotation</text>
-<rect x="547" y="1446" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="596" y="1466.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="659" y="1467.2" font-size="20" font-weight="700" fill="#2B3440">RotationAnnotationInvalid</text>
+<text x="200" y="1467.2" font-size="20" font-weight="400" fill="#2B3440">Initial Secret created</text>
+<rect x="547" y="1446" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="590" y="1466.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
+<text x="647" y="1467.2" font-size="20" font-weight="700" fill="#2B3440">FernetKeysGenerated</text>
 <polyline points="160,1492 188,1492" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="1499.2" font-size="20" font-weight="400" fill="#2B3440">Staged key set rejected</text>
-<rect x="547" y="1478" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="596" y="1498.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="659" y="1499.2" font-size="20" font-weight="700" fill="#2B3440">RotationRejected</text>
-<polyline points="160,1362 160,1492" fill="none" stroke="#7D8794" stroke-width="2"/>
-<rect x="130" y="1522" width="332" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
-<text x="296" y="1553.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileCredentialKeys()</text>
-<polyline points="90,1546 130,1546" fill="none" stroke="#7D8794" stroke-width="2"/>
-<polyline points="160,1604 188,1604" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="1611.2" font-size="20" font-weight="400" fill="#2B3440">Initial Secret created</text>
-<rect x="547" y="1590" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="590" y="1610.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
-<text x="647" y="1611.2" font-size="20" font-weight="700" fill="#2B3440">CredentialKeysGenerated</text>
-<polyline points="160,1636 188,1636" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="1643.2" font-size="20" font-weight="400" fill="#2B3440">Staged rotation applied</text>
-<rect x="547" y="1622" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="590" y="1642.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
-<text x="647" y="1643.2" font-size="20" font-weight="700" fill="#2B3440">CredentialKeysRotated</text>
+<text x="200" y="1499.2" font-size="20" font-weight="400" fill="#2B3440">Staged rotation applied</text>
+<rect x="547" y="1478" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="590" y="1498.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
+<text x="647" y="1499.2" font-size="20" font-weight="700" fill="#2B3440">FernetKeysRotated</text>
+<polyline points="160,1524 188,1524" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="1531.2" font-size="20" font-weight="400" fill="#2B3440">Malformed completion annotation</text>
+<rect x="547" y="1510" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="596" y="1530.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="659" y="1531.2" font-size="20" font-weight="700" fill="#2B3440">RotationAnnotationInvalid</text>
+<polyline points="160,1556 188,1556" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="1563.2" font-size="20" font-weight="400" fill="#2B3440">Staged key set rejected</text>
+<rect x="547" y="1542" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="596" y="1562.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="659" y="1563.2" font-size="20" font-weight="700" fill="#2B3440">RotationRejected</text>
+<polyline points="160,1426 160,1556" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="130" y="1586" width="332" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="296" y="1617.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileCredentialKeys()</text>
+<polyline points="90,1610 130,1610" fill="none" stroke="#7D8794" stroke-width="2"/>
 <polyline points="160,1668 188,1668" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="1675.2" font-size="20" font-weight="400" fill="#2B3440">Malformed completion annotation</text>
-<rect x="547" y="1654" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="596" y="1674.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="659" y="1675.2" font-size="20" font-weight="700" fill="#2B3440">RotationAnnotationInvalid</text>
+<text x="200" y="1675.2" font-size="20" font-weight="400" fill="#2B3440">Initial Secret created</text>
+<rect x="547" y="1654" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="590" y="1674.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
+<text x="647" y="1675.2" font-size="20" font-weight="700" fill="#2B3440">CredentialKeysGenerated</text>
 <polyline points="160,1700 188,1700" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="1707.2" font-size="20" font-weight="400" fill="#2B3440">Staged key set rejected</text>
-<rect x="547" y="1686" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="596" y="1706.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="659" y="1707.2" font-size="20" font-weight="700" fill="#2B3440">RotationRejected</text>
-<polyline points="160,1570 160,1700" fill="none" stroke="#7D8794" stroke-width="2"/>
-<rect x="130" y="1730" width="364" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
-<text x="312" y="1761.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcilePasswordRotation()</text>
-<polyline points="90,1754 130,1754" fill="none" stroke="#7D8794" stroke-width="2"/>
-<polyline points="160,1812 188,1812" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="1819.2" font-size="20" font-weight="400" fill="#2B3440">Staged rotation applied</text>
-<rect x="547" y="1798" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="590" y="1818.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
-<text x="647" y="1819.2" font-size="20" font-weight="700" fill="#2B3440">AdminPasswordRotated</text>
-<polyline points="160,1844 188,1844" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="1851.2" font-size="20" font-weight="400" fill="#2B3440">Malformed completion annotation</text>
-<rect x="547" y="1830" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="596" y="1850.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="659" y="1851.2" font-size="20" font-weight="700" fill="#2B3440">AdminPasswordRotationAnnotationInvalid</text>
+<text x="200" y="1707.2" font-size="20" font-weight="400" fill="#2B3440">Staged rotation applied</text>
+<rect x="547" y="1686" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="590" y="1706.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
+<text x="647" y="1707.2" font-size="20" font-weight="700" fill="#2B3440">CredentialKeysRotated</text>
+<polyline points="160,1732 188,1732" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="1739.2" font-size="20" font-weight="400" fill="#2B3440">Malformed completion annotation</text>
+<rect x="547" y="1718" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="596" y="1738.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="659" y="1739.2" font-size="20" font-weight="700" fill="#2B3440">RotationAnnotationInvalid</text>
+<polyline points="160,1764 188,1764" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="1771.2" font-size="20" font-weight="400" fill="#2B3440">Staged key set rejected</text>
+<rect x="547" y="1750" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="596" y="1770.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="659" y="1771.2" font-size="20" font-weight="700" fill="#2B3440">RotationRejected</text>
+<polyline points="160,1634 160,1764" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="130" y="1794" width="364" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="312" y="1825.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcilePasswordRotation()</text>
+<polyline points="90,1818 130,1818" fill="none" stroke="#7D8794" stroke-width="2"/>
 <polyline points="160,1876 188,1876" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="1883.2" font-size="20" font-weight="400" fill="#2B3440">Staged password rejected</text>
-<rect x="547" y="1862" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="596" y="1882.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="659" y="1883.2" font-size="20" font-weight="700" fill="#2B3440">AdminPasswordRotationRejected</text>
-<polyline points="160,1778 160,1876" fill="none" stroke="#7D8794" stroke-width="2"/>
-<rect x="130" y="1906" width="391" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
-<text x="325.5" y="1937.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileDBConnectionSecret()</text>
-<polyline points="90,1930 130,1930" fill="none" stroke="#7D8794" stroke-width="2"/>
-<polyline points="160,1988 188,1988" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="1995.2" font-size="20" font-weight="400" fill="#2B3440">MaxScale named, not routed through</text>
-<rect x="579" y="1974" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="628" y="1994.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="691" y="1995.2" font-size="20" font-weight="700" fill="#2B3440">DatabaseMaxScaleBypassed</text>
-<polyline points="160,1954 160,1988" fill="none" stroke="#7D8794" stroke-width="2"/>
-<rect x="130" y="2018" width="233" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
-<text x="246.5" y="2049.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileConfig()</text>
-<polyline points="90,2042 130,2042" fill="none" stroke="#7D8794" stroke-width="2"/>
-<polyline points="160,2100 188,2100" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="2107.2" font-size="20" font-weight="400" fill="#2B3440">spec.extraConfig overrides operator-owned keys</text>
-<rect x="696" y="2086" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="745" y="2106.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="808" y="2107.2" font-size="20" font-weight="700" fill="#2B3440">ExtraConfigOwnedKeyOverride</text>
-<text x="696" y="2139.2" font-size="20" font-weight="400" fill="#55606E">gated on transition into ExtraConfigHealthy=False, Reason=OwnedKeysOverridden</text>
-<polyline points="160,2066 160,2100" fill="none" stroke="#7D8794" stroke-width="2"/>
-<rect x="130" y="2162" width="284" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
-<text x="272" y="2193.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileTrustFlush()</text>
-<polyline points="90,2186 130,2186" fill="none" stroke="#7D8794" stroke-width="2"/>
-<polyline points="160,2244 188,2244" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="2251.2" font-size="20" font-weight="400" fill="#2B3440">Legacy nil spec.trustFlush bypass</text>
-<rect x="565" y="2230" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="614" y="2250.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="677" y="2251.2" font-size="20" font-weight="700" fill="#2B3440">TrustFlushBypass</text>
-<polyline points="160,2210 160,2244" fill="none" stroke="#7D8794" stroke-width="2"/>
-<rect x="130" y="2274" width="293" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
-<text x="276.5" y="2305.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileDeployment()</text>
-<polyline points="90,2298 130,2298" fill="none" stroke="#7D8794" stroke-width="2"/>
-<polyline points="160,2356 188,2356" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="2363.2" font-size="20" font-weight="400" fill="#2B3440">Ready during upgrade rollout</text>
-<rect x="505" y="2342" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="548" y="2362.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
-<text x="605" y="2363.2" font-size="20" font-weight="700" fill="#2B3440">DeploymentRolloutComplete</text>
-<polyline points="160,2322 160,2356" fill="none" stroke="#7D8794" stroke-width="2"/>
-<polyline points="90,96 90,2298" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="40" y="2431.2" font-size="20" font-weight="400" fill="#55606E">A filled chip is a Warning event, an outline chip a Normal event. A line with two chips emits one or the other.</text>
-<text x="40" y="2457.2" font-size="20" font-weight="400" fill="#55606E">Every reason is described in the Event Reasons Reference of the page.</text>
+<text x="200" y="1883.2" font-size="20" font-weight="400" fill="#2B3440">Staged rotation applied</text>
+<rect x="547" y="1862" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="590" y="1882.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
+<text x="647" y="1883.2" font-size="20" font-weight="700" fill="#2B3440">AdminPasswordRotated</text>
+<polyline points="160,1908 188,1908" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="1915.2" font-size="20" font-weight="400" fill="#2B3440">Malformed completion annotation</text>
+<rect x="547" y="1894" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="596" y="1914.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="659" y="1915.2" font-size="20" font-weight="700" fill="#2B3440">AdminPasswordRotationAnnotationInvalid</text>
+<polyline points="160,1940 188,1940" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="1947.2" font-size="20" font-weight="400" fill="#2B3440">Staged password rejected</text>
+<rect x="547" y="1926" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="596" y="1946.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="659" y="1947.2" font-size="20" font-weight="700" fill="#2B3440">AdminPasswordRotationRejected</text>
+<polyline points="160,1842 160,1940" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="130" y="1970" width="391" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="325.5" y="2001.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileDBConnectionSecret()</text>
+<polyline points="90,1994 130,1994" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="160,2052 188,2052" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="2059.2" font-size="20" font-weight="400" fill="#2B3440">MaxScale named, not routed through</text>
+<rect x="579" y="2038" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="628" y="2058.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="691" y="2059.2" font-size="20" font-weight="700" fill="#2B3440">DatabaseMaxScaleBypassed</text>
+<polyline points="160,2018 160,2052" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="130" y="2082" width="233" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="246.5" y="2113.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileConfig()</text>
+<polyline points="90,2106 130,2106" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="160,2164 188,2164" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="2171.2" font-size="20" font-weight="400" fill="#2B3440">spec.extraConfig overrides operator-owned keys</text>
+<rect x="696" y="2150" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="745" y="2170.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="808" y="2171.2" font-size="20" font-weight="700" fill="#2B3440">ExtraConfigOwnedKeyOverride</text>
+<text x="696" y="2203.2" font-size="20" font-weight="400" fill="#55606E">gated on transition into ExtraConfigHealthy=False, Reason=OwnedKeysOverridden</text>
+<polyline points="160,2130 160,2164" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="130" y="2226" width="284" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="272" y="2257.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileTrustFlush()</text>
+<polyline points="90,2250 130,2250" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="160,2308 188,2308" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="2315.2" font-size="20" font-weight="400" fill="#2B3440">Legacy nil spec.trustFlush bypass</text>
+<rect x="565" y="2294" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="614" y="2314.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="677" y="2315.2" font-size="20" font-weight="700" fill="#2B3440">TrustFlushBypass</text>
+<polyline points="160,2274 160,2308" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="130" y="2338" width="293" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="276.5" y="2369.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileDeployment()</text>
+<polyline points="90,2362 130,2362" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="160,2420 188,2420" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="2427.2" font-size="20" font-weight="400" fill="#2B3440">Ready during upgrade rollout</text>
+<rect x="505" y="2406" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="548" y="2426.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
+<text x="605" y="2427.2" font-size="20" font-weight="700" fill="#2B3440">DeploymentRolloutComplete</text>
+<polyline points="160,2386 160,2420" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="90,96 90,2362" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="40" y="2495.2" font-size="20" font-weight="400" fill="#55606E">A filled chip is a Warning event, an outline chip a Normal event. A line with two chips emits one or the other.</text>
+<text x="40" y="2521.2" font-size="20" font-weight="400" fill="#55606E">Every reason is described in the Event Reasons Reference of the page.</text>
 </svg>

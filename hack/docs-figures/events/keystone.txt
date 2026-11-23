@@ -23,9 +23,11 @@ KeystoneReconciler.Reconcile()
   │     └─ Upgrade path:
   │           ├─ Tag changed mid-upgrade → Warning UpgradeTargetChanged
   │           ├─ Tag reverted mid-upgrade → Normal UpgradeAborted
+  │           ├─ Tag reverted, digest kept → Warning ImageReleaseMismatch
   │           ├─ Version parse error     → Warning VersionParseError
   │           ├─ Downgrade attempted     → Warning DowngradeNotSupported
   │           ├─ Non-sequential upgrade  → Warning UpgradePathInvalid
+  │           ├─ Release bump, image unchanged → Warning ImageReleaseMismatch
   │           ├─ Upgrade validated       → Normal  UpgradeInitiated
   │           ├─ Expand succeeds         → Normal  ExpandComplete
   │           ├─ Expand fails            → Warning ExpandFailed
