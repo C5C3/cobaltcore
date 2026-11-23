@@ -1900,6 +1900,118 @@ func TestIntegration_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 		"endpoint should still be set after upgrade")
 }
 
+// TestIntegration_UpgradeCycle_TagAndDigest drives a Keystone whose spec.image
+// pins a digest beside its tag through a release upgrade on a real API server.
+// The CRD admits both fields, the tag names the release, so the bump runs the
+// expand, migrate and contract phases, and every phase Job and the Deployment
+// run the new digest rather than the tag. No Chainsaw suite covers this: a kind
+// node does not start an image it loaded by "repository@sha256:..." reference.
+func TestIntegration_UpgradeCycle_TagAndDigest(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-upgrade-digest-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	const (
+		oldDigest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+		newDigest = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+	)
+	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
+	ks.Spec.Image.Tag = "2026.1"
+	ks.Spec.Image.Digest = oldDigest
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
+	oldImage := ks.Spec.Image.Repository + "@" + oldDigest
+	newImage := ks.Spec.Image.Repository + "@" + newDigest
+
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+
+	initial := &keystonev1alpha1.Keystone{}
+	g.Expect(c.Get(ctx, key, initial)).To(Succeed())
+	g.Expect(initial.Status.InstalledRelease).To(Equal("2026.1"))
+	g.Expect(initial.Status.InstalledImage).To(Equal(oldImage))
+
+	// Move tag and digest to the next release in one update.
+	initial.Spec.Image.Tag = "2026.2"
+	initial.Spec.Image.Digest = newDigest
+	g.Expect(c.Update(ctx, initial)).To(Succeed())
+
+	waitForPhase := func(phase keystonev1alpha1.UpgradePhase) {
+		t.Helper()
+		g.Eventually(func() keystonev1alpha1.UpgradePhase {
+			current := &keystonev1alpha1.Keystone{}
+			if err := c.Get(ctx, key, current); err != nil {
+				return ""
+			}
+			return current.Status.UpgradePhase
+		}, eventuallyTimeout, pollInterval).Should(Equal(phase), "upgradePhase should reach %s", phase)
+	}
+	completePhaseJob := func(suffix string) {
+		t.Helper()
+		jobKey := client.ObjectKey{Namespace: ns.Name, Name: ks.Name + "-" + suffix}
+		g.Eventually(func() string {
+			j := &batchv1.Job{}
+			if err := c.Get(ctx, jobKey, j); err != nil || len(j.Spec.Template.Spec.Containers) == 0 {
+				return ""
+			}
+			return j.Spec.Template.Spec.Containers[0].Image
+		}, eventuallyTimeout, pollInterval).Should(Equal(newImage), "%s Job should run the new digest", suffix)
+		g.Expect(simulators.SimulateJobComplete(ctx, c, jobKey)).To(Succeed(), "simulate %s Job completion", suffix)
+	}
+
+	waitForPhase(keystonev1alpha1.UpgradePhaseExpanding)
+	completePhaseJob("db-expand")
+	waitForPhase(keystonev1alpha1.UpgradePhaseMigrating)
+	completePhaseJob("db-migrate")
+	waitForPhase(keystonev1alpha1.UpgradePhaseRollingUpdate)
+
+	deployKey := client.ObjectKey{Namespace: ns.Name, Name: ks.Name}
+	g.Eventually(func() string {
+		d := &appsv1.Deployment{}
+		if err := c.Get(ctx, deployKey, d); err != nil || len(d.Spec.Template.Spec.Containers) == 0 {
+			return ""
+		}
+		return d.Spec.Template.Spec.Containers[0].Image
+	}, eventuallyTimeout, pollInterval).Should(Equal(newImage), "Deployment should run the new digest")
+	deploy := &appsv1.Deployment{}
+	g.Expect(c.Get(ctx, deployKey, deploy)).To(Succeed())
+	g.Expect(simulators.SimulateDeploymentReady(ctx, c, deployKey, ptr.Deref(deploy.Spec.Replicas, 1))).
+		To(Succeed(), "simulate Deployment rollout with the new digest")
+
+	waitForPhase(keystonev1alpha1.UpgradePhaseContracting)
+	completePhaseJob("db-contract")
+
+	g.Eventually(func() string {
+		current := &keystonev1alpha1.Keystone{}
+		if err := c.Get(ctx, key, current); err != nil {
+			return ""
+		}
+		return current.Status.InstalledRelease
+	}, eventuallyTimeout, pollInterval).Should(Equal("2026.2"), "installedRelease should move to 2026.2")
+
+	upgraded := &keystonev1alpha1.Keystone{}
+	g.Expect(c.Get(ctx, key, upgraded)).To(Succeed())
+	g.Expect(upgraded.Status.InstalledImage).To(Equal(newImage))
+	g.Expect(upgraded.Status.UpgradePhase).To(BeEmpty())
+	g.Expect(upgraded.Status.TargetRelease).To(BeEmpty())
+
+	// The steady-state db-sync and schema-check Jobs re-run on the new digest.
+	completePhaseJob("db-sync")
+	completePhaseJob("schema-check")
+	waitForCondition(t, ctx, c, key, "DatabaseReady", metav1.ConditionTrue, eventuallyTimeout)
+	waitForCondition(t, ctx, c, key, "Ready", metav1.ConditionTrue, eventuallyTimeout)
+
+	final := &keystonev1alpha1.Keystone{}
+	g.Expect(c.Get(ctx, key, final)).To(Succeed())
+	g.Expect(final.Status.InstalledRelease).To(Equal("2026.2"))
+	g.Expect(final.Status.InstalledImage).To(Equal(newImage))
+}
+
 // --- Task/4.1: Trust flush CronJob lifecycle integration tests ---
 
 // integrationBrownfieldKeystoneWithTrustFlush returns a valid Keystone CR with trustFlush
