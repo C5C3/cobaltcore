@@ -126,17 +126,17 @@ path "kv-v2/metadata/bootstrap/{{identity.entity.aliases.KUBERNETES_MANAGEMENT_A
 }
 
 # --- admin application credential + service-account backups ---
-# Carried over from the retired push-app-credentials.hcl, INCLUDING its
-# metadata-path asymmetry: the metadata paths grant create/update/read but NOT
-# delete. That asymmetry predates #606 and is preserved here, not fixed — the
-# admin-AC / service-account PushSecrets run DeletionPolicy=Delete and ESO's
-# KV-v2 delete only DELETEs the data path.
+# Carried over from the retired push-app-credentials.hcl. These PushSecrets run
+# DeletionPolicy=Delete: ESO soft-deletes the data path and then deletes the
+# metadata path, so both paths carry create/update/read/delete. Without delete
+# on the metadata path the second request gets 403 and the key stays in OpenBao
+# with its versions and custom_metadata (#1860).
 path "kv-v2/data/openstack/keystone/{{identity.entity.aliases.KUBERNETES_MANAGEMENT_ACCESSOR.metadata.service_account_namespace}}/+/admin/app-credential" {
   capabilities = ["create", "update", "read", "delete"]
 }
 
 path "kv-v2/metadata/openstack/keystone/{{identity.entity.aliases.KUBERNETES_MANAGEMENT_ACCESSOR.metadata.service_account_namespace}}/+/admin/app-credential" {
-  capabilities = ["create", "update", "read"]
+  capabilities = ["create", "update", "read", "delete"]
 }
 
 path "kv-v2/data/openstack/keystone/{{identity.entity.aliases.KUBERNETES_MANAGEMENT_ACCESSOR.metadata.service_account_namespace}}/+/service-accounts/+" {
@@ -144,21 +144,21 @@ path "kv-v2/data/openstack/keystone/{{identity.entity.aliases.KUBERNETES_MANAGEM
 }
 
 path "kv-v2/metadata/openstack/keystone/{{identity.entity.aliases.KUBERNETES_MANAGEMENT_ACCESSOR.metadata.service_account_namespace}}/+/service-accounts/+" {
-  capabilities = ["create", "update", "read"]
+  capabilities = ["create", "update", "read", "delete"]
 }
 
 # --- RabbitMQVhost credentials backup ---
-# The backup PushSecret of a RabbitMQVhost order lives in the ControlPlane's
-# namespace and pushes the order's broker credentials to
-# openstack/rabbitmq/{ns}/<name>-<hash>-vhost/credentials through that
-# namespace's own store. It runs DeletionPolicy=Delete, so the data path carries
-# delete and the metadata path keeps the asymmetry of the service-account pair
-# above (create/update/read, no delete). The {ns}/+ glob ends at the literal
+# The backup PushSecret of a RabbitMQVhost order pushes the order's broker
+# credentials to openstack/rabbitmq/{ns}/<name>-<hash>-vhost/credentials through
+# the ControlPlane namespace's own store. For its DeletionPolicy=Delete, ESO
+# soft-deletes the data path and then deletes the metadata path, so both paths
+# carry create/update/read/delete; without delete on the metadata path the key
+# stays behind with its versions (#1860). The {ns}/+ glob ends at the literal
 # /credentials leaf, so nothing else under openstack/rabbitmq is writable.
 path "kv-v2/data/openstack/rabbitmq/{{identity.entity.aliases.KUBERNETES_MANAGEMENT_ACCESSOR.metadata.service_account_namespace}}/+/credentials" {
   capabilities = ["create", "update", "read", "delete"]
 }
 
 path "kv-v2/metadata/openstack/rabbitmq/{{identity.entity.aliases.KUBERNETES_MANAGEMENT_ACCESSOR.metadata.service_account_namespace}}/+/credentials" {
-  capabilities = ["create", "update", "read"]
+  capabilities = ["create", "update", "read", "delete"]
 }

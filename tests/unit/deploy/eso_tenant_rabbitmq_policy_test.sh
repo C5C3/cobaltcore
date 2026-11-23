@@ -10,9 +10,9 @@
 #     pushes openstack/rabbitmq/{ns}/<name>-<hash>-vhost/credentials through that
 #     namespace's own store, which authenticates as eso-tenant. Without the data
 #     grant the push fails with 403 and the order holds on BackupNotSynced.
-#   - The PushSecret runs DeletionPolicy=Delete, so the data path carries
-#     delete. The metadata path carries create/update/read and no delete, the
-#     asymmetry the service-account pair of the same file keeps.
+#   - The PushSecret runs DeletionPolicy=Delete: ESO soft-deletes the data path
+#     and then deletes the metadata path, so both carry delete. Without it on
+#     the metadata path the key stays in OpenBao with its versions (#1860).
 #   - Every path under openstack/rabbitmq is scoped by the ACL identity template
 #     to the caller's own namespace. A path without it would let one tenant's
 #     store write another tenant's broker credentials.
@@ -70,13 +70,13 @@ test_data_path_is_granted() {
 }
 
 # ---------------------------------------------------------------------------
-# Test: the metadata twin carries no delete
+# Test: the metadata twin carries the write verbs and delete
 # ---------------------------------------------------------------------------
 test_metadata_path_is_granted() {
   echo "Test: eso-tenant.hcl grants the RabbitMQVhost backup metadata path"
 
-  assert_eq "the metadata path carries create, update and read" \
-    '"create", "update", "read"' "$(capabilities_of "$METADATA_PATH")"
+  assert_eq "the metadata path carries create, update, read and delete" \
+    '"create", "update", "read", "delete"' "$(capabilities_of "$METADATA_PATH")"
 }
 
 # ---------------------------------------------------------------------------
