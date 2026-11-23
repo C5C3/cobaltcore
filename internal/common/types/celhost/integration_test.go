@@ -44,7 +44,7 @@ func callerDir() string {
 // the others admit the boundary of a single rule. A subtest fails when a rule
 // of the CRD has no reject case.
 //
-// Rules: types.go:68, 149, 150, 285, 286, 311, 444, 445
+// Rules: types.go:72, 156, 157, 295, 296, 322, 455, 456
 // Rules: workload.go:133, 240, 241, 296, 297, 330, 413, 482, 483
 // Rules: uwsgi.go:15
 func TestIntegration_CRD_CELOnly_SharedTypes(t *testing.T) {
@@ -53,7 +53,7 @@ func TestIntegration_CRD_CELOnly_SharedTypes(t *testing.T) {
 		commonenvtest.BuildScheme(AddToScheme), []string{filepath.Join(callerDir(), "crd")})
 
 	const (
-		imageExactlyOne     = "exactly one of image.tag or image.digest must be set"
+		imageAtLeastOne     = "at least one of image.tag or image.digest must be set"
 		databaseExactlyOne  = "exactly one of clusterRef or host must be set"
 		cacheExactlyOne     = "exactly one of clusterRef or servers must be set"
 		messagingExactlyOne = "exactly one of clusterRef or secretRef must be set"
@@ -71,14 +71,14 @@ func TestIntegration_CRD_CELOnly_SharedTypes(t *testing.T) {
 		wantSub string // empty: the object must be admitted
 	}{
 		{
-			name:    "image-tag-and-digest",
-			spec:    CELHostSpec{Image: &commonv1.ImageSpec{Repository: "r", Tag: "t", Digest: "sha256:" + strings.Repeat("a", 64)}},
-			wantSub: imageExactlyOne,
+			// The image rule admits a tag beside a digest.
+			name: "image-tag-and-digest",
+			spec: CELHostSpec{Image: &commonv1.ImageSpec{Repository: "r", Tag: "t", Digest: "sha256:" + strings.Repeat("a", 64)}},
 		},
 		{
 			name:    "image-neither",
 			spec:    CELHostSpec{Image: &commonv1.ImageSpec{Repository: "r"}},
-			wantSub: imageExactlyOne,
+			wantSub: imageAtLeastOne,
 		},
 		{
 			name: "database-cluster-ref-and-host",

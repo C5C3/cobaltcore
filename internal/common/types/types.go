@@ -50,14 +50,18 @@ const (
 	CredentialsModeDynamic = "Dynamic"
 )
 
-// ImageSpec defines a container image reference. Exactly one of Tag or Digest
-// must be set (enforced by the type-level XValidation rule below), so a
-// supply-chain-sensitive deployment can pin the image by immutable digest while
-// the common case keeps a human-readable tag.
+// ImageSpec defines a container image reference. At least one of Tag or
+// Digest must be set (enforced by the type-level XValidation rule below). An
+// image takes one of three forms:
 //
-// Digest-mode (Tag empty, Digest set) disables release
-// tracking/upgrades, which key on the tag; the managed ControlPlane path always
-// projects a tag, so it is unaffected.
+//   - Tag only: the workloads run "repository:tag", and the tag names the
+//     OpenStack release the operators reason about.
+//   - Digest only: the workloads run "repository@digest", pinned by immutable
+//     content. No release string is present, so release tracking that reads
+//     the tag (Keystone and Horizon) is off.
+//   - Tag and digest: the digest decides what the workloads run
+//     ("repository@digest") and the tag names its release. No operator checks
+//     that the digest is a build of that release.
 //
 // The pull policy of a container that runs the image resolves at render time
 // (EffectivePullPolicy): PullPolicy when set, else the operator's process-wide
@@ -65,7 +69,7 @@ const (
 // digest and Always for a tag. No webhook writes PullPolicy, so a stored CR
 // does not freeze the default of the operator release that admitted it.
 //
-// +kubebuilder:validation:XValidation:rule="has(self.tag) != has(self.digest)",message="exactly one of image.tag or image.digest must be set"
+// +kubebuilder:validation:XValidation:rule="has(self.tag) || has(self.digest)",message="at least one of image.tag or image.digest must be set"
 type ImageSpec struct {
 	// Repository is the OCI image repository, optionally including the registry
 	// host (e.g. "ghcr.io/c5c3/<service>" or "c5c3/<service>"). The pattern is a
@@ -78,15 +82,17 @@ type ImageSpec struct {
 	Repository string `json:"repository"`
 	// Tag is the OCI image tag (e.g. "2026.1"). It follows the OCI tag grammar:
 	// up to 128 characters of word characters, dots, and dashes, and must not
-	// begin with a dot or dash. Optional: exactly one of Tag or Digest must be
-	// set. The pattern is enforced only when a tag is present.
+	// begin with a dot or dash. Optional: at least one of Tag or Digest must be
+	// set. Beside a Digest the tag only names the release; the digest decides
+	// what runs. The pattern is enforced only when a tag is present.
 	// +optional
 	// +kubebuilder:validation:Pattern=`^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$`
 	Tag string `json:"tag,omitempty"`
 	// Digest pins the image by immutable content digest (e.g.
-	// "sha256:<64 hex chars>"). Optional: exactly one of Tag or Digest must be
+	// "sha256:<64 hex chars>"). Optional: at least one of Tag or Digest must be
 	// set. A pinned digest closes the supply-chain gap where a mutable tag can be
-	// re-pushed behind a stable name, at the cost of disabling release tracking.
+	// re-pushed behind a stable name. Without a Tag beside it, release tracking
+	// that reads the tag is off.
 	// +optional
 	// +kubebuilder:validation:Pattern=`^sha256:[a-f0-9]{64}$`
 	Digest string `json:"digest,omitempty"`
@@ -101,7 +107,8 @@ type ImageSpec struct {
 }
 
 // Reference returns the fully-qualified image reference the workloads consume:
-// "repository@digest" when a digest is pinned, otherwise "repository:tag".
+// "repository@digest" when a digest is pinned, with or without a tag, otherwise
+// "repository:tag".
 func (i ImageSpec) Reference() string {
 	if i.Digest != "" {
 		return i.Repository + "@" + i.Digest
