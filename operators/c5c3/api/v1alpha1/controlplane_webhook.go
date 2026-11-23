@@ -880,7 +880,7 @@ func validateNovaChildName(cp *ControlPlane) field.ErrorList {
 
 // validateGlance enforces the rules on the services.glance block. It mirrors the
 // declarative constraints as defense-in-depth for callers that bypass CRD schema
-// admission — the gateway hostname shape, the image tag/digest XOR, the
+// admission — the gateway hostname shape, the image tag-or-digest rule, the
 // per-backend type/s3 union, the S3 endpoint URL shape, the non-empty
 // credentialsSecretRef, and the non-empty-backends / exactly-one-default
 // invariants — and adds the rules the CRD schema cannot express: the public
@@ -911,11 +911,11 @@ func validateGlance(cp *ControlPlane) field.ErrorList {
 		}
 	}
 
-	// When the Glance image is overridden, mirror the ImageSpec tag/digest XOR
-	// (the +kubebuilder:validation:XValidation rule on commonv1.ImageSpec).
-	if img := gl.Image; img != nil && (img.Tag != "") == (img.Digest != "") {
+	// When the Glance image is overridden, mirror the ImageSpec tag-or-digest
+	// rule (the +kubebuilder:validation:XValidation rule on commonv1.ImageSpec).
+	if img := gl.Image; img != nil && img.Tag == "" && img.Digest == "" {
 		allErrs = append(allErrs, field.Invalid(glPath.Child("image"), img,
-			"exactly one of image.tag or image.digest must be set"))
+			"at least one of image.tag or image.digest must be set"))
 	}
 
 	allErrs = append(allErrs, validateGlancePublicEndpoint(glPath, gl)...)
@@ -1137,7 +1137,7 @@ func validateGlanceBackends(cp *ControlPlane, backendsPath *field.Path) field.Er
 // validatePlacement enforces the rules on the services.placement block. It
 // mirrors the declarative constraints as defense-in-depth for callers that
 // bypass CRD schema admission (the gateway hostname shape and the image
-// tag/digest XOR) and adds the rule the CRD schema cannot express: the public
+// tag-or-digest rule) and adds the rule the CRD schema cannot express: the public
 // endpoint's origin shape and its agreement with the gateway
 // (validatePlacementPublicEndpoint).
 //
@@ -1169,11 +1169,11 @@ func validatePlacement(cp *ControlPlane) field.ErrorList {
 		}
 	}
 
-	// When the Placement image is overridden, mirror the ImageSpec tag/digest XOR
-	// (the +kubebuilder:validation:XValidation rule on commonv1.ImageSpec).
-	if img := pl.Image; img != nil && (img.Tag != "") == (img.Digest != "") {
+	// When the Placement image is overridden, mirror the ImageSpec tag-or-digest
+	// rule (the +kubebuilder:validation:XValidation rule on commonv1.ImageSpec).
+	if img := pl.Image; img != nil && img.Tag == "" && img.Digest == "" {
 		allErrs = append(allErrs, field.Invalid(plPath.Child("image"), img,
-			"exactly one of image.tag or image.digest must be set"))
+			"at least one of image.tag or image.digest must be set"))
 	}
 
 	allErrs = append(allErrs, validatePlacementPublicEndpoint(plPath, pl)...)
@@ -1271,8 +1271,8 @@ func warnInsecurePlacementPublicEndpoint(cp *ControlPlane) admission.Warnings {
 
 // validateBarbican enforces the rules on the services.barbican block. It mirrors
 // the declarative constraints as defense-in-depth for callers that bypass CRD
-// schema admission (the gateway hostname shape, the image tag/digest XOR, the
-// secret-store dedicated/external union and the external store's URL and
+// schema admission (the gateway hostname shape, the image tag-or-digest rule,
+// the secret-store dedicated/external union and the external store's URL and
 // credentials reference) and adds the rules the CRD schema cannot express: the
 // public endpoint's origin shape and its agreement with the gateway
 // (validateBarbicanPublicEndpoint), and the cron grammar of the clean-up
@@ -1306,11 +1306,11 @@ func validateBarbican(cp *ControlPlane) field.ErrorList {
 		}
 	}
 
-	// When the Barbican image is overridden, mirror the ImageSpec tag/digest XOR
-	// (the +kubebuilder:validation:XValidation rule on commonv1.ImageSpec).
-	if img := bn.Image; img != nil && (img.Tag != "") == (img.Digest != "") {
+	// When the Barbican image is overridden, mirror the ImageSpec tag-or-digest
+	// rule (the +kubebuilder:validation:XValidation rule on commonv1.ImageSpec).
+	if img := bn.Image; img != nil && img.Tag == "" && img.Digest == "" {
 		allErrs = append(allErrs, field.Invalid(bnPath.Child("image"), img,
-			"exactly one of image.tag or image.digest must be set"))
+			"at least one of image.tag or image.digest must be set"))
 	}
 
 	allErrs = append(allErrs, validateBarbicanSecretStore(bnPath.Child("secretStore"), &bn.SecretStore)...)
@@ -1486,10 +1486,10 @@ func warnDevelopmentBarbicanSecretStore(cp *ControlPlane) admission.Warnings {
 
 // validateNeutron enforces the rules on the services.neutron block. It mirrors
 // the declarative constraints as defense-in-depth for callers that bypass CRD
-// schema admission (the gateway hostname shape, the image tag/digest XOR, and
-// the name of the OVNCentral reference) and adds the rules the CRD schema cannot
-// express: the public endpoint's origin shape and its agreement with the gateway
-// (validateNeutronPublicEndpoint).
+// schema admission (the gateway hostname shape, the image tag-or-digest rule,
+// and the name of the OVNCentral reference) and adds the rules the CRD schema
+// cannot express: the public endpoint's origin shape and its agreement with the
+// gateway (validateNeutronPublicEndpoint).
 //
 // The shared message bus the projected child cannot come up without is checked
 // by validateMessagingConsumers, which the caller runs directly after this
@@ -1524,11 +1524,11 @@ func validateNeutron(cp *ControlPlane) field.ErrorList {
 		}
 	}
 
-	// When the Neutron image is overridden, mirror the ImageSpec tag/digest XOR
-	// (the +kubebuilder:validation:XValidation rule on commonv1.ImageSpec).
-	if img := nn.Image; img != nil && (img.Tag != "") == (img.Digest != "") {
+	// When the Neutron image is overridden, mirror the ImageSpec tag-or-digest
+	// rule (the +kubebuilder:validation:XValidation rule on commonv1.ImageSpec).
+	if img := nn.Image; img != nil && img.Tag == "" && img.Digest == "" {
 		allErrs = append(allErrs, field.Invalid(nnPath.Child("image"), img,
-			"exactly one of image.tag or image.digest must be set"))
+			"at least one of image.tag or image.digest must be set"))
 	}
 
 	allErrs = append(allErrs, validateNeutronPublicEndpoint(nnPath, nn)...)
@@ -1548,11 +1548,11 @@ func validateNeutron(cp *ControlPlane) field.ErrorList {
 
 // validateCinder enforces the rules on the services.cinder block. It mirrors the
 // declarative constraints as defense-in-depth for callers that bypass CRD schema
-// admission (the gateway hostname shape and the image tag/digest XOR here, the
-// backend shapes in the two validators below) and adds the rules the CRD schema
-// cannot express: the public endpoint's origin shape and its agreement with the
-// gateway (validateCinderPublicEndpoint), the reserved backend name, and the
-// composed CinderBackend child-name bound.
+// admission (the gateway hostname shape and the image tag-or-digest rule here,
+// the backend shapes in the two validators below) and adds the rules the CRD
+// schema cannot express: the public endpoint's origin shape and its agreement
+// with the gateway (validateCinderPublicEndpoint), the reserved backend name,
+// and the composed CinderBackend child-name bound.
 //
 // The shared message bus the projected child cannot come up without is checked
 // by validateMessagingConsumers, which the caller runs directly after this
@@ -1586,11 +1586,11 @@ func validateCinder(cp *ControlPlane) field.ErrorList {
 		}
 	}
 
-	// When the Cinder image is overridden, mirror the ImageSpec tag/digest XOR
-	// (the +kubebuilder:validation:XValidation rule on commonv1.ImageSpec).
-	if img := cd.Image; img != nil && (img.Tag != "") == (img.Digest != "") {
+	// When the Cinder image is overridden, mirror the ImageSpec tag-or-digest
+	// rule (the +kubebuilder:validation:XValidation rule on commonv1.ImageSpec).
+	if img := cd.Image; img != nil && img.Tag == "" && img.Digest == "" {
 		allErrs = append(allErrs, field.Invalid(cdPath.Child("image"), img,
-			"exactly one of image.tag or image.digest must be set"))
+			"at least one of image.tag or image.digest must be set"))
 	}
 
 	allErrs = append(allErrs, validateCinderPublicEndpoint(cdPath, cd)...)
@@ -1929,7 +1929,7 @@ func validateCinderRBDFields(rbdPath *field.Path, pool, user, clusterName string
 // validateNova enforces the rules on the services.nova block. It mirrors the
 // declarative constraints as defense-in-depth for callers that bypass CRD schema
 // admission (the hostname shape of the three gateways the compute service
-// publishes, and the image tag/digest XOR) and adds the rules the CRD schema
+// publishes, and the image tag-or-digest rule) and adds the rules the CRD schema
 // cannot express: the public endpoint's origin shape and its agreement with the
 // API gateway (validateNovaPublicEndpoint), the root-only console route, the
 // archive schedule, and the three sibling services the compute service cannot
@@ -1985,11 +1985,11 @@ func validateNova(cp *ControlPlane) field.ErrorList {
 		}
 	}
 
-	// When the Nova image is overridden, mirror the ImageSpec tag/digest XOR
-	// (the +kubebuilder:validation:XValidation rule on commonv1.ImageSpec).
-	if img := nv.Image; img != nil && (img.Tag != "") == (img.Digest != "") {
+	// When the Nova image is overridden, mirror the ImageSpec tag-or-digest
+	// rule (the +kubebuilder:validation:XValidation rule on commonv1.ImageSpec).
+	if img := nv.Image; img != nil && img.Tag == "" && img.Digest == "" {
 		allErrs = append(allErrs, field.Invalid(nvPath.Child("image"), img,
-			"exactly one of image.tag or image.digest must be set"))
+			"at least one of image.tag or image.digest must be set"))
 	}
 
 	allErrs = append(allErrs, validateNovaGatewayHostnames(nvPath, nv, cp.NovaNamespace())...)
@@ -3494,14 +3494,14 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 			}
 		}
 
-		// When the Keystone image is overridden, mirror the ImageSpec tag/digest
-		// XOR (the +kubebuilder:validation:XValidation rule on commonv1.ImageSpec)
-		// with a defense-in-depth check: exactly one of tag or digest must be set.
-		if img := ks.Image; img != nil && (img.Tag != "") == (img.Digest != "") {
+		// When the Keystone image is overridden, mirror the ImageSpec tag-or-digest
+		// rule (the +kubebuilder:validation:XValidation rule on commonv1.ImageSpec)
+		// with a defense-in-depth check: at least one of tag or digest must be set.
+		if img := ks.Image; img != nil && img.Tag == "" && img.Digest == "" {
 			allErrs = append(allErrs, field.Invalid(
 				specPath.Child("services", "keystone", "image"),
 				img,
-				"exactly one of image.tag or image.digest must be set",
+				"at least one of image.tag or image.digest must be set",
 			))
 		}
 	}
@@ -3526,14 +3526,14 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 
 		allErrs = append(allErrs, validateHorizonPublicEndpoint(specPath, hz)...)
 
-		// When the Horizon image is overridden, mirror the ImageSpec tag/digest
-		// XOR (the +kubebuilder:validation:XValidation rule on commonv1.ImageSpec)
-		// with a defense-in-depth check: exactly one of tag or digest must be set.
-		if img := hz.Image; img != nil && (img.Tag != "") == (img.Digest != "") {
+		// When the Horizon image is overridden, mirror the ImageSpec tag-or-digest
+		// rule (the +kubebuilder:validation:XValidation rule on commonv1.ImageSpec)
+		// with a defense-in-depth check: at least one of tag or digest must be set.
+		if img := hz.Image; img != nil && img.Tag == "" && img.Digest == "" {
 			allErrs = append(allErrs, field.Invalid(
 				specPath.Child("services", "horizon", "image"),
 				img,
-				"exactly one of image.tag or image.digest must be set",
+				"at least one of image.tag or image.digest must be set",
 			))
 		}
 
@@ -4661,9 +4661,9 @@ func validateKeystoneMode(cp *ControlPlane) field.ErrorList {
 			allErrs = append(allErrs, field.Required(imgPath.Child("repository"),
 				"federationProxyImage.repository must be set"))
 		}
-		if (ks.FederationProxyImage.Tag != "") == (ks.FederationProxyImage.Digest != "") {
+		if ks.FederationProxyImage.Tag == "" && ks.FederationProxyImage.Digest == "" {
 			allErrs = append(allErrs, field.Invalid(imgPath, ks.FederationProxyImage,
-				"exactly one of federationProxyImage.tag or federationProxyImage.digest must be set"))
+				"at least one of federationProxyImage.tag or federationProxyImage.digest must be set"))
 		}
 	}
 
@@ -5459,8 +5459,8 @@ type childImage struct {
 	projected bool
 	// overridden reports that spec.services.<service>.image is set.
 	overridden bool
-	// tag is the child's spec.image.tag: the override's tag ("" for a digest
-	// pin) or, without an override, spec.openStackRelease.
+	// tag is the child's spec.image.tag: the override's tag ("" for an
+	// override without a tag) or, without an override, spec.openStackRelease.
 	tag string
 }
 

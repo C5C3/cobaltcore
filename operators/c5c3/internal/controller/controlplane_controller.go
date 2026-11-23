@@ -1080,8 +1080,8 @@ func setServicesStatus(cp *c5c3v1alpha1.ControlPlane, releases map[string]string
 // migrations completed, so a fresh child reports "" until its first db-sync
 // finished. Horizon has no installed release: it reports spec.image.tag once the
 // child is Ready at its current generation, and keeps the release its entry
-// carried at the start of the pass until then; a digest-pinned image has no tag
-// and reports "". A missing child reports "", and a Keystone in External mode has
+// carried at the start of the pass until then; an image without a tag reports
+// "". A missing child reports "", and a Keystone in External mode has
 // no child, so it is not read. Any other read error keeps the entry's previous
 // release and is logged rather than returned, so a cache that has not synced
 // never fails the status write. Every read goes through the informer cache the

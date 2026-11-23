@@ -587,8 +587,8 @@ func ownedSettingWarning(owned config.OwnedKey, path *field.Path) string {
 // Cinder, Nova) against
 // the option catalog embedded for the resolved release (Family B). It fails
 // open — exactly one warning, no error — when no catalog resolves for a
-// non-empty merged config, so a digest pin, an unparseable tag, or a release the
-// build ships no catalog for never blocks admission. Every unknown
+// non-empty merged config, so an override without a tag, an unparseable tag, or
+// a release the build ships no catalog for never blocks admission. Every unknown
 // option/section becomes a field error attributed to the concrete block(s) that
 // carry it; every deprecated-but-accepted option becomes a warning.
 func validateExtraConfigCatalogs(cp *ControlPlane) (admission.Warnings, field.ErrorList) {
@@ -786,10 +786,10 @@ func barbicanExemptSections(merged map[string]map[string]string) map[string]stru
 
 // failOpenCatalogWarning renders the single fail-open warning for a service
 // whose merged config could not be validated against a catalog. It distinguishes
-// a release input that does not parse as a release (empty tag, digest pin,
-// "latest") from a parseable release the build ships no catalog for, mirroring
-// the keystone child. It returns "" when the merged config is empty (nothing to
-// validate, so no warning).
+// a release input that does not parse as a release (an empty tag, as for an
+// image without one, or "latest") from a parseable release the build ships no
+// catalog for, mirroring the keystone child. It returns "" when the merged
+// config is empty (nothing to validate, so no warning).
 func failOpenCatalogWarning(svc, releaseField, tag string, merged map[string]map[string]string) string {
 	if len(merged) == 0 {
 		return ""

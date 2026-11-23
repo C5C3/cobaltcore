@@ -545,6 +545,16 @@ func TestValidateCreate_ServiceImageTagFloor(t *testing.T) {
 			g.Expect(err.Error()).To(ContainSubstring("must be 2026.1 or later"))
 		})
 
+		t.Run(tc.name+" override below the floor with a digest rejected", func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := validControlPlane()
+			tc.mutate(cp, &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/" + tc.name, Tag: "2025.2", Digest: "sha256:" + strings.Repeat("a", 64)})
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring(tc.wantPath))
+			g.Expect(err.Error()).To(ContainSubstring("must be 2026.1 or later"))
+		})
+
 		t.Run(tc.name+" override at the floor accepted", func(t *testing.T) {
 			g := NewGomegaWithT(t)
 			cp := validControlPlane()
@@ -611,20 +621,91 @@ func TestValidateUpdate_AllowsSecretStoreRefSwitch(t *testing.T) {
 		"switching spec.secretStoreRef must be allowed on update")
 }
 
-func TestValidateCreate_RejectsKeystoneImageTagAndDigestBothSet(t *testing.T) {
+func TestValidateCreate_RejectsKeystoneImageNeitherTagNorDigest(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &ControlPlaneWebhook{}
 	cp := validControlPlane()
-	// Override the Keystone image with BOTH a tag and a digest — XOR violation.
-	cp.Spec.Services.Keystone.Image = &commonv1.ImageSpec{
-		Repository: "ghcr.io/c5c3/keystone",
-		Tag:        "2026.1",
-		Digest:     "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-	}
+	// Override the Keystone image with NEITHER a tag nor a digest.
+	cp.Spec.Services.Keystone.Image = &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone"}
 
 	_, err := w.ValidateCreate(context.Background(), cp)
 	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("exactly one of image.tag or image.digest"))
+	g.Expect(err.Error()).To(ContainSubstring("services.keystone.image"))
+	g.Expect(err.Error()).To(ContainSubstring("at least one of image.tag or image.digest must be set"))
+}
+
+// TestValidateCreate_AdmitsImageOverrideWithTagAndDigest pins the admitting
+// side of the ImageSpec tag-or-digest mirror: each of the eight
+// spec.services.<service>.image overrides and
+// spec.services.keystone.federationProxyImage is admitted with a tag beside a
+// digest. The tag is the fixture's spec.openStackRelease, so no release rule
+// answers instead.
+func TestValidateCreate_AdmitsImageOverrideWithTagAndDigest(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+	image := func(repository string) *commonv1.ImageSpec {
+		return &commonv1.ImageSpec{
+			Repository: repository,
+			Tag:        "2026.1",
+			Digest:     "sha256:" + strings.Repeat("a", 64),
+		}
+	}
+
+	for _, tc := range []struct {
+		name  string
+		build func() *ControlPlane
+	}{
+		{"keystone", func() *ControlPlane {
+			cp := validControlPlane()
+			cp.Spec.Services.Keystone.Image = image("ghcr.io/c5c3/keystone")
+			return cp
+		}},
+		{"keystone federationProxyImage", func() *ControlPlane {
+			cp := validControlPlane()
+			cp.Spec.Services.Keystone.FederationProxyImage = image("ghcr.io/c5c3/keystone-federation-proxy")
+			return cp
+		}},
+		{"horizon", func() *ControlPlane {
+			cp := validControlPlane()
+			cp.Spec.Services.Horizon = &ServiceHorizonSpec{Image: image("ghcr.io/c5c3/horizon")}
+			return cp
+		}},
+		{"glance", func() *ControlPlane {
+			cp := glanceControlPlane()
+			cp.Spec.Services.Glance.Image = image("ghcr.io/c5c3/glance")
+			return cp
+		}},
+		{"placement", func() *ControlPlane {
+			cp := placementControlPlane()
+			cp.Spec.Services.Placement.Image = image("ghcr.io/c5c3/placement")
+			return cp
+		}},
+		{"barbican", func() *ControlPlane {
+			cp := barbicanControlPlane()
+			cp.Spec.Services.Barbican.Image = image("ghcr.io/c5c3/barbican")
+			return cp
+		}},
+		{"neutron", func() *ControlPlane {
+			cp := neutronControlPlane()
+			cp.Spec.Services.Neutron.Image = image("ghcr.io/c5c3/neutron")
+			return cp
+		}},
+		{"cinder", func() *ControlPlane {
+			cp := cinderControlPlane()
+			cp.Spec.Services.Cinder.Image = image("ghcr.io/c5c3/cinder")
+			return cp
+		}},
+		{"nova", func() *ControlPlane {
+			cp := novaControlPlane()
+			cp.Spec.Services.Nova.Image = image("ghcr.io/c5c3/nova")
+			return cp
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			_, err := w.ValidateCreate(context.Background(), tc.build())
+			g.Expect(err).NotTo(HaveOccurred())
+		})
+	}
 }
 
 func TestValidateCreate_RejectsDatabaseBothSet(t *testing.T) {
@@ -1579,23 +1660,20 @@ func TestValidateCreate_RejectsHorizonGatewayWithoutHostname(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("services.horizon.gateway.hostname"))
 }
 
-// TestValidateCreate_RejectsHorizonImageTagAndDigestBothSet mirrors the
-// ImageSpec tag/digest XOR defense-in-depth check for the horizon override.
-func TestValidateCreate_RejectsHorizonImageTagAndDigestBothSet(t *testing.T) {
+// TestValidateCreate_RejectsHorizonImageNeitherTagNorDigest mirrors the
+// ImageSpec tag-or-digest defense-in-depth check for the horizon override.
+func TestValidateCreate_RejectsHorizonImageNeitherTagNorDigest(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &ControlPlaneWebhook{}
 	cp := validControlPlane()
 	cp.Spec.Services.Horizon = &ServiceHorizonSpec{
-		Image: &commonv1.ImageSpec{
-			Repository: "ghcr.io/c5c3/horizon",
-			Tag:        "2026.1",
-			Digest:     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		},
+		Image: &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/horizon"},
 	}
 
 	_, err := w.ValidateCreate(context.Background(), cp)
 	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("exactly one of image.tag or image.digest"))
+	g.Expect(err.Error()).To(ContainSubstring("services.horizon.image"))
+	g.Expect(err.Error()).To(ContainSubstring("at least one of image.tag or image.digest must be set"))
 }
 
 // TestValidateCreate_RejectsHorizonEmptySecretKeyRefName covers the error path
@@ -2178,12 +2256,7 @@ func TestValidateCreate_FederationProxyImageDefenseInDepth(t *testing.T) {
 		wantSubstr string
 	}{
 		{"empty repository", &commonv1.ImageSpec{Tag: "dev"}, "federationProxyImage.repository must be set"},
-		{"neither tag nor digest", &commonv1.ImageSpec{Repository: "r"}, "exactly one of federationProxyImage.tag or federationProxyImage.digest"},
-		{
-			"both tag and digest",
-			&commonv1.ImageSpec{Repository: "r", Tag: "dev", Digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"},
-			"exactly one of federationProxyImage.tag or federationProxyImage.digest",
-		},
+		{"neither tag nor digest", &commonv1.ImageSpec{Repository: "r"}, "at least one of federationProxyImage.tag or federationProxyImage.digest must be set"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -4840,31 +4913,20 @@ func TestValidateCreate_WarnsOnCleartextPlacementPublicEndpoint(t *testing.T) {
 	})
 }
 
-// TestValidateCreate_RejectsPlacementImageTagDigestXOR pins the defense-in-depth
-// mirror of the commonv1.ImageSpec XValidation rule for callers that bypass CRD
-// schema admission.
-func TestValidateCreate_RejectsPlacementImageTagDigestXOR(t *testing.T) {
+// TestValidateCreate_RejectsPlacementImageNeitherTagNorDigest pins the
+// defense-in-depth mirror of the commonv1.ImageSpec XValidation rule for callers
+// that bypass CRD schema admission: an override needs at least one of tag or
+// digest.
+func TestValidateCreate_RejectsPlacementImageNeitherTagNorDigest(t *testing.T) {
+	g := NewGomegaWithT(t)
 	w := &ControlPlaneWebhook{}
+	cp := placementControlPlane()
+	cp.Spec.Services.Placement.Image = &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/placement"}
 
-	for name, img := range map[string]*commonv1.ImageSpec{
-		"neither tag nor digest": {Repository: "ghcr.io/c5c3/placement"},
-		"both tag and digest": {
-			Repository: "ghcr.io/c5c3/placement",
-			Tag:        "2026.1",
-			Digest:     "sha256:" + strings.Repeat("a", 64),
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			g := NewGomegaWithT(t)
-			cp := placementControlPlane()
-			cp.Spec.Services.Placement.Image = img
-
-			_, err := w.ValidateCreate(context.Background(), cp)
-			g.Expect(err).To(HaveOccurred())
-			g.Expect(err.Error()).To(ContainSubstring("services.placement.image"))
-			g.Expect(err.Error()).To(ContainSubstring("exactly one of image.tag or image.digest must be set"))
-		})
-	}
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.placement.image"))
+	g.Expect(err.Error()).To(ContainSubstring("at least one of image.tag or image.digest must be set"))
 }
 
 // TestValidateCreate_RejectsPlacementInExternalMode verifies the webhook
@@ -5447,6 +5509,27 @@ func TestValidateCreate_RejectsUnknownGlobalExtraConfigOption(t *testing.T) {
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("spec.globalExtraConfig[token][providr]"))
 	g.Expect(err.Error()).To(ContainSubstring("no such option in the keystone 2026.1 option catalog"))
+}
+
+// TestValidateExtraConfigCatalogs_KeystoneOverrideTagAndDigest pins that a
+// Keystone image override with a tag beside a digest selects the option
+// catalog of its tag: the digest does not make the check fail open, and the
+// override's tag wins over spec.openStackRelease.
+func TestValidateExtraConfigCatalogs_KeystoneOverrideTagAndDigest(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := validControlPlane()
+	cp.Spec.Services.Keystone.Image = &commonv1.ImageSpec{
+		Repository: "ghcr.io/c5c3/keystone",
+		Tag:        "2026.2",
+		Digest:     "sha256:" + strings.Repeat("a", 64),
+	}
+	cp.Spec.GlobalExtraConfig = map[string]map[string]string{"token": {"providr": "fernet"}}
+
+	warnings, errs := validateExtraConfigCatalogs(cp)
+	g.Expect(errs.ToAggregate()).To(HaveOccurred())
+	g.Expect(errs.ToAggregate().Error()).To(ContainSubstring("spec.globalExtraConfig[token][providr]"))
+	g.Expect(errs.ToAggregate().Error()).To(ContainSubstring("no such option in the keystone 2026.2 option catalog"))
+	g.Expect(warnings).NotTo(ContainElement(ContainSubstring("was not validated against an option catalog")))
 }
 
 // TestValidateCreate_RejectsGlobalKeystoneOptionUnknownToGlance pins the
@@ -6405,31 +6488,20 @@ func TestValidateCreate_AcceptsBarbicanExternalStore(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
-// TestValidateCreate_RejectsBarbicanImageTagDigestXOR pins the defense-in-depth
-// mirror of the commonv1.ImageSpec XValidation rule for callers that bypass CRD
-// schema admission.
-func TestValidateCreate_RejectsBarbicanImageTagDigestXOR(t *testing.T) {
+// TestValidateCreate_RejectsBarbicanImageNeitherTagNorDigest pins the
+// defense-in-depth mirror of the commonv1.ImageSpec XValidation rule for callers
+// that bypass CRD schema admission: an override needs at least one of tag or
+// digest.
+func TestValidateCreate_RejectsBarbicanImageNeitherTagNorDigest(t *testing.T) {
+	g := NewGomegaWithT(t)
 	w := &ControlPlaneWebhook{}
+	cp := barbicanControlPlane()
+	cp.Spec.Services.Barbican.Image = &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/barbican"}
 
-	for name, img := range map[string]*commonv1.ImageSpec{
-		"neither tag nor digest": {Repository: "ghcr.io/c5c3/barbican"},
-		"both tag and digest": {
-			Repository: "ghcr.io/c5c3/barbican",
-			Tag:        "2026.1",
-			Digest:     "sha256:" + strings.Repeat("a", 64),
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			g := NewGomegaWithT(t)
-			cp := barbicanControlPlane()
-			cp.Spec.Services.Barbican.Image = img
-
-			_, err := w.ValidateCreate(context.Background(), cp)
-			g.Expect(err).To(HaveOccurred())
-			g.Expect(err.Error()).To(ContainSubstring("services.barbican.image"))
-			g.Expect(err.Error()).To(ContainSubstring("exactly one of image.tag or image.digest must be set"))
-		})
-	}
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.barbican.image"))
+	g.Expect(err.Error()).To(ContainSubstring("at least one of image.tag or image.digest must be set"))
 }
 
 // TestValidateCreate_BarbicanPublicEndpointMustAgreeWithGateway pins the rules
@@ -8493,31 +8565,20 @@ func TestValidateCreate_WarnsOnCleartextNeutronPublicEndpoint(t *testing.T) {
 	})
 }
 
-// TestValidateCreate_RejectsNeutronImageTagDigestXOR pins the defense-in-depth
-// mirror of the commonv1.ImageSpec XValidation rule for callers that bypass CRD
-// schema admission.
-func TestValidateCreate_RejectsNeutronImageTagDigestXOR(t *testing.T) {
+// TestValidateCreate_RejectsNeutronImageNeitherTagNorDigest pins the
+// defense-in-depth mirror of the commonv1.ImageSpec XValidation rule for callers
+// that bypass CRD schema admission: an override needs at least one of tag or
+// digest.
+func TestValidateCreate_RejectsNeutronImageNeitherTagNorDigest(t *testing.T) {
+	g := NewGomegaWithT(t)
 	w := &ControlPlaneWebhook{}
+	cp := neutronControlPlane()
+	cp.Spec.Services.Neutron.Image = &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/neutron"}
 
-	for name, img := range map[string]*commonv1.ImageSpec{
-		"neither tag nor digest": {Repository: "ghcr.io/c5c3/neutron"},
-		"both tag and digest": {
-			Repository: "ghcr.io/c5c3/neutron",
-			Tag:        "2026.1",
-			Digest:     "sha256:" + strings.Repeat("a", 64),
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			g := NewGomegaWithT(t)
-			cp := neutronControlPlane()
-			cp.Spec.Services.Neutron.Image = img
-
-			_, err := w.ValidateCreate(context.Background(), cp)
-			g.Expect(err).To(HaveOccurred())
-			g.Expect(err.Error()).To(ContainSubstring("services.neutron.image"))
-			g.Expect(err.Error()).To(ContainSubstring("exactly one of image.tag or image.digest must be set"))
-		})
-	}
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.neutron.image"))
+	g.Expect(err.Error()).To(ContainSubstring("at least one of image.tag or image.digest must be set"))
 }
 
 // TestValidateCreate_RejectsNeutronCredentialsModeOverrideDynamicOnDedicated is
@@ -9372,31 +9433,20 @@ func TestValidateUpdate_WarnsOnCinderBackupDriverSwitch(t *testing.T) {
 	})
 }
 
-// TestValidateCreate_RejectsCinderImageTagDigestXOR pins the defense-in-depth
-// mirror of the commonv1.ImageSpec XValidation rule for callers that bypass CRD
-// schema admission.
-func TestValidateCreate_RejectsCinderImageTagDigestXOR(t *testing.T) {
+// TestValidateCreate_RejectsCinderImageNeitherTagNorDigest pins the
+// defense-in-depth mirror of the commonv1.ImageSpec XValidation rule for callers
+// that bypass CRD schema admission: an override needs at least one of tag or
+// digest.
+func TestValidateCreate_RejectsCinderImageNeitherTagNorDigest(t *testing.T) {
+	g := NewGomegaWithT(t)
 	w := &ControlPlaneWebhook{}
+	cp := cinderControlPlane()
+	cp.Spec.Services.Cinder.Image = &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/cinder"}
 
-	for name, img := range map[string]*commonv1.ImageSpec{
-		"neither tag nor digest": {Repository: "ghcr.io/c5c3/cinder"},
-		"both tag and digest": {
-			Repository: "ghcr.io/c5c3/cinder",
-			Tag:        "2026.1",
-			Digest:     "sha256:" + strings.Repeat("a", 64),
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			g := NewGomegaWithT(t)
-			cp := cinderControlPlane()
-			cp.Spec.Services.Cinder.Image = img
-
-			_, err := w.ValidateCreate(context.Background(), cp)
-			g.Expect(err).To(HaveOccurred())
-			g.Expect(err.Error()).To(ContainSubstring("services.cinder.image"))
-			g.Expect(err.Error()).To(ContainSubstring("exactly one of image.tag or image.digest must be set"))
-		})
-	}
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.cinder.image"))
+	g.Expect(err.Error()).To(ContainSubstring("at least one of image.tag or image.digest must be set"))
 }
 
 // TestValidateCreate_RejectsCinderCredentialsModeOverrideDynamicOnDedicated is the
@@ -11482,31 +11532,20 @@ func TestValidateCreate_NovaDBArchiveSchedule(t *testing.T) {
 	}
 }
 
-// TestValidateCreate_RejectsNovaImageTagDigestXOR pins the defense-in-depth
-// mirror of the commonv1.ImageSpec XValidation rule for callers that bypass CRD
-// schema admission.
-func TestValidateCreate_RejectsNovaImageTagDigestXOR(t *testing.T) {
+// TestValidateCreate_RejectsNovaImageNeitherTagNorDigest pins the
+// defense-in-depth mirror of the commonv1.ImageSpec XValidation rule for callers
+// that bypass CRD schema admission: an override needs at least one of tag or
+// digest.
+func TestValidateCreate_RejectsNovaImageNeitherTagNorDigest(t *testing.T) {
+	g := NewGomegaWithT(t)
 	w := &ControlPlaneWebhook{}
+	cp := novaControlPlane()
+	cp.Spec.Services.Nova.Image = &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/nova"}
 
-	for name, img := range map[string]*commonv1.ImageSpec{
-		"neither tag nor digest": {Repository: "ghcr.io/c5c3/nova"},
-		"both tag and digest": {
-			Repository: "ghcr.io/c5c3/nova",
-			Tag:        "2026.1",
-			Digest:     "sha256:" + strings.Repeat("a", 64),
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			g := NewGomegaWithT(t)
-			cp := novaControlPlane()
-			cp.Spec.Services.Nova.Image = img
-
-			_, err := w.ValidateCreate(context.Background(), cp)
-			g.Expect(err).To(HaveOccurred())
-			g.Expect(err.Error()).To(ContainSubstring("services.nova.image"))
-			g.Expect(err.Error()).To(ContainSubstring("exactly one of image.tag or image.digest must be set"))
-		})
-	}
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.nova.image"))
+	g.Expect(err.Error()).To(ContainSubstring("at least one of image.tag or image.digest must be set"))
 }
 
 // TestValidateCreate_RejectsNovaCredentialsModeOverrideDynamicOnDedicated is the
