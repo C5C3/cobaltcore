@@ -159,6 +159,17 @@ behind the committed batches. For an unset field the
 operator passes no flag, so an image built before the two options keeps
 cleaning with its own default.
 
+The passes over secrets, orders and containers delete the soft-deleted rows
+that still reference a parent they delete, whatever the `deleted_at` of those
+rows. Barbican sets `deleted_at` on a parent and on each of its child rows
+separately, in whole seconds, so a child row can carry a later value than its
+parent. Such a row can therefore be deleted before its own retention ends, by
+at most the gap between the two values, and a batch of these passes can change
+more than `batchSize` rows. A row that references such a parent and was never
+soft-deleted fails the run with MariaDB error 1451, and `DBCleanReady` turns
+False with reason `DBCleanJobFailed`. A failed run logs how many rows its
+batches committed before the failure.
+
 A batch that conflicts with a concurrent API write (MariaDB error 1020, 1213 or
 1205) is rolled back, logged at WARNING and retried, up to ten times. A run that
 still fails keeps the batches it committed, and the next attempt of the Job

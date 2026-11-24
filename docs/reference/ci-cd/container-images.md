@@ -1136,6 +1136,44 @@ following `GET /secrets/`, which answers 500 without the patch, to answer
 commit that raises `DBConnectionError` and expects a new session that runs
 `SELECT 1`. Upstream status: not yet proposed.
 
+**Source patch:**
+`patches/barbican/2026.1/0008-delete-soft-deleted-dependents-with-their-parent-in-the-clean-up.patch`
+and its 2026.2 twin
+`patches/barbican/2026.2/0007-delete-soft-deleted-dependents-with-their-parent-in-the-clean-up.patch`
+make the three parent passes of the clean-up delete the soft-deleted rows that
+still reference the parents of a batch. The twins differ in their `Applies to`
+line only. Barbican soft-deletes a parent row first and each of its child rows
+afterwards, and every row takes a `utcnow()` of its own. `deleted_at` holds
+whole seconds, so a delete that crosses a second boundary writes second S on
+the parent and S+1 on a child. The clean-up computes one cutoff per run and
+compares each table with it on its own. With the cutoff between the two
+values, the pass over the child table keeps the row, and the `DELETE` of the
+parent fails on the foreign key with MariaDB error 1451. In the playground the
+hourly clean-up failed nine times this way between 2026-11-19 and 2026-11-23
+(issue #1861). A retry of the batch reads the same rows, because the cutoff
+stays the same for the whole run. `cleanup_parent_with_no_child` gains
+`dependent_keys`, and the secret, order and container passes name the nine
+foreign keys whose rows Barbican soft-deletes apart from their parent. Before
+a batch deletes its parents, it reads the soft-deleted rows that reference
+them, whatever their `deleted_at`, and deletes them by id in the same
+transaction, at most 500 ids per statement. Each such batch logs
+`Clean-up batch for Secret/no-Order deletes 1 soft-deleted SecretStoreMetadatum entries ahead of their own cutoff, with the parents they reference`
+at INFO, and the INFO line of the pass ends with
+`, their soft-deleted dependents included`. A child row that was never
+soft-deleted still fails the run with 1451. The patch also corrects the count
+of a failed run. Upstream `clean_command` sums the counts of the passes that
+returned, so the batches of the failing pass are missing, and a run that had
+deleted rows logs `0 entries were committed before the failure.` The patch
+adds the rows of each committed batch to a module-level count, which
+`clean_command` resets when a run starts and reports when it fails. No
+upstream test moves: `test_db_cleanup_raise_integrity_error` still expects
+`DBReferenceError` for a child row that was never soft-deleted. The patch adds
+twelve tests to `barbican/tests/cmd/test_db_cleanup.py`, and ten of them fail
+without the change to `clean.py`. Upstream status: not yet proposed.
+`verify_barbican.sh` Test 15 cleans a secret whose two metadata rows carry a
+`deleted_at` 1 s after its own, and expects a failed run in the built image to
+report the 4 rows its batches committed.
+
 **Final image properties:**
 
 - Runs as `openstack` user (UID 42424, GID 42424)
@@ -1163,7 +1201,9 @@ handlers upstream exposes with `template='json'` answer 204 with an empty
 body and their 400 and 404 answers carry JSON, that `barbican-manage db clean`
 defaults to 500 rows per commit and no pause and pauses after each committed
 batch when asked to, that a request whose commit raises leaves a new session
-behind, non-root execution, and the absence of build tools. Both plugin halves are loaded through their entry-point metadata
+behind, that the clean-up deletes soft-deleted metadata stamped after their
+secret together with it and counts the committed batches of a failed run,
+non-root execution, and the absence of build tools. Both plugin halves are loaded through their entry-point metadata
 rather than imported by module path, because that is how barbican and
 castellan resolve them at runtime — an import would go green off the `.py`
 file on disk while the runtime lookup raises stevedore `NoMatches`. The WSGI
