@@ -300,7 +300,7 @@ type BarbicanSecretStoreReconciler struct {
 // Unexercised by the e2e suites; used by operators/barbican/internal/controller/barbicansecretstore_controller.go:475 (ensureRemoteTeardownMarks) to update barbicansecretstores.
 // +kubebuilder:rbac:groups=barbican.openstack.c5c3.io,resources=barbicansecretstores,verbs=get;list;watch;update
 // +kubebuilder:rbac:groups=barbican.openstack.c5c3.io,resources=barbicansecretstores/status,verbs=get;update
-// Unexercised by the e2e suites; used by operators/barbican/internal/controller/barbicansecretstore_controller.go:860 (mintCredentials) to update barbicansecretstores/finalizers.
+// Unexercised by the e2e suites; used by operators/barbican/internal/controller/barbicansecretstore_controller.go:863 (mintCredentials) to update barbicansecretstores/finalizers.
 // +kubebuilder:rbac:groups=barbican.openstack.c5c3.io,resources=barbicansecretstores/finalizers,verbs=update
 // +kubebuilder:rbac:groups=barbican.openstack.c5c3.io,resources=barbicans,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;delete

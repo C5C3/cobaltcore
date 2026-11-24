@@ -320,7 +320,7 @@ var CinderRemoteChildKinds = []schema.GroupVersionKind{
 // Unexercised by the e2e suites; used by operators/cinder/internal/controller/reconcile_hpa.go:32 (reconcileHPA) to create and patch horizontalpodautoscalers.
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;patch;delete
 // Unexercised by the e2e suites; used by operators/cinder/internal/controller/reconcile_vpa.go:24 (reconcileVPA) to create, patch and delete verticalpodautoscalers.
-// Unexercised by the e2e suites; used by operators/cinder/internal/controller/cinder_controller.go:870 (setupWithOptions) to list and watch verticalpodautoscalers.
+// Unexercised by the e2e suites; used by operators/cinder/internal/controller/cinder_controller.go:908 (setupWithOptions) to list and watch verticalpodautoscalers.
 // +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch;create;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;patch;delete
 // Required to create, patch and delete HTTPRoutes that expose the Cinder API

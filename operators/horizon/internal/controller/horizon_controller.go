@@ -213,7 +213,7 @@ var HorizonRemoteChildKinds = []schema.GroupVersionKind{
 	httpRouteGVK,
 }
 
-// Unexercised by the e2e suites; used by internal/common/reconcile/finalizer.go:25 (EnsureFinalizer) to update horizons.
+// Unexercised by the e2e suites; used by internal/common/reconcile/finalizer.go:27 (EnsureFinalizer) to update horizons.
 // +kubebuilder:rbac:groups=horizon.openstack.c5c3.io,resources=horizons,verbs=get;list;watch;update
 // +kubebuilder:rbac:groups=horizon.openstack.c5c3.io,resources=horizons/status,verbs=get;update
 // Unexercised by the e2e suites; used by internal/common/apply/apply.go:53 (EnsureObject) to update horizons/finalizers.
@@ -237,7 +237,7 @@ var HorizonRemoteChildKinds = []schema.GroupVersionKind{
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;patch;delete
 // Unexercised by the e2e suites; used by internal/common/deployment/vpa_flow.go:190 (ReconcileVPAs) to create and patch verticalpodautoscalers.
 // Unexercised by the e2e suites; used by internal/common/deployment/vpa_flow.go:213 (ReconcileVPAs) to delete verticalpodautoscalers.
-// Unexercised by the e2e suites; used by operators/horizon/internal/controller/horizon_controller.go:590 (SetupWithManager) to list and watch verticalpodautoscalers.
+// Unexercised by the e2e suites; used by operators/horizon/internal/controller/horizon_controller.go:627 (SetupWithManager) to list and watch verticalpodautoscalers.
 // +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch;create;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;patch;delete
 // Required to create, patch and delete HTTPRoutes that expose the dashboard externally.
