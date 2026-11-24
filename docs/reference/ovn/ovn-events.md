@@ -98,7 +98,7 @@ emits neither.
 | --- | --- | --- | --- |
 | `RemoteChildrenAbandoned` | Warning | Deletion of a CR whose `spec.targetClusterRef` no longer resolves, once the abandon window has passed. The finalizer is released without touching what was written on that cluster | `Target cluster is no longer registered; releasing the remote-children finalizer without deleting the objects on it labelled as owned by this OVNCentral` |
 
-**Source:** `SweepRemoteChildren` in `internal/common/multicluster/teardown.go`,
+**Source:** `SweepRemoteChildren` in `internal/common/reconcile/teardown.go`,
 called from `reconcileDeleteRemoteChildren` in both controllers.
 
 The trailing kind name is read from the owner's GVK, so the same event reads

@@ -307,8 +307,8 @@ func (r *HorizonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				return r.updateStatus(ctx, &horizon, statusBefore,
 					ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil)
 			}
-			if err := r.reconcileDeleteRemoteChildren(ctx, children, &horizon); err != nil {
-				return ctrl.Result{}, err
+			if result, err := r.reconcileDeleteRemoteChildren(ctx, children, &horizon); err != nil || !result.IsZero() {
+				return result, err
 			}
 		}
 		log.FromContext(ctx).V(1).Info("Horizon resource is being deleted; owned resources are garbage-collected via ownerReferences")
@@ -469,9 +469,9 @@ func (r *HorizonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 // reconcileDeleteRemoteChildren deletes everything this Horizon projected onto
 // the target cluster it names, selected on the ownership labels Claim stamped on
 // those objects, and releases the remote-children finalizer that held the CR in
-// etcd for it, as commonmulticluster.SweepRemoteChildren documents.
-func (r *HorizonReconciler) reconcileDeleteRemoteChildren(ctx context.Context, children client.Client, horizon *horizonv1alpha1.Horizon) error {
-	return commonmulticluster.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
+// etcd for it, as commonreconcile.SweepRemoteChildren documents.
+func (r *HorizonReconciler) reconcileDeleteRemoteChildren(ctx context.Context, children client.Client, horizon *horizonv1alpha1.Horizon) (ctrl.Result, error) {
+	return commonreconcile.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
 		horizon, horizon.Spec.TargetClusterRef, children, HorizonRemoteChildKinds)
 }
 

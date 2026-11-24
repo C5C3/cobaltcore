@@ -387,10 +387,7 @@ func (r *CinderReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		// sweep running first would delete them out from under it. The ordering
 		// mirrors the local one, where the garbage collection cascade starts only
 		// once every finalizer has been released.
-		if err := r.reconcileDeleteRemoteChildren(ctx, children, &cinder); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, nil
+		return r.reconcileDeleteRemoteChildren(ctx, children, &cinder)
 	}
 
 	// A suspended CR ends the pass here. The deletion branch above still runs
@@ -762,13 +759,13 @@ func (r *CinderReconciler) reconcileDelete(ctx context.Context, children client.
 
 // reconcileDeleteRemoteChildren deletes everything this Cinder projected onto the
 // target cluster it names and releases the remote-children finalizer, as
-// commonmulticluster.SweepRemoteChildren documents. reconcileDelete above deletes
+// commonreconcile.SweepRemoteChildren documents. reconcileDelete above deletes
 // the three MariaDB CRs it tracks by name; this pass is what reaches the rest,
 // selected on the ownership labels Claim stamped on them.
 func (r *CinderReconciler) reconcileDeleteRemoteChildren(ctx context.Context, children client.Client,
 	cinder *cinderv1alpha1.Cinder,
-) error {
-	return commonmulticluster.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
+) (ctrl.Result, error) {
+	return commonreconcile.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
 		cinder, cinder.Spec.TargetClusterRef, children, CinderRemoteChildKinds)
 }
 

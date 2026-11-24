@@ -592,7 +592,7 @@ func TestReconcileDeleteRemoteChildren_SweepsEveryLabelledChild(t *testing.T) {
 		WithObjects(deployment, service, cronJob, grant, unlabelled, foreign).Build()
 
 	ctx := context.Background()
-	err := r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), terminating)
+	_, err := r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), terminating)
 
 	g.Expect(err).NotTo(HaveOccurred())
 
@@ -619,7 +619,7 @@ func TestReconcileDeleteRemoteChildren_NilChildrenAbandonsAndReleases(t *testing
 	g := NewGomegaWithT(t)
 	r, terminating := terminatingRemoteBarbican(t)
 
-	err := r.reconcileDeleteRemoteChildren(context.Background(), nil, terminating)
+	_, err := r.reconcileDeleteRemoteChildren(context.Background(), nil, terminating)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).
@@ -649,7 +649,7 @@ func TestReconcileDeleteRemoteChildren_SweepFailureKeepsFinalizer(t *testing.T) 
 		}).Build()
 
 	ctx := context.Background()
-	err := r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), terminating)
+	_, err := r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), terminating)
 
 	g.Expect(err).To(MatchError(ContainSubstring("listing remote Deployment children for teardown")))
 	g.Expect(target.Get(ctx, client.ObjectKeyFromObject(child), &appsv1.Deployment{})).To(Succeed())

@@ -518,7 +518,7 @@ for svc in ${SERVICES}; do
 
   t=0; grep -rq "SweepRemoteChildren" "operators/${svc}/internal/controller/" 2>/dev/null || t=1
   check "${svc}" P12 "remote-sweep" "${t}" \
-    "deletion sweeps remote children (commonmulticluster.SweepRemoteChildren)"
+    "deletion sweeps remote children (commonreconcile.SweepRemoteChildren)"
 done
 
 # ---------------------------------------------------------------------------

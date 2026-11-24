@@ -309,10 +309,7 @@ func (r *OVNCentralReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			return r.updateStatus(ctx, &cr, statusBefore,
 				ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil)
 		}
-		if err := r.reconcileDeleteRemoteChildren(ctx, children, &cr); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, nil
+		return r.reconcileDeleteRemoteChildren(ctx, children, &cr)
 	}
 
 	// A suspended CR ends the pass here. The deletion branch above still runs
@@ -477,12 +474,12 @@ func (r *OVNCentralReconciler) reconcileParallelGroup(
 
 // reconcileDeleteRemoteChildren deletes everything this OVNCentral projected
 // onto the target cluster it names and releases the remote-children finalizer,
-// as commonmulticluster.SweepRemoteChildren documents. It is the operator's
+// as commonreconcile.SweepRemoteChildren documents. It is the operator's
 // whole teardown path: nothing else outlives the CR, because the databases and
 // their volumes are children like the rest, and a CR that kept its children
 // local is left to the garbage collection cascade.
-func (r *OVNCentralReconciler) reconcileDeleteRemoteChildren(ctx context.Context, children client.Client, cr *ovnv1alpha1.OVNCentral) error {
-	return commonmulticluster.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
+func (r *OVNCentralReconciler) reconcileDeleteRemoteChildren(ctx context.Context, children client.Client, cr *ovnv1alpha1.OVNCentral) (ctrl.Result, error) {
+	return commonreconcile.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
 		cr, cr.Spec.TargetClusterRef, children, OVNCentralRemoteChildKinds)
 }
 

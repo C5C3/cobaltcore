@@ -54,6 +54,7 @@ import (
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
 	"github.com/c5c3/cobaltcore/internal/common/testutil"
+	mctestutil "github.com/c5c3/cobaltcore/internal/common/testutil/multicluster"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 	"github.com/c5c3/cobaltcore/operators/keystone/internal/metrics"
@@ -4616,7 +4617,7 @@ func TestReconcileDeleteRemoteChildren_SweepsEveryLabelledChild(t *testing.T) {
 		WithObjects(deployment, service, pushSecret, grant, unlabelled, foreign).Build()
 
 	ctx := context.Background()
-	err := r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), terminating)
+	_, err := r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), terminating)
 
 	g.Expect(err).NotTo(HaveOccurred())
 
@@ -4647,7 +4648,7 @@ func TestReconcileDeleteRemoteChildren_NilChildrenAbandonsAndReleases(t *testing
 	r, terminating := terminatingRemoteKeystone(t)
 
 	ctx := context.Background()
-	err := r.reconcileDeleteRemoteChildren(ctx, nil, terminating)
+	_, err := r.reconcileDeleteRemoteChildren(ctx, nil, terminating)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	expectEvent(g, r, "Warning RemoteChildrenAbandoned")
@@ -4673,7 +4674,7 @@ func TestReconcileDeleteRemoteChildren_WithoutFinalizerIsANoOp(t *testing.T) {
 	target := fake.NewClientBuilder().WithScheme(s).WithObjects(child).Build()
 
 	ctx := context.Background()
-	err := r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), ks)
+	_, err := r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), ks)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(target.Get(ctx, client.ObjectKeyFromObject(child), &appsv1.Deployment{})).To(Succeed(),
@@ -4703,7 +4704,7 @@ func TestReconcileDeleteRemoteChildren_SweepFailureKeepsFinalizer(t *testing.T) 
 		}).Build()
 
 	ctx := context.Background()
-	err := r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), terminating)
+	_, err := r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), terminating)
 
 	g.Expect(err).To(MatchError(ContainSubstring("listing remote Deployment children for teardown")))
 	g.Expect(target.Get(ctx, client.ObjectKeyFromObject(child), &appsv1.Deployment{})).To(Succeed())
@@ -4712,6 +4713,36 @@ func TestReconcileDeleteRemoteChildren_SweepFailureKeepsFinalizer(t *testing.T) 
 	g.Expect(r.Get(ctx, client.ObjectKeyFromObject(terminating), &updated)).To(Succeed())
 	g.Expect(controllerutil.ContainsFinalizer(&updated, commonmulticluster.RemoteChildrenFinalizer)).To(BeTrue(),
 		"a failed sweep must keep the finalizer so the next pass retries")
+}
+
+// TestReconcile_RemoteChildrenReleaseConflictRequeues pins the answer to a
+// remote-children release that loses to a newer copy of the CR: the pass
+// requeues after RequeueNextPass without an error and keeps the finalizer,
+// and the next pass releases it from a fresh read.
+func TestReconcile_RemoteChildrenReleaseConflictRequeues(t *testing.T) {
+	g := NewGomegaWithT(t)
+	r, terminating := terminatingRemoteKeystone(t)
+	r.Resolver = mctestutil.ResolverFor(mctestutil.TargetCluster{
+		Client: fake.NewClientBuilder().WithScheme(remoteChildrenScheme(t)).Build(),
+	})
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), testutil.ConflictFirstUpdate())
+	ctx := context.Background()
+	req := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(terminating)}
+
+	result, err := r.Reconcile(ctx, req)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
+	var updated keystonev1alpha1.Keystone
+	g.Expect(r.Get(ctx, req.NamespacedName, &updated)).To(Succeed())
+	g.Expect(updated.Finalizers).To(ContainElement(commonmulticluster.RemoteChildrenFinalizer))
+
+	result, err = r.Reconcile(ctx, req)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.IsZero()).To(BeTrue())
+	g.Expect(r.Get(ctx, req.NamespacedName, &updated)).To(Succeed())
+	g.Expect(updated.Finalizers).To(ConsistOf("foreign.example.com/keep-alive"))
 }
 
 // TestReconcile_InstallsRemoteChildrenFinalizerForATargetCluster verifies that

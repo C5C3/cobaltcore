@@ -69,7 +69,7 @@ const RemoteChildrenFinalizer = "openstack.c5c3.io/remote-children"
 // not populate it on Get either, so reading the kind off the object would stamp
 // an empty label for nearly every caller.
 func OwnerLabels(scheme *runtime.Scheme, owner client.Object) (map[string]string, error) {
-	gvk, err := ownerGVK(scheme, owner)
+	gvk, err := OwnerGVK(scheme, owner)
 	if err != nil {
 		return nil, err
 	}
@@ -151,7 +151,7 @@ func Claim(c client.Client, scheme *runtime.Scheme, owner, obj client.Object) er
 		return controllerutil.SetControllerReference(owner, obj, scheme)
 	}
 
-	gvk, err := ownerGVK(scheme, owner)
+	gvk, err := OwnerGVK(scheme, owner)
 	if err != nil {
 		return err
 	}
@@ -217,9 +217,9 @@ type remoteClient struct {
 	reader client.Reader
 }
 
-// ownerGVK resolves owner's kind through the scheme, under the error message
-// every entry point in this file reports that failure with.
-func ownerGVK(scheme *runtime.Scheme, owner client.Object) (schema.GroupVersionKind, error) {
+// OwnerGVK resolves owner's kind through the scheme, under the error message
+// every entry point that resolves an owner's kind reports that failure with.
+func OwnerGVK(scheme *runtime.Scheme, owner client.Object) (schema.GroupVersionKind, error) {
 	gvk, err := apiutil.GVKForObject(owner, scheme)
 	if err != nil {
 		return schema.GroupVersionKind{}, fmt.Errorf("resolving GVK for owner %s/%s: %w",

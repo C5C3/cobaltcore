@@ -323,10 +323,7 @@ func (r *NeutronMetadataAgentReconciler) Reconcile(ctx context.Context, req ctrl
 				return ctrl.Result{}, err
 			}
 		}
-		if err := r.reconcileDeleteRemoteChildren(ctx, children, &cr); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, nil
+		return r.reconcileDeleteRemoteChildren(ctx, children, &cr)
 	}
 
 	// Resolve the client every child object of this CR is read and written with.
@@ -431,15 +428,15 @@ func (r *NeutronMetadataAgentReconciler) pipelineSteps(children client.Client,
 
 // reconcileDeleteRemoteChildren deletes everything this NeutronMetadataAgent
 // projected onto the target cluster it names and releases the remote-children
-// finalizer, as commonmulticluster.SweepRemoteChildren documents.
+// finalizer, as commonreconcile.SweepRemoteChildren documents.
 //
 // What it removes is the agent, not the networking: the DaemonSet pods go, and
 // with them the metadata proxies they run, while the logical model those proxies
 // answered from stays in the OVN databases.
 func (r *NeutronMetadataAgentReconciler) reconcileDeleteRemoteChildren(ctx context.Context, children client.Client,
 	cr *neutronv1alpha1.NeutronMetadataAgent,
-) error {
-	return commonmulticluster.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
+) (ctrl.Result, error) {
+	return commonreconcile.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
 		cr, cr.Spec.TargetClusterRef, children, NeutronMetadataAgentRemoteChildKinds)
 }
 
