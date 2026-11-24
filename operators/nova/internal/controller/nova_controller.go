@@ -725,10 +725,15 @@ func (r *NovaReconciler) reconcileDelete(ctx context.Context, children client.Cl
 			"MariaDB Databases, Users, and Grants marked for deletion; releasing finalizer")
 	}
 
-	controllerutil.RemoveFinalizer(nova, novaFinalizer)
-	if err := r.Update(ctx, nova); err != nil {
+	outcome, err := commonreconcile.RemoveFinalizer(ctx, r.Client, nova, novaFinalizer)
+	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
 	}
+	if outcome == commonreconcile.FinalizerConflict {
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
+	}
+	// A CR already gone runs the clean-up below as well: it is keyed on the
+	// name and namespace alone, and no other path runs it.
 	metrics.DeleteForNova(nova.Name, nova.Namespace)
 	// Drop the per-CR health-probe cache so a CR recreated under the same
 	// name/namespace never serves a stale probe keyed on the deleted CR's UID.
