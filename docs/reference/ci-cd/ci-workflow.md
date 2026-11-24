@@ -225,7 +225,7 @@ Jobs that need elevated access declare per-job `permissions:` blocks:
 
 ## Job Dependency DAG
 
-The workflow defines 43 jobs. `changes` and `test-shell` run on every event. The
+The workflow defines 44 jobs. `changes` and `test-shell` run on every event. The
 gate, test and E2E jobs carry a `github.event_name == 'pull_request'` guard.
 `build-e2e-images`, `e2e-chaos` and `e2e-chaos-random` also run on a `schedule` or
 `workflow_dispatch` event, the nightly chaos run, and `report-nightly-chaos` runs on a `schedule` event
@@ -236,7 +236,7 @@ The figure groups the jobs into stages and draws the order of the stages. The
 table lists every job with its stage and its `needs:` list, and links the
 section that describes the job.
 
-![The jobs of the CI workflow, grouped into stages. The job changes works out what a run has to do, and every job of the two events needs it. test-shell needs no job and runs on every event. On a pull request the gates come first: lint, shellcheck, test, test-integration, verify-codegen, verify-invalid-cr-fixtures and chainsaw-lint. The image build, build-e2e-images, needs each of them. The E2E fan-out needs the image build: e2e-operator, e2e-operator-upgrade, e2e-prometheus, e2e-controlplane, e2e-controlplane-sso, e2e-autoscaling, e2e-external-keystone, e2e-multicluster, e2e-orders-multicluster, e2e-ovn-overlay, e2e-nova-libvirt and keystone-pressure. e2e-chaos follows e2e-operator, the random chaos run e2e-chaos-random follows the image build, and report-nightly-chaos follows both on a schedule only. The infrastructure suites e2e-infra and e2e-bgp-fabric need only changes. tempest follows e2e-chaos and e2e-infra, and cleanup-e2e-tags runs last. No other job needs the checks format-check, feature-ids, review-markers, actionlint, test-race, govulncheck, docs, docs-overlay and helm-validate. On a push to main or of an RC tag, build-and-push and merge-operator-images publish the operator images, helm-push and helm-push-target-cluster publish the charts, and github-release follows the image and chart jobs for an RC tag.](../../diagrams/ci-stage-overview.svg)
+![The jobs of the CI workflow, grouped into stages. The job changes works out what a run has to do, and every job of the two events needs it. test-shell needs no job and runs on every event. On a pull request the gates come first: lint, shellcheck, test, test-integration, verify-codegen, verify-invalid-cr-fixtures and chainsaw-lint. The image build, build-e2e-images, needs each of them. The E2E fan-out needs the image build: e2e-operator, e2e-operator-upgrade, e2e-prometheus, e2e-controlplane, e2e-controlplane-sso, e2e-autoscaling, e2e-external-keystone, e2e-multicluster, e2e-orders-multicluster, e2e-ovn-overlay, e2e-nova-libvirt and keystone-pressure. e2e-chaos follows e2e-operator, the random chaos run e2e-chaos-random follows the image build, and report-nightly-chaos follows both on a schedule only. The infrastructure suites e2e-infra and e2e-bgp-fabric need only changes. tempest follows e2e-chaos and e2e-infra, and cleanup-e2e-tags runs last. No other job needs the checks format-check, feature-ids, review-markers, actionlint, test-race, govulncheck, docs, docs-overlay and helm-validate. On a push to main or of an RC tag, candidate-state gates publishing. Then build-and-push and merge-operator-images publish the operator images, helm-push and helm-push-target-cluster publish the charts, and github-release follows the image and chart jobs for an RC tag.](../../diagrams/ci-stage-overview.svg)
 
 | Job | Stage | `needs` |
 | --- | --- | --- |
@@ -278,7 +278,7 @@ section that describes the job.
 | [`keystone-pressure`](#keystone-pressure) | E2E fan-out | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` |
 | [`tempest`](#tempest) | Tempest | `changes`, `build-e2e-images`, `e2e-infra`, `e2e-operator`, `e2e-chaos`, `e2e-prometheus` |
 | [`cleanup-e2e-tags`](#cleanup-e2e-tags) | Cleanup | `changes`, `build-e2e-images`, `e2e-operator`, `e2e-operator-upgrade`, `e2e-chaos`, `e2e-chaos-random`, `e2e-prometheus`, `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-autoscaling`, `e2e-external-keystone`, `e2e-multicluster`, `e2e-orders-multicluster`, `e2e-ovn-overlay`, `e2e-nova-libvirt`, `keystone-pressure`, `tempest` |
-| [`candidate-state`](#github-release) | Check RC publication status | None |
+| [`candidate-state`](#candidate-state) | Check RC publication status | None |
 | [`build-and-push`](#build-and-push) | Publish images | `changes`, `candidate-state` |
 | [`merge-operator-images`](#merge-operator-images) | Publish images | `changes`, `build-and-push` |
 | [`helm-push`](#helm-push) | Publish charts | `changes`, `candidate-state` |
@@ -2268,6 +2268,13 @@ can add a new run's tag to a version older than 24 hours
 
 Timeout: 15 minutes.
 
+### candidate-state
+
+On an RC tag push, checks whether the GitHub prerelease is absent, a draft,
+or published. The image and chart jobs run when no release exists. A draft
+can resume from the artifacts produced by its original workflow run. On
+a push to main, this job leaves the state empty so the publish jobs can run.
+
 ### build-and-push
 
 Builds operator container images per platform on native runners and pushes each
@@ -2337,12 +2344,15 @@ list, pushes it with the final tags, and signs its digest with cosign
 
 | Trigger | Tags Applied |
 | --- | --- |
-| Push to main | `sha-<full-sha>`, `latest`, `<chart version>` (the operator's `Chart.yaml` version, e.g. `0.14.0`) |
+| Push to main | `sha-<full-sha>`, `latest`, `<chart version>` (the operator's `Chart.yaml` version, e.g. `0.14.0`, unless reserved by a distribution tag) |
 | Push RC tag | `sha-<full-sha>`, `<version>` (e.g. `0.1.0-rc.1`) |
 
 Images are published at `ghcr.io/c5c3/<operator>-operator:<tag>`. The chart-version
 tag carries the `enable={{is_default_branch}}` rule of `latest`, so on `main` the two
-name one digest. `hack/ghcr-prune-stale-versions.py` keeps a version with a bare
+name one digest when the chart version is available. An RC or stable Git tag
+reserves the corresponding numeric version for distribution releases. Main skips
+that chart version in GHCR for both images and charts.
+`hack/ghcr-prune-stale-versions.py` keeps a version with a bare
 `X.Y.Z` tag forever, and once `Chart.yaml` moves past a version no push writes that
 tag again. The operator upgrade suites pin their baseline to it
 ([Operator Upgrade E2E Tests](../testing/operator-upgrade-e2e-tests.md)).
@@ -2372,7 +2382,7 @@ push without re-running the E2E suite.
 
 | Trigger | Version |
 | --- | --- |
-| Push to main | Default version from `Chart.yaml` |
+| Push to main | Version from `Chart.yaml` unless reserved for a distribution release |
 | Push RC tag | The candidate version, e.g. `0.1.0-rc.1` |
 
 **Matrix strategy:** Same `operator` dimension as `build-and-push` (via
@@ -2380,7 +2390,8 @@ push without re-running the E2E suite.
 packaged and pushed.
 
 The `make helm-package` target packages `operators/<operator>/helm/<operator>-operator/`.
-When `CHART_VERSION` is set (for tag pushes), it overrides the version in `Chart.yaml`.
+For RCs, CI sets both `CHART_VERSION` and `CHART_APP_VERSION` to the candidate
+version. The chart therefore installs the matching operator image by default.
 
 **Push retry:** `helm push` uploads the chart manifest by digest, fetches that
 digest back and uploads it again under the chart version. ghcr.io now and then
@@ -2438,7 +2449,7 @@ workflow changes.
 
 | Trigger | Version |
 | --- | --- |
-| Push to main | Default version from `Chart.yaml` |
+| Push to main | Version from `Chart.yaml` unless reserved for a distribution release |
 | Push RC tag | The tag name without its `v` prefix, passed as `CHART_VERSION="${GITHUB_REF_NAME#v}"` |
 
 The `make helm-package-target-cluster` target packages
@@ -2447,7 +2458,7 @@ target passes it to `helm package` as `--version`, which overrides the version i
 `Chart.yaml`. The target runs no `helm dependency build`, because the chart has
 no subchart.
 
-RC publication waits for this chart to reach GHCR. The GitHub release attaches the operator charts.
+RC publication waits for this chart to reach GHCR and includes the archive in the prerelease.
 
 Runs on `ubuntu-latest`. Timeout: 15 minutes.
 
@@ -2455,10 +2466,11 @@ Runs on `ubuntu-latest`. Timeout: 15 minutes.
 
 For a new `vX.Y.Z-rc.N` tag, `candidate-state` checks whether a release
 already exists. After the image manifests and both chart jobs succeed,
-`github-release` calls `.github/workflows/release.yaml`. The workflow attaches
-the exact operator archives uploaded by `helm-push`, checks the set against
-the operator matrix, and attaches `SHA256SUMS` with the candidate's source
-commit and archive checksums. GitHub generates the changelog from merged PRs
+`github-release` collects the exact archives from both chart jobs and the
+signed image index digests from `merge-operator-images`. It requires one
+chart and image digest per operator and the `target-cluster-access` chart.
+It attaches the digests as `IMAGE_DIGESTS.json` and records the source
+commit and asset checksums in `SHA256SUMS`. GitHub generates the changelog from merged PRs
 since the latest published stable version below the requested version. It uses
 `.github/release.yml` to group changes. The first series lists recent commits and
 links to its full history. Later RCs also link to the changes since the preceding
@@ -2469,9 +2481,21 @@ To preview a changelog, set `GH_TOKEN` and run
 uses the version's local tag when available and `HEAD` for an untagged version.
 
 For a new `vX.Y.Z` tag, `release.yaml` selects the highest-numbered RC of that
-version and checks that both tags resolve to the same commit. It copies the
-published candidate's changelog and downloadable assets, verifies their SHA-256
-digests, and publishes the stable GitHub Release with a link to the RC.
+version and checks that both tags resolve to the same commit. It verifies the
+published candidate archives against GitHub's digests and the candidate checksums.
+Helm repackages those archives, including their vendored dependencies, with chart
+version `X.Y.Z`. Each operator chart also gets `appVersion: X.Y.Z`. The workflow
+verifies each recorded candidate image digest's signature and source revision,
+gives that digest the stable tag, and verifies the tag resolves to it. It pushes
+and signs the stable charts in GHCR before publishing the stable archives, the
+same `IMAGE_DIGESTS.json`, new `SHA256SUMS`, and the candidate changelog.
+
+For example, after promotion to `v1.5.0`, this installs the stable chart and
+selects the `ghcr.io/c5c3/keystone-operator:1.5.0` image by default.
+
+```bash
+helm install keystone oci://ghcr.io/c5c3/charts/keystone-operator --version 1.5.0
+```
 
 Both paths assemble the assets in a draft before publication. A rerun can
 complete a matching draft. An already published release is left intact.
@@ -2483,7 +2507,7 @@ push with cosign, keylessly through Sigstore OIDC. A signature names a digest: t
 index digest of each of the ten operator images, and the manifest digest of each of
 the ten operator charts and of `target-cluster-access`. The three jobs sign
 artifacts they publish on pushes to `main` and on new RC tag pushes. Stable
-promotion reuses the artifacts already signed by the RC jobs. An image or chart
+promotion retains the RC image signatures and signs the new stable chart digests. An image or chart
 digest pushed before the publish jobs signed has no signature, among them the
 baseline versions the operator upgrade suites pin.
 
@@ -2512,7 +2536,8 @@ is `https://github.com/` followed by the run's `GITHUB_WORKFLOW_REF`:
 | --- | --- |
 | Issuer | `https://token.actions.githubusercontent.com` |
 | Subject, push to `main` | `https://github.com/C5C3/cobaltcore/.github/workflows/ci.yaml@refs/heads/main` |
-| Subject, RC tag push | `https://github.com/C5C3/cobaltcore/.github/workflows/ci.yaml@refs/tags/<tag>` |
+| Subject, RC tag push and promoted image | `https://github.com/C5C3/cobaltcore/.github/workflows/ci.yaml@refs/tags/<RC tag>` |
+| Subject, stable chart | `https://github.com/C5C3/cobaltcore/.github/workflows/release.yaml@refs/tags/<stable tag>` |
 
 The subject names the workflow file, so it changes if the publish jobs move to
 another workflow. The images of the image workflow carry the subject of

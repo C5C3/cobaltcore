@@ -4,24 +4,22 @@
 ---
 name: Publish CobaltCore release
 "on":
-  # ci.yaml calls this workflow after publishing the RC images and charts.
-  workflow_call:
-    inputs:
-      operators:
-        description: Operator matrix whose chart archives CI published for this RC
-        type: string
-        required: true
   push:
     tags: ["v[0-9]+.[0-9]+.[0-9]+"]
 
 permissions:
   contents: write
+  packages: write
+  id-token: write
+
+env:
+  HELM_VERSION: v4.3.1
 
 jobs:
   release:
     if: github.event.created && !github.event.deleted && github.ref_type == 'tag'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
     concurrency:
       group: publish-release-${{ github.ref }}
       cancel-in-progress: false
@@ -37,16 +35,16 @@ jobs:
         id: tag
         run: python3 scripts/release/publish.py identify
 
-      - name: Download the exact chart archives from the candidate build
-        if: steps.tag.outputs.kind == 'rc' && !steps.tag.outputs.published
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          pattern: release-chart-*
-          path: assets
-          merge-multiple: true
-
-      - name: Publish the release with its changelog
+      - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5
         if: '!steps.tag.outputs.published'
-        env:
-          OPERATORS: ${{ inputs.operators }}
+        with:
+          version: ${{ env.HELM_VERSION }}
+      - uses: ./.github/actions/setup-docker-registry
+        if: '!steps.tag.outputs.published'
+        with:
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Promote the candidate images and charts and publish the stable release
+        if: '!steps.tag.outputs.published'
         run: python3 scripts/release/publish.py publish

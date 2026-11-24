@@ -21,10 +21,12 @@ If no RC exists, report that and point to [[prerelease-cobaltcore]].
    elsewhere, report both SHAs and stop. Preserve the original RC tag.
 3. Create the missing annotated stable tag directly at the RC commit and name
    the promoted RC in the annotation. The release branch may have advanced.
-   Keep the candidate's manifest, chart archives and image digests intact.
 4. Report the RC, stable tag and commit. Leave the tag local unless the
    maintainer requests publication. When publishing, recheck the remote RC
    and stable refs, push only the stable tag to the selected repository, and
-   verify the resulting GitHub Release. Return its URL.
+   verify that the GitHub Release has stable chart archives, checksums, and
+   the same `IMAGE_DIGESTS.json` as the prerelease.
+   Pull an operator chart from GHCR with `--version X.Y.Z` and verify its operator image
+   defaults to the same stable version. Return the release URL.
 
 [Release management RFC](https://github.com/C5C3/cobaltcore/pull/1645)

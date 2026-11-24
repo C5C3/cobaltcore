@@ -6110,13 +6110,21 @@ jobs:
 
       # The operator upgrade suites install a baseline pinned to a chart
       # version (tests/e2e-operator-upgrade/<op>-helm-upgrade/baseline.yaml),
-      # so main tags every operator image it publishes with the version its
-      # Chart.yaml names. hack/ghcr-prune-stale-versions.py keeps a bare
+      # so main tags each image with its Chart.yaml version unless a
+      # distribution tag reserves it. hack/ghcr-prune-stale-versions.py keeps a bare
       # X.Y.Z tag forever, and once Chart.yaml moves past a version no push
       # writes that tag again. Any other version only warns: the step writes
       # no version, the metadata action drops a raw tag with an empty value,
       # and the index still gets its sha and latest tags.
+      - name: Reserve distribution versions on main
+        if: github.ref_type == 'branch'
+        id: distribution
+        env:
+          CHART: operators/${{ matrix.operator }}/helm/${{ matrix.operator }}-operator/Chart.yaml
+        run: bash scripts/release/reserved-version.sh "$CHART"
+
       - name: Read the chart version
+        if: steps.distribution.outputs.reserved != 'true'
         id: chart
         env:
           OPERATOR: ${{ matrix.operator }}
@@ -6208,6 +6216,22 @@ jobs:
           DIGEST: ${{ steps.manifest.outputs.digest }}
         run: hack/ci-cosign-sign.sh "${IMAGE}@${DIGEST}"
 
+      - name: Record the signed candidate image digest
+        if: github.ref_type == 'tag'
+        env:
+          OPERATOR: ${{ matrix.operator }}
+          DIGEST: ${{ steps.manifest.outputs.digest }}
+        run: printf '%s\n' "$DIGEST" > "${OPERATOR}-operator.digest"
+
+      - name: Retain the candidate image digest
+        if: github.ref_type == 'tag'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-image-${{ matrix.operator }}
+          path: "${{ matrix.operator }}-operator.digest"
+          if-no-files-found: error
+          overwrite: true
+
   # Package, push and sign operator Helm charts in GHCR. RC tag pushes use the
   # candidate version and retain the exact chart archives for the prerelease.
   helm-push:
@@ -6239,7 +6263,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
           setup-buildx: 'false'
+      - name: Reserve distribution versions on main
+        if: github.ref_type == 'branch'
+        id: distribution
+        env:
+          CHART: operators/${{ matrix.operator }}/helm/${{ matrix.operator }}-operator/Chart.yaml
+        run: bash scripts/release/reserved-version.sh "$CHART"
+
       - name: Package and push Helm chart
+        if: steps.distribution.outputs.reserved != 'true'
         id: push
         env:
           OPERATOR: ${{ matrix.operator }}
@@ -6247,7 +6279,7 @@ jobs:
           # Remove stale chart tarballs to prevent glob ambiguity.
           rm -f "${OPERATOR}"-operator-*.tgz
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            make helm-package OPERATOR="${OPERATOR}" CHART_VERSION="${GITHUB_REF_NAME#v}"
+            make helm-package OPERATOR="${OPERATOR}" CHART_VERSION="${GITHUB_REF_NAME#v}" CHART_APP_VERSION="${GITHUB_REF_NAME#v}"
           else
             make helm-package OPERATOR="${OPERATOR}"
           fi
@@ -6257,6 +6289,7 @@ jobs:
       # Keyless signature of the pushed chart digest; see "Cosign Signing" in
       # docs/reference/ci-cd/ci-workflow.md.
       - name: Sign the chart
+        if: steps.distribution.outputs.reserved != 'true'
         env:
           CHART_REF: ${{ steps.push.outputs.ref }}
         run: hack/ci-cosign-sign.sh "${CHART_REF}"
@@ -6298,13 +6331,21 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
           setup-buildx: 'false'
+      - name: Reserve distribution versions on main
+        if: github.ref_type == 'branch'
+        id: distribution
+        env:
+          CHART: deploy/bases/target-cluster-access/Chart.yaml
+        run: bash scripts/release/reserved-version.sh "$CHART"
+
       - name: Package and push Helm chart
+        if: steps.distribution.outputs.reserved != 'true'
         id: push
         run: |
           # Remove stale chart tarballs to prevent glob ambiguity.
           rm -f target-cluster-access-*.tgz
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            make helm-package-target-cluster CHART_VERSION="${GITHUB_REF_NAME#v}"
+            make helm-package-target-cluster CHART_VERSION="${GITHUB_REF_NAME#v}" CHART_APP_VERSION="${GITHUB_REF_NAME#v}"
           else
             make helm-package-target-cluster
           fi
@@ -6312,9 +6353,19 @@ jobs:
           hack/ci-helm-push.sh target-cluster-access-*.tgz oci://${{ env.REGISTRY }}/c5c3/charts
       # Keyless signature of the pushed chart digest, as in helm-push.
       - name: Sign the chart
+        if: steps.distribution.outputs.reserved != 'true'
         env:
           CHART_REF: ${{ steps.push.outputs.ref }}
         run: hack/ci-cosign-sign.sh "${CHART_REF}"
+
+      - name: Retain the published chart for the GitHub prerelease
+        if: github.ref_type == 'tag'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-chart-target-cluster-access
+          path: target-cluster-access-*.tgz
+          if-no-files-found: error
+          overwrite: true
 
   # RCs are published after their build jobs. Stable tag pushes enter
   # release.yaml directly and reuse the published candidate's assets.
@@ -6328,6 +6379,28 @@ jobs:
         needs.helm-push.result == 'success' && needs.helm-push-target-cluster.result == 'success'))
     permissions:
       contents: write
-    uses: ./.github/workflows/release.yaml
-    with:
-      operators: ${{ needs.changes.outputs.e2e-operators }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: publish-release-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-chart-*
+          path: assets
+          merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-image-*
+          path: image-digests
+          merge-multiple: true
+      - name: Publish the candidate with its changelog
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OPERATORS: ${{ needs.changes.outputs.e2e-operators }}
+        run: python3 scripts/release/publish.py publish

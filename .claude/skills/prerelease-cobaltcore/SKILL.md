@@ -7,8 +7,8 @@ description: >-
 
 # Prerelease CobaltCore
 
-One RC tag identifies the entire distribution. Component charts and images keep
-their existing versions when their inputs are unchanged. [RFC 0001](https://github.com/C5C3/cobaltcore/pull/1645)
+One RC tag identifies the entire distribution. CI uses the candidate version
+for every operator image and chart and for the `target-cluster-access` chart. [RFC 0001](https://github.com/C5C3/cobaltcore/pull/1645)
 
 ## Select the series
 
