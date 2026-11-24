@@ -78,7 +78,8 @@ test_setup_helm_steps_pass_the_pin() {
   local versions count
   versions="$(setup_helm_versions)"
   count="$(printf '%s\n' "$versions" | grep -c . | tr -d ' ')"
-  assert_gte "the workflows have setup-helm steps" "$count" 5
+  # Validation, the two chart publishers, and operator upgrade install Helm.
+  assert_gte "the workflows have setup-helm steps" "$count" 4
   assert_eq "every setup-helm step passes version: \${{ env.HELM_VERSION }}" \
     '${{ env.HELM_VERSION }}' "$(printf '%s\n' "$versions" | sort -u)"
   local ci_helm f

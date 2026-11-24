@@ -1,0 +1,162 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+---
+name: Publish CobaltCore release
+"on":
+  # ci.yaml calls this workflow after publishing the RC images and charts.
+  workflow_call:
+    inputs:
+      operators:
+        description: Operator matrix whose chart archives CI published for this RC
+        type: string
+        required: true
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  release:
+    if: github.event.created && !github.event.deleted && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: publish-release-${{ github.ref }}
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.ref_name }}
+      REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Identify the release
+        id: tag
+        run: |
+          number='(0|[1-9][0-9]*)'
+          [[ "$TAG" =~ ^v${number}\.${number}\.${number}(-rc\.[1-9][0-9]*)?$ ]]
+          source=$(git rev-parse "refs/tags/$TAG^{commit}")
+          event_commit=$(git rev-parse "$GITHUB_SHA^{commit}")
+          [[ "$source" == "$event_commit" ]]
+          kind=stable
+          [[ "$TAG" != *-rc.* ]] || kind=rc
+          echo "kind=$kind" >> "$GITHUB_OUTPUT"
+          # Include drafts left by interrupted uploads, and propagate API errors.
+          gh api --paginate "repos/$REPO/releases?per_page=100" |
+            jq -s --arg tag "$TAG" 'add | map(select(.tag_name == $tag)) | first' > existing.json
+          if jq -e '. != null' existing.json >/dev/null; then
+            jq -e --arg kind "$kind" '.prerelease == ($kind == "rc")' existing.json >/dev/null
+            if jq -e '.draft == false' existing.json >/dev/null; then
+              echo "published=true" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - name: Download the exact chart archives from the candidate build
+        if: steps.tag.outputs.kind == 'rc' && !steps.tag.outputs.published
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-chart-*
+          path: assets
+          merge-multiple: true
+
+      - name: Generate the candidate changelog
+        if: steps.tag.outputs.kind == 'rc' && !steps.tag.outputs.published
+        env:
+          OPERATORS: ${{ inputs.operators }}
+        run: |
+          jq -er --arg version "${TAG#v}" '.operator[] | . + "-operator-" + $version + ".tgz"' \
+            <<< "$OPERATORS" | sort > expected-charts.txt
+          find assets -type f | sed 's,^assets/,,' | sort | diff expected-charts.txt -
+          # Bind the published archives to the candidate's peeled commit.
+          source=$(git rev-parse "refs/tags/$TAG^{commit}")
+          (cd assets && { echo "# Source commit $source"; sha256sum -- *.tgz; } > SHA256SUMS)
+
+          # The previous stable can have backports that never landed verbatim on main.
+          base=${TAG%-rc.*}
+          previous=$(
+            git tag --list |
+              awk '/^v(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*)){2}$/' |
+              { cat; echo "$base"; } | sort -Vu | awk -v base="$base" '$0 == base {print prev} {prev=$0}'
+          )
+          if [[ -n "$previous" ]]; then
+            gh api --method POST "repos/$REPO/releases/generate-notes" \
+              -f tag_name="$TAG" -f previous_tag_name="$previous" --jq .body > notes.md
+          else
+            # There is no base tag for the first series. Include recent changes
+            # and a permanent link to the full history even on its second RC.
+            echo "## Recent changes in the first release series" > notes.md
+            git log -100 --first-parent --format='- %s (%h)' "$GITHUB_SHA" >> notes.md
+            printf '\n[Full commit history](%s/%s/commits/%s)\n' "$GITHUB_SERVER_URL" "$REPO" "$GITHUB_SHA" >> notes.md
+          fi
+          previous_rc=$(
+            git tag --merged "$GITHUB_SHA" --list "$base-rc.*" --sort=version:refname |
+              awk -F '-rc\\.' -v tag="$TAG" 'NF == 2 && $2 ~ /^[1-9][0-9]*$/ {if ($0 == tag) print prev; prev=$0}'
+          )
+          if [[ -n "$previous_rc" ]]; then
+            printf '\n[Changes since %s](%s/%s/compare/%s...%s)\n' \
+              "$previous_rc" "$GITHUB_SERVER_URL" "$REPO" "$previous_rc" "$TAG" >> notes.md
+          fi
+
+      - name: Reuse the latest RC at the stable commit
+        if: steps.tag.outputs.kind == 'stable' && !steps.tag.outputs.published
+        run: |
+          candidates=$(git tag --list "$TAG-rc.*" --sort=-version:refname)
+          rc=$(awk -F '-rc\\.' 'NF == 2 && $2 ~ /^[1-9][0-9]*$/ {print; exit}' <<< "$candidates")
+          [[ -n "$rc" ]] || { echo "::error::No RC for $TAG"; exit 1; }
+          source=$(git rev-parse "refs/tags/$rc^{commit}")
+          stable=$(git rev-parse "refs/tags/$TAG^{commit}")
+          [[ "$source" == "$stable" ]] || {
+            echo "::error::$TAG must point to the same commit as $rc"; exit 1;
+          }
+          gh release view "$rc" --repo "$REPO" --json databaseId,isDraft,isPrerelease,body,url > candidate.json
+          jq -e '.isPrerelease and (.isDraft | not) and (.body | length > 0)' candidate.json >/dev/null
+          jq -r --arg rc "$rc" '"Promoted from [" + $rc + "](" + .url + ").\n\n" + .body' candidate.json > notes.md
+
+          mkdir -p assets
+          gh release download "$rc" --repo "$REPO" --dir assets
+          id=$(jq -r .databaseId candidate.json)
+          gh api --paginate "repos/$REPO/releases/$id/assets?per_page=100" |
+            jq -ser 'add[] | "\(.digest)  \(.name)"' | sort > candidate.sha256
+          (cd assets && sha256sum -- *) | sed 's/^/sha256:/' | sort | diff candidate.sha256 -
+          grep -Fxq "# Source commit $source" assets/SHA256SUMS
+          (cd assets && sha256sum --check --strict SHA256SUMS)
+
+      - name: Publish the release with its changelog
+        if: '!steps.tag.outputs.published'
+        env:
+          KIND: ${{ steps.tag.outputs.kind }}
+        run: |
+          flags=(--prerelease=false)
+          [[ "$KIND" != rc ]] || flags=(--prerelease --latest=false)
+          if jq -e '. == null' existing.json >/dev/null; then
+            gh release create "$TAG" --repo "$REPO" --verify-tag --draft \
+              --title "$TAG" --notes-file notes.md "${flags[@]}"
+          fi
+          id=$(gh release view "$TAG" --repo "$REPO" --json databaseId --jq .databaseId)
+          # Resume a matching draft. Preserve existing uploads and reject a
+          # partial or conflicting asset rather than replacing published bytes.
+          remote_assets() {
+            gh api --paginate "repos/$REPO/releases/$id/assets?per_page=100" | jq -s 'add // []'
+          }
+          remote_assets > uploaded.json
+          (cd assets && sha256sum -- *) > local.sha256
+          while read -r digest name; do
+            remote=$(jq -r --arg name "$name" '.[] | select(.name == $name) | .digest' uploaded.json)
+            if [[ -z "$remote" ]]; then
+              gh release upload "$TAG" "assets/$name" --repo "$REPO"
+            elif [[ "$remote" != "sha256:$digest" ]]; then
+              echo "::error::Draft asset differs: $name"; exit 1
+            fi
+          done < local.sha256
+          remote_assets | jq -r '.[] | "\(.digest)  \(.name)"' | sed 's/^sha256://' | sort > remote.sha256
+          sort local.sha256 | diff - remote.sha256
+          gh release edit "$TAG" --repo "$REPO" --draft=false --notes-file notes.md "${flags[@]}"

@@ -88,7 +88,7 @@ jobs:
   #
   # To add a new operator: see hack/ci-resolve-changes.sh for full instructions.
   #
-  # On tag pushes the full release pipeline must always run, so all areas and
+  # On RC tag pushes the full release pipeline runs, so all areas and
   # all operators are forced active regardless of which files were touched. On a
   # push to main the operator matrix keeps the publish semantics it has today.
   #
@@ -96,6 +96,11 @@ jobs:
   # skipped, and the resolver ignores paths and labels and switches on
   # e2e-chaos and build-e2e-images alone.
   changes:
+    # Stable promotion uses the published RC. The independent test-shell job
+    # still runs on tag pushes; none of the artifact producers run for stable.
+    if: >-
+      github.event_name != 'push' || github.ref_type != 'tag' ||
+      (github.event.created && !github.event.deleted && contains(github.ref_name, '-rc.'))
     runs-on: ubuntu-latest
     timeout-minutes: 8
     outputs:
@@ -6236,6 +6241,35 @@ jobs:
             --min-age-hours 0 \
             --max-deletions 0
 
+  # Listing unpublished drafts requires push access. Keep that token in a job
+  # without a checkout. Main pushes pass this gate without looking up a release.
+  candidate-state:
+    if: >-
+      github.event_name == 'push' && (github.ref_type == 'branch' ||
+      (github.event.created && !github.event.deleted && contains(github.ref_name, '-rc.')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: write
+    outputs:
+      state: ${{ steps.candidate.outputs.state }}
+    steps:
+      - name: Validate candidate tag and check publication state
+        if: github.ref_type == 'tag'
+        id: candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          number='(0|[1-9][0-9]*)'
+          [[ "$GITHUB_REF_NAME" =~ ^v${number}\.${number}\.${number}-rc\.[1-9][0-9]*$ ]] || {
+            echo "::error::Invalid distribution RC tag: $GITHUB_REF_NAME"; exit 1;
+          }
+          # A retry must never rebuild the artifacts of an existing release.
+          state=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" |
+            jq -r --arg tag "$GITHUB_REF_NAME" '.[] | select(.tag_name == $tag) | if .draft then "draft" else "published" end')
+          echo "state=$state" >> "$GITHUB_OUTPUT"
+
   # Build operator container images per platform on native runners.
   # Each platform is pushed by digest; merge-operator-images assembles the manifest list.
   # Runs only on push events (main branch or v* tags) after E2E passed.
@@ -6251,8 +6285,8 @@ jobs:
     # not re-run the E2E suite on push. This job depends only on `changes` (for
     # the operator matrix) and builds the image from the flake, independent of
     # build-e2e-images.
-    needs: [changes]
-    if: github.event_name == 'push' && needs.changes.outputs.has-e2e-operators == 'true'
+    needs: [changes, candidate-state]
+    if: github.event_name == 'push' && needs.changes.outputs.has-e2e-operators == 'true' && !needs.candidate-state.outputs.state
     permissions:
       contents: read
       packages: write
@@ -6402,14 +6436,14 @@ jobs:
 
   # Package and push operator Helm charts to GHCR OCI registry.
   # Runs only on push events after E2E passed. Uses versioned chart packaging
-  # for v* tag pushes.
+  # for release candidate tag pushes.
   helm-push:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # Publish-only-on-merge: see build-and-push. The chart is packaged and pushed
     # for every changed operator on push without re-running the E2E suite.
-    needs: [changes]
-    if: github.event_name == 'push' && needs.changes.outputs.has-e2e-operators == 'true'
+    needs: [changes, candidate-state]
+    if: github.event_name == 'push' && needs.changes.outputs.has-e2e-operators == 'true' && !needs.candidate-state.outputs.state
     permissions:
       contents: read
       packages: write
@@ -6438,6 +6472,15 @@ jobs:
           # helm fetches it back to tag it; the script retries that one error.
           hack/ci-helm-push.sh "${OPERATOR}"-operator-*.tgz oci://${{ env.REGISTRY }}/c5c3/charts
 
+      - name: Retain the published chart for the GitHub prerelease
+        if: github.ref_type == 'tag'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-chart-${{ matrix.operator }}
+          path: "${{ matrix.operator }}-operator-*.tgz"
+          if-no-files-found: error
+          overwrite: true
+
   # Package and push the target-cluster-access chart to the GHCR OCI registry.
   # It is a job of its own rather than a step in helm-push because that job is a
   # per-operator matrix: an in-matrix step would package and push this single
@@ -6446,8 +6489,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # Publish-only-on-merge: see build-and-push.
-    needs: [changes]
-    if: github.event_name == 'push' && needs.changes.outputs.target-cluster-chart == 'true'
+    needs: [changes, candidate-state]
+    if: github.event_name == 'push' && needs.changes.outputs.target-cluster-chart == 'true' && !needs.candidate-state.outputs.state
     permissions:
       contents: read
       packages: write
@@ -6470,30 +6513,18 @@ jobs:
           # Retries ghcr.io's 404 on the tag step, as in helm-push.
           hack/ci-helm-push.sh target-cluster-access-*.tgz oci://${{ env.REGISTRY }}/c5c3/charts
 
-  # Create GitHub release with auto-generated release notes
-  # on v* tag pushes, after images and charts are published.
+  # RCs are published after their build jobs. Stable tag pushes enter
+  # release.yaml directly and reuse the published candidate's assets.
   github-release:
-    runs-on: ubuntu-latest
-    timeout-minutes: 8
-    needs: [changes, merge-operator-images, helm-push]
-    if: |
-      startsWith(github.ref, 'refs/tags/v') &&
-      needs.merge-operator-images.result == 'success' &&
-      needs.helm-push.result == 'success'
+    needs: [changes, candidate-state, merge-operator-images, helm-push, helm-push-target-cluster]
+    if: >-
+      !cancelled() && github.event_name == 'push' && github.ref_type == 'tag' &&
+      github.event.created && !github.event.deleted && needs.changes.result == 'success' &&
+      (needs.candidate-state.outputs.state == 'draft' ||
+       (!needs.candidate-state.outputs.state && needs.merge-operator-images.result == 'success' &&
+        needs.helm-push.result == 'success' && needs.helm-push-target-cluster.result == 'success'))
     permissions:
       contents: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5
-        with:
-          version: ${{ env.HELM_VERSION }}
-      # Package Helm chart tarballs to attach as release assets.
-      - name: Package Helm charts
-        run: |
-          for op in $(echo '${{ needs.changes.outputs.e2e-operators }}' | jq -r '.operator[]'); do
-            make helm-package OPERATOR="${op}" CHART_VERSION="${GITHUB_REF_NAME#v}"
-          done
-      - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3
-        with:
-          generate_release_notes: true
-          files: "*-operator-*.tgz"
+    uses: ./.github/workflows/release.yaml
+    with:
+      operators: ${{ needs.changes.outputs.e2e-operators }}

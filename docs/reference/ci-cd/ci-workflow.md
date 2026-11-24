@@ -39,7 +39,7 @@ The workflow triggers on four event types:
 | Event | Scope | Description |
 | --- | --- | --- |
 | `push` | `branches: [main]` | Runs on every push to the main branch |
-| `push` | `tags: ["v*"]` | Runs on every v-prefixed tag push (triggers publish and release jobs) |
+| `push` | `tags: ["v*"]` | Runs shell tests on v-prefixed tags and publishes new distribution RCs |
 | `pull_request` | `branches: [main]`, `types: [opened, synchronize, reopened, labeled]` | Runs on every pull request targeting main; the `labeled` type lets a `ci:*` label schedule jobs the paths alone did not |
 | `schedule` | `cron: "0 22 * * *"` | The nightly chaos run against `main` at 22:00 UTC |
 | `workflow_dispatch` | no inputs | The same run on demand, for example `gh workflow run ci.yaml --ref main` |
@@ -48,12 +48,10 @@ Most gate, test, and E2E jobs run **only on `pull_request` events** — they eac
 `github.event_name == 'pull_request'` guard. `test-shell` is the exception. It carries no
 guard and also runs on pushes to `main` and on tag pushes. A breakage that lands on `main`
 therefore turns main's own run red at the commit that caused it, instead of surfacing on
-the next PR branch. Otherwise, pushes to `main` and tag pushes
-(`v*`) run only the publish and release jobs (`build-and-push`, `merge-operator-images`,
-`helm-push`, `helm-push-target-cluster`, `github-release`): the merged commit's PR was
-already green, so the E2E suite is not re-run on push ("publish-only-on-merge"). On tag
-pushes the `changes` job forces all areas and all operators active, so every operator's
-images and charts are published regardless of which files the tagged commit touched.
+the next PR branch. A push to `main` publishes changed artifacts. A new `vX.Y.Z-rc.N` tag publishes
+the operator images and charts, then creates a GitHub prerelease. A stable
+`vX.Y.Z` tag triggers `release.yaml` directly and promotes the published RC
+at that commit. See [GitHub release publishing](#github-release).
 
 A scheduled or dispatched run is the nightly chaos run of #1388. It runs `changes`,
 `test-shell`, `build-e2e-images`, the seven [`e2e-chaos`](#e2e-chaos) matrix entries,
@@ -125,7 +123,7 @@ evaluates the new label set. A label outside this set resolves to nothing: the
 concurrency group of its own so it does not cancel the pipeline in flight. See
 [Concurrency](#concurrency).
 
-On a `v*` tag push every flag is forced on. On a push to `main` the operator
+On an RC tag push every flag is forced on. On a push to `main` the operator
 matrix keeps its publish semantics, driven by the `publish_legacy` class, so what
 a merge publishes is unchanged.
 
@@ -191,7 +189,7 @@ that `make fmt` and `make format-check` use a consistent version locally.
 `GOLANGCI_LINT_VERSION` pins the golangci-lint binary installed by the `lint` job and
 keys its analysis cache. `HELM_VERSION` is the Helm CLI that every
 `azure/setup-helm` step installs (`helm-validate`, `helm-push`,
-`helm-push-target-cluster` and `github-release`, and the `upgrade` job of the
+`helm-push-target-cluster`, and the `upgrade` job of the
 reusable `.github/workflows/e2e-operator-upgrade.yaml`, which repeats the pin in its
 own env). Without a version input the action installs the newest Helm release when
 the job starts. Renovate bumps both copies in one pull request without automerge,
@@ -222,6 +220,7 @@ Jobs that need elevated access declare per-job `permissions:` blocks:
 | `helm-push` | `packages: write` | Push Helm charts to GHCR OCI registry |
 | `helm-push-target-cluster` | `packages: write` | Push the `target-cluster-access` chart to GHCR OCI registry |
 | `github-release` | `contents: write` | Create GitHub Releases |
+| `candidate-state` | `contents: write` | Look up existing releases, including unpublished drafts |
 
 ## Job Dependency DAG
 
@@ -236,7 +235,7 @@ The figure groups the jobs into stages and draws the order of the stages. The
 table lists every job with its stage and its `needs:` list, and links the
 section that describes the job.
 
-![The jobs of the CI workflow, grouped into stages. The job changes works out what a run has to do, and every job of the two events needs it. test-shell needs no job and runs on every event. On a pull request the gates come first: lint, shellcheck, test, test-integration, verify-codegen, verify-invalid-cr-fixtures and chainsaw-lint. The image build, build-e2e-images, needs each of them. The E2E fan-out needs the image build: e2e-operator, e2e-operator-upgrade, e2e-prometheus, e2e-controlplane, e2e-controlplane-sso, e2e-autoscaling, e2e-external-keystone, e2e-multicluster, e2e-orders-multicluster, e2e-ovn-overlay, e2e-nova-libvirt and keystone-pressure. e2e-chaos follows e2e-operator, the random chaos run e2e-chaos-random follows the image build, and report-nightly-chaos follows both on a schedule only. The infrastructure suites e2e-infra and e2e-bgp-fabric need only changes. tempest follows e2e-chaos and e2e-infra, and cleanup-e2e-tags runs last. No other job needs the checks format-check, feature-ids, review-markers, actionlint, test-race, govulncheck, docs, docs-overlay and helm-validate. On a push to main or of a v* tag, build-and-push and merge-operator-images publish the operator images, helm-push and helm-push-target-cluster publish the charts, and github-release follows both for a v* tag.](../../diagrams/ci-stage-overview.svg)
+![The jobs of the CI workflow, grouped into stages. The job changes works out what a run has to do, and every job of the two events needs it. test-shell needs no job and runs on every event. On a pull request the gates come first: lint, shellcheck, test, test-integration, verify-codegen, verify-invalid-cr-fixtures and chainsaw-lint. The image build, build-e2e-images, needs each of them. The E2E fan-out needs the image build: e2e-operator, e2e-operator-upgrade, e2e-prometheus, e2e-controlplane, e2e-controlplane-sso, e2e-autoscaling, e2e-external-keystone, e2e-multicluster, e2e-orders-multicluster, e2e-ovn-overlay, e2e-nova-libvirt and keystone-pressure. e2e-chaos follows e2e-operator, the random chaos run e2e-chaos-random follows the image build, and report-nightly-chaos follows both on a schedule only. The infrastructure suites e2e-infra and e2e-bgp-fabric need only changes. tempest follows e2e-chaos and e2e-infra, and cleanup-e2e-tags runs last. No other job needs the checks format-check, feature-ids, review-markers, actionlint, test-race, govulncheck, docs, docs-overlay and helm-validate. On a push to main or of an RC tag, build-and-push and merge-operator-images publish the operator images, helm-push and helm-push-target-cluster publish the charts, and github-release follows the image and chart jobs for an RC tag.](../../diagrams/ci-stage-overview.svg)
 
 | Job | Stage | `needs` |
 | --- | --- | --- |
@@ -278,11 +277,12 @@ section that describes the job.
 | [`keystone-pressure`](#keystone-pressure) | E2E fan-out | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` |
 | [`tempest`](#tempest) | Tempest | `changes`, `build-e2e-images`, `e2e-infra`, `e2e-operator`, `e2e-chaos`, `e2e-prometheus` |
 | [`cleanup-e2e-tags`](#cleanup-e2e-tags) | Cleanup | `changes`, `build-e2e-images`, `e2e-operator`, `e2e-operator-upgrade`, `e2e-chaos`, `e2e-chaos-random`, `e2e-prometheus`, `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-autoscaling`, `e2e-external-keystone`, `e2e-multicluster`, `e2e-orders-multicluster`, `e2e-ovn-overlay`, `e2e-nova-libvirt`, `keystone-pressure`, `tempest` |
-| [`build-and-push`](#build-and-push) | Publish images | `changes` |
+| [`candidate-state`](#github-release) | Check RC publication status | None |
+| [`build-and-push`](#build-and-push) | Publish images | `changes`, `candidate-state` |
 | [`merge-operator-images`](#merge-operator-images) | Publish images | `changes`, `build-and-push` |
-| [`helm-push`](#helm-push) | Publish charts | `changes` |
-| [`helm-push-target-cluster`](#helm-push-target-cluster) | Publish charts | `changes` |
-| [`github-release`](#github-release) | Release | `changes`, `merge-operator-images`, `helm-push` |
+| [`helm-push`](#helm-push) | Publish charts | `changes`, `candidate-state` |
+| [`helm-push-target-cluster`](#helm-push-target-cluster) | Publish charts | `changes`, `candidate-state` |
+| [`github-release`](#github-release) | Release | `changes`, `candidate-state`, `merge-operator-images`, `helm-push`, `helm-push-target-cluster` |
 
 `e2e-infra`, `e2e-bgp-fabric`, the jobs of the E2E fan-out, `e2e-chaos` and
 `tempest` bring up a kind cluster through the `create-kind-cluster` and `setup-e2e-infra` composite
@@ -296,11 +296,10 @@ the `self-hosted` runners, as do `test-integration` and `build-e2e-images`.
 Classifies the paths an event changed and resolves them into the outputs the
 other jobs read: one flag per job, the change sets `build-e2e-images` builds
 from, and the matrices of the test, Tempest, publish and cleanup jobs. Every
-other job except `test-shell` lists it in `needs`.
+other job except `test-shell` and `candidate-state` lists it in `needs`.
 
 **Dependencies:** none (the job has no `needs:`)
-**Condition:** none. The job has no `if:` and runs on every event that starts
-the workflow: a push to `main`, a `v*` tag push, a `pull_request` event of
+**Condition:** Runs on a push to `main`, creation of an RC tag, a `pull_request` event of
 type `opened`, `synchronize`, `reopened` or `labeled`, and the `schedule` and
 `workflow_dispatch` events of the nightly chaos run.
 
@@ -319,7 +318,7 @@ The job runs on `ubuntu-latest` with `timeout-minutes: 8`.
 Step 3 has four special cases. A `labeled` event whose label is
 neither a `ci:*` label nor `run-chaos` resolves to `noop=true`: every other flag
 is `false`, the change sets are `[]`, and `test-targets`, `e2e-operators` and
-`e2e-operator-upgrade-operators` hold the placeholder `__none__`. The `ci:full` label and a `v*` tag push force
+`e2e-operator-upgrade-operators` hold the placeholder `__none__`. The `ci:full` label and an RC tag push force
 every job flag on and select every operator. `measure-sizing` is the exception:
 only the `ci:measure-sizing` label sets it. On a push to `main` the script sets
 `build-e2e-images` to `false`, and `e2e-operators` holds every operator when the
@@ -381,9 +380,9 @@ The matrices come last:
 
 | Output | Meaning |
 | --- | --- |
-| `e2e-operators` | `{"operator":[...]}`. The matrix of `merge-operator-images` and `helm-push` and the `operator` dimension of `build-and-push`. `github-release` loops over it to package the charts |
+| `e2e-operators` | `{"operator":[...]}`. The matrix of `merge-operator-images` and `helm-push` and the `operator` dimension of `build-and-push`. `github-release` checks the downloaded charts against it |
 | `e2e-operator-legs` | Written by step 7: the operators of `e2e-operators` as `include` entries, with `nova` split into shards `1` and `2`. The matrix of `e2e-operator` |
-| `e2e-operator-upgrade-operators` | `{"operator":[...]}` in `ALL_OPERATORS` order: every operator whose Go code is affected (`go_common` included) or whose `tests_operator_upgrade_<op>` class changed, every operator when `tests_operator_upgrade` changed or under `ci:full` and a `v*` tag, the `__none__` placeholder when none. The matrix `e2e-operator-upgrade` passes to the reusable workflow; the `e2e-operator-upgrade` flag is `true` when it names an operator |
+| `e2e-operator-upgrade-operators` | `{"operator":[...]}` in `ALL_OPERATORS` order: every operator whose Go code is affected (`go_common` included) or whose `tests_operator_upgrade_<op>` class changed, every operator when `tests_operator_upgrade` changed or under `ci:full` and an RC tag, the `__none__` placeholder when none. The matrix `e2e-operator-upgrade` passes to the reusable workflow; the `e2e-operator-upgrade` flag is `true` when it names an operator |
 | `test-targets` | `{"target":[...]}` with `common` and operator names. The matrix of `test` and `test-integration` |
 | `tempest-releases` | Written by step 4: `{"include":[...]}` with one entry per service and release, plus one `keystone-upgrade` entry for the newest release when `keystone` is selected and two or more releases exist. The matrix of `tempest` |
 | `keystone-pressure-releases` | Written by step 5: `{"release":[...]}` with the releases that ship a Keystone image. The matrix of `keystone-pressure` |
@@ -849,7 +848,7 @@ validated without editing the job.
 
 **Dependencies:** `needs: [changes]`
 **Condition:** `if: github.event_name == 'pull_request' && needs.changes.outputs.helm == 'true'`
-**Path filter:** `operators/*/helm/**`, `deploy/bases/target-cluster-access/**`, `hack/gen-helm-values-schema.py`, `hack/gen-helm-rbac-rules.py`, `hack/verify-helm-released-values.sh`, `hack/helm-removed-values.yaml`, `Makefile` (forced `true` on `v*` tag pushes)
+**Path filter:** `operators/*/helm/**`, `deploy/bases/target-cluster-access/**`, `hack/gen-helm-values-schema.py`, `hack/gen-helm-rbac-rules.py`, `hack/verify-helm-released-values.sh`, `hack/helm-removed-values.yaml`, `Makefile` (forced `true` on RC tag pushes)
 
 | Step | Action | Details |
 | --- | --- | --- |
@@ -1736,7 +1735,7 @@ runner for a fork's pull request. `_output/reports/` is uploaded as the
 
 **Path filter:** `tests/e2e-bgp-fabric/**` and `deploy/overlays/kind/frr-k8s/**`
 (the `tests_bgp_fabric` class). A change elsewhere under `deploy/` or `hack/`
-does not schedule the job, and `ci:full` forces it on. A `v*` tag push sets
+does not schedule the job, and `ci:full` forces it on. An RC tag push sets
 the flag but does not run the job, which runs on `pull_request` events only.
 
 ### e2e-nova-libvirt
@@ -2228,7 +2227,7 @@ are estimates to confirm against the first green run.
 `deploy/overlays/kind/metrics-server/**`, `deploy/overlays/kind/vpa/**`,
 `internal/common/deployment/builders.go`,
 `internal/common/deployment/hpa_flow.go` and
-`internal/common/deployment/vpa_flow.go`. `ci:full` and a `v*` tag force it on,
+`internal/common/deployment/vpa_flow.go`. `ci:full` and an RC tag force it on,
 and a labeled no-op resolves it to `false`.
 
 ### e2e-external-keystone
@@ -2591,15 +2590,15 @@ Timeout: 15 minutes.
 
 Builds operator container images per platform on native runners and pushes each
 single-arch image by digest. Runs only on push events (main branch or
-v* tags) — skipped on pull requests. The multi-arch manifest list and final tags are
+new RC tags). The multi-arch manifest list and final tags are
 assembled by the subsequent `merge-operator-images` job.
 
 Publish-only-on-merge: the merged commit's PR was already green, so the E2E suite is
 not re-run on push. The job depends only on `changes` (for the operator matrix) and
 builds the image from the flake, independent of `build-e2e-images`.
 
-**Dependencies:** `needs: [changes]`
-**Condition:** `if: github.event_name == 'push' && needs.changes.outputs.has-e2e-operators == 'true'`
+**Dependencies:** `needs: [changes, candidate-state]`
+**Condition:** `if: github.event_name == 'push' && needs.changes.outputs.has-e2e-operators == 'true' && !needs.candidate-state.outputs.state`
 **Permissions:** `contents: read`, `packages: write`
 
 | Step | Action | Details |
@@ -2654,8 +2653,7 @@ list, and pushes it with the final tags.
 | Trigger | Tags Applied |
 | --- | --- |
 | Push to main | `sha-<full-sha>`, `latest`, `<chart version>` (the operator's `Chart.yaml` version, e.g. `0.14.0`) |
-| Push v* tag (from main) | `sha-<full-sha>`, `latest`, `<version>` (e.g. `0.1.0`, v prefix stripped) |
-| Push v* tag (from non-main) | `sha-<full-sha>`, `<version>` (no `latest` — restricted to default branch) |
+| Push RC tag | `sha-<full-sha>`, `<version>` (e.g. `0.1.0-rc.1`) |
 
 Images are published at `ghcr.io/c5c3/<operator>-operator:<tag>`. The chart-version
 tag carries the `enable={{is_default_branch}}` rule of `latest`, so on `main` the two
@@ -2671,8 +2669,8 @@ Runs only on push events — skipped on pull requests. Like `build-and-push`, th
 publish-only-on-merge: the chart is packaged and pushed for every changed operator on
 push without re-running the E2E suite.
 
-**Dependencies:** `needs: [changes]`
-**Condition:** `if: github.event_name == 'push' && needs.changes.outputs.has-e2e-operators == 'true'`
+**Dependencies:** `needs: [changes, candidate-state]`
+**Condition:** `if: github.event_name == 'push' && needs.changes.outputs.has-e2e-operators == 'true' && !needs.candidate-state.outputs.state`
 **Permissions:** `contents: read`, `packages: write`
 
 | Step | Action | Details |
@@ -2687,7 +2685,7 @@ push without re-running the E2E suite.
 | Trigger | Version |
 | --- | --- |
 | Push to main | Default version from `Chart.yaml` |
-| Push v* tag | SemVer derived from tag (v prefix stripped, e.g. `v0.1.0` → `0.1.0`) |
+| Push RC tag | The candidate version, e.g. `0.1.0-rc.1` |
 
 **Matrix strategy:** Same `operator` dimension as `build-and-push` (via
 `fromJson(needs.changes.outputs.e2e-operators)`), so every changed operator's chart is
@@ -2720,14 +2718,14 @@ registry. Runs only on push events and is skipped on pull requests. Like
 and push this single chart once per matrix entry, and the entries would race on
 the same registry tag.
 
-**Dependencies:** `needs: [changes]`
+**Dependencies:** `needs: [changes, candidate-state]`
 **Condition:** Runs on `push` events when the `target-cluster-chart` output of
-`changes` is `true`.
+`changes` is `true` and the candidate has no existing release.
 **Permissions:** `contents: read`, `packages: write`
 
 `hack/ci-resolve-changes.sh` sets `target-cluster-chart` when the
 `target_cluster_chart` class (`deploy/bases/target-cluster-access/**`) changed, and forces it
-on for a `v*` tag push.
+on for an RC tag push.
 
 | Step | Action | Details |
 | --- | --- | --- |
@@ -2741,7 +2739,7 @@ on for a `v*` tag push.
 | Trigger | Version |
 | --- | --- |
 | Push to main | Default version from `Chart.yaml` |
-| Push v* tag | The tag name without its `v` prefix, passed as `CHART_VERSION="${GITHUB_REF_NAME#v}"` |
+| Push RC tag | The tag name without its `v` prefix, passed as `CHART_VERSION="${GITHUB_REF_NAME#v}"` |
 
 The `make helm-package-target-cluster` target packages
 `deploy/bases/target-cluster-access/`. When `CHART_VERSION` is set, the
@@ -2749,31 +2747,29 @@ target passes it to `helm package` as `--version`, which overrides the version i
 `Chart.yaml`. The target runs no `helm dependency build`, because the chart has
 no subchart.
 
-No other job lists `helm-push-target-cluster` in `needs`. `github-release` waits
-for `helm-push` only, and its `files: "*-operator-*.tgz"` pattern does not match
-this chart's tarball.
+RC publication waits for this chart to reach GHCR. The GitHub release attaches the operator charts.
 
 Runs on `ubuntu-latest`. Timeout: 15 minutes.
 
 ### github-release
 
-Creates a GitHub Release with auto-generated release notes on v* tag pushes.
+For a new `vX.Y.Z-rc.N` tag, `candidate-state` checks whether a release
+already exists. After the image manifests and both chart jobs succeed,
+`github-release` calls `.github/workflows/release.yaml`. The workflow attaches
+the exact operator archives uploaded by `helm-push`, checks the set against
+the operator matrix, and attaches `SHA256SUMS` with the candidate's source
+commit and archive checksums. GitHub generates the changelog from merged PRs since the
+preceding stable version using `.github/release.yml`. The first series lists
+recent commits with a link to its full history. Later RCs also link the changes
+since the preceding candidate.
 
-**Dependencies:** `needs: [changes, merge-operator-images, helm-push]`
-**Condition:** `if: startsWith(github.ref, 'refs/tags/v') && needs.merge-operator-images.result == 'success' && needs.helm-push.result == 'success'`
-**Permissions:** `contents: write`
+For a new `vX.Y.Z` tag, `release.yaml` selects the highest-numbered RC of that
+version and checks that both tags resolve to the same commit. It copies the
+published candidate's changelog and downloadable assets, verifies their SHA-256
+digests, and publishes the stable GitHub Release with a link to the RC.
 
-| Step | Action | Details |
-| --- | --- | --- |
-| 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
-| 2 | `azure/setup-helm@v5` | Installs Helm CLI `HELM_VERSION` for chart packaging |
-| 3 | Package Helm charts | Packages operator Helm charts with release version |
-| 4 | `softprops/action-gh-release@v3` | Creates release with `generate_release_notes: true` and attaches chart tarballs |
-
-This job runs only after both `merge-operator-images` and `helm-push` complete
-successfully, ensuring the final multi-arch manifest list and charts are published before
-the release is created. Helm chart tarballs
-are attached as release assets for direct download. Timeout: 8 minutes.
+Both paths assemble the assets in a draft before publication. A rerun can
+complete a matching draft. An already published release is left intact.
 
 ## Reusable CI Scripts
 
