@@ -561,9 +561,15 @@ jobs:
               - 'hack/helm-removed-values.yaml'
               - 'Makefile'
             # The target-cluster-access chart is published outside the
-            # per-operator helm-push matrix, so it needs its own gate.
+            # per-operator helm-push matrix, so it needs its own gate. The two
+            # scripts push and sign the chart, so a change to either publishes
+            # and signs it again. ci.yaml stays out: it changes in most pull
+            # requests, and each match pushes the same chart version again
+            # under a new digest.
             target_cluster_chart:
               - 'deploy/bases/target-cluster-access/**'
+              - 'hack/ci-helm-push.sh'
+              - 'hack/ci-cosign-sign.sh'
             # Push events only, and ignored on pull requests. Reproduces the
             # operator set today's go_common and e2e-test unions publish on a
             # push to main, so what lands in GHCR after a merge does not change
@@ -6298,8 +6304,8 @@ jobs:
           # is an OCI index, which can carry the revision annotation.
           manifest-format: oci
 
-  # Assemble per-platform digests into multi-arch manifest lists
-  # and push with final tags (SHA, latest, semver).
+  # Assemble per-platform digests into multi-arch manifest lists, push with
+  # final tags (SHA, latest, semver) and sign the index with cosign.
   merge-operator-images:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -6308,13 +6314,16 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write #: Sigstore OIDC signing
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.changes.outputs.e2e-operators) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
-      - uses: ./.github/actions/registry-login
+      # Buildx for imagetools create, the docker login the push and cosign
+      # use, and cosign for the sign step.
+      - name: Setup Docker registry
+        uses: ./.github/actions/setup-docker-registry
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -6413,9 +6422,17 @@ jobs:
           fi
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
-  # Package and push operator Helm charts to GHCR OCI registry.
-  # Runs only on push events after E2E passed. Uses versioned chart packaging
-  # for v* tag pushes.
+      # Keyless signature of the index digest; see "Cosign Signing" in
+      # docs/reference/ci-cd/ci-workflow.md.
+      - name: Sign the manifest list
+        env:
+          IMAGE: ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}-operator
+          DIGEST: ${{ steps.manifest.outputs.digest }}
+        run: hack/ci-cosign-sign.sh "${IMAGE}@${DIGEST}"
+
+  # Package and push operator Helm charts to GHCR OCI registry and sign them
+  # with cosign. Runs only on push events after E2E passed. Uses versioned
+  # chart packaging for v* tag pushes.
   helm-push:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -6426,6 +6443,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write #: Sigstore OIDC signing
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.changes.outputs.e2e-operators) }}
@@ -6434,9 +6452,18 @@ jobs:
       - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5
         with:
           version: ${{ env.HELM_VERSION }}
-      - name: Login to GHCR
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ${{ env.REGISTRY }} --username ${{ github.actor }} --password-stdin
+      # The docker login helm push and cosign read, and cosign: Helm's
+      # registry client falls back to Docker's config.json. The job builds no
+      # image, so it starts no Buildx builder.
+      - name: Setup Docker registry
+        uses: ./.github/actions/setup-docker-registry
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          setup-buildx: 'false'
       - name: Package and push Helm chart
+        id: push
         env:
           OPERATOR: ${{ matrix.operator }}
         run: |
@@ -6450,6 +6477,12 @@ jobs:
           # ghcr.io now and then 404s the manifest helm has just uploaded when
           # helm fetches it back to tag it; the script retries that one error.
           hack/ci-helm-push.sh "${OPERATOR}"-operator-*.tgz oci://${{ env.REGISTRY }}/c5c3/charts
+      # Keyless signature of the pushed chart digest; see "Cosign Signing" in
+      # docs/reference/ci-cd/ci-workflow.md.
+      - name: Sign the chart
+        env:
+          CHART_REF: ${{ steps.push.outputs.ref }}
+        run: hack/ci-cosign-sign.sh "${CHART_REF}"
 
   # Package and push the target-cluster-access chart to the GHCR OCI registry.
   # It is a job of its own rather than a step in helm-push because that job is a
@@ -6464,14 +6497,23 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write #: Sigstore OIDC signing
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5
         with:
           version: ${{ env.HELM_VERSION }}
-      - name: Login to GHCR
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ${{ env.REGISTRY }} --username ${{ github.actor }} --password-stdin
+      # The docker login helm push and cosign read, and cosign, without a
+      # Buildx builder; see helm-push.
+      - name: Setup Docker registry
+        uses: ./.github/actions/setup-docker-registry
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          setup-buildx: 'false'
       - name: Package and push Helm chart
+        id: push
         run: |
           # Remove stale chart tarballs to prevent glob ambiguity.
           rm -f target-cluster-access-*.tgz
@@ -6482,6 +6524,11 @@ jobs:
           fi
           # Retries ghcr.io's 404 on the tag step, as in helm-push.
           hack/ci-helm-push.sh target-cluster-access-*.tgz oci://${{ env.REGISTRY }}/c5c3/charts
+      # Keyless signature of the pushed chart digest, as in helm-push.
+      - name: Sign the chart
+        env:
+          CHART_REF: ${{ steps.push.outputs.ref }}
+        run: hack/ci-cosign-sign.sh "${CHART_REF}"
 
   # Create GitHub release with auto-generated release notes
   # on v* tag pushes, after images and charts are published.
