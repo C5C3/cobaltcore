@@ -295,7 +295,7 @@ var NeutronRemoteChildKinds = []schema.GroupVersionKind{
 // +kubebuilder:rbac:groups=neutron.openstack.c5c3.io,resources=neutrons/status,verbs=get;update
 // Unexercised by the e2e suites; used by operators/neutron/internal/controller/reconcile_deployment.go:157 (reconcileDeployment) to update neutrons/finalizers.
 // +kubebuilder:rbac:groups=neutron.openstack.c5c3.io,resources=neutrons/finalizers,verbs=update
-// Unexercised by the e2e suites; used by operators/neutron/internal/controller/neutronmetadataagent_controller.go:363 (Reconcile) to update neutronmetadataagents.
+// Unexercised by the e2e suites; used by operators/neutron/internal/controller/neutronmetadataagent_controller.go:360 (Reconcile) to update neutronmetadataagents.
 // +kubebuilder:rbac:groups=neutron.openstack.c5c3.io,resources=neutronmetadataagents,verbs=get;list;watch;update
 // +kubebuilder:rbac:groups=neutron.openstack.c5c3.io,resources=neutronmetadataagents/status,verbs=get;update
 // Unexercised by the e2e suites; used by operators/neutron/internal/controller/reconcile_daemonset.go:155 (reconcileDaemonSet) to update neutronmetadataagents/finalizers.
@@ -350,7 +350,7 @@ var NeutronRemoteChildKinds = []schema.GroupVersionKind{
 // Unexercised by the e2e suites; used by operators/neutron/internal/controller/reconcile_hpa.go:30 (reconcileHPA) to create and patch horizontalpodautoscalers.
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;patch;delete
 // Unexercised by the e2e suites; used by operators/neutron/internal/controller/reconcile_vpa.go:21 (reconcileVPA) to create, patch and delete verticalpodautoscalers.
-// Unexercised by the e2e suites; used by operators/neutron/internal/controller/neutron_controller.go:814 (setupWithOptions) to list and watch verticalpodautoscalers.
+// Unexercised by the e2e suites; used by operators/neutron/internal/controller/neutron_controller.go:852 (setupWithOptions) to list and watch verticalpodautoscalers.
 // +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch;create;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;patch;delete
 // Required to create, patch and delete HTTPRoutes that expose the Neutron API

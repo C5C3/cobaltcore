@@ -330,7 +330,7 @@ var BarbicanRemoteChildKinds = []schema.GroupVersionKind{
 // Unexercised by the e2e suites; used by internal/common/policy/policy.go:30 (LoadPolicyFromConfigMap) to list and watch configmaps.
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch
 // Unexercised by the e2e suites; used by operators/barbican/internal/controller/reconcile_config.go:147 (reconcileConfig) to delete secrets.
-// Unexercised by the e2e suites; used by operators/barbican/internal/controller/barbicansecretstore_controller.go:845 (mintCredentials) to update secrets.
+// Unexercised by the e2e suites; used by operators/barbican/internal/controller/barbicansecretstore_controller.go:848 (mintCredentials) to update secrets.
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;delete
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
 // NOTE: create on serviceaccounts/token is deliberately NOT part of this rule
@@ -371,7 +371,7 @@ var BarbicanRemoteChildKinds = []schema.GroupVersionKind{
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;patch;delete
 // Unexercised by the e2e suites; used by internal/common/deployment/vpa_flow.go:190 (ReconcileVPAs) to create and patch verticalpodautoscalers.
 // Unexercised by the e2e suites; used by internal/common/deployment/vpa_flow.go:213 (ReconcileVPAs) to delete verticalpodautoscalers.
-// Unexercised by the e2e suites; used by operators/barbican/internal/controller/barbican_controller.go:814 (SetupWithManager) to list and watch verticalpodautoscalers.
+// Unexercised by the e2e suites; used by operators/barbican/internal/controller/barbican_controller.go:854 (SetupWithManager) to list and watch verticalpodautoscalers.
 // +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch;create;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;patch;delete
 // Required to create, patch and delete HTTPRoutes that expose the Barbican API externally.
