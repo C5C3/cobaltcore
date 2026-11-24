@@ -38,9 +38,6 @@ the local-build path, the production HelmRelease, E2E and Tempest, see
   ```
 
 - [`jq`](https://jqlang.org/download/) on `PATH` for extracting the OpenBao root token in Optional: UIs
-- For the optional OpenBao UI, the [OpenSSL CLI](https://docs.openssl.org/) and
-  [Firefox](https://www.mozilla.org/firefox/) for the client-certificate setup
-  in [Extended Quick Start: Step 4b](./quick-start-extended.md#step-4b-openbao-ui)
 - [`yq`](https://github.com/mikefarah/yq) v4.40.1 or newer on `PATH` (only required because `KIND_HOST_PORT` is overridden)
 - A stable internet connection for the initial image pulls and package downloads
 
