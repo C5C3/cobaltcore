@@ -114,7 +114,7 @@ func (r *KeystoneUserReconciler) deliverCredentials(
 		return ctrl.Result{}, err
 	}
 	pushed := &esov1alpha1.PushSecret{}
-	if err := r.Get(ctx, pushKey, pushed); err != nil {
+	if err := r.Get(ctx, pushKey, pushed); client.IgnoreNotFound(err) != nil {
 		fail(reasonKeystoneUserDeliveryError, err.Error())
 		return ctrl.Result{}, fmt.Errorf("reading order PushSecret %s/%s: %w", cp.Namespace, pushName, err)
 	}

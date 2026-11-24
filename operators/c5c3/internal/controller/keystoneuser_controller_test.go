@@ -667,6 +667,30 @@ func TestKeystoneUser_PushSecretReadErrorIsReported(t *testing.T) {
 	g.Expect(kuCondition(h.get(t), conditionTypeKeystoneUserDeliveryReady).Reason).To(Equal(reasonKeystoneUserDeliveryError))
 }
 
+// TestKeystoneUser_PushSecretNotInCacheWaits pins a read-back that misses the
+// PushSecret the pass has just applied: the pass treats the backup as not
+// pushed yet and waits for it, rather than failing with an error, and
+// delivers nothing.
+func TestKeystoneUser_PushSecretNotInCacheWaits(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := keystoneUserControlPlane(assignOn(kuTestNamespace, ""))
+	order := keystoneUserCR(kuTestNamespace)
+	h := newKUHarness(t, c5c3v1alpha1.ManagementCluster, pushSecretNotInCache(), nil,
+		append([]client.Object{order, cp}, kuConvergedChildren(order, cp, "", 1)...)...)
+
+	result, err := h.reconcile(context.Background())
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(And(BeNumerically(">", 0), BeNumerically("<=", 10*time.Second)))
+	cond := kuCondition(h.get(t), conditionTypeKeystoneUserDeliveryReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonKeystoneUserBackupNotSynced))
+	err = h.order.Get(context.Background(),
+		types.NamespacedName{Namespace: kuTestNamespace, Name: "workflow-credentials"}, &corev1.Secret{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "nothing is delivered before the backup is read back")
+}
+
 // --- naming ---
 
 func TestKeystoneUser_ChildNames(t *testing.T) {
