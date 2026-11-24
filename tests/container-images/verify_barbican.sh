@@ -619,6 +619,116 @@ if new.execute(sqlalchemy.text("SELECT 1")).scalar() != 1:
   assert_eq "a failed commit leaves a new, usable session" "0" "$exit_code"
 }
 
+# --- Test 15: soft-deleted dependents go with their parent ---
+test_db_clean_dependents_patch_applied() {
+  echo "Test: db clean deletes soft-deleted metadata set after their secret with it"
+  # Proves both build paths applied
+  # patches/barbican/2026.1/0008-delete-soft-deleted-dependents-with-their-parent-in-the-clean-up.patch
+  # and patches/barbican/2026.2/0007-delete-soft-deleted-dependents-with-their-parent-in-the-clean-up.patch.
+  # Foreign keys are enforced on the in-memory database through
+  # PRAGMA foreign_keys=ON on connect, as barbican/tests/database_utils.py
+  # does. First check: a secret soft-deleted at S whose store and user
+  # metadata carry S+1 s is cleaned with the cutoff at S+0.5 s, and all three
+  # rows go. An unpatched image keeps the metadata and fails the DELETE of
+  # the secret with "FOREIGN KEY constraint failed". Second check: three
+  # soft-deleted transport keys and a secret whose store metadatum is live;
+  # clean_command raises DBReferenceError and hands LOG.exception the 4 rows
+  # its batches committed (the keys and the soft-deleted user metadatum),
+  # and the secret and its live metadatum stay. The project id is read
+  # before the first commit, because each batch detaches the loaded objects.
+  # stderr is echoed on failure.
+  local exit_code=0 err=""
+  err=$(docker run --rm "$IMAGE" \
+    /var/lib/openstack/bin/python -c \
+    'import datetime
+import sys
+from unittest import mock
+
+from sqlalchemy import event
+from sqlalchemy.engine import Engine
+
+from barbican.common import config
+from barbican.model import clean
+from barbican.model import models
+from barbican.model import repositories as repo
+
+
+@event.listens_for(Engine, "connect")
+def _enforce_foreign_keys(dbapi_connection, connection_record):
+    dbapi_connection.execute("PRAGMA foreign_keys=ON")
+
+
+CONF = config.CONF
+CONF.set_override("connection", "sqlite://", "database")
+CONF.set_override("db_auto_create", True)
+repo.setup_database_engine_and_factory()
+session = repo.get_session()
+
+parent_at = datetime.datetime(2026, 11, 22, 10, 11, 43)
+later = parent_at + datetime.timedelta(seconds=1)
+between = parent_at + datetime.timedelta(microseconds=500000)
+
+project = models.Project()
+project.external_id = "p"
+project.save(session)
+project_id = project.id
+
+
+def secret_with_metadata(store_deleted):
+    secret = models.Secret()
+    secret.project_id = project_id
+    secret.deleted = True
+    secret.deleted_at = parent_at
+    secret.save(session)
+    store = models.SecretStoreMetadatum("k", "v")
+    user = models.SecretUserMetadatum("k", "v")
+    for row, deleted in ((store, store_deleted), (user, True)):
+        row.secret_id = secret.id
+        row.deleted = deleted
+        row.deleted_at = later if deleted else None
+        row.save(session)
+
+
+def rows():
+    s = repo.get_session()
+    return tuple(s.query(m).count() for m in (
+        models.Secret, models.SecretStoreMetadatum,
+        models.SecretUserMetadatum))
+
+
+secret_with_metadata(True)
+repo.commit()
+total = clean.cleanup_all(threshold_date=between)
+if total != 3 or rows() != (0, 0, 0):
+    sys.exit("cleaned %r with %r rows left, want 3 with (0, 0, 0)"
+             % (total, rows()))
+
+for _ in range(3):
+    key = models.TransportKey("plugin", "key")
+    key.deleted = True
+    key.deleted_at = parent_at
+    repo.get_session().add(key)
+secret_with_metadata(False)
+repo.commit()
+with mock.patch.object(clean.LOG, "exception") as log_exception, \
+        mock.patch.object(clean.repo, "clear"):
+    try:
+        clean.clean_command(None, -1, False, False, False, None)
+    except Exception as exc:
+        failure = type(exc).__name__
+    else:
+        sys.exit("a secret with a live metadata row was cleaned")
+if failure != "DBReferenceError" or log_exception.call_args.args[1] != 4 \
+        or rows() != (1, 1, 0):
+    sys.exit("%s, %r entries counted, %r rows left, want DBReferenceError, "
+             "4 and (1, 1, 0)" % (failure, log_exception.call_args.args[1],
+                                  rows()))' \
+    2>&1 > /dev/null) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "    $err"
+
+  assert_eq "soft-deleted metadata stamped after their secret go with it, and a failed run counts its batches" "0" "$exit_code"
+}
+
 # --- Run all tests ---
 echo "=== barbican container verification tests ==="
 echo "Image: $IMAGE"
@@ -650,6 +760,8 @@ echo ""
 test_db_clean_batch_options_patch_applied
 echo ""
 test_request_session_cleared_patch_applied
+echo ""
+test_db_clean_dependents_patch_applied
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 
