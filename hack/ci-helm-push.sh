@@ -22,6 +22,21 @@
 # registry already serves, and tags again. Every other error fails on the
 # first attempt.
 #
+# A successful push ends with two lines that name what it pushed:
+#
+#   Pushed: ghcr.io/c5c3/charts/barbican-operator:0.8.0
+#   Digest: sha256:<digest>
+#
+# The script reads the last of each from the attempt that succeeded. When
+# either is missing, the push exits 1: the chart is in the registry, but the
+# digest the chart jobs sign is unknown.
+#
+# Outputs written to GITHUB_OUTPUT when it is set and not empty, after a
+# successful push:
+#   digest — sha256:<digest> of the pushed chart manifest
+#   ref    — <repository>@sha256:<digest>, the pushed reference with its tag
+#            replaced by the digest; hack/ci-cosign-sign.sh signs it
+#
 # Optional env vars:
 #   HELM_PUSH_ATTEMPTS — attempts in total (default: 3)
 #   HELM_PUSH_DELAY    — seconds before the first retry, tripled for each
@@ -56,6 +71,19 @@ while :; do
   output="$(helm push "${chart}" "${remote}" 2>&1)" || status=$?
   printf '%s\n' "${output}"
   if [[ "${status}" -eq 0 ]]; then
+    pushed="$(sed -n 's/^Pushed: \([^[:space:]]\{1,\}\)$/\1/p' <<<"${output}" | tail -n 1)"
+    digest="$(sed -n 's/^Digest: //p' <<<"${output}" | tail -n 1)"
+    if [[ -z "${pushed}" ]] || [[ ! "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+      echo "::error::helm push of ${chart} succeeded but printed no Pushed and Digest line; the pushed digest is unknown" >&2
+      exit 1
+    fi
+    ref="${pushed%:*}@${digest}"
+    if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+      {
+        echo "digest=${digest}"
+        echo "ref=${ref}"
+      } >>"${GITHUB_OUTPUT}"
+    fi
     exit 0
   fi
   if ! grep -Eq "${tag_not_found}" <<<"${output}"; then
