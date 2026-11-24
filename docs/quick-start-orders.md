@@ -1057,7 +1057,6 @@ kubectl delete secret cobaltcore-target -n c5c3-clusters
 helm uninstall --kube-context kind-cobaltcore-target target-cluster-access -n c5c3-access
 kind delete cluster --name cobaltcore-target
 kind get clusters
-rm -r "$workdir"
 ```
 
 The final command removes the temporary directory, including the target
