@@ -72,39 +72,7 @@ jobs:
         if: steps.tag.outputs.kind == 'rc' && !steps.tag.outputs.published
         env:
           OPERATORS: ${{ inputs.operators }}
-        run: |
-          jq -er --arg version "${TAG#v}" '.operator[] | . + "-operator-" + $version + ".tgz"' \
-            <<< "$OPERATORS" | sort > expected-charts.txt
-          find assets -type f | sed 's,^assets/,,' | sort | diff expected-charts.txt -
-          # Bind the published archives to the candidate's peeled commit.
-          source=$(git rev-parse "refs/tags/$TAG^{commit}")
-          (cd assets && { echo "# Source commit $source"; sha256sum -- *.tgz; } > SHA256SUMS)
-
-          # The previous stable can have backports that never landed verbatim on main.
-          base=${TAG%-rc.*}
-          previous=$(
-            git tag --list |
-              awk '/^v(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*)){2}$/' |
-              { cat; echo "$base"; } | sort -Vu | awk -v base="$base" '$0 == base {print prev} {prev=$0}'
-          )
-          if [[ -n "$previous" ]]; then
-            gh api --method POST "repos/$REPO/releases/generate-notes" \
-              -f tag_name="$TAG" -f previous_tag_name="$previous" --jq .body > notes.md
-          else
-            # There is no base tag for the first series. Include recent changes
-            # and a permanent link to the full history even on its second RC.
-            echo "## Recent changes in the first release series" > notes.md
-            git log -100 --first-parent --format='- %s (%h)' "$GITHUB_SHA" >> notes.md
-            printf '\n[Full commit history](%s/%s/commits/%s)\n' "$GITHUB_SERVER_URL" "$REPO" "$GITHUB_SHA" >> notes.md
-          fi
-          previous_rc=$(
-            git tag --merged "$GITHUB_SHA" --list "$base-rc.*" --sort=version:refname |
-              awk -F '-rc\\.' -v tag="$TAG" 'NF == 2 && $2 ~ /^[1-9][0-9]*$/ {if ($0 == tag) print prev; prev=$0}'
-          )
-          if [[ -n "$previous_rc" ]]; then
-            printf '\n[Changes since %s](%s/%s/compare/%s...%s)\n' \
-              "$previous_rc" "$GITHUB_SERVER_URL" "$REPO" "$previous_rc" "$TAG" >> notes.md
-          fi
+        run: python3 scripts/release/candidate-changelog.py
 
       - name: Reuse the latest RC at the stable commit
         if: steps.tag.outputs.kind == 'stable' && !steps.tag.outputs.published
