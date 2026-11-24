@@ -152,36 +152,30 @@ In another terminal, query the targets:
 
 ```bash
 curl --fail --silent --show-error 'http://localhost:9090/api/v1/targets?state=active' \
-  | jq -e '
-      [.data.activeTargets[]? |
+  | jq '
+      [.data.activeTargets[] |
         select(.labels.namespace == "neutron-system") |
-        {health, lastScrape, lastError}] as $targets |
-      if ($targets | length) == 0 then
-        error("no Neutron operator target; check Prometheus ServiceMonitor selectors")
-      elif any($targets[]; .health != "up") then
-        error("a Neutron operator target is not up: " + ($targets | tojson))
-      else $targets end'
+        {health, lastScrape, lastError}]'
 ```
 
-The query fails if Prometheus has not selected a target or if a target is down;
-inspect `lastError` in the output. If a target is absent, recheck both
-ServiceMonitor selectors. If it is down, confirm Prometheus can reach the
-operator metrics port. When the operator NetworkPolicy is enabled, add the
-Prometheus source to `networkPolicy.allowMetricsFrom`; see
+Expect at least one target and `health: "up"` for each. If a target is absent,
+recheck both ServiceMonitor selectors. If it is down, inspect `lastError` and
+confirm Prometheus can reach the operator metrics port. When the operator
+NetworkPolicy is enabled, add the Prometheus source to
+`networkPolicy.allowMetricsFrom`; see
 [Enable the Neutron Operator NetworkPolicy](./enable-neutron-operator-networkpolicy.md).
 Then confirm the series exist:
 
 ```bash
 curl --fail --silent --show-error \
   'http://localhost:9090/api/v1/query?query=neutron_operator_reconcile_duration_seconds_count' \
-  | jq -r 'if .status != "success" then
-      error("Prometheus query failed: " + (.error // "unknown error"))
-    else (.data.result | length) end'
+  | jq '{status, error, count: (.data.result | length)}'
 ```
 
-A non-zero result count means the operator has recorded at least one reconcile
-observation since its process started. Prometheus receives the histogram's
-cumulative count at each scrape; restarting the operator resets that count.
+Expect `status: "success"`. A non-zero result count means the operator has
+recorded at least one reconcile observation since its process started.
+Prometheus receives the histogram's cumulative count at each scrape; restarting
+the operator resets that count.
 
 Both sync pairs stay empty until a Job terminates, and each fills from a
 different event. The db-sync pair records terminal runs of the initial

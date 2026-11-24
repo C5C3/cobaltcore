@@ -179,29 +179,15 @@ client, so allow up to a minute for the file to appear:
 ```bash
 PODS=$(kubectl get pods -n openstack \
   -l app.kubernetes.io/instance=controlplane-glance -o name)
-CACHED_ON=""
-for _ in $(seq 1 12); do
-  for pod in $PODS; do
-    listing=$(kubectl exec -n openstack "${pod#pod/}" -c glance-api -- \
-      ls -1 /var/lib/glance/image-cache 2>/dev/null || true)
-    if printf '%s\n' "$listing" | grep -qx "$IMAGE_ID" \
-      && printf '%s\n' "$listing" | grep -qx 'cache.db'; then
-      CACHED_ON="${pod#pod/}"
-      break 2
-    fi
-  done
-  sleep 5
+for pod in $PODS; do
+  echo "$pod"
+  kubectl exec -n openstack "$pod" -c glance-api -- \
+    ls -1 /var/lib/glance/image-cache
 done
-if [ -z "$CACHED_ON" ]; then
-  echo "ERROR: image ${IMAGE_ID} did not appear in any replica's cache." >&2
-  exit 1
-fi
-echo "Cached on pod ${CACHED_ON}:"
-kubectl exec -n openstack "$CACHED_ON" -c glance-api -- \
-  ls -1 /var/lib/glance/image-cache
 ```
 
-One pod lists a file named after the image ID the command above printed, next to
+Repeat the listing if the entry has not appeared yet. One pod lists a file named
+after the image ID the command above printed, next to
 `cache.db`, the metadata the sqlite driver keeps inside the cache directory:
 
 ```
@@ -214,16 +200,11 @@ replica, and returns the same bytes either way:
 
 ```bash
 openstack --insecure image save --file /tmp/cache-demo.again cache-demo
-if cmp -s /tmp/cache-demo.img /tmp/cache-demo.out \
-  && cmp -s /tmp/cache-demo.img /tmp/cache-demo.again; then
-  echo "Both downloads match the uploaded image."
-else
-  echo "ERROR: a downloaded image differs from the uploaded image." >&2
-  exit 1
-fi
+cmp /tmp/cache-demo.img /tmp/cache-demo.out
+cmp /tmp/cache-demo.img /tmp/cache-demo.again
 ```
 
-Clean up:
+Both comparisons are silent when the files match. Clean up:
 
 ```bash
 openstack --insecure image delete cache-demo

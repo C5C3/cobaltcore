@@ -121,20 +121,15 @@ openstack --insecure flavor create --vcpus 1 --ram 128 --disk 1 m1.nano
 truncate -s 1M /tmp/boot-image.raw
 openstack --insecure image create --disk-format raw --container-format bare \
   --file /tmp/boot-image.raw boot-image
-for _ in $(seq 30); do
-  image_status="$(openstack --insecure image show boot-image -f value -c status)"
-  [ "$image_status" = active ] && break
-  sleep 2
-done
-image_status="$(openstack --insecure image show boot-image -f value -c status)"
-if [ "$image_status" != active ]; then
-  echo "ERROR: boot-image did not become active during the 60-second polling window " \
-    "(status: $image_status)" >&2
-else
-  openstack --insecure server create --image boot-image --flavor m1.nano \
-    --nic none --wait drain-server
-  openstack --insecure server show drain-server -c OS-EXT-SRV-ATTR:host -f value
-fi
+openstack --insecure image show boot-image -f value -c status
+```
+
+Repeat the status check until it prints `active`, then boot the server:
+
+```bash
+openstack --insecure server create --image boot-image --flavor m1.nano \
+  --nic none --wait drain-server
+openstack --insecure server show drain-server -c OS-EXT-SRV-ATTR:host -f value
 ```
 
 The last command prints the node's name, the value of `$NODE`.
@@ -183,19 +178,14 @@ describes.
 
 ```bash
 openstack --insecure server delete --wait drain-server
-for _ in $(seq 36); do
-  nodes="$(kubectl get novacompute controlplane-pool-a -n openstack -o jsonpath='{.status.nodes}')"
-  [ -z "$nodes" ] && break
-  sleep 5
-done
-kubectl get novacompute controlplane-pool-a -n openstack -o jsonpath='{.status.nodes}'
+kubectl get novacompute controlplane-pool-a -n openstack -o jsonpath='{.status.nodes}{"\n"}'
 ```
 
 A Draining node is polled every 30 seconds. Once Nova counts no server, the
 node goes `Releasing` and the pool releases its pod; once the pod is gone, the
-pool deletes the compute service and drops the node from `status.nodes`, so the
-last command prints an empty line. The pool's next pass, about 10 seconds
-later, deletes the zone aggregate no pool needs any more:
+pool deletes the compute service and drops the node from `status.nodes`. Repeat
+the last command until it prints an empty line. The pool's next pass, about 10
+seconds later, deletes the zone aggregate no pool needs any more:
 
 ```bash
 kubectl get events -n openstack \

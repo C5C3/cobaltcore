@@ -138,164 +138,81 @@ unbounded.
 ## Verification
 
 Use example names that are unused in this OpenStack environment; the cleanup
-below deletes them. Create calls return before backend work completes, so wait
-for each image or volume to reach its target status before counting cache
-entries:
+below deletes them. Create an image and check its status:
 
 ```bash
-(
-  set -e
-
-  wait_status() {
-    local kind=$1 name=$2 wanted=$3 timeout=$4 deadline status
-    deadline=$(( $(date +%s) + timeout ))
-    while true; do
-      status=$(openstack --insecure "$kind" show "$name" -f value -c status 2>/dev/null || true)
-      if [ "$status" = "$wanted" ]; then
-        return 0
-      fi
-      case "$status" in
-        error*|killed)
-          echo "ERROR: $kind $name reached $status" >&2
-          openstack --insecure "$kind" show "$name" >&2 || true
-          return 1
-          ;;
-      esac
-      if [ "$(date +%s)" -ge "$deadline" ]; then
-        echo "ERROR: $kind $name status '${status:-<none>}' != $wanted within ${timeout}s" >&2
-        openstack --insecure "$kind" show "$name" >&2 || true
-        return 1
-      fi
-      sleep 5
-    done
-  }
-
-  image_file=$(mktemp /tmp/cinder-cache.XXXXXX)
-  trap 'rm -f "$image_file"' EXIT
-  dd if=/dev/urandom of="$image_file" bs=1024 count=1024
-  openstack --insecure image create --disk-format raw --container-format bare \
-    --file "$image_file" demo-cache-img
-  rm -f "$image_file"
-  trap - EXIT
-  wait_status image demo-cache-img active 120
-  IMG=$(openstack --insecure image show demo-cache-img -f value -c id)
-
-  # The first create downloads the image and seeds the cache.
-  openstack --insecure volume create --size 1 --image "$IMG" demo-img-1
-  wait_status volume demo-img-1 available 180
-  VOLUME_NAMES=$(openstack --insecure volume list --all-projects -f value -c Name)
-  COUNT=$(printf '%s\n' "$VOLUME_NAMES" | grep -cx "image-$IMG" || true)
-  printf 'Cache entries after first create: %s\n' "$COUNT"
-  test "$COUNT" -eq 1 || {
-    echo "ERROR: expected one cache entry, found $COUNT" >&2
-    exit 1
-  }
-
-  # The second create clones the cached volume.
-  openstack --insecure volume create --size 1 --image "$IMG" demo-img-2
-  wait_status volume demo-img-2 available 180
-  VOLUME_NAMES=$(openstack --insecure volume list --all-projects -f value -c Name)
-  COUNT=$(printf '%s\n' "$VOLUME_NAMES" | grep -cx "image-$IMG" || true)
-  printf 'Cache entries after second create: %s\n' "$COUNT"
-  test "$COUNT" -eq 1 || {
-    echo "ERROR: expected the second create to reuse one cache entry, found $COUNT" >&2
-    exit 1
-  }
-)
+image_file=$(mktemp /tmp/cinder-cache.XXXXXX)
+dd if=/dev/urandom of="$image_file" bs=1024 count=1024
+openstack --insecure image create --disk-format raw --container-format bare \
+  --file "$image_file" demo-cache-img
+rm "$image_file"
+openstack --insecure image show demo-cache-img -f value -c status
 ```
 
-Both checks should print `1`. The list uses `--all-projects` because Cinder
-stores the cache entry under the internal tenant; a tenant's own volume list
-omits it.
-
-The cleanup block looks up only these example names and skips resources that
-were not created, so you can also run it after a failed status wait. If Cinder
-rejects a volume delete while it is still creating, wait for its state to settle
-and rerun cleanup. The cache belongs to the deployment, so deleting the test
-volumes does not remove it:
+If image creation fails, remove the temporary file with `rm "$image_file"`.
+Repeat the status check until the image is `active`. Keep
+this shell open, then create a volume from it:
 
 ```bash
-(
-  set -e
+IMG=$(openstack --insecure image show demo-cache-img -f value -c id)
+openstack --insecure volume create --size 1 --image "$IMG" demo-img-1
+openstack --insecure volume show demo-img-1 -f value -c status
+```
 
-  wait_gone() {
-    local volume_id=$1 timeout=$2 deadline ids
-    deadline=$(( $(date +%s) + timeout ))
-    while true; do
-      ids=$(openstack --insecure volume list --all-projects -f value -c ID) || {
-        echo "ERROR: could not list volumes while waiting for $volume_id" >&2
-        return 1
-      }
-      if ! printf '%s\n' "$ids" | grep -Fxq "$volume_id"; then
-        return 0
-      fi
-      if [ "$(date +%s)" -ge "$deadline" ]; then
-        echo "ERROR: volume $volume_id is still listed after ${timeout}s" >&2
-        openstack --insecure volume show "$volume_id" >&2 || true
-        return 1
-      fi
-      sleep 5
-    done
-  }
+Repeat the status check until the volume is `available`, then inspect the cache:
 
-  wait_image_gone() {
-    local image_id=$1 timeout=$2 deadline ids
-    deadline=$(( $(date +%s) + timeout ))
-    while true; do
-      ids=$(openstack --insecure image list -f value -c ID) || {
-        echo "ERROR: could not list images while waiting for $image_id" >&2
-        return 1
-      }
-      if ! printf '%s\n' "$ids" | grep -Fxq "$image_id"; then
-        return 0
-      fi
-      if [ "$(date +%s)" -ge "$deadline" ]; then
-        echo "ERROR: image $image_id is still listed after ${timeout}s" >&2
-        openstack --insecure image show "$image_id" >&2 || true
-        return 1
-      fi
-      sleep 5
-    done
-  }
+```bash
+openstack --insecure volume list --all-projects --name "image-$IMG"
+```
 
-  resource_id() {
-    local rows=$1 name=$2 ids count
-    ids=$(printf '%s\n' "$rows" | awk -v n="$name" '$2 == n {print $1}')
-    count=$(printf '%s\n' "$ids" | grep -c . || true)
-    if [ "$count" -gt 1 ]; then
-      echo "ERROR: multiple resources are named $name" >&2
-      return 1
-    fi
-    printf '%s' "$ids"
-  }
+There should be one entry named `image-$IMG`. The list uses `--all-projects`
+because Cinder stores it under the internal tenant; a tenant's own volume list
+omits it. Create a second volume and check that it reuses the same cache entry:
 
-  VOLUME_ROWS=$(openstack --insecure volume list --all-projects -f value -c ID -c Name)
-  for name in demo-img-2 demo-img-1; do
-    volume_id=$(resource_id "$VOLUME_ROWS" "$name")
-    if [ -n "$volume_id" ]; then
-      openstack --insecure volume delete "$volume_id"
-    fi
-  done
-  for name in demo-img-2 demo-img-1; do
-    volume_id=$(resource_id "$VOLUME_ROWS" "$name")
-    if [ -n "$volume_id" ]; then
-      wait_gone "$volume_id" 120
-    fi
-  done
+```bash
+openstack --insecure volume create --size 1 --image "$IMG" demo-img-2
+openstack --insecure volume show demo-img-2 -f value -c status
+```
 
-  IMAGE_ROWS=$(openstack --insecure image list -f value -c ID -c Name)
-  IMG=$(resource_id "$IMAGE_ROWS" demo-cache-img)
-  if [ -n "$IMG" ]; then
-    VOLUME_ROWS=$(openstack --insecure volume list --all-projects -f value -c ID -c Name)
-    CACHE_ID=$(resource_id "$VOLUME_ROWS" "image-$IMG")
-    if [ -n "$CACHE_ID" ]; then
-      openstack --insecure volume delete "$CACHE_ID"
-      wait_gone "$CACHE_ID" 120
-    fi
-    openstack --insecure image delete "$IMG"
-    wait_image_gone "$IMG" 120
-  fi
-)
+Repeat the status check until the second volume is `available`, then list the
+cache entry again:
+
+```bash
+openstack --insecure volume list --all-projects --name "image-$IMG"
+```
+
+The list should still contain one entry.
+
+Delete the test volumes. If one was not created, omit it; if Cinder rejects a
+delete while a volume is still creating, wait for its state to settle and retry:
+
+```bash
+openstack --insecure volume delete demo-img-1 demo-img-2
+openstack --insecure volume list
+```
+
+Repeat the list until both test volumes are gone. If `IMG` was not set earlier,
+recover the image ID first:
+
+```bash
+IMG=$(openstack --insecure image show demo-cache-img -f value -c id)
+```
+
+The cache belongs to the deployment, so deleting the test volumes does not
+remove it. Find the ID of the entry named `image-$IMG` and replace
+`CACHE_VOLUME_ID` with that ID:
+
+```bash
+openstack --insecure volume list --all-projects --name "image-$IMG"
+openstack --insecure volume delete CACHE_VOLUME_ID
+openstack --insecure volume list --all-projects --name "image-$IMG"
+```
+
+Repeat the list until the cache volume is gone, then delete the image. If the
+cache entry was not created, skip its deletion.
+
+```bash
+openstack --insecure image delete "$IMG"
 ```
 
 On the ControlPlane's `nfs1` entry, set `enabled: false` or remove

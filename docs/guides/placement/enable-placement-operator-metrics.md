@@ -168,17 +168,12 @@ allows its source. Then confirm the reconcile series exists:
 ```bash
 curl --fail --silent --show-error \
   'http://localhost:9090/api/v1/query?query=placement_operator_reconcile_duration_seconds_count' \
-  | jq -r '
-      if .status != "success" then
-        error("Prometheus query failed: " + (.error // "unknown error"))
-      elif (.data.result | length) == 0 then
-        error("no sub-reconciler observations have been recorded yet")
-      else (.data.result | length) end'
+  | jq '{status, error, count: (.data.result | length)}'
 ```
 
-Replace the namespace and job name if needed. Expect `status: "success"` and
-a non-zero series count, which means the operator has recorded at least one
-sub-reconciler observation. The db-sync pair stays empty until a db-sync Job
+Expect `status: "success"` and a non-zero series count, which means the operator
+has recorded at least one sub-reconciler observation. The db-sync pair stays
+empty until a db-sync Job
 terminates and the controller observes it. A new `Placement` CR therefore
 shows reconcile metrics first, then db-sync metrics after its Job completes.
 

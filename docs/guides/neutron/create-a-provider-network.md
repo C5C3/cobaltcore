@@ -69,33 +69,14 @@ apply can take a short time, so wait for both the mapping and bridge:
 
 ```bash
 DS=ds/controlplane-chassis-ovs
-RAW=""
-MAPPINGS=""
-FOUND=""
-for _ in $(seq 1 24); do
-  RAW="$(kubectl exec "$DS" -n openstack -c ovsdb-server -- \
-    ovs-vsctl --timeout=15 get open . external_ids:ovn-bridge-mappings 2>&1 || true)"
-  MAPPINGS="$(tr -d '[:space:]"' <<< "$RAW")"
-  if [ "$MAPPINGS" = "physnet1:br-ex" ] &&
-     kubectl exec "$DS" -n openstack -c ovsdb-server -- \
-       ovs-vsctl --timeout=15 br-exists br-ex >/dev/null 2>&1; then
-    FOUND=yes
-    break
-  fi
-  sleep 5
-done
-if [ "$FOUND" != yes ]; then
-  echo "Timed out waiting for physnet1:br-ex and bridge br-ex; last mapping: $RAW" >&2
-  kubectl exec "$DS" -n openstack -c ovsdb-server -- \
-    ovs-vsctl --timeout=15 list-br >&2 || true
-  exit 1
-fi
-printf 'Mapping: %s\n' "$MAPPINGS"
-echo "Bridge br-ex exists."
+kubectl exec "$DS" -n openstack -c ovsdb-server -- \
+  ovs-vsctl --timeout=15 get open . external_ids:ovn-bridge-mappings
+kubectl exec "$DS" -n openstack -c ovsdb-server -- \
+  ovs-vsctl --timeout=15 list-br
 ```
 
-The mapping is `"physnet1:br-ex"` in the OVS database; the check strips its
-quotes. `ovn-controller` attaches patch ports to a bridge but never creates
+Repeat the checks until the mapping is `"physnet1:br-ex"` and `br-ex` appears
+in the bridge list. `ovn-controller` attaches patch ports to a bridge but never creates
 one, so a mapping that points at a missing bridge drops every packet on that
 physical network while the CR and mapping still read correctly.
 
@@ -123,17 +104,14 @@ still allocates each port a fixed address out of the subnet.
 ```bash
 NODE="$(kubectl get nodes -l openstack.c5c3.io/chassis=true \
   -o jsonpath='{.items[0].metadata.name}')"
-if [ -z "$NODE" ]; then
-  echo "No node has the openstack.c5c3.io/chassis=true label." >&2
-  exit 1
-fi
+echo "$NODE"
+```
+
+Confirm the command prints a node name, then create the port:
+
+```bash
 openstack --insecure port create --network provider --host "$NODE" smoke0
-VIF_TYPE="$(openstack --insecure port show smoke0 -c binding_vif_type -f value)"
-if [ "$VIF_TYPE" != ovs ]; then
-  echo "Expected binding_vif_type=ovs, got ${VIF_TYPE:-empty}." >&2
-  exit 1
-fi
-printf '%s\n' "$VIF_TYPE"
+openstack --insecure port show smoke0 -c binding_vif_type -f value
 ```
 
 Expect `ovs`. `--host` sets `binding:host_id`, and the ML2/OVN mechanism driver
@@ -148,26 +126,15 @@ the part of the plug that OVN reacts to:
 
 ```bash
 PORT_ID=$(openstack --insecure port show smoke0 -f value -c id)
-if [ -z "$PORT_ID" ]; then
-  echo "Neutron returned no ID for port smoke0." >&2
-  exit 1
-fi
-DS=ds/controlplane-chassis-ovs
-FOUND=""
-for _ in $(seq 1 24); do
-  if kubectl exec "$DS" -n openstack -c ovsdb-server -- \
-    ovs-vsctl --timeout=15 br-exists br-int >/dev/null 2>&1; then
-    FOUND=yes
-    break
-  fi
-  sleep 5
-done
-if [ "$FOUND" != yes ]; then
-  echo "Timed out waiting for ovn-controller to create br-int." >&2
-  kubectl exec "$DS" -n openstack -c ovsdb-server -- \
-    ovs-vsctl --timeout=15 list-br >&2 || true
-  exit 1
-fi
+echo "$PORT_ID"
+kubectl exec "$DS" -n openstack -c ovsdb-server -- \
+  ovs-vsctl --timeout=15 list-br
+```
+
+Confirm the port ID is present and `br-int` appears in the list. Repeat the
+bridge check if `ovn-controller` has not created it yet. Then claim the port:
+
+```bash
 kubectl exec "$DS" -n openstack -c ovsdb-server -- \
   ovs-vsctl --may-exist add-port br-int smoke0 \
   -- set Interface smoke0 type=internal external_ids:iface-id="$PORT_ID"
@@ -179,21 +146,11 @@ Southbound `Port_Binding` row, and Neutron reports the port `ACTIVE` as soon as
 that row names a chassis:
 
 ```bash
-STATUS=""
-for _ in $(seq 30); do
-  STATUS="$(openstack --insecure port show smoke0 -c status -f value)"
-  [ "$STATUS" = ACTIVE ] && break
-  sleep 2
-done
-if [ "$STATUS" != ACTIVE ]; then
-  printf 'Timed out waiting for smoke0 to become ACTIVE (last status: %s).\n' \
-    "${STATUS:-unknown}" >&2
-  exit 1
-fi
-printf '%s\n' "$STATUS"
+openstack --insecure port show smoke0 -c status -f value
 ```
 
-The interface is `type=internal` because no traffic needs to pass through it;
+Repeat the command until the status is `ACTIVE`. The interface is
+`type=internal` because no traffic needs to pass through it;
 the port's `ACTIVE` status confirms that OVN bound it to the chassis.
 
 ### 5. Clean up

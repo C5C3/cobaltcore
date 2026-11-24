@@ -201,46 +201,35 @@ kubectl -n cinder-system describe networkpolicy cinder-operator
 
 Then confirm reconciliation still works end-to-end by driving a change through
 the `ControlPlane` CR and watching the projected block-storage API roll out.
-The block records the ControlPlane's current count, which is empty while the
-ControlPlane leaves it at the default, scales the API one replica above the size
-it runs at, and puts the count back:
+Record the ControlPlane's current override and the Deployment's current count:
 
 ```bash
-(
-  set -e
-  if CUR=$(kubectl get controlplane controlplane -n openstack \
-       -o jsonpath='{.spec.sizing.cinder.api.replicas}') &&
-     RUN=$(kubectl get deploy/controlplane-cinder -n openstack \
-       -o jsonpath='{.spec.replicas}'); then
-    NEW=$((RUN + 1))
-
-    restore_replicas() {
-      # null drops the override again when the ControlPlane used its default.
-      kubectl patch controlplane controlplane -n openstack --type merge \
-        -p "{\"spec\":{\"sizing\":{\"cinder\":{\"api\":{\"replicas\":${CUR:-null}}}}}}"
-    }
-    trap restore_replicas EXIT
-
-    kubectl patch controlplane controlplane -n openstack --type merge \
-      -p "{\"spec\":{\"sizing\":{\"cinder\":{\"api\":{\"replicas\":$NEW}}}}}"
-    kubectl wait deploy/controlplane-cinder -n openstack --timeout=5m \
-      --for=jsonpath='{.spec.replicas}'="$NEW"
-    kubectl rollout status deploy/controlplane-cinder -n openstack --timeout=5m
-
-    restore_replicas
-    trap - EXIT
-  else
-    echo "could not read the replica counts; nothing was patched" >&2
-    exit 1
-  fi
-)
+CUR=$(kubectl get controlplane controlplane -n openstack \
+  -o jsonpath='{.spec.sizing.cinder.api.replicas}')
+RUN=$(kubectl get deploy/controlplane-cinder -n openstack \
+  -o jsonpath='{.spec.replicas}')
+echo "Configured: ${CUR:-unset}; running: $RUN"
 ```
 
-The two reads finish before the first patch. If either fails, the block prints
-an error, exits nonzero and leaves the ControlPlane unchanged. If the patch,
-wait or rollout fails after scaling, the exit trap restores the recorded count.
-An unset replica override reads as an empty string, so the restore uses `null`
-to remove that override again.
+Check that both reads succeeded and the running count is a number. Keep this
+shell open, then scale the API one replica above its current size:
+
+```bash
+NEW=$((RUN + 1))
+kubectl patch controlplane controlplane -n openstack --type merge \
+  -p "{\"spec\":{\"sizing\":{\"cinder\":{\"api\":{\"replicas\":$NEW}}}}}"
+kubectl wait deploy/controlplane-cinder -n openstack --timeout=5m \
+  --for=jsonpath='{.spec.replicas}'="$NEW"
+kubectl rollout status deploy/controlplane-cinder -n openstack --timeout=5m
+```
+
+Restore the recorded count even if a check fails. An unset override reads as an
+empty string, so `null` removes it again:
+
+```bash
+kubectl patch controlplane controlplane -n openstack --type merge \
+  -p "{\"spec\":{\"sizing\":{\"cinder\":{\"api\":{\"replicas\":${CUR:-null}}}}}}"
+```
 
 The `kubectl wait` is the check that proves the operator still reconciles: the
 patch travels from the ControlPlane to the `Cinder` CR to the Deployment, and

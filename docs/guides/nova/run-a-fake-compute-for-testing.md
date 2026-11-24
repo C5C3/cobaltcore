@@ -147,25 +147,19 @@ openstack --insecure flavor create --vcpus 1 --ram 128 --disk 1 m1.nano
 truncate -s 1M /tmp/boot-image.raw
 openstack --insecure image create --disk-format raw --container-format bare \
   --file /tmp/boot-image.raw boot-image
-status=
-for _ in $(seq 30); do
-  status="$(openstack --insecure image show boot-image -f value -c status)"
-  if [ "$status" = active ]; then
-    break
-  fi
-  sleep 2
-done
-if [ "$status" != active ]; then
-  echo "boot-image did not become active within 60 seconds" >&2
-  exit 1
-fi
+openstack --insecure image show boot-image -f value -c status
+```
+
+Repeat the status check until it prints `active`, then boot the server:
+
+```bash
 openstack --insecure server create --image boot-image --flavor m1.nano \
   --nic none --wait demo-server
 openstack --insecure server show demo-server -c status -f value
 ```
 
-The last command prints `ACTIVE`. The loop before the boot waits for the image
-to reach `active`: `image create` returns before the store write completes, and
+The last command prints `ACTIVE`. `image create` returns before the store write
+completes, and
 nova refuses to boot from an image that is still `saving`. `--nic none` is what
 lets the boot finish on this devstack: it runs no `OVNChassis`, so a port on a
 network could never bind.

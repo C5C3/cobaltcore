@@ -129,7 +129,7 @@ configured with OpenBao's client certificate, key, and CA as described in the
 
 ```bash
 # Obtain BAO_TOKEN as described in Running the Full Bootstrap above.
-source deploy/openbao/bootstrap/common.sh
+source deploy/bases/shared-openbao/bootstrap/common.sh
 printf 'Static Keystone DB password: '
 IFS= read -r -s DB_PASSWORD
 printf '\n'
@@ -280,7 +280,7 @@ with `v-` using the command in Step 4. Then, once the ControlPlane reports
    KEYSTONE_NAMESPACE=openstack
    CONTROLPLANE_NAME=controlplane
    # BAO_TOKEN must be exported as described in Step 1.
-   source deploy/openbao/bootstrap/common.sh
+   source deploy/bases/shared-openbao/bootstrap/common.sh
    bao_exec bao kv metadata delete \
      "kv-v2/openstack/keystone/${KEYSTONE_NAMESPACE}/${CONTROLPLANE_NAME}/db"
    ```

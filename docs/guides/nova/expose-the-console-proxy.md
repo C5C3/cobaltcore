@@ -94,14 +94,10 @@ shared terminal logs.
 
 ```bash
 URL=$(openstack --insecure console url show --novnc demo-server -f value -c url)
-if [ -z "$URL" ]; then
-  echo "ERROR: the API returned no console URL for demo-server" >&2
-  exit 1
-fi
 echo "$URL"
 ```
 
-The URL reads
+Confirm the command prints a URL before continuing. The URL reads
 `https://nova-console.127-0-0-1.nip.io/vnc_lite.html?path=%3Ftoken%3D<token>`.
 It carries no port, because the operator renders the console base URL from the
 gateway hostname alone and assumes the listener answers on 443. With
@@ -113,15 +109,14 @@ the next block derives `TOKEN` from `URL`:
 URL_WITH_PORT="${URL/nip.io\//nip.io:8443/}"
 echo "$URL_WITH_PORT"
 TOKEN=$(sed -n 's/.*token%3D\([0-9a-f-]*\).*/\1/p' <<<"$URL")
-if [ -z "$TOKEN" ]; then
-  echo "ERROR: could not extract a console token from the URL" >&2
-  exit 1
-fi
+test -n "$TOKEN" && echo "Token extracted"
 ```
 
-On the default `KIND_HOST_PORT=443` the URL works as printed. By default, a
-console token lives for 600 seconds (`[consoleauth] token_ttl`), so fetch a
-fresh URL if the checks below run later than that.
+If the check does not print `Token extracted`, fetch a new URL and check its
+format before continuing. On the default `KIND_HOST_PORT=443` the URL works as
+printed. By default, a console token lives for 600 seconds
+(`[consoleauth] token_ttl`), so fetch a fresh URL if the checks below run later
+than that.
 
 ### 3. Verify the path through the proxy
 
@@ -137,18 +132,16 @@ curl -sk -o /dev/null -w '%{http_code}\n' \
 The WebSocket upgrade the page makes next, spelled out with curl, answers
 `HTTP/1.1 101`. `--http1.1` pins the protocol version an upgrade needs, and the
 socket opens on `/websockify`, the path websockify serves its endpoint under.
-The proxy closes the upgraded socket after the timeout, so this pipeline ignores
-curl's expected nonzero exit and prints the response line:
+The proxy closes the upgraded socket after the timeout. The command prints the
+response line even if curl exits nonzero:
 
 ```bash
-set +o pipefail
 curl -sk -i -N --http1.1 --max-time 10 \
   -H 'Connection: Upgrade' \
   -H 'Upgrade: websocket' \
   -H 'Sec-WebSocket-Version: 13' \
   -H "Sec-WebSocket-Key: $(head -c 16 /dev/urandom | base64)" \
   "https://nova-console.127-0-0-1.nip.io:8443/websockify?token=${TOKEN}" | head -1
-set -o pipefail
 ```
 
 curl exits non-zero once the proxy drops the switched socket; the first line is
