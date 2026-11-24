@@ -17,10 +17,6 @@ name: Publish CobaltCore release
 permissions:
   contents: write
 
-defaults:
-  run:
-    shell: bash
-
 jobs:
   release:
     if: github.event.created && !github.event.deleted && github.ref_type == 'tag'
@@ -31,8 +27,6 @@ jobs:
       cancel-in-progress: false
     env:
       GH_TOKEN: ${{ github.token }}
-      TAG: ${{ github.ref_name }}
-      REPO: ${{ github.repository }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -41,24 +35,7 @@ jobs:
 
       - name: Identify the release
         id: tag
-        run: |
-          number='(0|[1-9][0-9]*)'
-          [[ "$TAG" =~ ^v${number}\.${number}\.${number}(-rc\.[1-9][0-9]*)?$ ]]
-          source=$(git rev-parse "refs/tags/$TAG^{commit}")
-          event_commit=$(git rev-parse "$GITHUB_SHA^{commit}")
-          [[ "$source" == "$event_commit" ]]
-          kind=stable
-          [[ "$TAG" != *-rc.* ]] || kind=rc
-          echo "kind=$kind" >> "$GITHUB_OUTPUT"
-          # Include drafts left by interrupted uploads, and propagate API errors.
-          gh api --paginate "repos/$REPO/releases?per_page=100" |
-            jq -s --arg tag "$TAG" 'add | map(select(.tag_name == $tag)) | first' > existing.json
-          if jq -e '. != null' existing.json >/dev/null; then
-            jq -e --arg kind "$kind" '.prerelease == ($kind == "rc")' existing.json >/dev/null
-            if jq -e '.draft == false' existing.json >/dev/null; then
-              echo "published=true" >> "$GITHUB_OUTPUT"
-            fi
-          fi
+        run: python3 scripts/release/publish.py identify
 
       - name: Download the exact chart archives from the candidate build
         if: steps.tag.outputs.kind == 'rc' && !steps.tag.outputs.published
@@ -68,63 +45,8 @@ jobs:
           path: assets
           merge-multiple: true
 
-      - name: Generate the candidate changelog
-        if: steps.tag.outputs.kind == 'rc' && !steps.tag.outputs.published
-        env:
-          OPERATORS: ${{ inputs.operators }}
-        run: python3 scripts/release/candidate-changelog.py
-
-      - name: Reuse the latest RC at the stable commit
-        if: steps.tag.outputs.kind == 'stable' && !steps.tag.outputs.published
-        run: |
-          candidates=$(git tag --list "$TAG-rc.*" --sort=-version:refname)
-          rc=$(awk -F '-rc\\.' 'NF == 2 && $2 ~ /^[1-9][0-9]*$/ {print; exit}' <<< "$candidates")
-          [[ -n "$rc" ]] || { echo "::error::No RC for $TAG"; exit 1; }
-          source=$(git rev-parse "refs/tags/$rc^{commit}")
-          stable=$(git rev-parse "refs/tags/$TAG^{commit}")
-          [[ "$source" == "$stable" ]] || {
-            echo "::error::$TAG must point to the same commit as $rc"; exit 1;
-          }
-          gh release view "$rc" --repo "$REPO" --json databaseId,isDraft,isPrerelease,body,url > candidate.json
-          jq -e '.isPrerelease and (.isDraft | not) and (.body | length > 0)' candidate.json >/dev/null
-          jq -r --arg rc "$rc" '"Promoted from [" + $rc + "](" + .url + ").\n\n" + .body' candidate.json > notes.md
-
-          mkdir -p assets
-          gh release download "$rc" --repo "$REPO" --dir assets
-          id=$(jq -r .databaseId candidate.json)
-          gh api --paginate "repos/$REPO/releases/$id/assets?per_page=100" |
-            jq -ser 'add[] | "\(.digest)  \(.name)"' | sort > candidate.sha256
-          (cd assets && sha256sum -- *) | sed 's/^/sha256:/' | sort | diff candidate.sha256 -
-          grep -Fxq "# Source commit $source" assets/SHA256SUMS
-          (cd assets && sha256sum --check --strict SHA256SUMS)
-
       - name: Publish the release with its changelog
         if: '!steps.tag.outputs.published'
         env:
-          KIND: ${{ steps.tag.outputs.kind }}
-        run: |
-          flags=(--prerelease=false)
-          [[ "$KIND" != rc ]] || flags=(--prerelease --latest=false)
-          if jq -e '. == null' existing.json >/dev/null; then
-            gh release create "$TAG" --repo "$REPO" --verify-tag --draft \
-              --title "$TAG" --notes-file notes.md "${flags[@]}"
-          fi
-          id=$(gh release view "$TAG" --repo "$REPO" --json databaseId --jq .databaseId)
-          # Resume a matching draft. Preserve existing uploads and reject a
-          # partial or conflicting asset rather than replacing published bytes.
-          remote_assets() {
-            gh api --paginate "repos/$REPO/releases/$id/assets?per_page=100" | jq -s 'add // []'
-          }
-          remote_assets > uploaded.json
-          (cd assets && sha256sum -- *) > local.sha256
-          while read -r digest name; do
-            remote=$(jq -r --arg name "$name" '.[] | select(.name == $name) | .digest' uploaded.json)
-            if [[ -z "$remote" ]]; then
-              gh release upload "$TAG" "assets/$name" --repo "$REPO"
-            elif [[ "$remote" != "sha256:$digest" ]]; then
-              echo "::error::Draft asset differs: $name"; exit 1
-            fi
-          done < local.sha256
-          remote_assets | jq -r '.[] | "\(.digest)  \(.name)"' | sed 's/^sha256://' | sort > remote.sha256
-          sort local.sha256 | diff - remote.sha256
-          gh release edit "$TAG" --repo "$REPO" --draft=false --notes-file notes.md "${flags[@]}"
+          OPERATORS: ${{ inputs.operators }}
+        run: python3 scripts/release/publish.py publish
