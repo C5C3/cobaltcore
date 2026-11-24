@@ -2458,10 +2458,15 @@ already exists. After the image manifests and both chart jobs succeed,
 `github-release` calls `.github/workflows/release.yaml`. The workflow attaches
 the exact operator archives uploaded by `helm-push`, checks the set against
 the operator matrix, and attaches `SHA256SUMS` with the candidate's source
-commit and archive checksums. GitHub generates the changelog from merged PRs since the
-preceding stable version using `.github/release.yml`. The first series lists
-recent commits with a link to its full history. Later RCs also link the changes
-since the preceding candidate.
+commit and archive checksums. GitHub generates the changelog from merged PRs
+since the latest published stable version below the requested version. It uses
+`.github/release.yml` to group changes. The first series lists recent commits and
+links to its full history. Later RCs also link to the changes since the preceding
+published RC on the same history.
+
+To preview a changelog, set `GH_TOKEN` and run
+`python3 scripts/release/changelog.py <version>` from the checkout. The script
+uses the version's local tag when available and `HEAD` for an untagged version.
 
 For a new `vX.Y.Z` tag, `release.yaml` selects the highest-numbered RC of that
 version and checks that both tags resolve to the same commit. It copies the
