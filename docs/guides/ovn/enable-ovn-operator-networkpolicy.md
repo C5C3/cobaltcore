@@ -75,7 +75,7 @@ and verify your CNI's behavior before applying the same assumption elsewhere
 ```bash
 kubectl get endpointslices -n default \
   -l kubernetes.io/service-name=kubernetes -o json \
-  | jq -er '
+  | jq -r '
       [
         .items[] as $slice
         | $slice.endpoints[]?
@@ -84,10 +84,7 @@ kubectl get endpointslices -n default \
         | $slice.ports[]?.port as $port
         | select($port != null)
         | "\($ip)\(if ($ip | contains(":")) then "/128" else "/32" end) port=\($port)"
-      ] | unique as $peers
-      | if ($peers | length) == 0 then
-          error("no Kubernetes API server EndpointSlice addresses or ports found")
-        else $peers[] end'
+      ] | unique[]'
 ```
 
 Record every unique CIDR and port the command prints. IPv4 addresses use
@@ -95,10 +92,11 @@ Record every unique CIDR and port the command prints. IPv4 addresses use
 node's address on the kind bridge, for example
 `172.18.0.2/32 port=6443`. An HA control plane reports an address for each API
 server replica, and a dual-stack cluster can report both address families. The
-chart puts all CIDRs and ports into one rule, so each listed port is allowed
-to each listed address. The rule must cover every address and port, or the
-operator can lose its leader-election lease when it talks to an excluded
-replica.
+command should print at least one address and port; if it does not, check the
+EndpointSlices before continuing. The chart puts all CIDRs and ports into one
+rule, so each listed port is allowed to each listed address. The rule must
+cover every address and port, or the operator can lose its leader-election
+lease when it talks to an excluded replica.
 
 On Cilium, CIDR selectors do not match cluster node addresses by default
 ([Cilium CIDR matching](https://docs.cilium.io/en/stable/security/policy/layer3/#cidr-select-nodes)).
@@ -136,10 +134,17 @@ peer while the HelmRelease is active:
 ```bash
 kubectl patch helmrelease ovn-operator -n ovn-system --type=merge \
   -p '{"spec":{"values":{"networkPolicy":{"allowMetricsFrom":[{"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"monitoring"}}}]}}}}'
-
-kubectl wait helmrelease/ovn-operator -n ovn-system \
-  --for=condition=Ready --timeout=5m
 ```
+
+Once the patch succeeds, check the release:
+
+```bash
+kubectl get helmrelease ovn-operator -n ovn-system -o yaml
+```
+
+Check that `status.observedGeneration` matches `metadata.generation` and the
+`Ready` condition is `True` before enabling the policy. Repeat the command if
+Flux has not reconciled the patch yet.
 
 For direct Helm installations, set the same value in the values supplied to
 `helm upgrade`. Each entry is rendered verbatim as a `NetworkPolicyPeer`, so a
@@ -150,23 +155,27 @@ Enable the policy after adding the metrics peer, if needed:
 ```bash
 kubectl patch helmrelease ovn-operator -n ovn-system --type=merge \
   -p '{"spec":{"values":{"networkPolicy":{"enabled":true,"kubeApiServer":{"cidrs":["172.18.0.2/32"],"ports":[6443]}}}}}'
-
-kubectl wait helmrelease/ovn-operator -n ovn-system \
-  --for=condition=Ready --timeout=5m
 ```
 
 Substitute the CIDRs and ports from the discovery command; the single-CIDR
-list stands in for the kind case of one control-plane node.
+list stands in for the kind case of one control-plane node. Once the patch
+succeeds, check that Flux has reconciled the current generation and the release
+is `Ready`, as above.
 
 ::: details Helm-managed installations (non-Flux)
 For a release managed directly by Helm, enable the same values with a rolling
-`helm upgrade`. Pin the upgrade to the installed chart version:
+`helm upgrade`. Find the installed chart version:
 
 ```bash
-CHART_VERSION="$(helm list -n ovn-system --filter '^ovn-operator$' -o json \
-  | jq -r '.[0].chart // "" | sub("^ovn-operator-"; "")')"
+helm list -n ovn-system --filter '^ovn-operator$'
+```
+
+Use the version from the `CHART` column to pin the upgrade. For example, if
+the column reads `ovn-operator-0.7.0`:
+
+```bash
 helm upgrade ovn-operator oci://ghcr.io/c5c3/charts/ovn-operator \
-  --namespace ovn-system --version "$CHART_VERSION" --reuse-values \
+  --namespace ovn-system --version 0.7.0 --reuse-values \
   --set networkPolicy.enabled=true \
   --set 'networkPolicy.kubeApiServer.cidrs[0]=172.18.0.2/32' \
   --set 'networkPolicy.kubeApiServer.ports[0]=6443'
@@ -235,87 +244,52 @@ kubectl -n ovn-system describe networkpolicy ovn-operator
 Then confirm reconciliation still works end-to-end by driving a change through
 the `OVNCentral` and watching northd roll out. The central is a CR you own on
 this devstack: the ControlPlane references it and projects nothing onto it, so
-it will not overwrite the test change. The block records the central's current
-northd count, scales northd one replica above the size it runs at, and patches
-the central back to its original count.
+it will not overwrite the test change. First, record the central's configured
+count and the Deployment's current count:
+
+```bash
+CUR="$(kubectl get ovncentral controlplane-ovn -n openstack \
+  -o jsonpath='{.spec.northd.deployment.replicas}')"
+RUN="$(kubectl get deploy/controlplane-ovn-northd -n openstack \
+  -o jsonpath='{.spec.replicas}')"
+echo "Configured: ${CUR:-unset}; running: $RUN"
+```
+
+Check that both reads succeeded and the running count is a number. Keep this
+shell open: the commands below use these values to scale northd up by one and
+restore the original configuration.
 
 The patch passes through the ovn-operator's own admission webhooks. In the
 first seconds after the restart, the webhook Service can still route a request
 to the old pod, which no longer serves, and the patch fails with
-`failed calling webhook`. That happens with the policy disabled too, so the
-block tries the patch up to ten times, two seconds apart. A refused call fails
-at once and the ten tries take about 20 seconds. A call the CNI drops, as
-kindnet does when the webhook ingress rule misses the API server, fails only
-after the API server's 10-second webhook timeout (the chart sets no
-`timeoutSeconds`) with `context deadline exceeded`, and the ten tries take about
-two minutes. When every try fails, the block reports failure and exits without
-changing the central. After a successful patch, it attempts to restore the
-recorded replica count even if the wait or rollout check fails. A failed
-verification or restore makes the block fail. That failure is the one under
+`failed calling webhook`. If this happens immediately after the restart, retry
+the patch. A persistent failure is described under
 [Every OVNCentral and OVNChassis write is rejected](#every-ovncentral-and-ovnchassis-write-is-rejected):
 
 ```bash
-set -eu
-
-if ! CUR=$(kubectl get ovncentral controlplane-ovn -n openstack \
-     -o jsonpath='{.spec.northd.deployment.replicas}'); then
-  echo "ERROR: could not read OVNCentral's northd replica count; nothing was patched" >&2
-  exit 1
-fi
-if ! RUN=$(kubectl get deploy/controlplane-ovn-northd -n openstack \
-     -o jsonpath='{.spec.replicas}'); then
-  echo "ERROR: could not read the northd Deployment replica count; nothing was patched" >&2
-  exit 1
-fi
-case "$RUN" in
-  ''|*[!0-9]*)
-    echo "ERROR: northd Deployment replica count is not an integer; nothing was patched" >&2
-    exit 1
-    ;;
-esac
 NEW=$((RUN + 1))
-
-patched=
-for _ in $(seq 10); do
-  if kubectl patch ovncentral controlplane-ovn -n openstack --type merge \
-       -p "{\"spec\":{\"northd\":{\"deployment\":{\"replicas\":$NEW}}}}"; then
-    patched=1
-    break
-  fi
-  sleep 2
-done
-if [ -z "$patched" ]; then
-  echo "ERROR: every OVNCentral patch was rejected; nothing was changed" >&2
-  exit 1
-fi
-
-verification_failed=0
-if kubectl wait deploy/controlplane-ovn-northd -n openstack --timeout=5m \
-     --for=jsonpath='{.spec.replicas}'="$NEW"; then
-  if ! kubectl rollout status deploy/controlplane-ovn-northd -n openstack --timeout=5m; then
-    echo "ERROR: northd did not finish rolling out at $NEW replicas" >&2
-    verification_failed=1
-  fi
-else
-  echo "ERROR: the operator did not set northd to $NEW replicas" >&2
-  verification_failed=1
-fi
-
-# Restore the recorded count; null drops the field again when it was unset.
-if ! kubectl patch ovncentral controlplane-ovn -n openstack --type merge \
-     -p "{\"spec\":{\"northd\":{\"deployment\":{\"replicas\":${CUR:-null}}}}}"; then
-  echo "ERROR: failed to restore the OVNCentral northd replica count" >&2
-  exit 1
-fi
-if [ "$verification_failed" -ne 0 ]; then
-  exit 1
-fi
+kubectl patch ovncentral controlplane-ovn -n openstack --type merge \
+  -p "{\"spec\":{\"northd\":{\"deployment\":{\"replicas\":$NEW}}}}"
 ```
 
-Both reads must succeed before the first patch. An unset replica count in the
-central remains empty, so the revert sends `null` to remove that field again.
-The Deployment count must be an integer before the block calculates the extra
-replica.
+Once the patch succeeds, wait for the operator to update the Deployment and
+for the rollout to finish:
+
+```bash
+kubectl wait deploy/controlplane-ovn-northd -n openstack --timeout=5m \
+  --for=jsonpath='{.spec.replicas}'="$NEW"
+kubectl rollout status deploy/controlplane-ovn-northd -n openstack --timeout=5m
+```
+
+Restore the original count, even if either check fails. If the count was unset,
+`null` removes the field again:
+
+```bash
+kubectl patch ovncentral controlplane-ovn -n openstack --type merge \
+  -p "{\"spec\":{\"northd\":{\"deployment\":{\"replicas\":${CUR:-null}}}}}"
+```
+
+If the restore fails, retry it after resolving the reported error.
 
 The `kubectl wait` is the check that proves the operator still reconciles. The
 restarted operator writes nothing until it holds the leader lease, and until it
@@ -333,142 +307,69 @@ restarted pod has run for at least one minute. The block adds an ephemeral
 container to the operator pod. The container shares the pod's network, so the
 policy judges its connections as it judges the operator's. It runs the image
 of the Keystone API Deployment, which ships `python3` and which the devstack's
-single node already holds, and opens one new TCP connection to every ready
-address and port of the `kubernetes` EndpointSlices. The block polls for about
-three minutes for the check to end, then prints the state of the check
-container and its log:
+single node already holds. Find the operator pod and the image:
 
 ```bash
-CHECK='
-import socket, sys
-failed = False
-for ep in sys.argv[1:]:
-    host, port = ep.rsplit(":", 1)
-    try:
-        socket.create_connection((host, int(port)), timeout=5).close()
-        print(ep, "connected")
-    except socket.timeout:
-        print(ep, "timed out")
-        failed = True
-    except OSError as exc:
-        print(ep, exc)
-        failed = True
-print("endpoints checked:", len(sys.argv) - 1)
-sys.exit(1 if failed else 0)
-'
-if ! POD=$(kubectl -n ovn-system get pods \
-     -l app.kubernetes.io/name=ovn-operator,app.kubernetes.io/instance=ovn-operator \
-     -o jsonpath='{.items[0].metadata.name}'); then
-  echo "ERROR: could not read the operator pod" >&2
-  exit 1
-fi
-if [ -z "${POD}" ]; then
-  echo "ERROR: no ovn-operator pod was found in ovn-system" >&2
-  exit 1
-fi
-if ! KS=$(kubectl -n openstack get keystones -o jsonpath='{.items[0].metadata.name}'); then
-  echo "ERROR: could not read the Keystone resource" >&2
-  exit 1
-fi
-if [ -z "${KS}" ]; then
-  echo "ERROR: no Keystone resource was found in openstack" >&2
-  exit 1
-fi
-if ! IMG=$(kubectl -n openstack get deploy "${KS}" \
-     -o jsonpath='{.spec.template.spec.containers[?(@.name=="keystone")].image}'); then
-  echo "ERROR: could not read the Keystone API image" >&2
-  exit 1
-fi
-if [ -z "${IMG}" ]; then
-  echo "ERROR: the Keystone API image is empty" >&2
-  exit 1
-fi
-if ! EPS=$(kubectl get endpointslices -n default \
-     -l kubernetes.io/service-name=kubernetes -o json \
-     | jq -er '
-         [
-           .items[] as $slice
-           | $slice.endpoints[]?
-           | select(.conditions.ready != false)
-           | .addresses[]? as $ip
-           | $slice.ports[]?.port as $port
-           | select($port != null)
-           | "\($ip):\($port)"
-         ] | unique | .[]'); then
-  echo "ERROR: could not discover ready Kubernetes API server endpoints" >&2
-  exit 1
-fi
-NAME="apiserver-check-$(date +%s)"
-if ! kubectl -n ovn-system debug "pod/${POD}" --image="${IMG}" --profile=restricted \
-    --container="${NAME}" -- python3 -u -c "${CHECK}" ${EPS}; then
-  echo "ERROR: could not add the API server check container" >&2
-  exit 1
-fi
+POD="$(kubectl -n ovn-system get pods \
+  -l app.kubernetes.io/name=ovn-operator,app.kubernetes.io/instance=ovn-operator \
+  -o jsonpath='{.items[0].metadata.name}')"
+KS="$(kubectl -n openstack get keystones -o jsonpath='{.items[0].metadata.name}')"
+IMG="$(kubectl -n openstack get deploy "$KS" \
+  -o jsonpath='{.spec.template.spec.containers[?(@.name=="keystone")].image}')"
+echo "Pod: $POD; image: $IMG"
+```
 
-DONE=
-for _ in $(seq 90); do
-  if ! DONE=$(kubectl -n ovn-system get pod "${POD}" \
-       -o jsonpath="{.status.ephemeralContainerStatuses[?(@.name==\"${NAME}\")].state.terminated.reason}"); then
-    echo "ERROR: could not read the API server check state" >&2
-    exit 1
-  fi
-  [ -n "${DONE}" ] && break
-  sleep 2
-done
-if [ -z "${DONE}" ]; then
-  echo "ERROR: the API server check did not finish within three minutes" >&2
-  exit 1
-fi
-if ! EXIT_CODE=$(kubectl -n ovn-system get pod "${POD}" \
-     -o jsonpath="{.status.ephemeralContainerStatuses[?(@.name==\"${NAME}\")].state.terminated.exitCode}"); then
-  echo "ERROR: could not read the API server check exit code" >&2
-  exit 1
-fi
+Check that the pod and image are present. Start an ephemeral container that
+opens a fresh connection to an API server endpoint. Replace `172.18.0.2` and
+`6443` with an address and port from Step 1:
+
+```bash
+NAME="apiserver-check-$(date +%s)"
+kubectl -n ovn-system debug "pod/$POD" --image="$IMG" --profile=restricted \
+  --container="$NAME" -- python3 -u -c \
+  'import socket; socket.create_connection(("172.18.0.2", 6443), timeout=5).close(); print("connected")'
+```
+
+Check the container's state and log:
+
+```bash
 kubectl -n ovn-system get pod "${POD}" \
   -o jsonpath="{.status.ephemeralContainerStatuses[?(@.name==\"${NAME}\")].state}{'\n'}"
 kubectl -n ovn-system logs "pod/${POD}" -c "${NAME}"
-if [ "${EXIT_CODE}" != "0" ]; then
-  echo "ERROR: the API server fresh-connection check failed (exit code ${EXIT_CODE})" >&2
-  exit 1
-fi
 ```
 
-On success, the first line shows a `terminated` state with reason `Completed`
-and exit code `0`. The last line reads `endpoints checked: N`, and every line
-between them ends in `connected`, as on the kind devstack:
+On success, the state is `terminated` with reason `Completed` and exit code
+`0`, and the log says `connected`:
 
 ```text
 {"terminated":{"containerID":"containerd://d0af3b80a47d77c57535cd38a77f062d8eeaeb1b0210bf2f3d89ec554b3905bc","exitCode":0,"finishedAt":"2026-11-06T15:47:48Z","reason":"Completed","startedAt":"2026-11-06T15:47:48Z"}}
-172.18.0.2:6443 connected
-endpoints checked: 1
+connected
 ```
 
 A `running` state, or a `waiting` state with reason `ContainerCreating`,
-means the check has not ended yet: run the block's last two `kubectl`
-commands again. Any other `waiting` reason, such as `ImagePullBackOff` or
+means the check has not ended yet: run the state and log commands again. Any
+other `waiting` reason, such as `ImagePullBackOff` or
 `RunContainerError`, means the node could not pull or start the image, and
 the state's `message` names the cause. A terminated state with a nonzero exit
-code means at least one endpoint connection failed; the state's `reason` and
-`exitCode` and the log say why. If the log lacks the last line, the check
-stopped before it tested every endpoint. An empty first line means the node has
-not reported the check container yet: check that the node is `Ready`
-with `kubectl get nodes`, then run the block's last two `kubectl`
-commands again.
+code means the connection failed; the state's `reason` and `exitCode` and the
+log say why. An empty state means the node has not reported the check
+container yet: check that the node is `Ready` with `kubectl get nodes`, then
+run the state and log commands again.
 
-A line that ends in `timed out` means the policy drops new connections to that
-endpoint: the rule misses its address or its port. Any other message, such as
-`[Errno 111] Connection refused`, means something answered or the route is
-broken; kindnet drops a denied connection without an answer. The block exits
-with an error unless every endpoint connection succeeds. The ephemeral
-container exits after the check and stays in the pod's spec until the next
-rollout replaces the pod. Adding it needs the `patch` verb on
+A `TimeoutError` means the connection was dropped; check whether the policy
+includes the address and port. Other errors, such as
+`[Errno 111] Connection refused`, can indicate a different connectivity
+problem. Repeat the check for every address and port from Step 1, using a new
+container name each time. The ephemeral container exits after the check and
+stays in the pod's spec until the next rollout replaces the pod. Adding it
+needs the `patch` verb on
 `pods/ephemeralcontainers` in the operator's namespace. That verb lets its
 holder mount the operator's ServiceAccount token and act with the operator's
 rights, so run the check as a cluster admin and do not grant the verb to a
 separate verification role. `--profile=restricted` lets it start in a
 namespace that enforces the restricted Pod Security Standard.
 
-When a line ends in `timed out`, see
+When the check reports a timeout, see
 [Reconcile timeouts / leader-election churn](#reconcile-timeouts-leader-election-churn).
 
 ## Troubleshooting
@@ -478,7 +379,7 @@ When a line ends in `timed out`, see
 **Symptom:** operator logs show `Get https://<kube-apiserver>: i/o timeout` or
 leader-election lease renewals fail with `context deadline exceeded`, and the
 `ovn-operator` pod restarts.
-On the kind devstack the first sign can instead be a `timed out` line from
+On the kind devstack the first sign can instead be a timeout from
 the fresh-connection check of the Verify step.
 
 **Diagnosis:** the egress allow-list does not match the destination address or
@@ -519,17 +420,18 @@ empty, which is wrong in that topology.
 ```bash
 kubectl patch helmrelease ovn-operator -n ovn-system --type=merge \
   -p '{"spec":{"values":{"networkPolicy":{"webhookClients":{"cidrs":["10.1.0.0/24"]}}}}}'
-
-kubectl wait helmrelease/ovn-operator -n ovn-system \
-  --for=condition=Ready --timeout=5m
 ```
+
+Replace the example CIDR with the caller address. Once the patch succeeds,
+check that Flux has reconciled the current generation and the release is
+`Ready`, as in Step 1.
 
 For a directly managed release, set the same value with the pinned Helm
 upgrade from Step 1.
 
 If blocked webhook calls prevent normal recovery, set
 `networkPolicy.enabled=false`. For an active Flux release, use the same patch
-shape and wait for it to become Ready. For a directly managed release, use the
+shape and check the release status. For a directly managed release, use the
 pinned Helm upgrade from Step 1 with `networkPolicy.enabled=false`. The policy
 object is removed on the next reconcile and the operator returns to
 unrestricted pod networking without a pod restart. To disable it on a Flux
@@ -538,10 +440,10 @@ release:
 ```bash
 kubectl patch helmrelease ovn-operator -n ovn-system --type=merge \
   -p '{"spec":{"values":{"networkPolicy":{"enabled":false}}}}'
-
-kubectl wait helmrelease/ovn-operator -n ovn-system \
-  --for=condition=Ready --timeout=5m
 ```
+
+Once the patch succeeds, check that Flux has reconciled the current generation
+and the release is `Ready`, as in Step 1.
 
 ## Tested by
 
