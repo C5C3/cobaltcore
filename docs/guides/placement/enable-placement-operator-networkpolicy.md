@@ -71,7 +71,7 @@ the same assumption to another cluster; see the
 ```bash
 kubectl get endpointslices -n default \
   -l kubernetes.io/service-name=kubernetes -o json \
-  | jq -er '
+  | jq -r '
       [
         .items[] as $slice
         | $slice.endpoints[]?
@@ -80,10 +80,7 @@ kubectl get endpointslices -n default \
         | $slice.ports[]?.port as $p
         | select($p != null)
         | "\($ip)\(if ($ip | contains(":")) then "/128" else "/32" end) port=\($p)"
-      ] | unique as $peers
-      | if ($peers | length) == 0 then
-          error("no Kubernetes API server EndpointSlice addresses or ports found")
-        else $peers[] end'
+      ] | unique[]'
 ```
 
 Record every unique CIDR and port pair. IPv4 addresses use `/32`; IPv6
@@ -98,6 +95,9 @@ cluster can report both address families:
 10.0.0.12/32 port=6443
 fd00::10/128 port=6443
 ```
+
+If the command prints no addresses or ports, check the EndpointSlices before
+continuing.
 
 The chart combines the CIDRs and ports in one rule, so each listed port is
 allowed to each listed address. The rule must cover all API server endpoints,
@@ -120,40 +120,47 @@ managed distributions, so verify the caller path there. The cluster-level
 option changes CIDR matching cluster-wide and causes Cilium to allocate node
 identities; review affected CIDR policies before enabling it.
 
-If Prometheus already scrapes the operator, add a metrics peer before enabling
-the default-deny policy. For Flux-managed releases, patch the HelmRelease first:
+On the tutorial devstacks the `placement-operator` release is owned by Flux (a
+`HelmRelease`), so set the values by patching its `spec.values`. The Flux
+helm-controller reverts a raw `helm upgrade` on its next reconcile. Check
+whether the HelmRelease is suspended:
+
+```bash
+kubectl get helmrelease placement-operator -n placement-system \
+  -o jsonpath='{.spec.suspend}{"\n"}'
+```
+
+If the result is `true`, resume the release through its deployment owner before
+continuing. If Prometheus already scrapes the operator, add a metrics peer
+before enabling the default-deny policy:
 
 ```bash
 kubectl patch helmrelease placement-operator -n placement-system --type=merge \
   -p '{"spec":{"values":{"networkPolicy":{"allowMetricsFrom":[{"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"monitoring"}}}]}}}}'
 ```
 
-On the tutorial devstacks the `placement-operator` release is owned by Flux (a
-`HelmRelease`), so set the values by patching its `spec.values`. The Flux
-helm-controller reverts a raw `helm upgrade` on its next
-reconcile. Substitute the CIDRs and ports from above. The single-CIDR list
-below stands in for the kind case (one control-plane node), so replace
-`172.18.0.2/32` with the address you recorded and extend the list to every IP
-an HA control plane prints:
+Once the patch succeeds, check the release:
+
+```bash
+kubectl get helmrelease placement-operator -n placement-system -o yaml
+```
+
+Check that `status.observedGeneration` matches `metadata.generation` and the
+`Ready` condition is `True`. Repeat the command if Flux has not reconciled the
+patch yet.
+
+Enable the policy after the metrics peer is in place, if needed. Substitute the
+CIDRs and ports from above. The single-CIDR list below stands in for the kind
+case (one control-plane node), so replace `172.18.0.2/32` with the address you
+recorded and extend the list to every IP an HA control plane prints:
 
 ```bash
 kubectl patch helmrelease placement-operator -n placement-system --type=merge \
   -p '{"spec":{"values":{"networkPolicy":{"enabled":true,"kubeApiServer":{"cidrs":["172.18.0.2/32"],"ports":[6443]}}}}}'
-
-SUSPENDED="$(kubectl get helmrelease placement-operator -n placement-system \
-  -o jsonpath='{.spec.suspend}')"
-if [ "$SUSPENDED" = "true" ]; then
-  echo "ERROR: HelmRelease is suspended; resume it through its deployment owner before waiting." >&2
-  exit 1
-fi
-
-kubectl wait helmrelease/placement-operator -n placement-system \
-  --for=condition=Ready --timeout=5m
 ```
 
-The patch is stored when the HelmRelease is suspended, but the policy is not
-rendered until the release resumes. Resume it through its deployment owner,
-then rerun this step.
+Once the patch succeeds, check that Flux has reconciled the current generation
+and the release is `Ready`, as above.
 
 The shared chart policy allows egress to the kube-apiserver and DNS. It omits
 ingress TCP 8081 for health probes: standard CNIs do not apply
@@ -237,64 +244,46 @@ kubectl -n placement-system get networkpolicy
 kubectl -n placement-system describe networkpolicy placement-operator
 ```
 
-Then confirm reconciliation still works end-to-end by driving a change
-through the `ControlPlane` CR and watching the projected resource-tracking
-service roll out. The block records the ControlPlane's current count, which is
-empty while the ControlPlane leaves it at the default, scales the API one
-replica above the size it runs at, and puts the count back:
+Then confirm reconciliation still works end-to-end by scaling the
+resource-tracking service through the `ControlPlane` CR. Record the current
+ControlPlane override and Deployment count:
 
 ```bash
-(
-if CUR=$(kubectl get controlplane controlplane -n openstack \
-     -o jsonpath='{.spec.sizing.placement.api.replicas}') &&
-   RUN=$(kubectl get deploy/controlplane-placement -n openstack \
-     -o jsonpath='{.spec.replicas}') &&
-   [[ "${RUN}" =~ ^[0-9]+$ ]]; then
-  NEW=$((RUN + 1))
-else
-  echo "could not read the replica counts; nothing was patched" >&2
-  exit 1
-fi
+CUR="$(kubectl get controlplane controlplane -n openstack \
+  -o jsonpath='{.spec.sizing.placement.api.replicas}')"
+RUN="$(kubectl get deploy/controlplane-placement -n openstack \
+  -o jsonpath='{.spec.replicas}')"
+echo "ControlPlane override: ${CUR:-unset}; Deployment replicas: ${RUN}"
+```
 
-restore_placement_replicas() {
-  local status=$?
-  trap - EXIT
-  if [ "${RESTORE_NEEDED}" = true ]; then
-    if ! kubectl patch controlplane controlplane -n openstack --type merge \
-      -p "{\"spec\":{\"sizing\":{\"placement\":{\"api\":{\"replicas\":${CUR:-null}}}}}}"; then
-      echo "ERROR: failed to restore the previous ControlPlane replica setting." >&2
-      exit 1
-    fi
-    if ! kubectl wait deploy/controlplane-placement -n openstack --timeout=5m \
-      --for=jsonpath='{.spec.replicas}'="${RUN}"; then
-      echo "ERROR: the Deployment did not return to ${RUN} replicas after restore." >&2
-      exit 1
-    fi
-    if ! kubectl rollout status deploy/controlplane-placement -n openstack --timeout=5m; then
-      echo "ERROR: the Deployment did not finish rolling back to its previous size." >&2
-      exit 1
-    fi
-  fi
-  exit "${status}"
-}
+If either read fails, or the Deployment count is empty or non-numeric, stop
+before patching. An unset ControlPlane override is expected when sizing comes
+from the default or a profile. Keep these values in the same shell for the
+restore. Increase the count by one and wait for the Deployment:
 
-RESTORE_NEEDED=true
-trap restore_placement_replicas EXIT
+```bash
+NEW=$((RUN + 1))
 kubectl patch controlplane controlplane -n openstack --type merge \
   -p "{\"spec\":{\"sizing\":{\"placement\":{\"api\":{\"replicas\":${NEW}}}}}}"
 kubectl wait deploy/controlplane-placement -n openstack --timeout=5m \
   --for=jsonpath='{.spec.replicas}'="${NEW}"
 kubectl rollout status deploy/controlplane-placement -n openstack --timeout=5m
-)
 ```
 
-The guard stops before the first patch if either read fails, and rejects an
-empty or non-numeric Deployment replica count. `CUR` can be empty when the
-ControlPlane has no replica override; `${CUR:-null}` then restores the default.
-The exit handler restores the prior setting and waits for the Deployment to
-return to its recorded count, even if the temporary scale or readiness check
-fails. Without the `RUN` check, an empty value could make `NEW` equal 1 and
-shrink the API instead of growing it.
+Restore the original override after the check, even if a wait or rollout
+fails. When `CUR` is empty, `null` removes the temporary override so the
+default or profile applies again:
+
+```bash
+kubectl patch controlplane controlplane -n openstack --type merge \
+  -p "{\"spec\":{\"sizing\":{\"placement\":{\"api\":{\"replicas\":${CUR:-null}}}}}}"
+kubectl wait deploy/controlplane-placement -n openstack --timeout=5m \
+  --for=jsonpath='{.spec.replicas}'="${RUN}"
+kubectl rollout status deploy/controlplane-placement -n openstack --timeout=5m
+```
+
+If restoration fails, inspect the ControlPlane and Deployment and restore the
+recorded setting before continuing.
 
 The `kubectl wait` is the check that proves the operator still reconciles: the
 patch travels from the ControlPlane to the `Placement` CR to the Deployment,
@@ -308,95 +297,55 @@ Set the replica count on the `ControlPlane` CR. The c5c3-operator re-asserts the
 child's `spec.deployment.replicas` on every reconcile, so a direct child edit
 does not persist.
 
-Finally, check the `kubeApiServer` rule on a fresh connection, once the
-restarted pod has run for at least one minute. The block adds an ephemeral
-container to the operator pod. The container shares the pod's network, so the
-policy judges its connections as it judges the operator's. It runs the image
-of the Keystone API Deployment, which ships `python3` and which the devstack's
-single node already holds, and opens one new TCP connection to every ready
-address and port in the `kubernetes` EndpointSlices. The block waits up to
-three minutes for the check to end, then prints the state of the check
-container and its log:
+Finally, check the `kubeApiServer` rule on fresh connections, once the
+restarted pod has run for at least one minute. An ephemeral container shares
+the operator pod's network, so the policy judges its connections as it judges
+the operator's. Use the Keystone API image, which ships `python3` and which
+the devstack's single node already holds:
 
 ```bash
-CHECK='
-import socket, sys
-for ep in sys.argv[1:]:
-    host, port = ep.rsplit(":", 1)
-    try:
-        socket.create_connection((host, int(port)), timeout=5).close()
-        print(ep, "connected")
-    except socket.timeout:
-        print(ep, "timed out")
-    except OSError as exc:
-        print(ep, exc)
-print("endpoints checked:", len(sys.argv) - 1)
-'
-if POD=$(kubectl -n placement-system get pods \
-     -l app.kubernetes.io/name=placement-operator,app.kubernetes.io/instance=placement-operator \
-     -o jsonpath='{.items[0].metadata.name}') &&
-   KS=$(kubectl -n openstack get keystones -o jsonpath='{.items[0].metadata.name}') &&
-   IMG=$(kubectl -n openstack get deploy "${KS}" \
-     -o jsonpath='{.spec.template.spec.containers[?(@.name=="keystone")].image}') &&
-   EPS=$(kubectl get endpointslices -n default \
-     -l kubernetes.io/service-name=kubernetes -o json \
-     | jq -er '
-         [
-           .items[] as $slice
-           | $slice.endpoints[]?
-           | select(.conditions.ready != false)
-           | .addresses[]? as $ip
-           | $slice.ports[]?.port as $port
-           | select($port != null)
-           | "\($ip):\($port)"
-         ] | unique as $endpoints
-         | if ($endpoints | length) == 0 then
-             error("no ready Kubernetes API server EndpointSlice addresses or ports found")
-           else $endpoints[] end') &&
-   [ -n "${POD}" ] && [ -n "${IMG}" ] && [ -n "${EPS}" ]; then
-  NAME="apiserver-check-$(date +%s)"
-  kubectl -n placement-system debug "pod/${POD}" --image="${IMG}" --profile=restricted \
-    --container="${NAME}" -- python3 -u -c "${CHECK}" ${EPS} &&
-  for _ in $(seq 90); do
-    DONE=$(kubectl -n placement-system get pod "${POD}" \
-      -o jsonpath="{.status.ephemeralContainerStatuses[?(@.name==\"${NAME}\")].state.terminated.reason}")
-    [ -n "${DONE}" ] && break
-    sleep 2
-  done &&
-  kubectl -n placement-system get pod "${POD}" \
-    -o jsonpath="{.status.ephemeralContainerStatuses[?(@.name==\"${NAME}\")].state}{'\n'}" &&
-  kubectl -n placement-system logs "pod/${POD}" -c "${NAME}"
-else
-  echo "could not read the operator pod, the Keystone image or ready EndpointSlice addresses; nothing was added" >&2
-  exit 1
-fi
+POD="$(kubectl -n placement-system get pods \
+  -l app.kubernetes.io/name=placement-operator,app.kubernetes.io/instance=placement-operator \
+  -o jsonpath='{.items[0].metadata.name}')"
+KS="$(kubectl -n openstack get keystones -o jsonpath='{.items[0].metadata.name}')"
+IMG="$(kubectl -n openstack get deploy "${KS}" \
+  -o jsonpath='{.spec.template.spec.containers[?(@.name=="keystone")].image}')"
+echo "Operator pod: ${POD}; Keystone image: ${IMG}"
 ```
 
-The first line must show a `terminated` state with reason `Completed`. The
-last line must read `endpoints checked: N`, and every line between them must
-end in `connected`, as on the kind devstack:
+If a lookup fails or the pod or image is empty, resolve it before continuing.
+Choose an address and port from Step 1, without the CIDR suffix, and start the
+check:
 
-```text
-{"terminated":{"containerID":"containerd://d0af3b80a47d77c57535cd38a77f062d8eeaeb1b0210bf2f3d89ec554b3905bc","exitCode":0,"finishedAt":"2026-11-06T15:47:48Z","reason":"Completed","startedAt":"2026-11-06T15:47:48Z"}}
-172.18.0.2:6443 connected
-endpoints checked: 1
+```bash
+API_ADDRESS=172.18.0.2
+API_PORT=6443
+NAME="apiserver-check-$(date +%s)"
+kubectl -n placement-system debug "pod/${POD}" --image="${IMG}" --profile=restricted \
+  --container="${NAME}" -- python3 -u -c \
+  'import socket, sys; socket.create_connection((sys.argv[1], int(sys.argv[2])), timeout=5).close(); print("connected")' \
+  "${API_ADDRESS}" "${API_PORT}"
 ```
 
-A `running` state, or a `waiting` state with reason `ContainerCreating`,
-means the check has not ended yet: run the block's last two `kubectl`
-commands again. Any other `waiting` reason, such as `ImagePullBackOff` or
-`RunContainerError`, means the node could not pull or start the image, and
-the state's `message` names the cause. A `terminated` state with a log that
-lacks the last line means the check failed: the state's `reason` and
-`exitCode` and the log say why. An empty first line means the node has
-not reported the check container yet: check that the node is `Ready`
-with `kubectl get nodes`, then run the block's last two `kubectl`
-commands again.
+Check the container state and log:
 
-A line that ends in `timed out` means the policy drops new connections to that
-endpoint: the rule misses its address or its port. Any other message, such as
-`[Errno 111] Connection refused`, means something answered or the route is
-broken; kindnet drops a denied connection without an answer. The ephemeral
+```bash
+kubectl -n placement-system get pod "${POD}" \
+  -o jsonpath="{.status.ephemeralContainerStatuses[?(@.name==\"${NAME}\")].state}{'\n'}"
+kubectl -n placement-system logs "pod/${POD}" -c "${NAME}"
+```
+
+The state must be `terminated` with reason `Completed`, and the log must say
+`connected`. If the container is still starting or running, repeat these two
+commands. If it cannot start, inspect the state's `reason` and `message`. If
+the state is empty, check that the node is `Ready` with `kubectl get nodes`.
+Repeat the check with each ready address and port from Step 1, using a new
+container name each time.
+
+A `TimeoutError` in the log can mean the policy drops connections to that
+endpoint because the rule misses its address or port. Other errors, such as
+`Connection refused`, can indicate a problem with the endpoint or route.
+kindnet drops a denied connection without an answer. The ephemeral
 container exits after the check and stays in the pod's spec until the next
 rollout replaces the pod. Adding it needs the `patch` verb on
 `pods/ephemeralcontainers` in the operator's namespace. That verb lets its
@@ -405,7 +354,7 @@ rights, so run the check as a cluster admin and do not grant the verb to a
 separate verification role. `--profile=restricted` lets it start in a
 namespace that enforces the restricted Pod Security Standard.
 
-When a line ends in `timed out`, see
+When a connection times out, see
 [Reconcile timeouts / leader-election churn](#reconcile-timeouts-leader-election-churn).
 
 ## Troubleshooting
@@ -415,7 +364,7 @@ When a line ends in `timed out`, see
 **Symptom:** operator logs show `Get https://<kube-apiserver>: i/o timeout` or
 leader-election lease renewals fail with `context deadline exceeded`, and the
 `placement-operator` pod restarts.
-On the kind devstack the first sign can instead be a `timed out` line from
+On the kind devstack the first sign can instead be a `TimeoutError` from
 the fresh-connection check of the Verify step.
 
 **Diagnosis:** the egress allow-list does not match the API server the operator
