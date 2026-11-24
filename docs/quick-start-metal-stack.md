@@ -56,7 +56,7 @@ The lab assumes a cluster of this shape:
 | No `libvirtd`, `qemu-system-x86_64` or `ovs-vswitchd` on the host | probe, `== host os / binaries` |
 | A pod-network MTU of 1460 or more, the value of `global_physnet_mtu` | probe, `== nics`, the `cali*` lines |
 | A default StorageClass, which every volume of the stack binds to, and no DaemonSet `kube-system/node-local-dns` | Step 1 of `EXTERNAL_CLUSTER=true make deploy-infra` exits 1 otherwise |
-| Room in that class for nine 100Gi raw block volumes and one 10Gi Ceph monitor volume in the checked-in three-worker setup, from a provisioner that serves `volumeMode: Block`; for another worker count, set `storageClassDeviceSets[].count` in `deploy/lab/metal-stack/ceph/cluster/cluster.yaml` to three per worker and size the class accordingly | the Ceph wait of the deploy in Step 3, which exits 1 otherwise |
+| Room in that class for nine 100Gi raw block volumes and one 10Gi Ceph monitor volume in the checked-in three-worker setup, from a provisioner that serves `volumeMode: Block`; for another worker count, set `storageClassDeviceSets[].count` in `deploy/overlays/metal-stack/ceph/cluster/cluster.yaml` to three per worker and size the class accordingly | the Ceph wait of the deploy in Step 3, which exits 1 otherwise |
 | Only with the optional `WITH_NFS=true` of Part 3: room in that class for a 100Gi volume, the claim `nfs-server-exports` of the NFS server | the `nfs-server` rollout wait of the deploy, which exits 1 otherwise |
 | Egress on TCP 443 to every chart source and image registry used by the enabled manifests (including `ghcr.io`, `quay.io` and `docker.io`), and to `download.cirros-cloud.net` | the shoot's firewall |
 | An address from the shoot's load balancer for a Service of type `LoadBalancer`, which metal-stack's cloud controller takes from the project's internet network, reachable on TCP 443 from where you work | the address wait of Step 3, which exits 1 otherwise |
@@ -72,8 +72,12 @@ with the [`osc-placement`](https://docs.openstack.org/osc-placement/latest/)
 plugin. Neither Docker nor kind is needed: the deploy creates no cluster and
 loads no image.
 The host-side examples also need GNU coreutils for `timeout` and `sha256sum`.
-On macOS, install it with `brew install coreutils` and add
-`$(brew --prefix coreutils)/libexec/gnubin` to `PATH`.
+On macOS, install it and add it to `PATH`:
+
+```bash
+brew install coreutils
+export PATH="$(brew --prefix coreutils)/libexec/gnubin:$PATH"
+```
 
 ## Part 1: The control plane {#control-plane}
 
