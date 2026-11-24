@@ -77,33 +77,40 @@ that value.
 On the tutorial devstacks the `placement-operator` release is owned by Flux (a
 `HelmRelease`), so set the chart value by patching that HelmRelease.
 Flux's helm-controller reverts any out-of-band
-Helm revision on its next reconcile:
+Helm revision on its next reconcile. First check whether the release is
+suspended:
+
+```bash
+kubectl get helmrelease placement-operator -n placement-system \
+  -o jsonpath='{.spec.suspend}{"\n"}'
+```
+
+If the result is `true`, resume the release through its deployment owner before
+continuing. Then enable the ServiceMonitor:
 
 ```bash
 kubectl patch helmrelease placement-operator -n placement-system --type=merge \
   -p '{"spec":{"values":{"monitoring":{"serviceMonitor":{"enabled":true}}}}}'
-
-SUSPENDED="$(kubectl get helmrelease placement-operator -n placement-system \
-  -o jsonpath='{.spec.suspend}')"
-if [ "$SUSPENDED" = "true" ]; then
-  echo "ERROR: HelmRelease is suspended; resume it through its deployment owner before waiting." >&2
-  exit 1
-fi
-
-kubectl wait helmrelease/placement-operator -n placement-system \
-  --for=condition=Ready --timeout=5m
 ```
 
-The patch is stored even when the HelmRelease is suspended, but Flux does not
-render the ServiceMonitor until the release resumes.
+Once the patch succeeds, check the release:
+
+```bash
+kubectl get helmrelease placement-operator -n placement-system -o yaml
+```
+
+Check that `status.observedGeneration` matches `metadata.generation` and the
+`Ready` condition is `True`. Repeat the command if Flux has not reconciled the
+patch yet.
 
 Confirm the `ServiceMonitor` was rendered:
 
 ```bash
 kubectl -n placement-system get servicemonitor \
-  -l app.kubernetes.io/name=placement-operator
+  -l app.kubernetes.io/name=placement-operator,app.kubernetes.io/instance=placement-operator
 ```
 
+For a differently named release, replace the instance label with its name.
 The chart renders a `ServiceMonitor` scraping the operator's metrics Service
 on the `metrics` port at `/metrics`, every 30 seconds by default
 (`monitoring.serviceMonitor.interval`).
@@ -155,35 +162,26 @@ query the targets:
 ```bash
 curl --fail --silent --show-error \
   'http://localhost:9090/api/v1/targets?state=active' \
-  | jq -e '
-      [.data.activeTargets[]? |
-        select(.labels.namespace == "placement-system") |
-        {health, lastScrape, lastError}] as $targets |
-      if ($targets | length) == 0 then
-        error("no Placement operator target; check Prometheus ServiceMonitor selectors")
-      elif any($targets[]; .health != "up") then
-        error("a Placement operator target is not up: " + ($targets | tojson))
-      else $targets end'
+  | jq '[.data.activeTargets[] |
+      select(.labels.namespace == "placement-system" and .labels.job == "placement-operator") |
+      {health, lastScrape, lastError}]'
 ```
 
-The query fails if Prometheus has not selected a target or if one is down;
-inspect `lastError` in the output. If no target appears, recheck both
-ServiceMonitor selectors. If a target is down, confirm Prometheus can reach the
-metrics port and that the NetworkPolicy allows its source. Then confirm the
-reconcile series exists:
+Replace the namespace and job name if your release uses different names. The
+job name defaults to the metrics Service name.
+Expect at least one target and `health: "up"` for each. If the list is empty,
+recheck both ServiceMonitor selectors. If a target is down, inspect `lastError`,
+confirm Prometheus can reach the metrics port, and check that the NetworkPolicy
+allows its source. Then confirm the reconcile series exists:
 
 ```bash
-curl --fail --silent --show-error \
-  'http://localhost:9090/api/v1/query?query=placement_operator_reconcile_duration_seconds_count' \
-  | jq -r '
-      if .status != "success" then
-        error("Prometheus query failed: " + (.error // "unknown error"))
-      elif (.data.result | length) == 0 then
-        error("no sub-reconciler observations have been recorded yet")
-      else (.data.result | length) end'
+curl --fail --silent --show-error --get 'http://localhost:9090/api/v1/query' \
+  --data-urlencode 'query=placement_operator_reconcile_duration_seconds_count{namespace="placement-system",job="placement-operator"}' \
+  | jq '{status, error, series: (.data.result | length)}'
 ```
 
-A non-zero result count means the operator has recorded at least one
+Replace the namespace and job name if needed. Expect `status: "success"` and
+a non-zero series count, which means the operator has recorded at least one
 sub-reconciler observation. The db-sync pair stays empty until a db-sync Job
 terminates and the controller observes it. A new `Placement` CR therefore
 shows reconcile metrics first, then db-sync metrics after its Job completes.
