@@ -21,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/utils/ptr"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -31,6 +32,8 @@ import (
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
+	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
 )
 
@@ -546,6 +549,32 @@ func TestKeystoneRoleAssignment_DeleteRemovesTheAssignmentThenTheRole(t *testing
 			g.Expect(kraLabelled(t, h.mgmt)).To(BeZero())
 		})
 	}
+}
+
+// TestKeystoneRoleAssignment_DeleteConflictRequeuesWithoutAnError pins a pass
+// that read a copy of the order older than its last write: the release
+// conflicts, and the pass requeues after RequeueNextPass without the
+// Reconciler error controller-runtime would log and count. The next pass
+// releases the order from a fresh read.
+func TestKeystoneRoleAssignment_DeleteConflictRequeuesWithoutAnError(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	order := keystoneRoleAssignmentCR()
+	order.DeletionTimestamp = ptr.To(metav1.Now())
+	conflict := testutil.ConflictFirstUpdate()
+	h := newKRAHarness(t, c5c3v1alpha1.ManagementCluster, &conflict, nil, order, kraControlPlane("", "member"))
+
+	result, err := h.reconcile(ctx)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
+	g.Expect(kraGet(t, h).Finalizers).To(ContainElement(keystoneRoleAssignmentFinalizerName))
+
+	_, err = h.reconcile(ctx)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(kraGet(t, h)).To(BeNil())
 }
 
 // TestKeystoneRoleAssignment_DeleteHoldsWhileApplicationCredentialsUseIt pins

@@ -28,6 +28,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
 )
@@ -1227,6 +1229,55 @@ func TestKeystoneService_DeleteWithoutChildrenReleasesImmediately(t *testing.T) 
 	err = c.Get(context.Background(),
 		types.NamespacedName{Namespace: ksTestNamespace, Name: ksTestName}, &c5c3v1alpha1.KeystoneService{})
 	g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
+}
+
+// TestKeystoneService_FinalizerReleaseConflictRequeues pins a release on a
+// copy older than the stored KeystoneService: the pass requeues after
+// RequeueNextPass without an error and keeps the finalizer, and the next pass
+// releases it from a fresh read.
+func TestKeystoneService_FinalizerReleaseConflictRequeues(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	ks := keystoneServiceCR()
+	ks.Spec.Account = ksAccountSpec()
+	ks.DeletionTimestamp = ptr.To(metav1.Now())
+	c, r := ksClientBuilder(t, ksControlPlane(), ks)
+	r.Client = interceptor.NewClient(c.(client.WithWatch), testutil.ConflictFirstUpdate())
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ksTestNamespace, Name: ksTestName}}
+
+	result, err := r.Reconcile(ctx, req)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
+	stored := &c5c3v1alpha1.KeystoneService{}
+	g.Expect(c.Get(ctx, req.NamespacedName, stored)).To(Succeed())
+	g.Expect(stored.Finalizers).To(ContainElement(keystoneServiceFinalizerName))
+
+	_, err = r.Reconcile(ctx, req)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(apierrors.IsNotFound(c.Get(ctx, req.NamespacedName, stored))).To(BeTrue())
+}
+
+// TestKeystoneService_FinalizerReleaseOnAGoneObjectEndsThePass pins a release
+// on a copy the cache still held after an earlier pass released it: the pass
+// ends without an error, since nothing is left to release.
+func TestKeystoneService_FinalizerReleaseOnAGoneObjectEndsThePass(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	ks := keystoneServiceCR()
+	ks.Spec.Account = ksAccountSpec()
+	ks.DeletionTimestamp = ptr.To(metav1.Now())
+	c, r := ksClientBuilder(t, ksControlPlane(), ks)
+	r.Client = interceptor.NewClient(c.(client.WithWatch), testutil.NotFoundOnUpdate())
+
+	result, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: ksTestNamespace, Name: ksTestName},
+	})
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{}))
 }
 
 func TestKeystoneService_DeleteFailsOpenWhenTheControlPlaneIsGone(t *testing.T) {

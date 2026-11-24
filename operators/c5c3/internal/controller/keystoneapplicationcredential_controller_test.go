@@ -36,6 +36,7 @@ import (
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
 )
 
@@ -893,6 +894,24 @@ func TestKeystoneApplicationCredential_DeleteOfAFrozenOrderTearsDown(t *testing.
 	}
 	g.Expect(kacGet(t, h)).To(BeNil(), "a withdrawn assignment does not stop the teardown")
 	g.Expect(kacLabelled(t, h.mgmt)).To(BeZero())
+}
+
+// TestKeystoneApplicationCredential_DeleteOfAGoneOrderEndsWithoutAnError
+// pins a pass that read the order from a cache still holding it after an
+// earlier pass released it: the release finds the order gone, and the pass
+// ends without the Reconciler error controller-runtime would log and count.
+func TestKeystoneApplicationCredential_DeleteOfAGoneOrderEndsWithoutAnError(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	order := keystoneApplicationCredentialCR()
+	order.DeletionTimestamp = ptr.To(metav1.Now())
+	gone := testutil.NotFoundOnUpdate()
+	h := newKACHarness(t, c5c3v1alpha1.ManagementCluster, &gone, nil, order, kacControlPlane(""))
+
+	result, err := h.reconcile(context.Background())
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{}))
 }
 
 func TestKeystoneApplicationCredential_TeardownFailures(t *testing.T) {

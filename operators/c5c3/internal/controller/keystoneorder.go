@@ -452,9 +452,12 @@ func orderTeardown(
 		}
 	}
 
-	controllerutil.RemoveFinalizer(owner, finalizer)
-	if err := oc.Update(ctx, owner); err != nil {
+	outcome, err := commonreconcile.RemoveFinalizer(ctx, oc, owner, finalizer)
+	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing %s finalizer: %w", kind, err)
+	}
+	if outcome == commonreconcile.FinalizerConflict {
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
 	}
 	return ctrl.Result{}, nil
 }
