@@ -4297,6 +4297,16 @@ projected. On deletion it:
    (anything else not explicitly `Unmanaged` is reported), because
    under-reporting a leak is worse than over-reporting one.
 
+The release in step 6, the release of the escape in step 8 and the
+remote-children release a later pass runs after the escape are each one update
+through `commonreconcile.RemoveFinalizer`. A 404 on it means an earlier pass
+already released the ControlPlane, and the pass ends; step 6 then emits no
+`ORCTeardownComplete`. A 409 means the pass read a stale copy: it logs the Info
+line `finalizer removal conflict, requeueing`, emits nothing and requeues after
+`RequeueNextPass` (1 s), so the next pass releases from a fresh read. Any other
+failure returns the wrapped error, and controller-runtime retries the pass with
+its error backoff.
+
 ::: warning `kubectl delete namespace` makes the leak deterministic
 Children live in the ControlPlane's own namespace, so the namespace controller
 reaps `{name}-admin-password-cloud` — the Secret the managed catalog entries

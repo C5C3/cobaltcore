@@ -418,6 +418,16 @@ Terminating.
 Every other owned resource is namespace-scoped with a controller owner
 reference, so Kubernetes garbage collection reclaims it.
 
+Both finalizers are released with one update each through
+`commonreconcile.RemoveFinalizer`, the second one by
+`commonreconcile.SweepRemoteChildren`. A 404 on it means an earlier pass
+already released the CR, and the pass ends; the metrics and the probe cache
+entry are dropped all the same. A 409 means the pass read a stale copy: it
+logs the Info line `finalizer removal conflict, requeueing` and requeues after
+`RequeueNextPass` (1 s), so the next pass releases from a fresh read. Any other
+failure returns the wrapped error, and controller-runtime retries the pass with
+its error backoff.
+
 ## NovaCompute
 
 A [NovaCompute](./novacompute-crd.md) runs `nova-compute` on one node pool. Its
@@ -620,6 +630,11 @@ VerticalPodAutoscaler) are swept, and the finalizers are released. A pool
 drains only while it carries the drain finalizer and the Nova exists. The reap
 comes first, so a pool whose drain finalizer was removed by hand still holds
 `openstack.c5c3.io/remote-children` while it runs, and a failed reap is retried.
+Both releases go through `commonreconcile.RemoveFinalizer` and answer as the
+Nova's do: a 404 ends the pass, a 409 logs
+`finalizer removal conflict, requeueing` and requeues after `RequeueNextPass`
+(1 s), and any other failure returns the wrapped error. A 409 on the
+remote-children release requeues before the drain finalizer is released.
 
 ### Watches
 

@@ -1043,3 +1043,14 @@ list or delete returns the error and keeps the remote-children finalizer, so the
 next pass retries. The reap is skipped for a target abandoned past the window,
 whose children client is nil, and for a local agent, which carries no such
 finalizer and gets no copy.
+
+The sweep, `commonreconcile.SweepRemoteChildren`, releases the remote-children
+finalizer with one update through `commonreconcile.RemoveFinalizer`, as the
+`Neutron` controller releases its own finalizer. A 404 on the update means an
+earlier pass already released the CR, and the pass ends; the metrics and the
+probe cache entry of a `Neutron` are dropped all the same. A 409 means the pass
+read a stale copy: it logs the Info line
+`finalizer removal conflict, requeueing` and requeues after `RequeueNextPass`
+(1 s), so the next pass releases from a fresh read. Any other failure returns
+the wrapped error, and controller-runtime retries the pass with its error
+backoff.

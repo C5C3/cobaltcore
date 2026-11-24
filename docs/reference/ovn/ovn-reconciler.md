@@ -688,7 +688,12 @@ unstructured and takes no Go dependency on frr-k8s. See
    API server or another writer added do not count as a difference, while a list
    of another length does, so a removed uplink or VRF id reaches the object. Every
    listed object the CR controls and no longer wants is deleted. When the desired
-   set is empty and none is left, the finalizer is removed.
+   set is empty and none is left, the finalizer is removed with one update
+   through `commonreconcile.RemoveFinalizer`. A 404 on it means an earlier pass
+   already released the CR, and the CR in hand keeps its copy. A 409 logs the
+   Info line `finalizer removal conflict, requeueing` and ends the step with a
+   requeue after `RequeueNextPass` (1 s). Any other failure returns the
+   wrapped error and reads `FabricError`.
 
 **Condition Contract:**
 
@@ -736,7 +741,16 @@ With a nil children client, a target cluster the CR was given up on, it removes
 the finalizer without a request, and the `RemoteChildrenAbandoned` event of the
 sweep that follows covers what stays behind. Otherwise it deletes every
 `FRRConfiguration` in `frr-k8s-system` the CR controls and removes the
-finalizer. A failed list or delete keeps the finalizer and is returned.
+finalizer. A failed list or delete keeps the finalizer and is returned. The
+removal, and the release of the remote-children finalizer by
+`commonreconcile.SweepRemoteChildren` after it, are each one update through
+`commonreconcile.RemoveFinalizer`. A 404 on it means an earlier pass already
+released the CR; the sweep still runs and meets the same 404, and the pass
+ends. A 409 means the pass read a stale copy: it logs the Info line
+`finalizer removal conflict, requeueing` and requeues after `RequeueNextPass`
+(1 s), so the next pass releases from a fresh read. Any other failure returns
+the wrapped error, and controller-runtime retries the pass with its error
+backoff.
 
 ## Requeue semantics
 
