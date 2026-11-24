@@ -70,26 +70,9 @@ else
   HASH="$(printf '%s' "$NODE" | shasum -a 256 | cut -c1-8)"
 fi
 echo "$NODE -> $HASH"
-
-wait_for_chassis_job() {
-  local job="$1"
-  local found=
-  for _ in $(seq 1 24); do
-    found="$(kubectl get -n openstack --ignore-not-found -o name "job/$job")"
-    if [ -n "$found" ]; then
-      kubectl wait --for=condition=complete -n openstack \
-        "job/$job" --timeout=5m
-      return
-    fi
-    sleep 5
-  done
-  echo "Job $job was not created within 2 minutes" >&2
-  return 1
-}
 ```
 
-Keep this shell open for the steps below; they reuse `NODE`, `HASH`, and the
-bounded Job waiter.
+Keep this shell open for the steps below; they reuse `NODE` and `HASH`.
 
 ### 1. Take the gateway role away
 
@@ -97,13 +80,15 @@ bounded Job waiter.
 kubectl label node "$NODE" openstack.c5c3.io/gateway-
 ```
 
-Two Jobs run, in this order. The waiter checks for each Job before waiting for
-completion, because the operator creates it on the reconcile that observes the
-label change:
+The operator creates two Jobs in this order. Wait for each Job to appear before
+running its command below. If `kubectl wait` reports that a Job was not found,
+run that command again after the next reconcile.
 
 ```bash
-wait_for_chassis_job "controlplane-chassis-apply-${HASH}"
-wait_for_chassis_job "controlplane-chassis-evacuate-${HASH}"
+kubectl wait --for=condition=complete -n openstack \
+  "job/controlplane-chassis-apply-${HASH}" --timeout=5m
+kubectl wait --for=condition=complete -n openstack \
+  "job/controlplane-chassis-evacuate-${HASH}" --timeout=5m
 ```
 
 The `apply` Job re-applies the node's values, which now carry `GATEWAY=false`,
@@ -135,10 +120,13 @@ re-promoted node is not treated as still drained.
 kubectl label node "$NODE" openstack.c5c3.io/chassis-
 ```
 
-Wait for the chassis-deletion Job:
+Wait for the chassis-deletion Job to appear, then wait for it to complete. If
+`kubectl wait` reports that the Job was not found, run the command again after
+the next reconcile.
 
 ```bash
-wait_for_chassis_job "controlplane-chassis-chassis-del-${HASH}"
+kubectl wait --for=condition=complete -n openstack \
+  "job/controlplane-chassis-chassis-del-${HASH}" --timeout=5m
 ```
 
 The node stops matching `spec.nodeSelector`. Its entry remains in the ConfigMap
