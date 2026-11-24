@@ -355,10 +355,10 @@ func orderRemoteKeyFor(cp *c5c3v1alpha1.ControlPlane, prefix, leaf string) strin
 // PushSecret, so ESO pushes a changed document at once rather than at its next
 // refresh, and records under syncedBeforeAnnotation the syncedResourceVersion
 // the stamp was written against. An unchanged hash writes nothing, and a
-// missing PushSecret is a no-op: the read after it reports that. The update
-// retries on conflict, because ESO writes the PushSecret's status on every
-// push; the conflict is also what keeps a cached syncedResourceVersion older
-// than the live one from being recorded.
+// missing PushSecret is a no-op: the read after it treats it as not pushed
+// yet. The update retries on conflict, because ESO writes the PushSecret's
+// status on every push; the conflict is also what keeps a cached
+// syncedResourceVersion older than the live one from being recorded.
 func stampOrderPush(
 	ctx context.Context, c client.Client, key types.NamespacedName, hashAnnotation, syncedBeforeAnnotation, hash string,
 ) error {

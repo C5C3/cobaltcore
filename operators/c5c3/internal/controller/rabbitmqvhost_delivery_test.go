@@ -210,6 +210,32 @@ func TestRabbitMQVhostDelivery_WaitsForTheBackup(t *testing.T) {
 	g.Expect(push.Spec.DeletionPolicy).To(Equal(esov1alpha1.PushSecretDeletionPolicyDelete))
 }
 
+// TestRabbitMQVhostDelivery_PushSecretNotInCacheWaits pins a read-back that
+// misses the PushSecret the pass has just applied: the pass treats the backup
+// as not pushed yet and waits for it, rather than failing with an error, and
+// delivers nothing.
+func TestRabbitMQVhostDelivery_PushSecretNotInCacheWaits(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	order := rabbitMQVhostCR()
+	objs := append([]client.Object{order, rvControlPlane("")}, rvReadyInfra()...)
+	objs = append(objs, rvMinted(order, "", 1, "password-1", rvTestClock)...)
+	objs = append(objs, rvPushed(order, "", 1, "password-1"))
+	h := newRVHarness(t, c5c3v1alpha1.ManagementCluster, pushSecretNotInCache(), nil, objs...)
+	rvMarkReady(t, h.mgmt, messaging.VhostGVK, rabbitMQVhostChildName(order, ""))
+	rvMarkGenerationReady(t, h, 1)
+
+	result, err := h.reconcile(context.Background())
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(And(BeNumerically(">", 0), BeNumerically("<=", 10*time.Second)))
+	cond := rvDeliveryReady(t, h)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonKeystoneUserBackupNotSynced))
+	_, found := rvDelivered(t, h)
+	g.Expect(found).To(BeFalse(), "nothing is delivered before the backup is read back")
+}
+
 // TestRabbitMQVhostDelivery_UnpublishedMessaging covers an order on a target
 // cluster while the ControlPlane publishes no broker: the leg refuses with a
 // zero result, the pass turns that into the refresh, and the vhost stays
