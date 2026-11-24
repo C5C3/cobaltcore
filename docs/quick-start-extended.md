@@ -69,11 +69,13 @@ You need `make` for the install and deployment targets below. The `KIND_HOST_POR
 override path also needs [`yq`](https://github.com/mikefarah/yq) v4.40.1 or
 newer on `PATH`.
 
+::: tip Nix users
 Nix users can run `nix develop` instead of `make install-test-deps` to enter the
 repository's pinned development environment. It also provides `controller-gen`,
 `gofumpt`, `golangci-lint`, `kustomize`, `chainsaw`, and the envtest assets. See
 [Nix Development Environment](./contributing/nix-dev-environment.md). Docker
 still has to be installed separately because kind needs a running daemon.
+:::
 
 ---
 
@@ -161,8 +163,9 @@ manual cluster creation and `kubectl cluster-info` commands above. Leave the
 cluster absent, then export `KIND_HOST_PORT` before Step 3. `make deploy-infra`
 creates the cluster with a non-privileged kind config; the script only renders
 that config when it creates a fresh cluster. If the cluster already exists,
-run `make teardown-infra` first. The Envoy proxy still listens on NodePort
-`31443` inside the cluster; only the host-side bind moves.
+run `make teardown-infra` first; this deletes the kind cluster and its
+workloads. The Envoy proxy still listens on NodePort `31443` inside the cluster;
+only the host-side bind moves.
 
 ```bash
 export KIND_HOST_PORT=8443
@@ -549,14 +552,18 @@ Build a PKCS#12 bundle from the `openbao-client-tls` Secret. Its keypair is sign
 CA as the server cert, `openbao-ca` (ClusterIssuer `openbao-ca-issuer`), and the listener
 verifies only chain-to-CA (not SANs) on client auth, so this certificate is accepted. Keep
 the exported key and bundle in a private temporary directory; do not leave them in the
-repository:
+repository. The `umask` also makes subsequently created files private in this shell:
 
 ```bash
 umask 077
 OPENBAO_CERT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/openbao-client.XXXXXX")
-# Generate a one-use passphrase for the temporary bundle.
-P12_PASSWORD=$(openssl rand -hex 24)
+echo "$OPENBAO_CERT_DIR"
+```
 
+Confirm the temporary directory was created, then export the certificate files.
+OpenSSL prompts for a passphrase to protect the bundle:
+
+```bash
 kubectl get secret openbao-client-tls -n shared-services \
   -o jsonpath='{.data.tls\.crt}' | base64 -d > "$OPENBAO_CERT_DIR/openbao-client.crt"
 kubectl get secret openbao-client-tls -n shared-services \
@@ -567,13 +574,10 @@ openssl pkcs12 -export -inkey "$OPENBAO_CERT_DIR/openbao-client.key" \
   -in "$OPENBAO_CERT_DIR/openbao-client.crt" \
   -certfile "$OPENBAO_CERT_DIR/openbao-ca.crt" \
   -name "OpenBao Client (kind)" \
-  -out "$OPENBAO_CERT_DIR/openbao-client.p12" \
-  -passout "pass:${P12_PASSWORD}"
-printf 'PKCS#12 passphrase: %s\n' "$P12_PASSWORD"
-printf 'Certificate files: %s\n' "$OPENBAO_CERT_DIR"
+  -out "$OPENBAO_CERT_DIR/openbao-client.p12"
 ```
 
-Keep the printed passphrase and directory private.
+Keep the passphrase and directory private.
 
 Import the bundle into Firefox once. This walkthrough is verified with Firefox;
 Chrome, Edge, and Safari also accept client certificates but import them through
@@ -581,20 +585,22 @@ the OS keychain / system certificate store, so the menu path differs:
 
 1. *Settings → Privacy & Security → Certificates → View Certificates…*
 2. Tab **Your Certificates → Import…** → select `openbao-client.p12` from the
-   directory printed above and enter the printed passphrase.
+   directory printed above and enter the passphrase you chose.
 3. *(Optional: removes the trust warning.)* Tab **Authorities → Import…** → select
    `openbao-ca.crt` from that directory → tick "Trust this CA to identify websites".
-   The server cert carries
-   `IP:127.0.0.1` as a SAN, so `https://localhost:8200` then validates cleanly.
+   The server certificate includes `127.0.0.1` as an IP subject alternative name.
 
-Open `https://localhost:8200/ui/`. Firefox asks which client certificate to send: pick
+Open `https://127.0.0.1:8200/ui/`. Firefox asks which client certificate to send: pick
 **"OpenBao Client (kind)"**, then paste the root token to sign in.
 
-After importing the certificate and CA, remove the temporary files in the same terminal:
+After importing the certificate and, if desired, the CA, remove the temporary files in
+the same terminal:
 
 ```bash
-rm -r "$OPENBAO_CERT_DIR"
-unset BAO_TOKEN OPENBAO_CERT_DIR P12_PASSWORD
+rm "$OPENBAO_CERT_DIR/openbao-client.crt" "$OPENBAO_CERT_DIR/openbao-client.key" \
+  "$OPENBAO_CERT_DIR/openbao-ca.crt" "$OPENBAO_CERT_DIR/openbao-client.p12"
+rmdir "$OPENBAO_CERT_DIR"
+unset BAO_TOKEN OPENBAO_CERT_DIR
 ```
 
 For the full token lifecycle, secret engines, auth methods, and the bootstrap sequence that
@@ -635,14 +641,19 @@ bundled dashboard sourced from `operators/keystone/dashboards/keystone-operator.
 
 ### Sanity-check: Prometheus targets
 
-In a second terminal, port-forward Prometheus and confirm the keystone-operator
-ServiceMonitor scrape target is `up`. The query path
+In a second terminal, port-forward Prometheus:
+
+```bash
+kubectl port-forward svc/kube-prometheus-stack-prometheus -n monitoring 9090:9090
+```
+
+In another terminal, confirm the keystone-operator ServiceMonitor scrape target
+is `up`. The query path
 (`/api/v1/targets?state=active`) is the same one the chainsaw suite
 issues against the in-cluster Service, so a green local check matches what
 CI exercises:
 
 ```bash
-kubectl port-forward svc/kube-prometheus-stack-prometheus -n monitoring 9090:9090
 curl -fsS 'http://localhost:9090/api/v1/targets?state=active' \
   | jq '.data.activeTargets[] | select(.labels.job=="keystone-operator") | {health, lastScrape: .lastScrape}'
 ```
