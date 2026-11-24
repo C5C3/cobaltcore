@@ -97,7 +97,8 @@ scripts it calls. Nothing runs because Go code changed somewhere else.
 | `e2e_infra` | `tests/e2e/infrastructure/**` | `e2e-infra` |
 | `e2e_shared`, `e2e_openbao`, `ci_plumbing`, `makefile` | the deploy stack, the infra scripts, the shared composite actions, the workflow file, the remaining CI helpers | the canary: `e2e-infra` plus the keystone `e2e-operator` leg. `deploy/bases/shared-openbao/**` adds the barbican leg |
 | `actionlint` | `.github/**` | `actionlint` |
-| `docs`, `helm`, `target_cluster_chart` | as before | `docs` and `docs-overlay`, `helm-validate`, `helm-push-target-cluster` |
+| `docs`, `helm` | as before | `docs` and `docs-overlay`, `helm-validate` |
+| `target_cluster_chart` | `deploy/bases/target-cluster-access/**`, `hack/ci-helm-push.sh`, `hack/ci-cosign-sign.sh` | `helm-push-target-cluster` |
 | `publish_legacy` | the wide paths a push publishes from | push events only, ignored on pull requests |
 
 The canary is the deliberate gap. A change to the substrate every e2e job stands
@@ -218,9 +219,9 @@ Jobs that need elevated access declare per-job `permissions:` blocks:
 | `report-nightly-chaos` | `issues: write`, `actions: read` | List the jobs of the nightly chaos run and file what went red on tracking issues |
 | `cleanup-e2e-tags` | `packages: write` | Delete the run-scoped tags from GHCR |
 | `build-and-push` | `packages: write` | Push per-platform operator image digests to GHCR |
-| `merge-operator-images` | `packages: write` | Push final multi-arch operator image manifest list |
-| `helm-push` | `packages: write` | Push Helm charts to GHCR OCI registry |
-| `helm-push-target-cluster` | `packages: write` | Push the `target-cluster-access` chart to GHCR OCI registry |
+| `merge-operator-images` | `packages: write`, `id-token: write` | Push final multi-arch operator image manifest list; sign its digest with cosign keyless signing through Sigstore OIDC |
+| `helm-push` | `packages: write`, `id-token: write` | Push Helm charts to GHCR OCI registry; sign their digests with cosign keyless signing through Sigstore OIDC |
+| `helm-push-target-cluster` | `packages: write`, `id-token: write` | Push the `target-cluster-access` chart to GHCR OCI registry; sign its digest with cosign keyless signing through Sigstore OIDC |
 | `github-release` | `contents: write` | Create GitHub Releases |
 
 ## Job Dependency DAG
@@ -2632,20 +2633,22 @@ spends its time in the vulnix scan. Timeout: 30 minutes.
 ### merge-operator-images
 
 Downloads per-platform digests from `build-and-push`, assembles the multi-arch manifest
-list, and pushes it with the final tags.
+list, pushes it with the final tags, and signs its digest with cosign
+([Cosign Signing](#cosign-signing)).
 
 **Dependencies:** `needs: [changes, build-and-push]`
 **Condition:** `if: github.event_name == 'push' && needs.build-and-push.result == 'success'`
-**Permissions:** `contents: read`, `packages: write`
+**Permissions:** `contents: read`, `packages: write`, `id-token: write`
 
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
-| 2 | `docker/setup-buildx-action@v4` + `registry-login` composite action | Authenticates to GHCR |
+| 2 | `Setup Docker registry` | The `setup-docker-registry` composite action: sets up Buildx, authenticates to GHCR with the `registry-login` composite action, and installs cosign |
 | 3 | `Read the chart version` | Step id `chart`. Reads the version of `operators/<op>/helm/<op>-operator/Chart.yaml` with `hack/ci-read-chart-version.sh` and writes it as `version`; a value that is not `X.Y.Z` writes nothing and logs a `::warning::`, so the index gets no chart-version tag but keeps `sha-<full-sha>` and `latest` |
 | 4 | `docker/metadata-action@v6` | Generates final image tags and, with `DOCKER_METADATA_ANNOTATIONS_LEVELS: index`, the index annotations (`created`, `revision`, `source`, `url`, `version`, and title, description, licenses and vendor as the image labels set them) |
 | 5 | Download digests | `actions/download-artifact@v8` | Downloads all `digests-operator-<operator>-*` artifacts |
-| 6 | Create and push manifest list | Shell | `docker buildx imagetools create` with the annotations from step 4 and `--annotation "index:org.opencontainers.image.revision=${GITHUB_SHA}"` assembles per-platform digests under the final tags from step 4; `hack/ci-resolve-e2e-images.sh` reads the revision annotation |
+| 6 | `Create and push manifest list` | `docker buildx imagetools create` with the annotations from step 4 and `--annotation "index:org.opencontainers.image.revision=${GITHUB_SHA}"` assembles per-platform digests under the final tags from step 4; `hack/ci-resolve-e2e-images.sh` reads the revision annotation. Step id `manifest`: `--metadata-file "${RUNNER_TEMP}/imagetools-metadata.json"` reports the digest of the pushed index, and the step writes it as `digest`. A metadata file without a `sha256:` digest fails the step |
+| 7 | `Sign the manifest list` | Runs `hack/ci-cosign-sign.sh` on `ghcr.io/c5c3/<operator>-operator@<digest>` with the `digest` of step 6 |
 
 **Matrix strategy:** Same `operator` dimension as `build-and-push` (via `fromJson(needs.changes.outputs.e2e-operators)`).
 
@@ -2666,21 +2669,23 @@ tag again. The operator upgrade suites pin their baseline to it
 
 ### helm-push
 
-Packages and pushes operator Helm charts to the GHCR OCI registry.
+Packages and pushes operator Helm charts to the GHCR OCI registry and signs each
+chart's digest with cosign ([Cosign Signing](#cosign-signing)).
 Runs only on push events — skipped on pull requests. Like `build-and-push`, this is
 publish-only-on-merge: the chart is packaged and pushed for every changed operator on
 push without re-running the E2E suite.
 
 **Dependencies:** `needs: [changes]`
 **Condition:** `if: github.event_name == 'push' && needs.changes.outputs.has-e2e-operators == 'true'`
-**Permissions:** `contents: read`, `packages: write`
+**Permissions:** `contents: read`, `packages: write`, `id-token: write`
 
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `azure/setup-helm@v5` | Installs Helm CLI `HELM_VERSION` |
-| 3 | Helm registry login | Authenticates to GHCR via `helm registry login` |
-| 4 | Package and push | Packages chart and pushes it to `oci://ghcr.io/c5c3/charts/` with `hack/ci-helm-push.sh` |
+| 3 | `Setup Docker registry` | The `setup-docker-registry` composite action with `setup-buildx: 'false'`: runs the `docker login` whose configuration `helm push` and cosign read, and installs cosign. The job builds no image and starts no Buildx builder |
+| 4 | Package and push | Step id `push`. Packages chart and pushes it to `oci://ghcr.io/c5c3/charts/` with `hack/ci-helm-push.sh`, which writes the outputs `digest` and `ref` |
+| 5 | `Sign the chart` | Runs `hack/ci-cosign-sign.sh` on the `ref` of step 4 |
 
 **Chart version derivation:**
 
@@ -2711,6 +2716,13 @@ the first attempt. `tests/unit/hack/ci_helm_push_test.sh` covers the script, and
 `tests/unit/ci/helm_wiring_test.sh` fails when a workflow runs `helm push`
 directly.
 
+**Pushed digest:** helm ends a successful push with `Pushed: <repository>:<version>`
+and `Digest: sha256:<digest>`. `hack/ci-helm-push.sh` reads the last of each from
+the attempt that succeeded and, when `GITHUB_OUTPUT` is set, writes `digest`
+(`sha256:<digest>`) and `ref` (`<repository>@sha256:<digest>`). A push that
+succeeds without either line exits 1, because the sign step would have no
+digest to sign.
+
 ### helm-push-target-cluster
 
 Packages the `target-cluster-access` chart and pushes it to the GHCR OCI
@@ -2723,18 +2735,24 @@ the same registry tag.
 **Dependencies:** `needs: [changes]`
 **Condition:** Runs on `push` events when the `target-cluster-chart` output of
 `changes` is `true`.
-**Permissions:** `contents: read`, `packages: write`
+**Permissions:** `contents: read`, `packages: write`, `id-token: write`
 
 `hack/ci-resolve-changes.sh` sets `target-cluster-chart` when the
-`target_cluster_chart` class (`deploy/bases/target-cluster-access/**`) changed, and forces it
-on for a `v*` tag push.
+`target_cluster_chart` class changed, and forces it on for a `v*` tag push. The
+class has three paths: `deploy/bases/target-cluster-access/**`, and
+`hack/ci-helm-push.sh` and `hack/ci-cosign-sign.sh`, which push and sign the
+chart, so a change to either script publishes and signs it again.
+`.github/workflows/ci.yaml` is not in the class. It changes in most pull
+requests, and each match would push the same chart version again under a new
+digest.
 
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `azure/setup-helm@v5` | Installs Helm CLI `HELM_VERSION` |
-| 3 | `Login to GHCR` | Authenticates to `ghcr.io` via `helm registry login` with `github.actor` and `secrets.GITHUB_TOKEN` |
-| 4 | `Package and push Helm chart` | Removes stale `target-cluster-access-*.tgz` files, runs `make helm-package-target-cluster` and pushes the tarball to `oci://ghcr.io/c5c3/charts` with `hack/ci-helm-push.sh` (see [push retry](#helm-push)) |
+| 3 | `Setup Docker registry` | As in `helm-push`: the `docker login` `helm push` and cosign read, and cosign, without a Buildx builder |
+| 4 | `Package and push Helm chart` | Step id `push`. Removes stale `target-cluster-access-*.tgz` files, runs `make helm-package-target-cluster` and pushes the tarball to `oci://ghcr.io/c5c3/charts` with `hack/ci-helm-push.sh` (see [push retry](#helm-push)), which writes the outputs `digest` and `ref` |
+| 5 | `Sign the chart` | Runs `hack/ci-cosign-sign.sh` on the `ref` of step 4 |
 
 **Chart version derivation:**
 
@@ -2774,6 +2792,126 @@ This job runs only after both `merge-operator-images` and `helm-push` complete
 successfully, ensuring the final multi-arch manifest list and charts are published before
 the release is created. Helm chart tarballs
 are attached as release assets for direct download. Timeout: 8 minutes.
+
+## Cosign Signing
+
+`merge-operator-images`, `helm-push` and `helm-push-target-cluster` sign what they
+push with cosign, keylessly through Sigstore OIDC. A signature names a digest: the
+index digest of each of the ten operator images, and the manifest digest of each of
+the ten operator charts and of `target-cluster-access`. The three jobs run on a push
+to `main` and on a `v*` tag push, and both sign. A pull request signs nothing. An
+image or chart digest pushed before the publish jobs signed has no signature, among
+them the baseline versions the operator upgrade suites pin.
+
+### Signing script
+
+Each job passes the digest its own push reported to `hack/ci-cosign-sign.sh`, as
+`<repository>@sha256:<digest>`. `merge-operator-images` reads it from the metadata
+file of `docker buildx imagetools create`, and the chart jobs from the `Digest:`
+line of `helm push`. The script runs `cosign sign --yes` and then `cosign verify`
+against the identity below, the command a consumer runs, with cosign's stdout
+discarded. Each command gets three attempts, with a 5 s and a 15 s pause
+(`COSIGN_ATTEMPTS` and `COSIGN_DELAY` change them). Every failure is retried: a
+second signature of one digest adds a second bundle, and `cosign verify` accepts
+either. A sign that still fails runs no verify.
+
+When either command fails on its last attempt, the job fails. The artifact is in
+the registry under its tags by then, unsigned, and a consumer that verifies rejects
+it. Re-running the failed job pushes again and signs what it pushed.
+
+### Identity
+
+cosign exchanges the job's GitHub OIDC token for a Fulcio certificate whose subject
+is `https://github.com/` followed by the run's `GITHUB_WORKFLOW_REF`:
+
+| Field | Value |
+| --- | --- |
+| Issuer | `https://token.actions.githubusercontent.com` |
+| Subject, push to `main` | `https://github.com/C5C3/cobaltcore/.github/workflows/ci.yaml@refs/heads/main` |
+| Subject, `v*` tag push | `https://github.com/C5C3/cobaltcore/.github/workflows/ci.yaml@refs/tags/<tag>` |
+
+The subject names the workflow file, so it changes if the publish jobs move to
+another workflow. The images of the image workflow carry the subject of
+`build-images.yaml` instead
+([Verifying Signatures](build-images-workflow.md#verifying-signatures)). Each
+signature also adds an entry to the public Rekor transparency log that names the
+repository, the workflow and the digest.
+
+### Where the signature is stored
+
+cosign writes a Sigstore bundle as an OCI referrer of the signed digest. ghcr.io
+serves no referrers API, so cosign stores the bundle under a `sha256-<digest>` tag in
+the same package. `hack/ghcr-prune-stale-versions.py` keeps such a version for as
+long as it keeps the digest the tag names, so the nightly cleanup does not delete
+the signature of an operator image it keeps. No cleanup job covers the chart
+packages. `helm pull` without `--version` and a Flux `HelmRepository` of type `oci`
+choose among the tags that parse as semantic versions, and `sha256-<digest>` is not
+one.
+
+### Verifying a signature
+
+```bash
+digest="$(crane digest ghcr.io/c5c3/keystone-operator:latest)"
+cosign verify \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity https://github.com/C5C3/cobaltcore/.github/workflows/ci.yaml@refs/heads/main \
+  "ghcr.io/c5c3/keystone-operator@${digest}"
+
+digest="$(crane digest ghcr.io/c5c3/charts/keystone-operator:<version>)"
+cosign verify \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity https://github.com/C5C3/cobaltcore/.github/workflows/ci.yaml@refs/heads/main \
+  "ghcr.io/c5c3/charts/keystone-operator@${digest}"
+```
+
+Each command verifies the digest the tag names when `crane digest` reads it. The
+publish jobs move `latest` and push a chart version again under a new digest, so
+a tag can name another digest by the time it is pulled; a deployment that names
+`@${digest}` runs the artifact that was verified.
+
+For an artifact a `v*` tag push published, the identity ends in `@refs/tags/<tag>`
+in place of `@refs/heads/main`.
+
+A Flux `OCIRepository` verifies the chart signature with `spec.verify`. `layerSelector`
+hands the chart tarball to a `HelmRelease` `chartRef` unaltered, as in
+`deploy/bases/operators/sources/openbao-operator.yaml`:
+
+```yaml
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: keystone-operator
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: oci://ghcr.io/c5c3/charts/keystone-operator
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    semver: ">=0.16.0 <1.0.0"
+  verify:
+    provider: cosign
+    matchOIDCIdentity:
+      - issuer: ^https://token\.actions\.githubusercontent\.com$
+        subject: ^https://github\.com/C5C3/cobaltcore/\.github/workflows/ci\.yaml@refs/heads/main$
+```
+
+Flux verifies this signature format from version 2.8 (source-controller v1.8.0).
+No job of this repository runs Flux against these signatures; CI proves them with
+`cosign verify` alone, in the job that signs. The lower bound of `ref.semver` is
+0.16.0, the version `operators/keystone/helm/keystone-operator/Chart.yaml` named when
+the publish jobs began to sign, so the source selects no version pushed without a
+signature.
+
+### Test coverage
+
+| Test | Covers |
+| --- | --- |
+| `tests/unit/hack/ci_cosign_sign_test.sh` | `hack/ci-cosign-sign.sh` under a stubbed `cosign`: the sign and verify arguments for a branch and a tag, the retries and their limit, the verify that never runs after a failed sign, and the usage and environment errors |
+| `tests/unit/hack/ci_helm_push_test.sh` | The `digest` and `ref` outputs of `hack/ci-helm-push.sh`, and the exit 1 when helm prints no `Pushed` or `Digest` line |
+| `tests/unit/ci/operator_image_jobs_test.sh` | The `--metadata-file` of the manifest step and the `digest` it writes, and the failure without one |
+| `tests/unit/ci/publish_signing_test.sh` | `id-token: write` on the three jobs alone and not in the workflow-level permissions, their `Setup Docker registry` and sign steps in order, `setup-buildx: 'false'` in the two chart jobs, no `cosign` command in `ci.yaml`, the push-only condition, and the `target_cluster_chart` paths |
 
 ## Reusable CI Scripts
 
@@ -3509,6 +3647,7 @@ The CI workflow depends on the following artifacts:
 | `hack/ci-deploy-operator.sh` | the `tempest` job and every `e2e-*` job except `e2e-infra` and `e2e-bgp-fabric` | Deploys operator via Helm; `e2e-controlplane` sets `OPERATOR_REPLICAS=1` |
 | `hack/ci-fetch-released-operator.sh`, `hack/ci-operator-upgrade-leg.sh` | `e2e-operator-upgrade.yaml` | Fetch the pinned baseline chart and image; name what an operator's upgrade suite loads and deploys |
 | `hack/ci-read-chart-version.sh` | `merge-operator-images`, `hack/ci-fetch-released-operator.sh`, `hack/ci-operator-upgrade-main-matrix.sh` | Prints the version a `Chart.yaml` or a `baseline.yaml` pin names |
+| `hack/ci-cosign-sign.sh` | `merge-operator-images`, `helm-push`, `helm-push-target-cluster` jobs | Signs one digest reference with cosign and verifies the signature against the workflow identity ([Cosign Signing](#cosign-signing)) |
 | `hack/ci-operator-upgrade-main-matrix.sh` | `operator-upgrade.yaml` | Selects the operators a push to `main` published whose pin is frozen, and maps the images their suites load |
 | `hack/ci-ensure-disk-space.sh` | `e2e-chaos` job, `multinode` entry | Prunes every unused image and the build cache when the runner's Docker disk has less free than the entry needs, and fails when it is still short |
 | `hack/ci-check-node-budget.sh` | `e2e-controlplane` job, through the full-chain suite's Link 6z | Fails when the pods on the kind node request more than 4000m CPU or 16Gi memory |
