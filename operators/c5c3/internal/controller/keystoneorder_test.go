@@ -38,6 +38,8 @@ import (
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
+	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
 )
 
@@ -447,14 +449,21 @@ func TestOrderAdminCredentialGate(t *testing.T) {
 
 func TestOrderTeardown(t *testing.T) {
 	boom := errors.New("boom")
+	failingUpdate := interceptor.Funcs{
+		Update: func(context.Context, client.WithWatch, client.Object, ...client.UpdateOption) error {
+			return boom
+		},
+	}
 	cases := []struct {
-		name         string
-		withPlane    bool
-		remaining    int
-		sweepErr     error
-		wantResult   ctrl.Result
-		wantErr      bool
-		wantReleased bool
+		name          string
+		withPlane     bool
+		remaining     int
+		sweepErr      error
+		funcs         interceptor.Funcs
+		wantResult    ctrl.Result
+		wantErr       bool
+		wantErrPrefix string
+		wantReleased  bool
 	}{
 		{
 			name: "children remain with the plane present", withPlane: true, remaining: 2,
@@ -464,6 +473,19 @@ func TestOrderTeardown(t *testing.T) {
 		{name: "a sweep error with the plane present", withPlane: true, sweepErr: boom, wantErr: true},
 		{name: "a sweep error with the plane gone", sweepErr: boom, wantReleased: true},
 		{name: "children remain with the plane gone", remaining: 2, wantReleased: true},
+		// A pass that read the order from a cache trailing the API server finds it
+		// gone at the release: nothing is left to release, so the pass ends quietly.
+		{name: "the order is gone at the release", withPlane: true, funcs: testutil.NotFoundOnUpdate()},
+		// A pass that read a copy older than the last write loses the release and
+		// requeues, so the next pass releases from a fresh read.
+		{
+			name: "the release conflicts", withPlane: true, funcs: testutil.ConflictFirstUpdate(),
+			wantResult: ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass},
+		},
+		{
+			name: "the release fails", withPlane: true, funcs: failingUpdate,
+			wantErr: true, wantErrPrefix: "removing KeystoneUser finalizer:",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -475,7 +497,7 @@ func TestOrderTeardown(t *testing.T) {
 			if tc.withPlane {
 				objs = append(objs, keystoneUserControlPlane())
 			}
-			c := kuFakeClient(t, nil, objs...)
+			c := kuFakeClient(t, &tc.funcs, objs...)
 			live := &c5c3v1alpha1.KeystoneUser{}
 			g.Expect(c.Get(ctx, client.ObjectKeyFromObject(order), live)).To(Succeed())
 
@@ -491,6 +513,7 @@ func TestOrderTeardown(t *testing.T) {
 			g.Expect(result).To(Equal(tc.wantResult))
 			if tc.wantErr {
 				g.Expect(err).To(MatchError(boom))
+				g.Expect(err.Error()).To(HavePrefix(tc.wantErrPrefix))
 			} else {
 				g.Expect(err).NotTo(HaveOccurred())
 			}

@@ -1024,9 +1024,12 @@ func (r *KeystoneServiceReconciler) reconcileDelete(ctx context.Context, ks *c5c
 
 // removeFinalizer releases the teardown finalizer and persists the update.
 func (r *KeystoneServiceReconciler) removeFinalizer(ctx context.Context, ks *c5c3v1alpha1.KeystoneService) (ctrl.Result, error) {
-	controllerutil.RemoveFinalizer(ks, keystoneServiceFinalizerName)
-	if err := r.Update(ctx, ks); err != nil {
+	outcome, err := commonreconcile.RemoveFinalizer(ctx, r.Client, ks, keystoneServiceFinalizerName)
+	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing KeystoneService finalizer: %w", err)
+	}
+	if outcome == commonreconcile.FinalizerConflict {
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
 	}
 	return ctrl.Result{}, nil
 }

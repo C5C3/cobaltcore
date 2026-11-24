@@ -560,11 +560,10 @@ func TestReconcileDelete_CompletionEventFollowsTheFinalizerUpdate(t *testing.T) 
 			return apierrors.NewConflict(controlPlanesResource, "cp", errors.New("the object was modified"))
 		}))
 
-		_, err := r.reconcileDelete(ctx, cp)
+		res, err := r.reconcileDelete(ctx, cp)
 
-		g.Expect(err).To(HaveOccurred())
-		g.Expect(err.Error()).To(HavePrefix("removing finalizer:"))
-		g.Expect(apierrors.IsConflict(err)).To(BeTrue())
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
 		g.Expect(eventsWithReason(rec, "ORCTeardownComplete")).To(BeEmpty())
 
 		// The retry starts from a fresh read, as the next pass does.
@@ -642,9 +641,10 @@ func TestReconcileDelete_UnfinishedStallEscapeReportsNoCompletion(t *testing.T) 
 		r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: rec}
 		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(cp), cp)).To(Succeed())
 
-		_, err := r.reconcileDelete(ctx, cp)
+		res, err := r.reconcileDelete(ctx, cp)
 
-		g.Expect(apierrors.IsConflict(err)).To(BeTrue())
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
 		expectSilentRelease(t, r, c, cp, rec)
 	})
 
@@ -5111,11 +5111,12 @@ func TestReconcileDeleteRemoteChildren_ToleratesAReleasedControlPlane(t *testing
 	expectSwept(t, target, placedChild)
 }
 
-// TestReconcileDelete_FinalizerUpdateConflictFailsThePass is the other half of the two
-// tolerant finalizer updates: they forgive NotFound alone. A swallowed Conflict would
-// end the pass with a zero result and nothing to requeue it, and the CR would stay
-// Terminating until a later watch event.
-func TestReconcileDelete_FinalizerUpdateConflictFailsThePass(t *testing.T) {
+// TestReconcileDelete_FinalizerUpdateConflictRequeuesThePass is the other half of the
+// two tolerant finalizer updates: a Conflict ends the pass without an error, but never
+// with a zero result. A swallowed Conflict with nothing to requeue the pass would leave
+// the CR Terminating until a later watch event, so the pass requeues after
+// RequeueNextPass and keeps the finalizer for the next one to release.
+func TestReconcileDelete_FinalizerUpdateConflictRequeuesThePass(t *testing.T) {
 	ctx := context.Background()
 	s := namespaceTeardownScheme(t)
 	conflict := failingORCReleases(func() error {
@@ -5130,10 +5131,13 @@ func TestReconcileDelete_FinalizerUpdateConflictFailsThePass(t *testing.T) {
 		r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
 		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(cp), cp)).To(Succeed())
 
-		_, err := r.reconcileDelete(ctx, cp)
+		res, err := r.reconcileDelete(ctx, cp)
 
-		g.Expect(apierrors.IsConflict(err)).To(BeTrue())
-		g.Expect(err.Error()).To(HavePrefix("removing finalizer after force-remove:"))
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
+		stored := &c5c3v1alpha1.ControlPlane{}
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(cp), stored)).To(Succeed())
+		g.Expect(stored.Finalizers).To(ContainElement(controlPlaneORCFinalizer))
 	})
 
 	t.Run("the remote-children release", func(t *testing.T) {
@@ -5148,10 +5152,13 @@ func TestReconcileDelete_FinalizerUpdateConflictFailsThePass(t *testing.T) {
 		}
 		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(cp), cp)).To(Succeed())
 
-		_, err := r.reconcileDelete(ctx, cp)
+		res, err := r.reconcileDelete(ctx, cp)
 
-		g.Expect(apierrors.IsConflict(err)).To(BeTrue())
-		g.Expect(err.Error()).To(HavePrefix("removing the remote-children finalizer:"))
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
+		stored := &c5c3v1alpha1.ControlPlane{}
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(cp), stored)).To(Succeed())
+		g.Expect(stored.Finalizers).To(ContainElement(commonmulticluster.RemoteChildrenFinalizer))
 	})
 }
 
