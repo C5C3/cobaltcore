@@ -28,6 +28,7 @@ import (
 
 	commonconditions "github.com/c5c3/cobaltcore/internal/common/conditions"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 	"github.com/c5c3/cobaltcore/operators/keystone/internal/identity"
 	identityfake "github.com/c5c3/cobaltcore/operators/keystone/internal/identity/fake"
@@ -703,6 +704,36 @@ func TestBackendDelete_KeystoneGoneFastPathReleasesFinalizer(t *testing.T) {
 	err = r.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "corp-ldap"}, &gone)
 	g.Expect(err).To(HaveOccurred(), "finalizer released despite the missing Keystone (fail open)")
 	g.Expect(srv.GetDomain(id)).NotTo(BeNil(), "no API to clean through; the domain is retained")
+}
+
+// TestBackendReconcile_FinalizerReleaseConflictRequeues pins a release on a
+// copy older than the stored backend: the pass requeues after RequeueNextPass
+// without an error and keeps the finalizer, and the next pass releases it from
+// a fresh read.
+func TestBackendReconcile_FinalizerReleaseConflictRequeues(t *testing.T) {
+	g := NewGomegaWithT(t)
+	srv := identityfake.NewServer(testAdminPassword)
+	t.Cleanup(srv.Close)
+	id := srv.SeedDomain("corp", "", true)
+
+	backend := deletingBackend(id, keystonev1alpha1.DomainDeletionPolicyDelete, keystonev1alpha1.DomainModeManage)
+	r := newBackendTestReconciler(srv, backend)
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), testutil.ConflictFirstUpdate())
+	ctx := context.Background()
+	key := client.ObjectKey{Namespace: "default", Name: "corp-ldap"}
+
+	result, err := r.Reconcile(ctx, backendRequest(backend))
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
+	var persisted keystonev1alpha1.KeystoneIdentityBackend
+	g.Expect(r.Get(ctx, key, &persisted)).To(Succeed())
+	g.Expect(persisted.Finalizers).To(ContainElement(identityBackendFinalizerName))
+
+	_, err = r.Reconcile(ctx, backendRequest(backend))
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(apierrors.IsNotFound(r.Get(ctx, key, &persisted))).To(BeTrue())
 }
 
 func TestBackendDelete_AdminSecretGoneFailsOpenWithWarning(t *testing.T) {

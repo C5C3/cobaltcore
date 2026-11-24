@@ -876,10 +876,15 @@ func (r *KeystoneReconciler) reconcileDelete(ctx context.Context, children clien
 			"MariaDB Database, User, and Grant marked for deletion; releasing finalizer")
 	}
 
-	controllerutil.RemoveFinalizer(keystone, keystoneFinalizer)
-	if err := r.Update(ctx, keystone); err != nil {
+	outcome, err := commonreconcile.RemoveFinalizer(ctx, r.Client, keystone, keystoneFinalizer)
+	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
 	}
+	if outcome == commonreconcile.FinalizerConflict {
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
+	}
+	// A CR already gone runs the clean-up below as well: it is keyed on the
+	// name and namespace alone, and no other path runs it.
 	metrics.DeleteForKeystone(keystone.Name, keystone.Namespace)
 	// Drop the per-CR hot-path caches so a CR recreated under the same
 	// name/namespace never serves a stale health probe or config-render entry
@@ -924,11 +929,7 @@ func (r *KeystoneReconciler) reconcileDeleteOpenBao(ctx context.Context, childre
 	if children == nil {
 		r.Recorder.Event(keystone, corev1.EventTypeWarning, "RemoteChildrenAbandoned",
 			"Target cluster is no longer registered; releasing the openbao-finalizer without deleting the backup PushSecrets on it")
-		controllerutil.RemoveFinalizer(keystone, keystoneOpenBaoFinalizer)
-		if err := r.Update(ctx, keystone); err != nil {
-			return ctrl.Result{}, fmt.Errorf("removing openbao finalizer: %w", err)
-		}
-		return ctrl.Result{}, nil
+		return r.removeOpenBaoFinalizer(ctx, keystone)
 	}
 
 	// Only emit FinalizingOpenBaoSecrets when a backup PushSecret is adopted
@@ -959,9 +960,19 @@ func (r *KeystoneReconciler) reconcileDeleteOpenBao(ctx context.Context, childre
 	r.Recorder.Event(keystone, corev1.EventTypeNormal, "OpenBaoSecretsFinalized",
 		"OpenBao backup PushSecrets deleted; releasing openbao-finalizer")
 
-	controllerutil.RemoveFinalizer(keystone, keystoneOpenBaoFinalizer)
-	if err := r.Update(ctx, keystone); err != nil {
+	return r.removeOpenBaoFinalizer(ctx, keystone)
+}
+
+// removeOpenBaoFinalizer releases the openbao finalizer. A conflict requeues
+// after RequeueNextPass and a CR already gone ends the pass, both without an
+// error.
+func (r *KeystoneReconciler) removeOpenBaoFinalizer(ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+	outcome, err := commonreconcile.RemoveFinalizer(ctx, r.Client, keystone, keystoneOpenBaoFinalizer)
+	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing openbao finalizer: %w", err)
+	}
+	if outcome == commonreconcile.FinalizerConflict {
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
 	}
 	return ctrl.Result{}, nil
 }

@@ -2613,13 +2613,11 @@ func TestReconcile_TerminatingCR_SentinelSuppressesEventAfterUpdateConflict(t *t
 	// Pass 1: RemoveFinalizer Update fails with Conflict, so the keystone
 	// finalizer remains on the persisted CR. Delete has already been issued
 	// on the MariaDB CRs, transitioning them to Terminating.
-	_, err := r.Reconcile(ctx, req)
-	g.Expect(err).To(HaveOccurred(),
-		"first pass must surface the Conflict on the finalizer-removing Update")
-	g.Expect(err.Error()).To(ContainSubstring("removing finalizer"),
-		"error must preserve the 'removing finalizer' wrapper from reconcileDelete")
-	g.Expect(apierrors.IsConflict(err)).To(BeTrue(),
-		"wrapped Conflict must remain recognizable via apierrors.IsConflict")
+	result, err := r.Reconcile(ctx, req)
+	g.Expect(err).NotTo(HaveOccurred(),
+		"a Conflict on the finalizer-removing Update must not surface as a Reconciler error")
+	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}),
+		"the Conflict requeues the pass so the next one releases from a fresh read")
 
 	// Verify both preconditions for the sentinel path on pass 2:
 	// (a) the keystone finalizer is still on the persisted CR, so pass 2
@@ -2994,6 +2992,88 @@ drain:
 	getErr := r.Get(ctx, req.NamespacedName, &keystonev1alpha1.Keystone{})
 	g.Expect(apierrors.IsNotFound(getErr)).To(BeTrue(),
 		"Keystone must be removed after the openbao finalizer is released")
+}
+
+// TestReconcile_FinalizerReleaseOnAGoneCREndsThePass pins a pass that read the
+// CR from a cache still holding it after an earlier pass released it: every
+// release finds the CR gone, and the pass ends without the Reconciler error
+// controller-runtime would log and count.
+func TestReconcile_FinalizerReleaseOnAGoneCREndsThePass(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	r := newTestReconciler(ks)
+	terminating := markKeystoneTerminating(t, r.Client, ks)
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), testutil.NotFoundOnUpdate())
+
+	result, err := r.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: client.ObjectKeyFromObject(terminating),
+	})
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{}))
+}
+
+// TestReconcile_FinalizerReleaseOnAGoneCRStillDropsMetrics pins the clean-up of
+// a pass whose release finds the CR already gone: the per-CR series, the health
+// probe entry and the config-render entry are dropped all the same, because no
+// later pass sees the CR to drop them.
+func TestReconcile_FinalizerReleaseOnAGoneCRStillDropsMetrics(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	ks.Name = "gone-drops-metrics"
+	ks.Namespace = "ns-gone-drops-metrics"
+	t.Cleanup(func() { metrics.DeleteForKeystone(ks.Name, ks.Namespace) })
+	labels := map[string]string{"keystone": ks.Name, "namespace": ks.Namespace, "result": "failed"}
+	metrics.RecordDBSync(ks.Name, ks.Namespace, "failed", time.Second)
+	g.Expect(counterValue(t, "keystone_operator_db_sync_total", labels)).To(Equal(1.0),
+		"the fixture series must exist to be dropped")
+
+	r := newTestReconciler(ks)
+	key := client.ObjectKeyFromObject(ks)
+	r.healthProbeCache.Store(key, ks.UID, internalAPIURL(ks), healthcheck.HealthCheckCacheTTL)
+	r.configRenderCache = map[types.NamespacedName]configRenderCacheEntry{key: {uid: ks.UID}}
+	_ = markKeystoneTerminating(t, r.Client, ks)
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), testutil.NotFoundOnUpdate())
+
+	_, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: key})
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(findMetricByLabels(t, ctrlmetrics.Registry, "keystone_operator_db_sync_total", labels)).To(BeNil(),
+		"the per-CR series must not outlive the CR they are labelled with")
+	g.Expect(r.healthProbeCache.Has(key)).To(BeFalse(),
+		"a CR recreated under the same name must not inherit the probe entry")
+	g.Expect(r.configRenderCache).NotTo(HaveKey(key),
+		"a CR recreated under the same name must not inherit the config-render entry")
+}
+
+// TestReconcile_OpenBaoFinalizerReleaseConflictRequeues pins an openbao
+// release on a copy older than the stored CR: the pass requeues after
+// RequeueNextPass without an error and keeps the finalizer, and the next pass
+// releases it from a fresh read.
+func TestReconcile_OpenBaoFinalizerReleaseConflictRequeues(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	// Isolate the openbao path: no MariaDB finalizer means its release is the
+	// first Update of the pass.
+	ks.Finalizers = []string{keystoneOpenBaoFinalizer}
+	r := newTestReconciler(ks)
+	ctx := context.Background()
+	_ = markKeystoneTerminating(t, r.Client, ks)
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), testutil.ConflictFirstUpdate())
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}}
+
+	result, err := r.Reconcile(ctx, req)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
+	persisted := &keystonev1alpha1.Keystone{}
+	g.Expect(r.Get(ctx, req.NamespacedName, persisted)).To(Succeed())
+	g.Expect(persisted.Finalizers).To(ContainElement(keystoneOpenBaoFinalizer))
+
+	_, err = r.Reconcile(ctx, req)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(apierrors.IsNotFound(r.Get(ctx, req.NamespacedName, persisted))).To(BeTrue())
 }
 
 // TestReconcile_TerminatingCR_NoDuplicateStartEventOnRequeue guards the
