@@ -639,9 +639,12 @@ func (r *BarbicanSecretStoreReconciler) deleteRemoteCredentialsSecret(
 func (r *BarbicanSecretStoreReconciler) releaseRemoteChildrenFinalizer(
 	ctx context.Context, store *barbicanv1alpha1.BarbicanSecretStore,
 ) (ctrl.Result, error) {
-	controllerutil.RemoveFinalizer(store, commonmulticluster.RemoteChildrenFinalizer)
-	if err := r.Update(ctx, store); err != nil {
+	outcome, err := commonreconcile.RemoveFinalizer(ctx, r.Client, store, commonmulticluster.RemoteChildrenFinalizer)
+	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing remote-children finalizer: %w", err)
+	}
+	if outcome == commonreconcile.FinalizerConflict {
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
 	}
 	return ctrl.Result{}, nil
 }
