@@ -226,10 +226,16 @@ openstack --insecure endpoint create --region RegionOne placement public \
 ```
 
 Neither `service create` nor `endpoint create` supports `--or-show`; inspect
-the catalog before retrying these create commands. Use
-`openstack --insecure service list` and
-`openstack --insecure endpoint list --service placement` to check what is
-registered.
+the catalog before retrying these create commands:
+
+```bash
+openstack --insecure service list
+openstack --insecure endpoint list
+```
+
+Check for Placement services and their endpoints. If multiple services have the
+same name, use a service ID from the first command with
+`openstack --insecure endpoint list --service <service-id>` to inspect each one.
 
 The internal endpoint is the in-cluster Service the operator owns (`placement` in
 `openstack`, port 8778). The public one goes through the Gateway on the kind host
@@ -250,8 +256,9 @@ openstack --insecure resource class list
 The output is a one-column table of the standard resource classes a fresh
 Placement seeds, `VCPU`, `MEMORY_MB` and `DISK_GB` among them.
 
-An `EndpointNotFound` here means Step 4 did not register the catalog entry. A
-`401` means the request was not authenticated; this CLI request uses the admin
+An `EndpointNotFound` here means the client could not find a matching catalog
+endpoint. Check the Placement service, region, and interface in Step 4. A `401`
+means the request was not authenticated; this CLI request uses the admin
 credentials exported in Step 2, not the Placement service user. First confirm
 that `openstack --insecure token issue` succeeds with those admin credentials.
 If it does but this request still returns `401`, inspect the Placement pod logs
