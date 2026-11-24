@@ -287,6 +287,16 @@ across a planned upgrade to avoid the noise.
   `RemoteChildrenAbandoned` Warning names what stays behind, and the CR
   leaves etcd instead of hanging in Terminating. See
   [Target Clusters](../target-clusters.md).
+  The finalizer and the remote-children finalizer that
+  `commonreconcile.SweepRemoteChildren` releases for a CR naming a target
+  cluster are each released with one update through
+  `commonreconcile.RemoveFinalizer`. A 404 on it means an earlier pass already
+  released the CR, and the pass ends; the metrics and the probe cache entry are
+  dropped all the same. A 409 means the pass read a stale copy: it logs the
+  Info line `finalizer removal conflict, requeueing` and requeues after
+  `RequeueNextPass` (1 s), so the next pass releases from a fresh read. Any
+  other failure returns the wrapped error, and controller-runtime retries the
+  pass with its error backoff.
   The `GlanceBackend` controller has no finalizer: the
   operator provisions no S3 resources, so there is nothing to clean up remotely.
   Deletion still **de-registers the store** — the bucket and its objects are

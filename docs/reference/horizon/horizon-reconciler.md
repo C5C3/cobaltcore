@@ -99,12 +99,20 @@ cleared on a suspended CR.
   the Secret, the Secrets step produces a new digest, the pod-template
   annotation changes, and the Deployment rolls. The key is consumed via an
   environment variable, so a restart is required for it to take effect.
-- **Deletion needs no finalizer**: every owned resource is namespace-scoped
-  and carries a controller owner reference, so Kubernetes garbage collection
-  reclaims the whole set when the CR is deleted. That holds on the management
-  cluster. A projection on a target cluster carries an owner reference that
-  cluster cannot resolve, so deleting a Horizon with a `targetClusterRef` leaves
-  its Deployment, Service, HTTPRoute, and Secret running there. See
+- **Deletion needs no finalizer** on the management cluster: every owned
+  resource is namespace-scoped and carries a controller owner reference, so
+  Kubernetes garbage collection reclaims the whole set when the CR is deleted.
+  A projection on a target cluster carries no owner reference that cluster can
+  resolve, so a Horizon with a `targetClusterRef` carries the
+  `openstack.c5c3.io/remote-children` finalizer instead.
+  `commonreconcile.SweepRemoteChildren` deletes its children there and then
+  releases the finalizer with one update through
+  `commonreconcile.RemoveFinalizer`. A 404 on the update means an earlier pass
+  already released the CR, and the pass ends. A 409 means the pass read a stale
+  copy: it logs the Info line `finalizer removal conflict, requeueing` and
+  requeues after `RequeueNextPass` (1 s), so the next pass sweeps again from a
+  fresh read. Any other failure returns the wrapped error, and
+  controller-runtime retries the pass with its error backoff. See
   [Target Clusters](../target-clusters.md).
 
 ## Watches

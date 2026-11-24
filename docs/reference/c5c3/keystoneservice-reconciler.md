@@ -573,6 +573,15 @@ and ESO finalizers before it releases itself.
 The children are looked for in the **resolved** `controlPlaneRef` namespace,
 which is where they are whether or not the plane itself is still readable.
 
+`removeFinalizer` releases the finalizer with one update through
+`commonreconcile.RemoveFinalizer`. A 404 on it means an earlier pass already
+released the CR, and the pass ends. A 409 means the pass read a stale copy: it
+logs the Info line `finalizer removal conflict, requeueing` and requeues after
+`RequeueNextPass` (1 s), so the next pass releases the finalizer from a fresh
+read. Any other failure returns the error wrapped as
+`removing KeystoneService finalizer`, and controller-runtime retries the pass
+with its error backoff.
+
 For which Keystone resources a deletion destroys, see
 [Deletion Semantics](./keystoneservice-crd.md#deletion-semantics) on the CRD
 page.

@@ -200,7 +200,11 @@ ControlPlane a wait is replaced by the classified K-ORC failure.
    the PushSecret's `status.syncedResourceVersion` beside it. ESO moves that
    field only after a successful push, so the step waits for `Ready` and for a
    value other than the recorded one (`BackupNotSynced`). `Ready` alone would
-   still read `True` from the push of the previous password.
+   still read `True` from the push of the previous password. The PushSecret
+   is read back through the cache, and one the cache does not hold yet, right
+   after the pass applied it, reads `BackupNotSynced` too: the pass requeues
+   without an error, and the PushSecret watch wakes the order once the cache
+   has it.
 5. The Secret `<name>-credentials` is applied beside the order with a
    controller owner reference to it. A live Secret of that name the order does
    not own is refused (`DeliveryRefused`). On a target cluster that check reads
@@ -268,6 +272,14 @@ With the ControlPlane present the finalizer is held while any of them is still
 listed, and the pass requeues after 10 seconds. With the ControlPlane gone the
 deletes are issued and the finalizer is released at once, because K-ORC has no
 credential left to reach Keystone with.
+
+The release is one update through `commonreconcile.RemoveFinalizer`. A 404 on
+it means an earlier pass already released the order, and the pass ends. A 409
+means the pass read a stale copy of the order: it logs the Info line
+`finalizer removal conflict, requeueing` and requeues after `RequeueNextPass`
+(1 s), so the next pass releases the finalizer from a fresh read. Any other
+failure returns the error wrapped as `removing KeystoneUser finalizer`, and
+controller-runtime retries the pass with its error backoff.
 
 An order whose target cluster was deregistered cannot be read, so it is never
 torn down, and its children stay labelled in the ControlPlane's namespace. See

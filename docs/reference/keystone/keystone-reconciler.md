@@ -731,9 +731,17 @@ pass:
    completing its own teardown — see
    [Why the finalizer does not wait](#why-the-finalizer-does-not-wait).
 4. **Finalizer release.** A Normal Event with reason `DatabaseFinalized` is
-   emitted, the finalizer is removed via `controllerutil.RemoveFinalizer`, and
-   the CR is `Update`d. The API server then observes an empty finalizers list
-   and garbage-collects the Keystone CR from etcd.
+   emitted, and the finalizer is removed with one `Update` through
+   `commonreconcile.RemoveFinalizer`. The API server then observes an empty
+   finalizers list and garbage-collects the Keystone CR from etcd. A 404 on the
+   update means an earlier pass already released the CR; the per-CR metrics
+   and cache entries are dropped all the same, and the pass goes on to the
+   OpenBao finalizer and the sweep, which meet the same 404. A 409 means the
+   pass read a stale copy: it logs the Info line
+   `finalizer removal conflict, requeueing` and requeues after
+   `RequeueNextPass` (1 s), so the next pass releases from a fresh read. Any
+   other failure returns the error wrapped as `removing finalizer`, and
+   controller-runtime retries the pass with its error backoff.
 
 ### Why the finalizer does not wait
 
@@ -1140,10 +1148,17 @@ The deletion handler proceeds as follows:
    leaves the finalizer in place so the Keystone CR stays alive until ESO
    finishes.
 5. **Finalizer release.** When `done=true`, a Normal Event with reason
-   `OpenBaoSecretsFinalized` is emitted, the finalizer is removed via
-   `controllerutil.RemoveFinalizer`, and the CR is `Update`d. The API
+   `OpenBaoSecretsFinalized` is emitted, and the finalizer is removed with one
+   `Update` through `commonreconcile.RemoveFinalizer`. The API
    server then observes the emptied finalizers list and, if no other
-   finalizers remain, garbage-collects the Keystone CR.
+   finalizers remain, garbage-collects the Keystone CR. A 404 on the update
+   means an earlier pass already released the CR, and the pass goes on to the
+   sweep. A 409 means the pass read a stale copy: it logs the Info line
+   `finalizer removal conflict, requeueing` and requeues after
+   `RequeueNextPass` (1 s). Any other failure returns the error wrapped as
+   `removing openbao finalizer`, and controller-runtime retries the pass with
+   its error backoff. The release on a deregistered target cluster answers the
+   same way.
 
 ### Why the finalizer waits
 
