@@ -57,16 +57,17 @@ The ControlPlane bring-up also deploys the `ovn-operator` in namespace
 
 ### 1. Label the node
 
-The devstack cluster has one node, so read its name once and keep it:
+The devstack cluster has one node, so read its name once and keep it. On a
+larger cluster, use `kubectl get nodes` to choose a node and replace the first
+line below with `NODE="node-name"`:
 
 ```bash
 NODE="$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')"
-test -n "$NODE"
 kubectl label node "$NODE" openstack.c5c3.io/chassis=true --overwrite
 ```
 
-On a larger cluster, repeat the label for every node that should carry the
-datapath. The CRD fixes no label keys; `openstack.c5c3.io/chassis` and
+Repeat the label for every node that should carry the datapath. The CRD fixes
+no label keys; `openstack.c5c3.io/chassis` and
 `openstack.c5c3.io/gateway` are the keys the e2e suites and these guides use.
 The operator never writes a Node: its RBAC on `nodes` is `get`, `list` and
 `watch`, so the labels stay yours.
@@ -115,16 +116,14 @@ kubectl get ovnchassis controlplane-chassis -n openstack \
 
 A node with the chassis label alone is a compute node: it forwards the traffic
 of the workloads on it and announces no gateway role. Add the second label to
-make it a network node:
+make it a network node. On a multi-node cluster, first set `NODE` to the
+chassis node you want to promote:
 
 ```bash
 kubectl label node "$NODE" openstack.c5c3.io/gateway=true --overwrite
 ```
 
-On a multi-node cluster, set `NODE` to the chassis node you want to promote
-before running the label command.
-
-Three things follow. The node's entry in the `controlplane-chassis-nodes`
+The node's entry in the `controlplane-chassis-nodes`
 ConfigMap is re-rendered with `GATEWAY=true`, so its hash no longer matches
 `status.nodes[].configHash` and the operator runs a
 `controlplane-chassis-apply-<8 hex>` Job pinned to that node. The Job re-runs
@@ -134,16 +133,28 @@ the same `apply-node.sh` the pod's init container runs, which sets
 before the Job completes. On demotion, it stays `true` until the evacuation Job
 succeeds. `MaintenanceReady` also stays `True` while a Job runs, so neither it
 nor the aggregate `Ready` condition proves that the node has applied the
-gateway configuration. After the operator creates the apply Job, check its
-name and wait for it to complete:
+gateway configuration. List the maintenance Jobs and find the apply Job for
+the selected node:
 
 ```bash
-kubectl get jobs -n openstack
+kubectl get jobs -n openstack \
+  -l app.kubernetes.io/instance=controlplane-chassis,app.kubernetes.io/component=maintenance \
+  -o custom-columns='NAME:.metadata.name,NODE:.spec.template.spec.nodeName,CREATED:.metadata.creationTimestamp'
+```
+
+Wait for the apply Job created after the label change. An older completed Job
+can have the same name; the operator replaces it when it processes the new
+configuration. If the Job is not present yet, check again after reconciliation.
+If the node already had the gateway label, applying it again does not
+necessarily create a Job; check the local database in Verification instead.
+Replace the example name with the Job for the selected node:
+
+```bash
 kubectl wait 'job/controlplane-chassis-apply-<8-hex-suffix>' -n openstack \
   --for=condition=Complete --timeout=5m
 ```
 
-If the wait fails, inspect the Job's pod logs:
+If the wait fails, inspect the Job's pod logs, replacing the name here too:
 
 ```bash
 kubectl logs 'job/controlplane-chassis-apply-<8-hex-suffix>' -n openstack
