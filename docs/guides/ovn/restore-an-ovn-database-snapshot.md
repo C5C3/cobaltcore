@@ -41,6 +41,8 @@ namespace and its logical model holds something worth snapshotting.
 
 If you intend to run the drift check at the end, ensure the `ControlPlane`
 network service is Ready. The snapshot replay itself requires only the central.
+Run the commands in the same shell so the Job names and other variables remain
+available between steps.
 
 ## Where the snapshots live
 
@@ -93,17 +95,17 @@ path. Delete it after the restore is complete.
 :::
 
 ```bash
-RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM"
-JOB="controlplane-ovn-backup-manual-$RUN_ID"
+JOB="controlplane-ovn-backup-manual-$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM"
 kubectl create job "$JOB" \
-  --from=cronjob/controlplane-ovn-backup -n openstack
-if ! kubectl wait --for=condition=complete -n openstack \
-  "job/$JOB" --timeout=5m; then
-  kubectl logs -n openstack "job/$JOB" --all-containers=true || true
-  kubectl describe job "$JOB" -n openstack || true
-  exit 1
-fi
+  --from=cronjob/controlplane-ovn-backup -n openstack &&
+kubectl wait --for=condition=complete -n openstack "job/$JOB" --timeout=5m
+```
+
+If the Job does not complete, inspect it before continuing:
+
+```bash
 kubectl logs -n openstack "job/$JOB" --all-containers=true
+kubectl describe job "$JOB" -n openstack
 ```
 
 The backup script prints no success message; the completed Job is the success
@@ -111,9 +113,10 @@ signal. It writes each snapshot to a `.tmp` file and renames it only after
 `ovsdb-client` exits zero with a non-empty result, so a run that dies mid-copy
 leaves no completed snapshot for that database. A full volume is why the
 emptiness check exists: `ovsdb-client` can exit zero having written nothing,
-and an empty file restores no database. After both snapshots succeed, retention
-prunes expired `*.backup` files, sweeps `*.backup.tmp` leftovers older than a
-day, and removes any zero-byte `*.backup` file left by an earlier run.
+and an empty file restores no database. At the start of the run, the script
+removes `*.backup.tmp` leftovers older than a day. After both snapshots succeed,
+retention prunes expired `*.backup` files and removes any zero-byte `*.backup`
+file left by an earlier run.
 
 A failed run reports itself twice, as a `BackupJobFailed` event and as
 `ovn_operator_backup_total{result="failed"}`:
@@ -130,12 +133,15 @@ borrows the OVN image from the running Northbound StatefulSet:
 ```bash
 IMG="$(kubectl get sts controlplane-ovn-nb -n openstack \
   -o jsonpath='{.spec.template.spec.containers[0].image}')"
-test -n "$IMG"
-RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM"
-POD="ovn-backup-ls-$RUN_ID"
+echo "$IMG"
+```
 
+Check that the command prints an image. Then create a pod to list the volume:
+
+```bash
+POD="ovn-backup-ls-$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM"
 OVERRIDES="$(cat <<JSON
-{"spec":{
+{"apiVersion":"v1", "spec":{
   "securityContext": {"fsGroup": 42424},
   "containers": [{"name": "ovn-backup-ls", "image": "${IMG}",
     "command": ["ls", "-l", "/backup"],
@@ -147,22 +153,28 @@ JSON
 )"
 
 kubectl run "$POD" -n openstack --image="$IMG" --restart=Never \
-  --overrides="$OVERRIDES"
-
-if ! kubectl wait --for=jsonpath='{.status.phase}'=Succeeded \
-  "pod/$POD" -n openstack --timeout=2m; then
-  kubectl logs "$POD" -n openstack || true
-  kubectl describe pod "$POD" -n openstack || true
-  exit 1
-fi
+  --overrides="$OVERRIDES" &&
+kubectl wait --for=jsonpath='{.status.phase}'=Succeeded \
+  "pod/$POD" -n openstack --timeout=2m &&
 kubectl logs "$POD" -n openstack
+```
+
+If the pod does not succeed, inspect its log and description before continuing:
+
+```bash
+kubectl logs "$POD" -n openstack
+kubectl describe pod "$POD" -n openstack
+```
+
+After reading the listing, delete the pod:
+
+```bash
 kubectl delete pod "$POD" -n openstack
 ```
 
-The pod-level `fsGroup` gives the image's UID 42424 access to the snapshot
-volume. The wait's failure path prints the pod log and description, exits
-nonzero, and leaves the pod available for inspection. The backup script removes
-an incomplete temporary file; do not restore any zero-byte file you find.
+The pod-level `fsGroup` gives the container's group access to the snapshot
+volume. An interrupted backup can leave a temporary file behind; do not restore
+temporary files or any zero-byte file you find.
 
 Choose an `nb-*.backup` file or a protected `hold-*` copy and keep its full path
 for Step 3. The newest file is rarely the one you want: the Step 1 snapshot is
@@ -177,17 +189,22 @@ snapshot volume and the client keypair the central publishes. `SNAPSHOT` names
 the file you picked in Step 2; the value below is an example, and replaying a
 different file means editing that one line:
 
+First, get the image and Northbound address:
+
 ```bash
 IMG="$(kubectl get sts controlplane-ovn-nb -n openstack \
   -o jsonpath='{.spec.template.spec.containers[0].image}')"
 NB="$(kubectl get ovncentral controlplane-ovn -n openstack \
   -o jsonpath='{.status.northbound.internalDbAddress}')"
-test -n "$IMG"
-test -n "$NB"
-RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM"
-RESTORE_JOB="controlplane-ovn-restore-$RUN_ID"
+printf 'Image: %s\nNorthbound: %s\n' "$IMG" "$NB"
+```
 
-cat <<JOB | kubectl apply -f -
+Check that both values are present. Replace the example `SNAPSHOT` value with
+the file you chose, then create the restore Job:
+
+```bash
+RESTORE_JOB="controlplane-ovn-restore-$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM"
+cat <<JOB | kubectl create -f -
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -246,14 +263,19 @@ spec:
       - name: tmp
         emptyDir: {}
 JOB
+```
 
-if ! kubectl wait --for=condition=complete -n openstack \
-  "job/$RESTORE_JOB" --timeout=5m; then
-  kubectl logs -n openstack "job/$RESTORE_JOB" --all-containers=true || true
-  kubectl describe job "$RESTORE_JOB" -n openstack || true
-  exit 1
-fi
+Once the Job is created, wait for the restore to complete:
+
+```bash
+kubectl wait --for=condition=complete -n openstack "job/$RESTORE_JOB" --timeout=5m
+```
+
+If the Job does not complete, inspect it before continuing:
+
+```bash
 kubectl logs -n openstack "job/$RESTORE_JOB" --all-containers=true
+kubectl describe job "$RESTORE_JOB" -n openstack
 ```
 
 The pod-level `fsGroup: 42424` is what
