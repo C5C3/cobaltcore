@@ -158,7 +158,7 @@ inventory. Exit code `1` means at least one `[FAIL]`. Interpret:
   invalid-cr rejection fixture, the multicluster builder
   (`mcbuilder.ControllerManagedBy` with remote child watches), and the
   remote-children deletion sweep
-  (`commonmulticluster.SweepRemoteChildren` behind
+  (`commonreconcile.SweepRemoteChildren` behind
   `RemoteChildrenFinalizer`). A service missing any of them cannot be
   placed, or strands label-owned remote children on delete — no
   cross-cluster ownerReference exists to cascade for it.

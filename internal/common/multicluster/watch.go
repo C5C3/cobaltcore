@@ -392,7 +392,7 @@ func AddRemoteChildWatches(
 	kinds []schema.GroupVersionKind,
 	extra map[schema.GroupVersionKind][]mcbuilder.WatchesOption,
 ) (*mcbuilder.Builder, error) {
-	resolved, err := ownerGVK(scheme, owner)
+	resolved, err := OwnerGVK(scheme, owner)
 	if err != nil {
 		return nil, err
 	}

@@ -438,9 +438,9 @@ func (r *NovaComputeReconciler) reconcileDelete(ctx context.Context, cr *novav1a
 			return ctrl.Result{}, err
 		}
 	}
-	if err := commonmulticluster.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
-		cr, cr.Spec.TargetClusterRef, children, NovaComputeRemoteChildKinds); err != nil {
-		return ctrl.Result{}, err
+	if result, err := commonreconcile.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
+		cr, cr.Spec.TargetClusterRef, children, NovaComputeRemoteChildKinds); err != nil || !result.IsZero() {
+		return result, err
 	}
 	if controllerutil.RemoveFinalizer(cr, novaComputeDrainFinalizer) {
 		if err := r.Update(ctx, cr); err != nil {

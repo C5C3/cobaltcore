@@ -224,10 +224,7 @@ func (r *OVNChassisReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		if err := r.reconcileDeleteFabric(ctx, children, &cr); err != nil {
 			return ctrl.Result{}, err
 		}
-		if err := r.reconcileDeleteRemoteChildren(ctx, children, &cr); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, nil
+		return r.reconcileDeleteRemoteChildren(ctx, children, &cr)
 	}
 
 	// Resolve the client every child object of this CR is read and written with.
@@ -362,15 +359,15 @@ func (r *OVNChassisReconciler) pipelineSteps(children client.Client, cr *ovnv1al
 
 // reconcileDeleteRemoteChildren deletes everything this OVNChassis projected
 // onto the target cluster it names and releases the remote-children finalizer,
-// as commonmulticluster.SweepRemoteChildren documents.
+// as commonreconcile.SweepRemoteChildren documents.
 //
 // What it removes is the configuration of a node, not the node itself: the
 // DaemonSet pods go, and with them ovn-controller, while the chassis records
 // they registered in the Southbound database are the maintenance step's to
 // deregister. A CR deleted outright therefore leaves those records behind, the
 // same way deleting a Deployment leaves the rows its pods wrote.
-func (r *OVNChassisReconciler) reconcileDeleteRemoteChildren(ctx context.Context, children client.Client, cr *ovnv1alpha1.OVNChassis) error {
-	return commonmulticluster.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
+func (r *OVNChassisReconciler) reconcileDeleteRemoteChildren(ctx context.Context, children client.Client, cr *ovnv1alpha1.OVNChassis) (ctrl.Result, error) {
+	return commonreconcile.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
 		cr, cr.Spec.TargetClusterRef, children, OVNChassisRemoteChildKinds)
 }
 

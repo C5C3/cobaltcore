@@ -371,10 +371,7 @@ func (r *NovaReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		// sweep running first would delete them out from under it. The ordering
 		// mirrors the local one, where the garbage collection cascade starts only
 		// once every finalizer has been released.
-		if err := r.reconcileDeleteRemoteChildren(ctx, children, &nova); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, nil
+		return r.reconcileDeleteRemoteChildren(ctx, children, &nova)
 	}
 
 	// A suspended CR ends the pass here. The deletion branch above still runs
@@ -742,13 +739,13 @@ func (r *NovaReconciler) reconcileDelete(ctx context.Context, children client.Cl
 
 // reconcileDeleteRemoteChildren deletes everything this Nova projected onto the
 // target cluster it names and releases the remote-children finalizer, as
-// commonmulticluster.SweepRemoteChildren documents. reconcileDelete above deletes
+// commonreconcile.SweepRemoteChildren documents. reconcileDelete above deletes
 // the MariaDB CRs it tracks by name; this pass is what reaches the rest, selected
 // on the ownership labels Claim stamped on them.
 func (r *NovaReconciler) reconcileDeleteRemoteChildren(ctx context.Context, children client.Client,
 	nova *novav1alpha1.Nova,
-) error {
-	return commonmulticluster.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
+) (ctrl.Result, error) {
+	return commonreconcile.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
 		nova, nova.Spec.TargetClusterRef, children, NovaRemoteChildKinds)
 }
 

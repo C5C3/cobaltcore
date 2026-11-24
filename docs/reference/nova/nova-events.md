@@ -186,7 +186,7 @@ requeue polls produce no noise.
 | `RemoteChildrenAbandoned` | Warning | Deletion begins while the target cluster the CR named no longer resolves; the finalizer is released without touching what was written there | `Target cluster is no longer registered; releasing the finalizer without deleting the MariaDB Databases, Users, and Grants on it` |
 
 **Source:** `reconcileDelete` in `nova_controller.go`; the shared
-`SweepRemoteChildren` in `internal/common/multicluster/teardown.go`, which
+`SweepRemoteChildren` in `internal/common/reconcile/teardown.go`, which
 raises `RemoteChildrenAbandoned` once more for the label-selected children when
 the sweep cannot reach the cluster
 

@@ -533,10 +533,11 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		// ESO purge the OpenBao flow waits for. The ordering mirrors the local
 		// one, where the garbage collection cascade starts only once every
 		// finalizer has been released.
-		if err := r.reconcileDeleteRemoteChildren(ctx, children, &keystone); err != nil {
+		result, err := r.reconcileDeleteRemoteChildren(ctx, children, &keystone)
+		if err != nil {
 			return r.updateStatus(ctx, &keystone, statusBefore, ctrl.Result{}, err)
 		}
-		return ctrl.Result{}, nil
+		return result, nil
 	}
 
 	// A suspended CR ends the pass here. The deletion branch above still runs
@@ -998,11 +999,11 @@ func (r *KeystoneReconciler) hasLiveOpenBaoBackupPushSecrets(ctx context.Context
 
 // reconcileDeleteRemoteChildren deletes everything this Keystone projected onto
 // the target cluster it names and releases the remote-children finalizer, as
-// commonmulticluster.SweepRemoteChildren documents. The two cleanup flows above
+// commonreconcile.SweepRemoteChildren documents. The two cleanup flows above
 // it delete the handful of objects they track by name; this pass is what reaches
 // the rest, selected on the ownership labels Claim stamped on them.
-func (r *KeystoneReconciler) reconcileDeleteRemoteChildren(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone) error {
-	return commonmulticluster.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
+func (r *KeystoneReconciler) reconcileDeleteRemoteChildren(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+	return commonreconcile.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
 		keystone, keystone.Spec.TargetClusterRef, children, KeystoneRemoteChildKinds)
 }
 

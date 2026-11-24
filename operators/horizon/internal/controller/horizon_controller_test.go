@@ -36,6 +36,7 @@ import (
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
 	"github.com/c5c3/cobaltcore/internal/common/testutil"
+	mctestutil "github.com/c5c3/cobaltcore/internal/common/testutil/multicluster"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
 )
@@ -449,7 +450,7 @@ func TestReconcileDeleteRemoteChildren_SweepsEveryProjectedKind(t *testing.T) {
 		WithObjects(append([]client.Object{unlabelled, foreign}, projected...)...).Build()
 
 	ctx := context.Background()
-	g.Expect(r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), terminating)).To(Succeed())
+	g.Expect(r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), terminating)).To(BeZero())
 
 	for _, child := range projected {
 		err := target.Get(ctx, client.ObjectKeyFromObject(child), child.DeepCopyObject().(client.Object))
@@ -485,12 +486,40 @@ func TestReconcileDeleteRemoteChildren_SweepFailureKeepsFinalizer(t *testing.T) 
 		}).Build()
 
 	ctx := context.Background()
-	err := r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), terminating)
+	_, err := r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), terminating)
 
 	g.Expect(err).To(MatchError(ContainSubstring("listing remote Deployment children for teardown")))
 	g.Expect(target.Get(ctx, client.ObjectKeyFromObject(child), &appsv1.Deployment{})).To(Succeed())
 	g.Expect(getHorizon(t, r).Finalizers).To(ContainElement(commonmulticluster.RemoteChildrenFinalizer),
 		"a failed sweep must keep the finalizer so the next pass retries")
+}
+
+// TestReconcile_RemoteChildrenReleaseConflictRequeues pins the answer to a
+// release that loses to a newer copy of the CR: the pass requeues after
+// RequeueNextPass without an error, so controller-runtime neither logs a
+// Reconciler error nor counts the pass, and the finalizer stays until the
+// next pass releases it from a fresh read.
+func TestReconcile_RemoteChildrenReleaseConflictRequeues(t *testing.T) {
+	g := NewGomegaWithT(t)
+	r, _ := terminatingRemoteHorizon(t)
+	r.Resolver = mctestutil.ResolverFor(mctestutil.TargetCluster{
+		Client: fake.NewClientBuilder().WithScheme(testScheme()).Build(),
+	})
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), testutil.ConflictFirstUpdate())
+	ctx := context.Background()
+	req := ctrl.Request{NamespacedName: horizonKey}
+
+	res, err := r.Reconcile(ctx, req)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
+	g.Expect(getHorizon(t, r).Finalizers).To(ContainElement(commonmulticluster.RemoteChildrenFinalizer))
+
+	res, err = r.Reconcile(ctx, req)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.IsZero()).To(BeTrue())
+	g.Expect(getHorizon(t, r).Finalizers).To(ConsistOf("foreign.example.com/keep-alive"))
 }
 
 // TestReconcile_TerminatingCR_UnresolvableTargetWaitsThenAbandons walks both

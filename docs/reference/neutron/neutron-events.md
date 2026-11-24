@@ -220,7 +220,7 @@ own:
 Target cluster is no longer registered; releasing the remote-children finalizer without deleting the objects on it labelled as owned by this Neutron
 ```
 
-**Source:** `SweepRemoteChildren` in `internal/common/multicluster/teardown.go`,
+**Source:** `SweepRemoteChildren` in `internal/common/reconcile/teardown.go`,
 called from `reconcileDeleteRemoteChildren` in both controllers
 
 Before the abandon window expires the deletion requeues instead, and the wait is
