@@ -13,8 +13,9 @@
 # keystone-federation-proxy sat outside every hardcoded matrix and accumulated
 # 352 stale e2e tags before anyone noticed.
 #
-# Helm chart packages (charts/<op>-operator) are deliberately out of scope: they
-# carry nothing but release semver tags.
+# Helm chart packages (charts/<op>-operator, charts/target-cluster-access) are
+# deliberately out of scope: they carry release semver tags and one
+# sha256-<digest> tag per chart digest the publish jobs signed with cosign.
 #
 # Optional env vars:
 #   CLEANUP_PACKAGES — space- or comma-separated subset to restrict both lists
