@@ -824,40 +824,25 @@ interface by default, so the upload runs directly from the host through the
 shared Gateway, with no in-cluster pod involved. `--insecure` accepts the listener's
 self-signed certificate, as with the Keystone calls above.
 
-Create a throwaway 1 KiB image, upload it through the gateway, wait for it to
-reach `active`, and delete it again:
+Create a throwaway 1 KiB image and upload it through the gateway:
 
 ```bash
 dd if=/dev/urandom of=/tmp/first.img bs=1024 count=1
 openstack --insecure image create --disk-format raw --container-format bare \
-  --file /tmp/first.img first-image || {
-    echo "ERROR: could not create first-image" >&2
-    exit 1
-  }
-for _ in $(seq 30); do
-  IMAGE_STATUS="$(openstack --insecure image show first-image -f value -c status)" || {
-    echo "ERROR: could not read first-image status" >&2
-    exit 1
-  }
-  [ "$IMAGE_STATUS" = active ] && break
-  sleep 2
-done
-if [ "$IMAGE_STATUS" != active ]; then
-  echo "ERROR: first-image status '$IMAGE_STATUS' != active" >&2
-  exit 1
-fi
-echo "OK: image uploaded through the gateway and reached active"
+  --file /tmp/first.img first-image
+openstack --insecure image show first-image -f value -c status
+```
+
+Repeat the status command until it prints `active`. The store write can take a
+few seconds, during which the image may remain in `saving`. Once it is active,
+delete it:
+
+```bash
 openstack --insecure image delete first-image
 ```
 
-The poll loop matters because `image create` returns as soon as Glance accepts
-the upload, while the store write completes asynchronously: a cold S3
-connection or a contended Garage backend can leave the image in `saving` for a
-few seconds.
-
-A run aborted before the final `delete` leaves `first-image` behind; delete it
-(`openstack --insecure image delete first-image`) before retrying, or the next
-`image create` fails on a name collision.
+A run aborted before the final `delete` leaves `first-image` behind. Delete it
+before retrying to avoid duplicate image names.
 
 OS_REGION_NAME is optional. Every catalog row the ControlPlane registers sits in its `spec.region`
 (`RegionOne` here), beside the identity rows Keystone's bootstrap inserted, so
@@ -909,11 +894,12 @@ and delete it again:
 PAYLOAD='cobaltcore-quick-start-payload'
 HREF=$(openstack --insecure secret store --name first-secret \
   --payload "$PAYLOAD" -f value -c 'Secret href')
-if [ "$(openstack --insecure secret get -p "$HREF" -f value -c Payload)" != "$PAYLOAD" ]; then
-  echo "ERROR: payload did not round-trip unchanged" >&2
-  exit 1
-fi
-echo "OK: payload came back unchanged from the key manager"
+openstack --insecure secret get -p "$HREF" -f value -c Payload
+```
+
+Confirm the output is `cobaltcore-quick-start-payload`, then delete the secret:
+
+```bash
 openstack --insecure secret delete "$HREF"
 ```
 
@@ -954,32 +940,15 @@ from Step 4. Create a network, put a subnet on it, and read the network's
 status back:
 
 ```bash
-openstack --insecure network create demo-net || {
-  echo "ERROR: could not create demo-net" >&2
-  exit 1
-}
-openstack --insecure subnet create --network demo-net --subnet-range 192.0.2.0/24 demo-subnet || {
-  echo "ERROR: could not create demo-subnet" >&2
-  exit 1
-}
-NETWORK_STATUS="$(openstack --insecure network show demo-net -c status -f value)" || {
-  echo "ERROR: could not read demo-net status" >&2
-  exit 1
-}
-if [ "$NETWORK_STATUS" != ACTIVE ]; then
-  echo "ERROR: demo-net status '$NETWORK_STATUS' != ACTIVE" >&2
-  exit 1
-fi
-echo "OK: network is ACTIVE"
+openstack --insecure network create demo-net
+openstack --insecure subnet create --network demo-net --subnet-range 192.0.2.0/24 demo-subnet
+openstack --insecure network show demo-net -c status -f value
 ```
 
-The status check requires `ACTIVE` and prints `OK: network is ACTIVE`. That
-confirms the whole network chain: the catalog row resolved the endpoint, the
-gateway listener routed the request to the Neutron API, Neutron validated the
-admin token against Keystone, and the ML2/OVN mechanism driver wrote the
-logical switch into the Northbound database of `controlplane-ovn`. The subnet
-range is the RFC 5737 documentation block, so it collides with nothing on your
-host. These are core `python-openstackclient`
+The last command should print `ACTIVE`. The requests verify that the catalog
+resolved the endpoint, the gateway routed them to the Neutron API, and Neutron
+accepted the admin token. The subnet range is the RFC 5737 documentation block,
+so it collides with nothing on your host. These are core `python-openstackclient`
 commands, so no plugin is needed here.
 
 Remove the two objects again, the subnet first:
@@ -1006,27 +975,12 @@ from Step 4 with the `/v3` the registration appends. Create a 1 GiB volume and
 read its status back:
 
 ```bash
-openstack --insecure volume create --size 1 demo-vol || {
-  echo "ERROR: could not create demo-vol" >&2
-  exit 1
-}
-for _ in $(seq 60); do
-  VOLUME_STATUS="$(openstack --insecure volume show demo-vol -c status -f value)" || {
-    echo "ERROR: could not read demo-vol status" >&2
-    exit 1
-  }
-  [ "$VOLUME_STATUS" = available ] && break
-  sleep 2
-done
-if [ "$VOLUME_STATUS" != available ]; then
-  echo "ERROR: demo-vol status '$VOLUME_STATUS' != available within 120s" >&2
-  exit 1
-fi
-echo "OK: volume is available"
+openstack --insecure volume create --size 1 demo-vol
+openstack --insecure volume show demo-vol -c status -f value
 ```
 
-The poll waits for `available` and prints `OK: volume is available`. That
-confirms the whole block-storage chain: the catalog row resolved the endpoint,
+Repeat the status command until it prints `available`. That confirms the
+block-storage chain: the catalog row resolved the endpoint,
 the gateway listener routed the request to the Cinder API, the API cast the
 request to the scheduler over the message bus, the scheduler picked the `nfs1`
 backend, and the volume service wrote a `volume-<id>` file into the export. That
@@ -1083,25 +1037,15 @@ kubectl rollout status deploy/controlplane-fake-compute -n openstack --timeout=5
 ```
 
 The compute registers under the name of the kind node,
-`cobaltcore-control-plane`. Wait until its service row reads `up`, which can
-take up to two minutes:
+`cobaltcore-control-plane`. Check its service row:
 
 ```bash
-for _ in $(seq 24); do
-  COMPUTE_STATE="$(openstack --insecure compute service list --service nova-compute \
-    --host cobaltcore-control-plane -f value -c State)" || {
-    echo "ERROR: could not read nova-compute service state" >&2
-    exit 1
-  }
-  [ "$COMPUTE_STATE" = up ] && break
-  sleep 5
-done
-if [ "$COMPUTE_STATE" != up ]; then
-  echo "ERROR: nova-compute on cobaltcore-control-plane did not reach up within 120s" >&2
-  exit 1
-fi
-openstack --insecure compute service list --service nova-compute
+openstack --insecure compute service list --service nova-compute \
+  --host cobaltcore-control-plane
 ```
+
+Repeat the command until the state reads `up`, which can take up to two minutes.
+The service status must also be `enabled` before it can accept a server.
 
 The scheduler places a server only on a host that is mapped into the cell, and
 its discovery periodic maps a new host within 300 seconds. Map it now by running
@@ -1113,50 +1057,27 @@ kubectl exec -n openstack deploy/controlplane-nova-conductor -c conductor -- \
 ```
 
 `openstack --insecure hypervisor list` now shows `cobaltcore-control-plane`.
-Create a flavor the fake driver can satisfy and a 1 MiB image it never reads,
-then boot a server without a network:
+Create a flavor the fake driver can satisfy and a 1 MiB image it never reads:
 
 ```bash
-openstack --insecure flavor create --vcpus 1 --ram 128 --disk 1 m1.nano || {
-  echo "ERROR: could not create m1.nano" >&2
-  exit 1
-}
+openstack --insecure flavor create --vcpus 1 --ram 128 --disk 1 m1.nano
 truncate -s 1M /tmp/boot-image.raw
 openstack --insecure image create --disk-format raw --container-format bare \
-  --file /tmp/boot-image.raw boot-image || {
-    echo "ERROR: could not create boot-image" >&2
-    exit 1
-  }
-for _ in $(seq 30); do
-  IMAGE_STATUS="$(openstack --insecure image show boot-image -f value -c status)" || {
-    echo "ERROR: could not read boot-image status" >&2
-    exit 1
-  }
-  [ "$IMAGE_STATUS" = active ] && break
-  sleep 2
-done
-if [ "$IMAGE_STATUS" != active ]; then
-  echo "ERROR: boot-image status '$IMAGE_STATUS' != active" >&2
-  exit 1
-fi
-openstack --insecure server create --image boot-image --flavor m1.nano \
-  --nic none --wait demo-server || {
-    echo "ERROR: could not create demo-server" >&2
-    exit 1
-  }
-SERVER_STATUS="$(openstack --insecure server show demo-server -c status -f value)" || {
-  echo "ERROR: could not read demo-server status" >&2
-  exit 1
-}
-if [ "$SERVER_STATUS" != ACTIVE ]; then
-  echo "ERROR: demo-server status '$SERVER_STATUS' != ACTIVE" >&2
-  exit 1
-fi
-echo "OK: server is ACTIVE"
+  --file /tmp/boot-image.raw boot-image
+openstack --insecure image show boot-image -f value -c status
 ```
 
-The status check requires `ACTIVE` and prints `OK: server is ACTIVE`. That
-confirms the compute chain: the API validated the admin token against Keystone,
+Repeat the status command until it prints `active`, then boot a server without
+a network:
+
+```bash
+openstack --insecure server create --image boot-image --flavor m1.nano \
+  --nic none --wait demo-server
+openstack --insecure server show demo-server -c status -f value
+```
+
+The last command should print `ACTIVE`. That confirms the compute chain: the
+API validated the admin token against Keystone,
 the conductor asked the scheduler for a host over the message bus, the
 scheduler claimed the flavor's resources in Placement, and the fake compute
 took the instance.
