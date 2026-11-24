@@ -469,9 +469,17 @@ func (r *CinderReconciler) detachBackend(ctx context.Context, children client.Cl
 		return ctrl.Result{}, "", fmt.Errorf("pruning Secrets of detaching backend %q: %w", backend.Name, err)
 	}
 
-	controllerutil.RemoveFinalizer(backend, CinderBackendServiceRemoveFinalizer)
-	if err := r.Update(ctx, backend); err != nil {
+	outcome, err := commonreconcile.RemoveFinalizer(ctx, r.Client, backend, CinderBackendServiceRemoveFinalizer)
+	if err != nil {
 		return ctrl.Result{}, "", fmt.Errorf("removing the service-remove finalizer from %q: %w", backend.Name, err)
+	}
+	if outcome == commonreconcile.FinalizerConflict {
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, "", nil
+	}
+	// The event, the metric and the log line report a release this pass wrote;
+	// a backend already gone was released by an earlier pass, which reported it.
+	if outcome == commonreconcile.FinalizerObjectGone {
+		return ctrl.Result{}, "", nil
 	}
 
 	r.Recorder.Eventf(cinder, corev1.EventTypeNormal, eventReasonServiceRemoved,

@@ -15,6 +15,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -22,6 +23,7 @@ import (
 
 	commonconditions "github.com/c5c3/cobaltcore/internal/common/conditions"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	cinderv1alpha1 "github.com/c5c3/cobaltcore/operators/cinder/api/v1alpha1"
 )
 
@@ -550,6 +552,53 @@ func TestCinderBackendReconcile_DeletingWithoutParentReleasesTheFinalizer(t *tes
 		ContainSubstring(eventReasonServiceRemoveSkipped),
 		ContainSubstring("no service registry row can be removed"),
 	)))
+}
+
+// A release on a copy older than the stored backend requeues after
+// RequeueNextPass without an error and keeps the finalizer. It reports nothing,
+// since nothing was released; the next pass releases from a fresh read and
+// records the skipped unregistration once.
+func TestCinderBackend_FinalizerReleaseConflictRequeues(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	backend := detachingBackend("nfs1")
+	r := newCinderBackendTestReconciler(backend)
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), testutil.ConflictFirstUpdate())
+	recorder, ok := r.Recorder.(*record.FakeRecorder)
+	g.Expect(ok).To(BeTrue())
+
+	result, err := r.Reconcile(ctx, backendRequest(backend))
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
+	var persisted cinderv1alpha1.CinderBackend
+	g.Expect(r.Get(ctx, objectKey("nfs1"), &persisted)).To(Succeed())
+	g.Expect(persisted.Finalizers).To(ContainElement(CinderBackendServiceRemoveFinalizer))
+	g.Expect(collectEvents(recorder)).To(BeEmpty())
+
+	_, err = r.Reconcile(ctx, backendRequest(backend))
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(r.Get(ctx, objectKey("nfs1"), &persisted)).To(HaveOccurred())
+	g.Expect(collectEvents(recorder)).To(ConsistOf(ContainSubstring(eventReasonServiceRemoveSkipped)))
+}
+
+// A release that finds the backend gone, because an earlier pass released it
+// and the cache still held it, ends the pass without an error and records no
+// event: the pass that wrote the release already recorded it.
+func TestCinderBackend_FinalizerReleaseOnAGoneBackendEmitsNoEvent(t *testing.T) {
+	g := NewGomegaWithT(t)
+	backend := detachingBackend("nfs1")
+	r := newCinderBackendTestReconciler(backend)
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), testutil.NotFoundOnUpdate())
+	recorder, ok := r.Recorder.(*record.FakeRecorder)
+	g.Expect(ok).To(BeTrue())
+
+	result, err := r.Reconcile(context.Background(), backendRequest(backend))
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.IsZero()).To(BeTrue())
+	g.Expect(collectEvents(recorder)).NotTo(ContainElement(ContainSubstring(eventReasonServiceRemoveSkipped)))
 }
 
 // A deleting backend this controller does not hold is none of its business: the
