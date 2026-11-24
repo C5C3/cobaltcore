@@ -150,8 +150,12 @@ write `kv-v2/openstack/placement/<placement-namespace>/<controlplane>/db`
 `PLACEMENT_NAMESPACE` to the Placement service namespace if it differs from the
 ControlPlane namespace. `BAO_TOKEN` must be exported.
 
+For the kind devstack, the shared bootstrap helper runs `bao` in the OpenBao
+pod with its client TLS configuration. On other installations, use a `bao`
+client configured for your OpenBao server.
+
 ```bash
-source deploy/openbao/bootstrap/common.sh
+source deploy/bases/shared-openbao/bootstrap/common.sh
 PLACEMENT_NAMESPACE=openstack
 CONTROLPLANE_NAME=controlplane
 PLACEMENT_CR_NAME="${CONTROLPLANE_NAME}-placement"
@@ -175,12 +179,21 @@ database integration. On the next reconcile the c5c3 operator projects the gener
 ServiceAccount, and Certificate, and the ExternalSecret switches to drawing from
 the generator.
 
-On a cluster that ran the static path, delete the credential Secret once to
-remove the old value before ESO syncs the engine-issued credential:
+On a cluster that ran the static path, check the ExternalSecret before
+deleting the old credential Secret:
 
 ```bash
 PLACEMENT_NAMESPACE=openstack
 CONTROLPLANE_NAME=controlplane
+kubectl get externalsecret "${CONTROLPLANE_NAME}-placement-db-credentials" \
+  -n "${PLACEMENT_NAMESPACE}" -o yaml
+```
+
+Wait until `spec.dataFrom[].sourceRef.generatorRef` names a
+`VaultDynamicSecret`, then delete the credential Secret once so ESO syncs the
+engine-issued credential:
+
+```bash
 kubectl delete secret "${CONTROLPLANE_NAME}-placement-db-credentials" \
   -n "${PLACEMENT_NAMESPACE}" --ignore-not-found
 ```
@@ -224,21 +237,40 @@ the rollout.
 
 ### 5. Retire the static credential
 
-Once the ControlPlane reports `PlacementReady=True` on the dynamic path, wait
-for the Deployment rollout to finish before deleting the static database user.
+Once the ControlPlane reports `PlacementReady=True`, inspect the Placement
+child and the credential username:
+
+```bash
+# Set to the Placement service namespace; Quick Start uses openstack.
+PLACEMENT_NAMESPACE=openstack
+CONTROLPLANE_NAME=controlplane
+PLACEMENT_CR_NAME="${CONTROLPLANE_NAME}-placement"
+kubectl get placement "${PLACEMENT_CR_NAME}" \
+  -n "${PLACEMENT_NAMESPACE}" -o yaml
+kubectl get secret "${PLACEMENT_CR_NAME}-db-credentials" \
+  -n "${PLACEMENT_NAMESPACE}" -o jsonpath='{.data.username}' | base64 -d
+echo
+```
+
+Confirm `spec.database.credentialsMode` is `Dynamic`, the username starts
+with `v-`, the Placement `Ready` condition is `True`, and
+`status.observedGeneration` matches `metadata.generation`. Then wait for the
+Deployment rollout to finish.
 `PlacementReady=True` confirms the desired replicas are available. An old pod
 can still remain in the Deployment:
+
+```bash
+kubectl rollout status "deployment/${PLACEMENT_CR_NAME}" \
+  -n "${PLACEMENT_NAMESPACE}" --timeout=10m
+```
+
+Only continue when the rollout succeeds. If it fails or times out, resolve the
+rollout before deleting the static user.
 
 1. Delete the leftover static MariaDB `User` and `Grant` CRs (they carry the
    long-lived `<controlplane>-placement` login the engine no longer uses):
 
    ```bash
-   # Set to the Placement service namespace; Quick Start uses openstack.
-   PLACEMENT_NAMESPACE=openstack
-   CONTROLPLANE_NAME=controlplane
-   PLACEMENT_CR_NAME="${CONTROLPLANE_NAME}-placement"
-   kubectl rollout status "deployment/${PLACEMENT_CR_NAME}" \
-     -n "${PLACEMENT_NAMESPACE}" --timeout=10m
    kubectl delete user,grant "${PLACEMENT_CR_NAME}" \
      -n "${PLACEMENT_NAMESPACE}" --ignore-not-found
    ```
@@ -247,7 +279,7 @@ can still remain in the Deployment:
 
    ```bash
    # BAO_TOKEN must be exported.
-   source deploy/openbao/bootstrap/common.sh
+   source deploy/bases/shared-openbao/bootstrap/common.sh
    # Set to the Placement service namespace; Quick Start uses openstack.
    PLACEMENT_NAMESPACE=openstack
    CONTROLPLANE_NAME=controlplane
@@ -330,7 +362,8 @@ Static-to-Dynamic cutover. It checks the projected Dynamic mode, the
 `controlplane-placement-db-credentials` ExternalSecret, the ServiceAccount, and
 a non-empty Secret username that differs from the fixture's static `placement`
 login. The suite also waits for the Placement child to become Ready after the
-API Deployment and database sync complete:
+API Deployment and database sync complete. Run it with the Kyverno Chainsaw
+test runner:
 
 ```bash
 chainsaw test --config tests/e2e/chainsaw-config.yaml \
