@@ -269,7 +269,7 @@ These hold even when the webhook is down.
 | `electionTimerMs is immutable: it is applied when the clustered database is created` | Transition rule on `OVNDatabaseSpec` |
 | `storage is immutable: volumeClaimTemplates cannot change` | Transition rule on `OVNDatabaseSpec`. The API server refuses the StatefulSet update anyway; rejecting it here reports the constraint at admission |
 | `replicas must be odd` | Field rule on `OVNDatabaseSpec.replicas` |
-| `exactly one of image.tag or image.digest must be set` | Inherited from `commonv1.ImageSpec`, on `spec.image` and on `spec.backup.s3.image` |
+| `at least one of image.tag or image.digest must be set` | Inherited from `commonv1.ImageSpec`, on `spec.image` and on `spec.backup.s3.image` |
 | `preStopSleepSeconds must be strictly less than terminationGracePeriodSeconds` | Inherited from `commonv1.DeploymentSpec` on `spec.northd.deployment`; the rule substitutes the effective defaults 5 and 30 for an unset pointer |
 | `relay.nodePort requires relay.externallyReachable` | Rule on `OVNRelaySpec`. A node port the relay is not published on would name a port nothing listens on |
 
@@ -289,7 +289,7 @@ The validating webhook accumulates every violation into one admission response.
 | `name must be at most %d characters: the backup CronJob appends %q and Kubernetes caps CronJob names at %d characters` | `metadata.name` longer than `MaxOVNCentralNameLength`. The three arguments are the bound (45), the suffix (`-backup`), and `MaxCronJobNameLength` (52) |
 | `issuerRef.name must be set` | `spec.tls.issuerRef.name` is empty |
 | `repository must be set` | `spec.image.repository` or `spec.backup.s3.image.repository` is empty |
-| `exactly one of image.tag or image.digest must be set` | Both or neither are set on either image reference, re-checked outside the schema |
+| `at least one of image.tag or image.digest must be set` | Neither is set on an image reference, re-checked outside the schema |
 | `nodePortBase %d leaves no room for %d replicas below %d` | A base whose range runs past 32767. The arguments are the effective base, the effective replica count, and the ceiling. The last member's Service would be rejected by the API server, leaving that member unreachable from outside the cluster |
 | `northbound and southbound nodePort ranges overlap` | The two ranges intersect. Each runs over as many consecutive ports as there are members, so two bases that look far apart still collide once both databases are scaled up |
 | `relay.nodePort requires relay.externallyReachable` | `spec.relay.nodePort` set without `spec.relay.externallyReachable`, the twin of the schema rule |

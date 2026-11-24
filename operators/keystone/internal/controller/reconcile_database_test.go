@@ -6,6 +6,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -747,6 +748,38 @@ func TestReconcileDatabase_StaleDBSyncJob_Recreated(t *testing.T) {
 	g.Expect(newJob.Annotations[job.PodSpecHashAnnotation]).To(Equal(expectedHash))
 }
 
+// Digests of two builds of the Keystone image, for the tests of a spec.image
+// that pins a digest beside its tag.
+const (
+	testDigestOld = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	testDigestNew = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+)
+
+// TestBuildUpgradeJobs_DigestPinned verifies that the three upgrade-phase Jobs
+// of an image with a tag beside a digest run "repository@digest": the digest
+// names the build, so the imageTag parameter does not enter the reference.
+func TestBuildUpgradeJobs_DigestPinned(t *testing.T) {
+	for name, build := range map[string]func(*keystonev1alpha1.Keystone, string, string, string) *batchv1.Job{
+		"db-expand":   buildExpandJob,
+		"db-migrate":  buildMigrateJob,
+		"db-contract": buildContractJob,
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ks := brownfieldKeystone()
+			ks.Spec.Image.Tag = "2026.2"
+			ks.Spec.Image.Digest = testDigestNew
+
+			j := build(ks, "keystone-config-abc123", "", ks.Spec.Image.Tag)
+
+			container := findContainerByName(j.Spec.Template.Spec.Containers, name)
+			g.Expect(container).NotTo(BeNil())
+			g.Expect(container.Image).To(Equal(ks.Spec.Image.Repository + "@" + testDigestNew))
+			g.Expect(container.ImagePullPolicy).To(Equal(corev1.PullIfNotPresent))
+		})
+	}
+}
+
 // TestBuildUpgradeJobs verifies all three upgrade-phase Job builders
 // (buildExpandJob, buildMigrateJob, buildContractJob) produce the correct Job
 // metadata, image, command, security context, and config volume.
@@ -1013,6 +1046,168 @@ func TestInitiateUpgrade_InvalidVersionFormat(t *testing.T) {
 	expectEvent(g, r, "Warning VersionParseError")
 }
 
+// --- Unchanged-image guard ---
+
+// TestReconcileDatabase_TagAndDigestBump_InitiatesUpgrade verifies that a
+// release bump whose spec.image reference moves with it starts the upgrade:
+// tag and digest moving together, and a tag-only image whose recorded
+// "repository:tag" reference moves with its tag.
+func TestReconcileDatabase_TagAndDigestBump_InitiatesUpgrade(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		digest    string
+		installed string
+	}{
+		{name: "tag and digest move together", digest: testDigestNew, installed: "ghcr.io/c5c3/keystone@" + testDigestOld},
+		{name: "tag-only image", installed: "ghcr.io/c5c3/keystone:2026.1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			s := dbTestScheme()
+			ks := brownfieldKeystone()
+			ks.Spec.Image.Tag = "2026.2"
+			ks.Spec.Image.Digest = tc.digest
+			ks.Status.InstalledRelease = "2026.1"
+			ks.Status.InstalledImage = tc.installed
+
+			r := newDBTestReconciler(s, ks)
+
+			_, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(ks.Status.UpgradePhase).To(Equal(keystonev1alpha1.UpgradePhaseExpanding))
+			g.Expect(ks.Status.TargetRelease).To(Equal("2026.2"))
+
+			expectEvent(g, r, "Normal UpgradeInitiated")
+		})
+	}
+}
+
+// TestReconcileDatabase_TagBumpWithUnchangedDigest_Rejected verifies that a
+// release bump of spec.image.tag under the digest that migrated the installed
+// schema is refused: the phase Jobs would run the installed build and mark a
+// release installed that no migration produced.
+func TestReconcileDatabase_TagBumpWithUnchangedDigest_Rejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := brownfieldKeystone()
+	ks.Spec.Image.Tag = "2026.2"
+	ks.Spec.Image.Digest = testDigestOld
+	ks.Status.InstalledRelease = "2026.1"
+	ks.Status.InstalledImage = "ghcr.io/c5c3/keystone@" + testDigestOld
+
+	r := newDBTestReconciler(s, ks)
+
+	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("leaves spec.image unchanged"))
+	g.Expect(err.Error()).To(ContainSubstring("ghcr.io/c5c3/keystone@" + testDigestOld))
+	g.Expect(err.Error()).To(ContainSubstring("patch status.installedRelease to 2026.2"))
+	g.Expect(result).To(Equal(ctrl.Result{}))
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonImageReleaseMismatch))
+	g.Expect(cond.Message).To(Equal(err.Error()))
+
+	g.Expect(ks.Status.UpgradePhase).To(BeEmpty())
+	g.Expect(ks.Status.TargetRelease).To(BeEmpty())
+	g.Expect(ks.Status.InstalledRelease).To(Equal("2026.1"))
+
+	var expandJob batchv1.Job
+	getErr := r.Get(context.Background(), client.ObjectKey{Name: "test-keystone-db-expand", Namespace: "default"}, &expandJob)
+	g.Expect(apierrors.IsNotFound(getErr)).To(BeTrue(), "a refused bump must create no expand Job")
+
+	expectEvent(g, r, "Warning ImageReleaseMismatch")
+	expectNoEvent(g, r)
+}
+
+// TestReconcileDatabase_TagBumpWithUnchangedDigestFromMirror_Rejected verifies
+// that the guard compares the build, not the reference: a release bump of
+// spec.image.tag that moves spec.image.repository to a mirror but keeps the
+// digest that migrated the installed schema is refused, because the phase Jobs
+// would run the installed build.
+func TestReconcileDatabase_TagBumpWithUnchangedDigestFromMirror_Rejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := brownfieldKeystone()
+	ks.Spec.Image.Repository = "registry.internal/keystone"
+	ks.Spec.Image.Tag = "2026.2"
+	ks.Spec.Image.Digest = testDigestOld
+	ks.Status.InstalledRelease = "2026.1"
+	ks.Status.InstalledImage = "ghcr.io/c5c3/keystone@" + testDigestOld
+
+	r := newDBTestReconciler(s, ks)
+
+	_, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("leaves spec.image unchanged (registry.internal/keystone@" + testDigestOld + ")"))
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Reason).To(Equal(conditionReasonImageReleaseMismatch))
+	g.Expect(ks.Status.UpgradePhase).To(BeEmpty())
+	g.Expect(ks.Status.TargetRelease).To(BeEmpty())
+
+	expectEvent(g, r, "Warning ImageReleaseMismatch")
+}
+
+// TestReconcileDatabase_EmptyInstalledImage_GuardSkipped verifies that the guard
+// needs a recorded image: without status.installedImage the same edit starts the
+// upgrade, as it did before the field existed.
+func TestReconcileDatabase_EmptyInstalledImage_GuardSkipped(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := brownfieldKeystone()
+	ks.Spec.Image.Tag = "2026.2"
+	ks.Spec.Image.Digest = testDigestOld
+	ks.Status.InstalledRelease = "2026.1"
+
+	r := newDBTestReconciler(s, ks)
+
+	_, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ks.Status.UpgradePhase).To(Equal(keystonev1alpha1.UpgradePhaseExpanding))
+	g.Expect(ks.Status.TargetRelease).To(Equal("2026.2"))
+}
+
+// TestReconcileDatabase_UnchangedImage_PathRulesAnswerFirst verifies that the
+// guard answers only a sequential bump: a downgrade, a skipped release and an
+// installed release that does not parse keep the reasons the shared
+// InitiateUpgrade reports, even when the image is unchanged.
+func TestReconcileDatabase_UnchangedImage_PathRulesAnswerFirst(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		installed  string
+		tag        string
+		wantReason string
+	}{
+		{name: "one release back", installed: "2026.2", tag: "2026.1", wantReason: conditionReasonDowngradeNotSupported},
+		{name: "two releases ahead", installed: "2026.1", tag: "2027.1", wantReason: conditionReasonUpgradePathInvalid},
+		{name: "unparseable installed release", installed: "latest", tag: "2026.2", wantReason: conditionReasonVersionParseError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			s := dbTestScheme()
+			ks := brownfieldKeystone()
+			ks.Spec.Image.Tag = tc.tag
+			ks.Spec.Image.Digest = testDigestOld
+			ks.Status.InstalledRelease = tc.installed
+			ks.Status.InstalledImage = ks.Spec.Image.Reference()
+
+			r := newDBTestReconciler(s, ks)
+
+			_, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
+			g.Expect(err).To(HaveOccurred())
+
+			cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
+			g.Expect(cond).NotTo(BeNil())
+			g.Expect(cond.Reason).To(Equal(tc.wantReason))
+			expectEvent(g, r, "Warning "+tc.wantReason)
+		})
+	}
+}
+
 // --- Upgrade detection in reconcileDatabase flow ---
 
 func TestReconcileDatabase_FreshDeploy_SetsInstalledRelease(t *testing.T) {
@@ -1036,6 +1231,113 @@ func TestReconcileDatabase_FreshDeploy_SetsInstalledRelease(t *testing.T) {
 	g.Expect(cond.Reason).To(Equal(database.ReasonDatabaseSynced))
 
 	expectEvent(g, r, "Normal DatabaseSynced")
+}
+
+// TestReconcileDatabase_TagAndDigest_FreshDeploy verifies that a settled sync
+// pass of an image with a tag beside a digest records both halves: the tag as
+// the installed release and the digest reference as the installed image.
+func TestReconcileDatabase_TagAndDigest_FreshDeploy(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := brownfieldKeystone()
+	ks.Spec.Image.Digest = testDigestOld
+
+	r := newDBTestReconciler(s, ks, completedDBSyncJob(ks), completedSchemaCheckJob(ks))
+
+	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.IsZero()).To(BeTrue())
+
+	g.Expect(ks.Status.InstalledRelease).To(Equal("2026.1"))
+	g.Expect(ks.Status.InstalledImage).To(Equal("ghcr.io/c5c3/keystone@" + testDigestOld))
+}
+
+// TestReconcileDatabase_ExistingKeystone_BackfillsInstalledImage verifies that a
+// Keystone created before status.installedImage existed gets it on its first
+// settled pass, and that the pass leaves its completed Jobs alone: no Job is
+// re-created, so neither db-sync nor the schema check re-runs.
+func TestReconcileDatabase_ExistingKeystone_BackfillsInstalledImage(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := brownfieldKeystone()
+	ks.Status.InstalledRelease = "2026.1"
+
+	r := newDBTestReconciler(s, ks, completedDBSyncJob(ks), completedSchemaCheckJob(ks))
+	jobVersions := func() map[string]string {
+		list := &batchv1.JobList{}
+		g.Expect(r.Client.List(context.Background(), list)).To(Succeed())
+		versions := make(map[string]string, len(list.Items))
+		for _, j := range list.Items {
+			versions[j.Name] = j.ResourceVersion
+		}
+		return versions
+	}
+	before := jobVersions()
+
+	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.IsZero()).To(BeTrue())
+
+	g.Expect(ks.Status.InstalledImage).To(Equal("ghcr.io/c5c3/keystone:2026.1"))
+	g.Expect(jobVersions()).To(Equal(before), "the backfill pass must create or delete no Job")
+}
+
+// TestReconcileDatabase_DigestOnly_RecordsImageNotRelease verifies that an image
+// without a tag records its reference but no release: a digest alone names no
+// release, so status.installedRelease stays empty.
+func TestReconcileDatabase_DigestOnly_RecordsImageNotRelease(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := brownfieldKeystone()
+	ks.Spec.Image.Tag = ""
+	ks.Spec.Image.Digest = testDigestOld
+
+	r := newDBTestReconciler(s, ks, completedDBSyncJob(ks), completedSchemaCheckJob(ks))
+
+	_, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(ks.Status.InstalledImage).To(Equal("ghcr.io/c5c3/keystone@" + testDigestOld))
+	g.Expect(ks.Status.InstalledRelease).To(BeEmpty())
+}
+
+// TestReconcileDatabase_SyncNotSettled_KeepsInstalledImage verifies that
+// status.installedImage moves only once db-sync and the schema check completed:
+// a running db-sync Job and a failed one both leave the recorded image alone.
+func TestReconcileDatabase_SyncNotSettled_KeepsInstalledImage(t *testing.T) {
+	const installed = "ghcr.io/c5c3/keystone@" + testDigestOld
+
+	t.Run("db-sync running", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := dbTestScheme()
+		ks := brownfieldKeystone()
+		ks.Status.InstalledImage = installed
+		running := buildDBSyncJob(ks, "keystone-config-abc123", "")
+		running.Annotations = map[string]string{
+			job.PodSpecHashAnnotation: job.PodSpecHash(&running.Spec.Template),
+		}
+
+		r := newDBTestReconciler(s, ks, running)
+
+		result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(result.RequeueAfter).To(Equal(RequeueDatabaseWait))
+		g.Expect(ks.Status.InstalledImage).To(Equal(installed))
+	})
+
+	t.Run("db-sync failed", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := dbTestScheme()
+		ks := brownfieldKeystone()
+		ks.Status.InstalledImage = installed
+
+		r := newDBTestReconciler(s, ks, failedDBSyncJob(ks))
+
+		_, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(errors.Is(err, job.ErrJobFailed)).To(BeTrue(), "got %v", err)
+		g.Expect(ks.Status.InstalledImage).To(Equal(installed))
+	})
 }
 
 func TestReconcileDatabase_PatchOnly_UsesSimpleDBSync(t *testing.T) {
@@ -1533,6 +1835,45 @@ func TestReconcileContract_JobCompleted_CompletesUpgrade(t *testing.T) {
 	expectEvent(g, r, "Normal UpgradeComplete")
 }
 
+// TestReconcileDatabase_ContractComplete_RecordsInstalledImage verifies that
+// the pass in which the contract Job completes records the new image reference
+// beside the new installed release.
+func TestReconcileDatabase_ContractComplete_RecordsInstalledImage(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := upgradingKeystone(keystonev1alpha1.UpgradePhaseContracting)
+	ks.Spec.Image.Digest = testDigestNew
+	ks.Status.InstalledImage = "ghcr.io/c5c3/keystone@" + testDigestOld
+
+	completed := completedUpgradeJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag, "contract", "--contract")
+
+	r := newDBTestReconciler(s, ks, completed)
+
+	_, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(ks.Status.InstalledRelease).To(Equal("2026.2"))
+	g.Expect(ks.Status.InstalledImage).To(Equal("ghcr.io/c5c3/keystone@" + testDigestNew))
+}
+
+// TestReconcileDatabase_ContractRunning_KeepsInstalledImage verifies that a
+// phase pass that does not complete the upgrade records nothing.
+func TestReconcileDatabase_ContractRunning_KeepsInstalledImage(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := upgradingKeystone(keystonev1alpha1.UpgradePhaseContracting)
+	ks.Spec.Image.Digest = testDigestNew
+	ks.Status.InstalledImage = "ghcr.io/c5c3/keystone@" + testDigestOld
+
+	r := newDBTestReconciler(s, ks)
+
+	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(RequeueUpgradeWait))
+
+	g.Expect(ks.Status.InstalledImage).To(Equal("ghcr.io/c5c3/keystone@" + testDigestOld))
+}
+
 func TestReconcileContract_JobFailed_ReturnsError(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := dbTestScheme()
@@ -1658,6 +1999,69 @@ func TestReconcileDatabase_TagChangedDuringUpgrade_Blocks(t *testing.T) {
 	expectEvent(g, r, "Warning UpgradeTargetChanged")
 }
 
+// TestReconcileDatabase_DigestChangedDuringUpgrade_RerunsPhaseJob verifies that
+// a digest change under the target tag during an active upgrade is the digest
+// counterpart of re-pushing a mutable tag: the completed expand Job of the old
+// build is re-created on the new reference, and the target-changed guard does
+// not fire, because the tag still names the target release.
+func TestReconcileDatabase_DigestChangedDuringUpgrade_RerunsPhaseJob(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := upgradingKeystone(keystonev1alpha1.UpgradePhaseExpanding)
+	ks.Spec.Image.Digest = testDigestOld
+	completed := completedUpgradeJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag, "expand", "--expand")
+	ks.Spec.Image.Digest = testDigestNew
+
+	r := newDBTestReconciler(s, ks, completed)
+
+	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(RequeueUpgradeWait))
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Reason).To(Equal(conditionReasonExpandInProgress))
+	g.Expect(ks.Status.UpgradePhase).To(Equal(keystonev1alpha1.UpgradePhaseExpanding))
+	g.Expect(ks.Status.TargetRelease).To(Equal("2026.2"))
+
+	var expandJob batchv1.Job
+	g.Expect(r.Client.Get(context.Background(), client.ObjectKey{
+		Name:      "test-keystone-db-expand",
+		Namespace: "default",
+	}, &expandJob)).To(Succeed())
+	g.Expect(expandJob.Status.Succeeded).To(BeZero(), "the completed Job of the old build must be replaced")
+	g.Expect(expandJob.Spec.Template.Spec.Containers[0].Image).To(Equal(ks.Spec.Image.Repository + "@" + testDigestNew))
+
+	expectNoEvent(g, r)
+}
+
+// TestReconcileDatabase_TagRemovedDuringUpgrade_Blocks verifies that dropping
+// the tag from an image with tag and digest during an active upgrade trips the
+// target-changed guard: without a tag the image names no release, which is
+// neither the installed nor the target release.
+func TestReconcileDatabase_TagRemovedDuringUpgrade_Blocks(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := upgradingKeystone(keystonev1alpha1.UpgradePhaseExpanding)
+	ks.Spec.Image.Digest = testDigestNew
+	ks.Spec.Image.Tag = ""
+
+	r := newDBTestReconciler(s, ks)
+
+	_, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("image tag changed during active upgrade"))
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonUpgradeTargetChanged))
+	g.Expect(ks.Status.UpgradePhase).To(Equal(keystonev1alpha1.UpgradePhaseExpanding))
+	g.Expect(ks.Status.TargetRelease).To(Equal("2026.2"))
+
+	expectEvent(g, r, "Warning UpgradeTargetChanged")
+}
+
 // --- Upgrade abort tests (#468) ---
 
 // TestReconcileDatabase_RevertToInstalledRelease_AbortsDuringExpand verifies that
@@ -1700,6 +2104,186 @@ func TestReconcileDatabase_RevertToInstalledRelease_AbortsDuringExpand(t *testin
 		g.Expect(apierrors.IsNotFound(getErr)).To(BeTrue(),
 			"%s Job must be absent after abort", suffix)
 	}
+
+	expectEvent(g, r, "Normal UpgradeAborted")
+}
+
+// TestReconcileDatabase_Abort_KeepsInstalledImage verifies that an aborted
+// upgrade records no image: installedRelease stays on the old release, so the
+// pass did not complete a migration. The abort reverts tag and digest, and the
+// db-sync Job of the pass after it runs the installed build.
+func TestReconcileDatabase_Abort_KeepsInstalledImage(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := upgradingKeystone(keystonev1alpha1.UpgradePhaseExpanding)
+	ks.Spec.Image.Tag = "2026.1"
+	ks.Spec.Image.Digest = testDigestOld
+	ks.Status.InstalledImage = "ghcr.io/c5c3/keystone@" + testDigestOld
+
+	r := newDBTestReconciler(s, ks)
+
+	_, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(ks.Status.UpgradePhase).To(BeEmpty())
+	g.Expect(ks.Status.InstalledRelease).To(Equal("2026.1"))
+	g.Expect(ks.Status.InstalledImage).To(Equal("ghcr.io/c5c3/keystone@" + testDigestOld))
+
+	expectEvent(g, r, "Normal UpgradeAborted")
+
+	_, err = r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var dbSync batchv1.Job
+	g.Expect(r.Get(context.Background(), client.ObjectKey{Name: "test-keystone-db-sync", Namespace: "default"}, &dbSync)).To(Succeed())
+	g.Expect(dbSync.Spec.Template.Spec.Containers[0].Image).To(Equal("ghcr.io/c5c3/keystone@" + testDigestOld))
+	g.Expect(ks.Status.InstalledRelease).To(Equal("2026.1"))
+}
+
+// TestReconcileDatabase_AbortOnTargetBuild_Rejected verifies that an abort
+// which reverts spec.image.tag but leaves the pinned digest on another build
+// than status.installedImage is refused with ImageReleaseMismatch. The upgrade
+// state and the phase Jobs stay, and no db-sync Job runs the target build's
+// plain db_sync under the installed release. The message names the edits that
+// end the refusal: reverting the digest, or, when the installed build is
+// recorded by tag, which no digest matches, either removing the digest or
+// patching status.installedImage to the installed build's digest and pinning
+// that digest. Each edit then aborts, and the db-sync Job of the pass after it
+// runs the tag or the pinned digest the edit left in spec.image.
+func TestReconcileDatabase_AbortOnTargetBuild_Rejected(t *testing.T) {
+	const tagRemedy = `the installed build is recorded by tag, which no digest matches: either remove spec.image.digest ` +
+		`("digest":null in a merge patch) in the same edit, which leaves the db_sync after the abort and the Deployment ` +
+		`on the mutable tag ghcr.io/c5c3/keystone:2026.1, or, to keep the pin, patch status.installedImage (status subresource) ` +
+		`to ghcr.io/c5c3/keystone@<digest of the installed build> and set spec.image.digest to that digest`
+	for _, tc := range []struct {
+		name      string
+		installed string
+		digest    string
+		remedy    string
+		resolved  string
+		// resolvedInstalled is the status.installedImage patch of the
+		// recovery that keeps the pin; empty leaves the recorded image.
+		resolvedInstalled string
+		syncImage         string
+	}{
+		{
+			name:      "installed by digest",
+			installed: "ghcr.io/c5c3/keystone@" + testDigestOld,
+			digest:    testDigestNew,
+			remedy:    "revert spec.image.digest in the same edit",
+			resolved:  testDigestOld,
+			syncImage: "ghcr.io/c5c3/keystone@" + testDigestOld,
+		},
+		{
+			name:      "installed by tag",
+			installed: "ghcr.io/c5c3/keystone:2026.1",
+			digest:    testDigestNew,
+			remedy:    tagRemedy,
+			syncImage: "ghcr.io/c5c3/keystone:2026.1",
+		},
+		{
+			name:      "installed by tag, digest of the installed build",
+			installed: "ghcr.io/c5c3/keystone:2026.1",
+			digest:    testDigestOld,
+			remedy:    tagRemedy,
+			syncImage: "ghcr.io/c5c3/keystone:2026.1",
+		},
+		{
+			name:              "installed by tag, pin kept by a status patch",
+			installed:         "ghcr.io/c5c3/keystone:2026.1",
+			digest:            testDigestNew,
+			remedy:            tagRemedy,
+			resolved:          testDigestOld,
+			resolvedInstalled: "ghcr.io/c5c3/keystone@" + testDigestOld,
+			syncImage:         "ghcr.io/c5c3/keystone@" + testDigestOld,
+		},
+		{
+			name:              "installed by tag, digest of the installed build, pin kept by a status patch",
+			installed:         "ghcr.io/c5c3/keystone:2026.1",
+			digest:            testDigestOld,
+			remedy:            tagRemedy,
+			resolved:          testDigestOld,
+			resolvedInstalled: "ghcr.io/c5c3/keystone@" + testDigestOld,
+			syncImage:         "ghcr.io/c5c3/keystone@" + testDigestOld,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			s := dbTestScheme()
+			ks := upgradingKeystone(keystonev1alpha1.UpgradePhaseExpanding)
+			ks.Spec.Image.Digest = testDigestNew
+			expandJob := buildExpandJob(ks, "keystone-config-abc123", "", ks.Spec.Image.Tag)
+			ks.Spec.Image.Tag = "2026.1"
+			ks.Spec.Image.Digest = tc.digest
+			ks.Status.InstalledImage = tc.installed
+
+			r := newDBTestReconciler(s, ks, expandJob)
+
+			result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("reverts spec.image.tag but leaves spec.image on ghcr.io/c5c3/keystone@" + tc.digest))
+			g.Expect(err.Error()).To(ContainSubstring("instead of the installed build " + tc.installed))
+			g.Expect(err.Error()).To(ContainSubstring(tc.remedy))
+			g.Expect(result).To(Equal(ctrl.Result{}))
+
+			cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
+			g.Expect(cond).NotTo(BeNil())
+			g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			g.Expect(cond.Reason).To(Equal(conditionReasonImageReleaseMismatch))
+			g.Expect(cond.Message).To(Equal(err.Error()))
+
+			g.Expect(ks.Status.UpgradePhase).To(Equal(keystonev1alpha1.UpgradePhaseExpanding))
+			g.Expect(ks.Status.TargetRelease).To(Equal("2026.2"))
+			g.Expect(ks.Status.InstalledRelease).To(Equal("2026.1"))
+			g.Expect(ks.Status.InstalledImage).To(Equal(tc.installed))
+
+			var jb batchv1.Job
+			g.Expect(r.Get(context.Background(), client.ObjectKey{Name: "test-keystone-db-expand", Namespace: "default"}, &jb)).To(Succeed(),
+				"a refused abort must keep the phase Jobs")
+			getErr := r.Get(context.Background(), client.ObjectKey{Name: "test-keystone-db-sync", Namespace: "default"}, &jb)
+			g.Expect(apierrors.IsNotFound(getErr)).To(BeTrue(), "a refused abort must create no db-sync Job")
+
+			expectEvent(g, r, "Warning ImageReleaseMismatch")
+			expectNoEvent(g, r)
+
+			ks.Spec.Image.Digest = tc.resolved
+			if tc.resolvedInstalled != "" {
+				ks.Status.InstalledImage = tc.resolvedInstalled
+			}
+			_, err = r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
+			g.Expect(err).NotTo(HaveOccurred(), "the edit the message names must end the refusal")
+			g.Expect(ks.Status.UpgradePhase).To(BeEmpty())
+			g.Expect(ks.Status.TargetRelease).To(BeEmpty())
+			expectEvent(g, r, "Normal UpgradeAborted")
+
+			_, err = r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
+			g.Expect(err).NotTo(HaveOccurred())
+			var dbSync batchv1.Job
+			g.Expect(r.Get(context.Background(), client.ObjectKey{Name: "test-keystone-db-sync", Namespace: "default"}, &dbSync)).To(Succeed())
+			g.Expect(dbSync.Spec.Template.Spec.Containers[0].Image).To(Equal(tc.syncImage))
+		})
+	}
+}
+
+// TestReconcileDatabase_AbortOnMirroredInstalledBuild_Aborts verifies that an
+// abort whose digest names the installed build runs, even when another
+// repository serves that build: the digest decides what the db-sync Job after
+// the abort runs.
+func TestReconcileDatabase_AbortOnMirroredInstalledBuild_Aborts(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := upgradingKeystone(keystonev1alpha1.UpgradePhaseExpanding)
+	ks.Spec.Image.Repository = "registry.internal/keystone"
+	ks.Spec.Image.Tag = "2026.1"
+	ks.Spec.Image.Digest = testDigestOld
+	ks.Status.InstalledImage = "ghcr.io/c5c3/keystone@" + testDigestOld
+
+	r := newDBTestReconciler(s, ks)
+
+	_, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ks.Status.UpgradePhase).To(BeEmpty())
+	g.Expect(ks.Status.TargetRelease).To(BeEmpty())
 
 	expectEvent(g, r, "Normal UpgradeAborted")
 }

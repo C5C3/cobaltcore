@@ -444,14 +444,14 @@ func (w *GlanceWebhook) validate(ctx context.Context, g *Glance, extra field.Err
 		))
 	}
 
-	// Defense-in-depth image tag/digest XOR check alongside the
-	// +kubebuilder:validation:XValidation rule on commonv1.ImageSpec: exactly
+	// Defense-in-depth image tag-or-digest check alongside the
+	// +kubebuilder:validation:XValidation rule on commonv1.ImageSpec: at least
 	// one of tag or digest must be set.
-	if (g.Spec.Image.Tag != "") == (g.Spec.Image.Digest != "") {
+	if g.Spec.Image.Tag == "" && g.Spec.Image.Digest == "" {
 		allErrs = append(allErrs, field.Invalid(
 			specPath.Child("image"),
 			g.Spec.Image,
-			"exactly one of image.tag or image.digest must be set",
+			"at least one of image.tag or image.digest must be set",
 		))
 	}
 

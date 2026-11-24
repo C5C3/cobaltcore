@@ -173,7 +173,7 @@ status:
 | `gateway` | [`*GatewaySpec`](#gatewayspec) | No | `nil` | Gateway API HTTPRoute configuration. When set, an HTTPRoute is created targeting the `{name}` Service on port 5000 and attached to the referenced pre-existing Gateway; `status.endpoint` is updated to `https://{hostname}/v3`. When removed, the HTTPRoute is deleted and `status.endpoint` reverts to the cluster-local Service URL. |
 | `uwsgi` | [`*UWSGISpec`](#uwsgispec) | No | `nil` | uWSGI application server parameters. When set, the operator uses these values for the Deployment container command. When `nil`, hardcoded defaults (processes=2, threads=1, httpKeepAlive=true) are used in the reconciler. |
 | `logging` | [`*LoggingSpec`](#loggingspec) | No | See below | oslo.log configuration for the Keystone API container. When `nil`, the defaulting webhook materializes a baseline (`format=text`, `level=INFO`, `debug=false`, no per-logger overrides) so downstream reconciler code never sees a nil pointer. When set, zero-valued sub-fields are partially filled with the same baseline. |
-| `extraConfig` | `map[string]map[string]string` | No | `nil` | Free-form INI sections for additional configuration. The render-time merge follows `plugins < operator defaults < extraConfig` (each stage merged key-wise), so `extraConfig` wins over both. Overrides of operator-owned keys are honored but reported via the `ExtraConfigHealthy` condition and an `ExtraConfigOwnedKeyOverride` Warning event. Option names are validated at admission against a per-release option catalog embedded in the operator (release derived from `spec.image.tag`; a digest-pinned image or a release with no embedded catalog skips the check with an admission warning). Sections declared by `spec.plugins` and operator-owned keys are exempt; an unknown section or option is rejected with the section and key named, and a deprecated-but-accepted option is admitted with a warning naming its replacement. Values are never checked, and the rule is webhook-only with no CEL backstop. |
+| `extraConfig` | `map[string]map[string]string` | No | `nil` | Free-form INI sections for additional configuration. The render-time merge follows `plugins < operator defaults < extraConfig` (each stage merged key-wise), so `extraConfig` wins over both. Overrides of operator-owned keys are honored but reported via the `ExtraConfigHealthy` condition and an `ExtraConfigOwnedKeyOverride` Warning event. Option names are validated at admission against a per-release option catalog embedded in the operator (release derived from `spec.image.tag`; an image without a tag or a release with no embedded catalog skips the check with an admission warning). Sections declared by `spec.plugins` and operator-owned keys are exempt; an unknown section or option is rejected with the section and key named, and a deprecated-but-accepted option is admitted with a warning naming its replacement. Values are never checked, and the rule is webhook-only with no CEL backstop. |
 | `suspend` | `bool` | No | `false` | Pauses the operator's reconciliation of this Keystone. While it is `true` the operator creates, updates and deletes nothing for the CR: no provisioning, no rollout of spec changes, no release upgrade or schema migration, and no correction of drift in the objects it owns. Workloads that already run keep running, the CronJobs included. The CR reports `Suspended=True` and keeps its last `Ready` condition and `status.observedGeneration`. Deleting a suspended CR runs its finalizer cleanup as usual. Setting it to `false` or removing it resumes reconciliation. The `suspend` fields of `fernet`, `credentialKeys`, `trustFlush` and `passwordRotation` pause one scheduled job only, while the rest of the CR keeps reconciling. See step 3 of [Reconciliation Flow](./keystone-reconciler.md#reconciliation-flow). |
 
 ### DeploymentSpec
@@ -1521,7 +1521,8 @@ does not collide on a shared object.
 | `conditions` | `[]metav1.Condition` | Latest available observations of the Keystone state. A `listType=map` strategic-merge list keyed by `type`, so concurrent writers (the controller and external tooling) merge per-condition under server-side apply instead of clobbering the whole list. |
 | `observedGeneration` | `int64` | The `.metadata.generation` the controller last reconciled, so a stale status is distinguishable from one reflecting the current spec without scanning conditions. |
 | `endpoint` | `string` | Keystone API endpoint URL (set by the controller when ready). Defaults to `http://{name}.{namespace}.svc.cluster.local:5000/v3`. |
-| `installedRelease` | `string` | OpenStack release version currently deployed. Set by the controller after a successful `db_sync`; reflects the value extracted from `spec.image.tag`. Left unset when the image is pinned by `digest` (digest mode disables release tracking). |
+| `installedRelease` | `string` | OpenStack release version currently deployed. Set by the controller after a successful `db_sync`; reflects the value extracted from `spec.image.tag`. An image without a tag leaves it untouched, because a digest alone names no release. |
+| `installedImage` | `string` | The `spec.image` reference whose `db_sync` last completed: `repository:tag`, or `repository@digest` when a digest is pinned. Set after every completed `db_sync` and schema check and in the pass whose contract Job completes an upgrade; an aborted upgrade leaves it. A release bump of `spec.image.tag` that leaves `spec.image` equal to it is refused with `ImageReleaseMismatch` (see [Pinning the Image by Digest](./keystone-upgrade-flow.md#pinning-the-image-by-digest)). |
 | `targetRelease` | `string` | Upgrade target release during an active upgrade. Set while `upgradePhase` is one of `Expanding`/`Migrating`/`RollingUpdate`/`Contracting`; cleared after `Contracting` completes. |
 | `upgradePhase` | [`UpgradePhase`](#upgradephase) | Current phase of an active database upgrade. Empty outside upgrades. |
 
@@ -1562,22 +1563,37 @@ operator CRDs.
 
 ### ImageSpec
 
-Exactly one of `tag` or `digest` must be set, enforced by a type-level
+At least one of `tag` or `digest` must be set, enforced by a type-level
 `XValidation` rule (and mirrored by the validating webhook). A pinned digest
 closes the supply-chain gap where a mutable tag can be re-pushed behind a stable
-name.
+name. An image takes one of three forms:
 
-> **Digest-mode disables release tracking.** Keystone's release tracking and the
-> expand-migrate-contract upgrade flow key entirely on the image tag. When the
-> image is pinned by `digest` (no `tag`), `status.installedRelease` is left unset
-> and no upgrade is ever detected. The managed ControlPlane path always projects
-> a tag, so it is unaffected.
+| Form | The pods and Jobs run | Release |
+| --- | --- | --- |
+| `tag` only | `repository:tag` | The tag |
+| `digest` only | `repository@digest` | None |
+| `tag` and `digest` | `repository@digest` | The tag |
+
+> **Release tracking needs the tag.** Keystone's release tracking and the
+> expand-migrate-contract upgrade flow key on the image tag. A digest alone
+> leaves `status.installedRelease` untouched and no upgrade is detected. With a
+> tag beside the digest, the digest decides what runs and the tag names its
+> release; no operator checks that the digest is a build of that release. See
+> [Pinning the Image by Digest](./keystone-upgrade-flow.md#pinning-the-image-by-digest).
+> The managed ControlPlane path always projects a tag.
+
+An operator older than this version admits only one of `tag` and `digest`, in
+its CRD and in its webhook. Upgrade the operator of a kind before one of its
+resources, or a ControlPlane override projected into one, sets both. Before you
+roll an operator back, reduce every image of its kinds that carries both to one
+field, and let a Keystone upgrade finish first: an older keystone-operator runs
+the phase Jobs on `repository:tag` whatever digest is pinned.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `repository` | `string` | Yes | Container image repository (e.g., `c5c3/keystone`). Must be non-empty (`MinLength=1`) and match a permissive OCI reference `Pattern` (`^[a-z0-9]+([._:/-][a-z0-9]+)*$`) that accepts registry-host and `host:port` forms. |
-| `tag` | `string` | No (exactly one of `tag`/`digest`) | Image tag (e.g., `2026.1`). When present, must match the OCI tag grammar `Pattern` (`^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$`). |
-| `digest` | `string` | No (exactly one of `tag`/`digest`) | Immutable content digest (e.g., `sha256:<64 hex>`). Must match `Pattern` (`^sha256:[a-f0-9]{64}$`). Pinning by digest disables release tracking/upgrades. |
+| `tag` | `string` | No (at least one of `tag`/`digest`) | Image tag (e.g., `2026.1`). When present, must match the OCI tag grammar `Pattern` (`^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$`). Beside a `digest` it names the release only. |
+| `digest` | `string` | No (at least one of `tag`/`digest`) | Immutable content digest (e.g., `sha256:<64 hex>`). Must match `Pattern` (`^sha256:[a-f0-9]{64}$`). Without a `tag` beside it, release tracking and upgrades are off. |
 | `pullPolicy` | `corev1.PullPolicy` | No | `imagePullPolicy` of every container that runs this image. `Enum=Always;IfNotPresent;Never`, schema-only: a CRD older than the operator prunes the field before a webhook sees it, so no webhook twin exists. Empty resolves in the order below, and no webhook writes a default. |
 
 #### Pull policy resolution
@@ -2215,7 +2231,7 @@ is pinned by a Chainsaw step.
 | `immutable-adminuser-rejected` | `16-immutable-adminuser.yaml` | `spec.bootstrap.adminUser` immutable on UPDATE | Error containing "adminUser" and "immutable" |
 | `immutable-region-rejected` | `17-immutable-region.yaml` | `spec.bootstrap.region` immutable on UPDATE | Error containing "region" and "immutable" |
 | `image-empty-tag-rejected` | `13-image-empty-tag.yaml` | ImageSpec.Tag Pattern | Error containing "image.tag" |
-| `image-tag-and-digest-rejected` | `21-image-tag-and-digest.yaml` | ImageSpec tag/digest XOR | Error containing "digest" |
+| `image-neither-tag-nor-digest-rejected` | `21-image-neither-tag-nor-digest.yaml` | ImageSpec at-least-one rule | Error containing "at least one of image.tag or image.digest" |
 | `database-name-invalid-char-rejected` | `14-database-name-invalid-char.yaml` | DatabaseSpec.Database Pattern | Error containing "database.database" |
 | `database-secretref-empty-name-rejected` | `15-database-secretref-empty-name.yaml` | SecretRefSpec.Name MinLength=1 | Error containing "secretRef.name" |
 | `middleware-bad-position-rejected` | `16-middleware-bad-position.yaml` | PipelinePosition Enum=before;after | Error containing "position" and "sideways" |

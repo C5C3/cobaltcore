@@ -191,7 +191,9 @@ since the operator's client caches no unstructured kind.
    through the namespace's own store, with `deletionPolicy: Delete`. A changed
    transport URL sets a hash annotation on it and records the PushSecret's
    `status.syncedResourceVersion`, so the step waits for a push of the current
-   credentials (`BackupNotSynced`), as the KeystoneUser delivery does.
+   credentials (`BackupNotSynced`), as the KeystoneUser delivery does. A
+   PushSecret the cache does not hold yet, right after the pass applied it,
+   reads `BackupNotSynced` too, and the pass requeues without an error.
 5. The Secret `<name>-credentials` is applied beside the order with a
    controller owner reference to it. A live Secret of that name the order does
    not own is refused (`DeliveryRefused`), read from the order cluster's API
@@ -247,6 +249,14 @@ still listed, and the pass requeues after 10 seconds. With the ControlPlane
 gone the deletes are issued and the finalizer is released at once; the
 topology operator removes a CR whose `RabbitmqCluster` is gone without reaching
 the broker.
+
+The release is one update through `commonreconcile.RemoveFinalizer`. A 404 on
+it means an earlier pass already released the order, and the pass ends. A 409
+means the pass read a stale copy of the order: it logs the Info line
+`finalizer removal conflict, requeueing` and requeues after `RequeueNextPass`
+(1 s), so the next pass releases the finalizer from a fresh read. Any other
+failure returns the error wrapped as `removing RabbitMQVhost finalizer`, and
+controller-runtime retries the pass with its error backoff.
 
 ## Metrics Instrumentation
 

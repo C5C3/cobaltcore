@@ -31,7 +31,7 @@ Suspended (`.spec.suspend`), and Age.
 | `deployment` | `DeploymentSpec` | no | Shared pod-level knobs: `replicas` (default 3), `resources` (resolved per resource when the pod is rendered: 70m CPU request, no CPU limit, and 720Mi memory request and limit at the default `spec.apiServer.uwsgi` counts, see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)), `terminationGracePeriodSeconds`, `preStopSleepSeconds`, `strategy`, `topologySpreadConstraints`, `priorityClassName`, and the node placement `nodeSelector`, `tolerations` and `affinity` (see [NodePlacementSpec](../keystone/keystone-crd.md#nodeplacementspec)) |
 | `deployment.verticalAutoscaling` | [`*VerticalAutoscalingSpec`](../keystone/keystone-crd.md#verticalautoscalingspec) | no | Opts the Barbican API Deployment into a VerticalPodAutoscaler that controls the requests of its containers; see [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec). Rejected beside `spec.autoscaling`, which scales the same Deployment. On a cluster without the VPA, `VPAReady` turns False with reason `VPANotInstalled`. |
 | `jobs` | [`*JobSpec`](../keystone/keystone-crd.md#jobspec) | no | Sizes, prioritizes and places the pods of the db-sync and db-index Jobs and the db-clean CronJob. A field left unset falls back to `spec.deployment`; unset resources default to a `70m` CPU request and `368Mi` memory as request and limit |
-| `image` | `ImageSpec` | yes | Container image. `tag` and `digest` are mutually exclusive and one of the two is required (shared CEL rule, re-checked by the webhook). The field carries no immutability rule |
+| `image` | `ImageSpec` | yes | Container image. At least one of `tag` or `digest` is required (shared CEL rule, re-checked by the webhook); with both, the digest decides what runs. The field carries no immutability rule |
 | `database` | `DatabaseSpec` | yes | MariaDB connection, rendered into `[database]`. One of `clusterRef` (managed) or `host` (brownfield), never both; plus `database`, `secretRef`, and the optional `port`, `credentialsMode`, and `tls`. `credentialsMode` selects how the credential in `secretRef` is provisioned: `Static` (the default) keeps a long-lived password and has the operator manage the MariaDB `User`/`Grant` CRs, `Dynamic` takes short-lived engine-issued credentials and manages neither. `Dynamic` requires `clusterRef`. The mutual-exclusivity and Dynamic-requires-clusterRef rules are inherited from `commonv1.DatabaseSpec`, and so are `replicas` and `storageSize`: both sit in the schema, but only the c5c3 operator's managed-mode projection reads them, so the Barbican operator ignores whatever they say. With `tls` enabled the client keypair is projected into the API pods, the db-sync and db-index Jobs, and the clean-up CronJob alike |
 | `cache` | `CacheSpec` | yes | Memcached backing the keystonemiddleware token cache, rendered as `[keystone_authtoken] memcached_servers`. One of `clusterRef` (managed) or `servers` (brownfield), never both. `backend` is webhook-defaulted to `dogpile.cache.pymemcache`. `replicas` is inherited from `commonv1.CacheSpec` on the same terms as the database counterparts: schema-visible, honoured by the c5c3 operator's managed-mode projection, ignored here |
 | `keystoneEndpoint` | `string` | yes | The Keystone auth URL rendered as `[keystone_authtoken] auth_url`; must match `^https?://` and parse with a host. keystonemiddleware validates a token against it server-side on every authenticated request, so it must be reachable from inside the cluster: use the cluster-local Service URL, not an externally routable address |
@@ -159,6 +159,17 @@ behind the committed batches. For an unset field the
 operator passes no flag, so an image built before the two options keeps
 cleaning with its own default.
 
+The passes over secrets, orders and containers delete the soft-deleted rows
+that still reference a parent they delete, whatever the `deleted_at` of those
+rows. Barbican sets `deleted_at` on a parent and on each of its child rows
+separately, in whole seconds, so a child row can carry a later value than its
+parent. Such a row can therefore be deleted before its own retention ends, by
+at most the gap between the two values, and a batch of these passes can change
+more than `batchSize` rows. A row that references such a parent and was never
+soft-deleted fails the run with MariaDB error 1451, and `DBCleanReady` turns
+False with reason `DBCleanJobFailed`. A failed run logs how many rows its
+batches committed before the failure.
+
 A batch that conflicts with a concurrent API write (MariaDB error 1020, 1213 or
 1205) is rolled back, logged at WARNING and retried, up to ten times. A run that
 still fails keeps the batches it committed, and the next attempt of the Job
@@ -194,7 +205,7 @@ reject keeps reconciling: `dbCleanCronJobName` collapses it onto a content-stabl
 hash instead of building an object the API server refuses.
 
 The validating webhook accumulates every violation into one admission response,
-reusing the shared validators: replicas floor, image tag/digest exclusivity, the
+reusing the shared validators: replicas floor, the image tag-or-digest rule, the
 database mutual-exclusivity and Dynamic-requires-clusterRef rules, cache
 mutual-exclusivity and its control-character guard, secret-store-ref shape, both
 Keystone endpoint URL shapes, logging enums (including the per-logger-level map,

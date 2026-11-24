@@ -26,6 +26,7 @@ import (
 
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	mctestutil "github.com/c5c3/cobaltcore/internal/common/testutil/multicluster"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	novav1alpha1 "github.com/c5c3/cobaltcore/operators/nova/api/v1alpha1"
@@ -270,6 +271,46 @@ func TestNovaComputeTeardown_NovaGoneReleasesAtOnce(t *testing.T) {
 	err := r.Get(context.Background(), testPoolKey, &novav1alpha1.NovaCompute{})
 	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "both finalizers are released, got %v", err)
 	g.Expect(api.Calls()).To(BeEmpty())
+}
+
+// TestNovaCompute_DrainFinalizerReleaseConflictRequeues pins the answer to a
+// compute-drain release that loses to a newer copy of the CR: the pass
+// requeues after RequeueNextPass without an error and keeps the finalizer, and
+// the next pass releases the CR from a fresh read.
+func TestNovaCompute_DrainFinalizerReleaseConflictRequeues(t *testing.T) {
+	g := NewGomegaWithT(t)
+	r := newNovaComputeTestReconciler(computeapitest.New(), deletingPool(novaComputeDrainFinalizer))
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), testutil.ConflictFirstUpdate())
+
+	g.Expect(reconcilePool(t, r)).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
+	g.Expect(getPool(t, r).Finalizers).To(ConsistOf(novaComputeDrainFinalizer))
+
+	reconcilePool(t, r)
+
+	err := r.Get(context.Background(), testPoolKey, &novav1alpha1.NovaCompute{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the second pass releases the finalizer, got %v", err)
+}
+
+// TestNovaCompute_RemoteChildrenReleaseConflictRequeues pins the answer to a
+// remote-children release that loses to a newer copy of the CR: the pass
+// requeues after RequeueNextPass without an error, holds both finalizers, and
+// runs nothing that follows the sweep; the next pass releases the CR.
+func TestNovaCompute_RemoteChildrenReleaseConflictRequeues(t *testing.T) {
+	g := NewGomegaWithT(t)
+	api := computeapitest.New()
+	cr := deletingPool(novaComputeDrainFinalizer, commonmulticluster.RemoteChildrenFinalizer)
+	cr.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "compute-a"}
+	r := newNovaComputeTestReconciler(api, cr)
+	r.Resolver = mctestutil.ResolverFor(mctestutil.TargetCluster{Client: novaFakeClientBuilder().Build()})
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), testutil.ConflictFirstUpdate())
+
+	g.Expect(reconcilePool(t, r)).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
+	g.Expect(getPool(t, r).Finalizers).To(ConsistOf(novaComputeDrainFinalizer, commonmulticluster.RemoteChildrenFinalizer))
+
+	reconcilePool(t, r)
+
+	err := r.Get(context.Background(), testPoolKey, &novav1alpha1.NovaCompute{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the second pass releases both finalizers, got %v", err)
 }
 
 func TestNovaComputeTeardown_InstancesHoldTheFinalizer(t *testing.T) {

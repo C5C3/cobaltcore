@@ -379,7 +379,7 @@ var GlanceRemoteChildKinds = []schema.GroupVersionKind{
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;patch;delete
 // Unexercised by the e2e suites; used by internal/common/deployment/vpa_flow.go:190 (ReconcileVPAs) to create and patch verticalpodautoscalers.
 // Unexercised by the e2e suites; used by internal/common/deployment/vpa_flow.go:213 (ReconcileVPAs) to delete verticalpodautoscalers.
-// Unexercised by the e2e suites; used by operators/glance/internal/controller/glance_controller.go:826 (SetupWithManager) to list and watch verticalpodautoscalers.
+// Unexercised by the e2e suites; used by operators/glance/internal/controller/glance_controller.go:864 (SetupWithManager) to list and watch verticalpodautoscalers.
 // +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch;create;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;patch;delete
 // Required to create, patch and delete HTTPRoutes that expose the Glance API externally.
@@ -446,10 +446,7 @@ func (r *GlanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		// sweep running first would delete them out from under it. The ordering
 		// mirrors the local one, where the garbage collection cascade starts only
 		// once every finalizer has been released.
-		if err := r.reconcileDeleteRemoteChildren(ctx, children, &glance); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, nil
+		return r.reconcileDeleteRemoteChildren(ctx, children, &glance)
 	}
 
 	// A suspended CR ends the pass here. The deletion branch above still runs
@@ -692,10 +689,15 @@ func (r *GlanceReconciler) reconcileDelete(ctx context.Context, children client.
 			"MariaDB Database, User, and Grant marked for deletion; releasing finalizer")
 	}
 
-	controllerutil.RemoveFinalizer(glance, glanceFinalizer)
-	if err := r.Update(ctx, glance); err != nil {
+	outcome, err := commonreconcile.RemoveFinalizer(ctx, r.Client, glance, glanceFinalizer)
+	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
 	}
+	if outcome == commonreconcile.FinalizerConflict {
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
+	}
+	// A CR already gone runs the clean-up below as well: it is keyed on the
+	// name and namespace alone, and no other path runs it.
 	glancemetrics.DeleteForGlance(glance.Name, glance.Namespace)
 	// Drop the per-CR health-probe cache so a CR recreated under the same
 	// name/namespace never serves a stale probe keyed on the deleted CR's UID.
@@ -705,11 +707,11 @@ func (r *GlanceReconciler) reconcileDelete(ctx context.Context, children client.
 
 // reconcileDeleteRemoteChildren deletes everything this Glance projected onto
 // the target cluster it names and releases the remote-children finalizer, as
-// commonmulticluster.SweepRemoteChildren documents. reconcileDelete above
+// commonreconcile.SweepRemoteChildren documents. reconcileDelete above
 // deletes the three MariaDB CRs it tracks by name; this pass is what reaches the
 // rest, selected on the ownership labels Claim stamped on them.
-func (r *GlanceReconciler) reconcileDeleteRemoteChildren(ctx context.Context, children client.Client, glance *glancev1alpha1.Glance) error {
-	return commonmulticluster.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
+func (r *GlanceReconciler) reconcileDeleteRemoteChildren(ctx context.Context, children client.Client, glance *glancev1alpha1.Glance) (ctrl.Result, error) {
+	return commonreconcile.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
 		glance, glance.Spec.TargetClusterRef, children, GlanceRemoteChildKinds)
 }
 

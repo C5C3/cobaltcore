@@ -50,7 +50,7 @@ of the fields below the plane fills and which it leaves to this CR.
 | `deployment` | [`commonv1.DeploymentSpec`](../keystone/keystone-crd.md#deploymentspec) | no | `{}` | Pod-level knobs of the API Deployment: `replicas` (default 3), `resources` (resolved per resource when the pod is rendered: 70m CPU request, no CPU limit, and 720Mi memory request and limit at the default `spec.apiServer.uwsgi` counts, see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)), `terminationGracePeriodSeconds`, `preStopSleepSeconds`, `strategy`, `topologySpreadConstraints`, `priorityClassName`, and the node placement `nodeSelector`, `tolerations` and `affinity` (see [NodePlacementSpec](../keystone/keystone-crd.md#nodeplacementspec)). It is also the fallback of `spec.jobs` |
 | `deployment.verticalAutoscaling` | [`*VerticalAutoscalingSpec`](../keystone/keystone-crd.md#verticalautoscalingspec) | no | `nil` | Opts the Neutron API Deployment into a VerticalPodAutoscaler that controls the requests of its containers; see [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec). Rejected beside `spec.autoscaling`, which scales the same Deployment. On a cluster without the VPA, `VPAReady` turns False with reason `VPANotInstalled`. |
 | `jobs` | [`*commonv1.JobSpec`](../keystone/keystone-crd.md#jobspec) | no | `nil` | Sizes, prioritizes and places the pods of the db-sync Job, the db-expand, db-migrate and db-contract upgrade phases, and the ovn-db-sync CronJob. A field left unset falls back to `spec.deployment`. Unset resources default to a `70m` CPU request and `368Mi` memory as request and limit; ovn-db-sync gets the request floor instead (see [OVNDBSyncSpec](#ovndbsyncspec)) |
-| `image` | [`commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | yes | none | The Neutron container image, run by the API pods, both worker Deployments, the migration Jobs, and the ovn-db-sync CronJob. `tag` and `digest` are mutually exclusive and one of the two is required. The field carries no immutability rule |
+| `image` | [`commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | yes | none | The Neutron container image, run by the API pods, both worker Deployments, the migration Jobs, and the ovn-db-sync CronJob. At least one of `tag` or `digest` is required; with both, the digest decides what runs. The field carries no immutability rule |
 | `database` | [`commonv1.DatabaseSpec`](../keystone/keystone-crd.md#databasespec) | yes | none | The MariaDB connection, rendered into the plain `[database]` section. One of `clusterRef` (managed) or `host` (brownfield), never both, plus `database`, `secretRef`, and the optional `port`, `credentialsMode` and `tls`. `credentialsMode: Dynamic` requires `clusterRef`. `replicas` and `storageSize` sit in the schema and are read by the ControlPlane's managed-mode projection alone, so this operator ignores them |
 | `cache` | [`commonv1.CacheSpec`](../keystone/keystone-crd.md#cachespec) | yes | `backend: dogpile.cache.pymemcache` | The Memcached instance backing the keystonemiddleware token cache, rendered as `[keystone_authtoken] memcached_servers`. One of `clusterRef` (managed) or `servers` (brownfield), never both. Managed mode renders the per-pod `status.serverList` of the referenced Memcached, and `<clusterRef.name>:11211` while it publishes none (see [CacheSpec](../keystone/keystone-crd.md#cachespec)); `replicas` is honoured by the ControlPlane projection alone |
 | `keystoneEndpoint` | `string` (MinLength=1, Pattern `^https?://`) | yes | none | The Keystone auth URL rendered as `[keystone_authtoken] auth_url`. keystonemiddleware validates every token against it server-side, so it has to be reachable from the Neutron pods: use the cluster-local Service URL, and not an address that only resolves outside the cluster |
@@ -401,7 +401,7 @@ These hold even when the webhook is down.
 | Message | Where it comes from |
 | --- | --- |
 | `targetClusterRef is immutable` | Two CEL transition rules on `NeutronSpec`, one for adding or removing the ref and one for renaming it |
-| `exactly one of image.tag or image.digest must be set` | Inherited from `commonv1.ImageSpec` on `spec.image` |
+| `at least one of image.tag or image.digest must be set` | Inherited from `commonv1.ImageSpec` on `spec.image` |
 | `exactly one of clusterRef or host must be set` | Inherited from `commonv1.DatabaseSpec` |
 | `credentialsMode Dynamic requires clusterRef (managed mode)` | Inherited from `commonv1.DatabaseSpec` |
 | `exactly one of clusterRef or servers must be set` | Inherited from `commonv1.CacheSpec` |
@@ -467,7 +467,7 @@ Image, replicas and graceful termination:
 | Message | Trigger |
 | --- | --- |
 | `repository must be set` | `spec.image.repository` is empty |
-| `exactly one of image.tag or image.digest must be set` | Both or neither are set |
+| `at least one of image.tag or image.digest must be set` | Neither is set |
 | `replicas must be at least 1` | `spec.deployment.replicas` below 1 |
 | `terminationGracePeriodSeconds must be at least 10` | `spec.deployment.terminationGracePeriodSeconds` is set below 10 |
 | `preStopSleepSeconds must be non-negative` | `spec.deployment.preStopSleepSeconds` is set below 0 |

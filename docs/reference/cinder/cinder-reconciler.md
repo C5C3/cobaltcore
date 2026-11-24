@@ -154,9 +154,9 @@ else enforces that they agree: an image whose tag names a different release
 would run the wrong `cinder-manage` binary against a schema already at its own
 head, and the phase Jobs would exit 0 as no-ops while `installedRelease` was
 promoted to a release the pods do not run. A mismatch sets
-`DatabaseReady=False` under `ImageReleaseMismatch` and requeues. A
-digest-pinned image and an unparseable tag carry no comparable release and are
-left to the explicit `spec.openStackRelease` declaration; a patch suffix such as
+`DatabaseReady=False` under `ImageReleaseMismatch` and requeues. An image
+without a tag and an unparseable tag carry no comparable release and are left
+to the explicit `spec.openStackRelease` declaration; a patch suffix such as
 `2026.1-p1` still matches `2026.1`.
 
 Steady state is a single `{name}-db-sync` Job running `cinder-manage db sync`,
@@ -407,3 +407,16 @@ Deleting a Cinder does not unregister its volume services. The registry lives in
 the database that is being torn down, so a `CinderBackend` whose parent is
 already gone releases its finalizer unconditionally and records a
 `ServiceRemoveSkipped` event.
+
+Each finalizer release is one update through `commonreconcile.RemoveFinalizer`:
+the Cinder finalizer, the remote-children finalizer that
+`commonreconcile.SweepRemoteChildren` releases for a CR naming a target
+cluster, and the service-remove finalizer of a `CinderBackend`. A 404 on the
+update means an earlier pass already released the object, and the pass ends.
+The Cinder's metrics and probe cache entry are dropped all the same, while
+`ServiceRemoveSkipped` and `ServiceRemoved` are recorded only for a release the
+pass wrote. A 409 means the pass read a stale copy: it logs the Info line
+`finalizer removal conflict, requeueing` and requeues after `RequeueNextPass`
+(1 s), so the next pass releases from a fresh read. Any other failure returns
+the wrapped error, and controller-runtime retries the pass with its error
+backoff.

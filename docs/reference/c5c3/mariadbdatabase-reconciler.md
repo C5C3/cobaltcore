@@ -281,6 +281,14 @@ the mariadb-operator runs the drop or the skip behind the Database CR's
 finalizer first. With the ControlPlane gone the deletes are issued and the
 finalizer is released at once, whatever their outcome.
 
+The release is one update through `commonreconcile.RemoveFinalizer`. A 404 on
+it means an earlier pass already released the order, and the pass ends. A 409
+means the pass read a stale copy of the order: it logs the Info line
+`finalizer removal conflict, requeueing` and requeues after `RequeueNextPass`
+(1 s), so the next pass releases the finalizer from a fresh read. Any other
+failure returns the error wrapped as `removing MariaDBDatabase finalizer`, and
+controller-runtime retries the pass with its error backoff.
+
 ## Metrics Instrumentation
 
 Both steps run through the package-scope `instrumenter`, so they observe the

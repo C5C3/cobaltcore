@@ -550,6 +550,65 @@ func TestReconcileDelete_NoLiveResourcesReleasesFinalizerAndDropsMetrics(t *test
 		"the per-CR series must not outlive the CR they are labelled with")
 }
 
+// TestReconcile_FinalizerReleaseConflictRequeues pins a release on a copy
+// older than the stored CR: the pass requeues after RequeueNextPass without an
+// error and keeps the finalizer, and the next pass releases it from a fresh
+// read.
+func TestReconcile_FinalizerReleaseConflictRequeues(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	nova := validNova()
+	nova.Finalizers = []string{novaFinalizer}
+	r := newNovaTestReconciler(nova) // no MariaDB CRs
+	g.Expect(r.Delete(ctx, nova)).To(Succeed())
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), testutil.ConflictFirstUpdate())
+	req := ctrl.Request{NamespacedName: objectKey(nova.Name)}
+
+	res, err := r.Reconcile(ctx, req)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
+	var persisted novav1alpha1.Nova
+	g.Expect(r.Get(ctx, req.NamespacedName, &persisted)).To(Succeed())
+	g.Expect(persisted.Finalizers).To(ContainElement(novaFinalizer))
+
+	_, err = r.Reconcile(ctx, req)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(apierrors.IsNotFound(r.Get(ctx, req.NamespacedName, &persisted))).To(BeTrue())
+}
+
+// TestReconcile_FinalizerReleaseOnAGoneCRStillDropsMetrics pins the clean-up of
+// a pass whose release finds the CR already gone: the per-CR series and the
+// health probe entry are dropped all the same, because no later pass sees the
+// CR to drop them.
+func TestReconcile_FinalizerReleaseOnAGoneCRStillDropsMetrics(t *testing.T) {
+	g := NewGomegaWithT(t)
+	g.Expect(metrics.Register()).To(Succeed())
+	ctx := context.Background()
+	nova := validNova()
+	nova.Name = "gone-drops-metrics"
+	nova.Finalizers = []string{novaFinalizer}
+	t.Cleanup(func() { metrics.DeleteForNova(nova.Name, nova.Namespace) })
+	metrics.RecordDBArchive(nova.Name, nova.Namespace, "failed", time.Second)
+	g.Expect(dbArchiveCount(t, nova, "failed")).To(Equal(1.0), "the fixture series must exist to be dropped")
+
+	r := newNovaTestReconciler(nova) // no MariaDB CRs
+	key := objectKey(nova.Name)
+	r.healthProbeCache.Store(key, nova.UID, "http://nova-api", time.Minute)
+	g.Expect(r.Delete(ctx, nova)).To(Succeed())
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), testutil.NotFoundOnUpdate())
+
+	res, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.IsZero()).To(BeTrue())
+	g.Expect(dbArchiveCount(t, nova, "failed")).To(BeZero(),
+		"the per-CR series must not outlive the CR they are labelled with")
+	g.Expect(r.healthProbeCache.Has(key)).To(BeFalse(),
+		"a CR recreated under the same name must not inherit the probe entry")
+}
+
 // TestReconcileDelete_WithoutTheFinalizerIsANoOp guards the entry condition: a CR
 // this operator never claimed must not have its database CRs deleted out from
 // under whoever does own them.
@@ -659,7 +718,7 @@ func TestReconcileDeleteRemoteChildren_SweepsEveryLabelledChild(t *testing.T) {
 		WithObjects(append([]client.Object{unlabelled, foreign}, projected...)...).Build()
 
 	ctx := context.Background()
-	err := r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), terminating)
+	_, err := r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), terminating)
 
 	g.Expect(err).NotTo(HaveOccurred())
 
@@ -685,7 +744,7 @@ func TestReconcileDeleteRemoteChildren_NilChildrenAbandonsAndReleases(t *testing
 	g := NewGomegaWithT(t)
 	r, terminating := terminatingRemoteNova(t)
 
-	err := r.reconcileDeleteRemoteChildren(context.Background(), nil, terminating)
+	_, err := r.reconcileDeleteRemoteChildren(context.Background(), nil, terminating)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).
@@ -709,7 +768,7 @@ func TestReconcileDeleteRemoteChildren_WithoutFinalizerIsANoOp(t *testing.T) {
 	target := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(child).Build()
 
 	ctx := context.Background()
-	err := r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), nova)
+	_, err := r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), nova)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(target.Get(ctx, client.ObjectKeyFromObject(child), &appsv1.Deployment{})).To(Succeed(),
@@ -740,7 +799,7 @@ func TestReconcileDeleteRemoteChildren_SweepFailureKeepsFinalizer(t *testing.T) 
 		}).Build()
 
 	ctx := context.Background()
-	err := r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), terminating)
+	_, err := r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), terminating)
 
 	g.Expect(err).To(MatchError(ContainSubstring("listing remote Deployment children for teardown")))
 	g.Expect(target.Get(ctx, client.ObjectKeyFromObject(child), &appsv1.Deployment{})).To(Succeed())

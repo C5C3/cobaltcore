@@ -562,6 +562,45 @@ func TestReconcileDatabase_ImageReleaseMismatchBlocks(t *testing.T) {
 	g.Expect(apierrors.IsNotFound(getErr)).To(BeTrue())
 }
 
+// TestCheckImageReleaseMismatch_TagAndDigest verifies that a tag beside a
+// digest is compared with spec.openStackRelease like any tag: a tag naming
+// another release blocks with ImageReleaseMismatch, and a tag naming the same
+// release passes, whatever the digest.
+func TestCheckImageReleaseMismatch_TagAndDigest(t *testing.T) {
+	const digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+	t.Run("tag names another release", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		glance := testGlance()
+		glance.Spec.OpenStackRelease = "2026.2"
+		glance.Spec.Image.Tag = "2026.1"
+		glance.Spec.Image.Digest = digest
+
+		res, blocked := checkImageReleaseMismatch(glance)
+
+		g.Expect(blocked).To(BeTrue())
+		g.Expect(res.RequeueAfter).To(Equal(RequeueDatabaseWait))
+		cond := conditions.GetCondition(glance.Status.Conditions, "DatabaseReady")
+		g.Expect(cond).NotTo(BeNil())
+		g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(cond.Reason).To(Equal(conditionReasonImageReleaseMismatch))
+	})
+
+	t.Run("tag names the same release", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		glance := testGlance()
+		glance.Spec.OpenStackRelease = "2026.2"
+		glance.Spec.Image.Tag = "2026.2"
+		glance.Spec.Image.Digest = digest
+
+		res, blocked := checkImageReleaseMismatch(glance)
+
+		g.Expect(blocked).To(BeFalse())
+		g.Expect(res).To(Equal(ctrl.Result{}))
+		g.Expect(conditions.GetCondition(glance.Status.Conditions, "DatabaseReady")).To(BeNil())
+	})
+}
+
 // TestReconcileDatabase_ImagePatchBuildAccepted verifies that a patched image
 // build (tag 2026.1-p1) still matches the base release 2026.1 and passes the
 // mismatch guard: the patch suffix is ignored, so the reconcile advances to the

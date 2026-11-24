@@ -372,6 +372,17 @@ while the credential in the pods is still valid.
   management cluster, and the remote-children finalizer while its parent names
   `spec.targetClusterRef`; see
   [Retained Artefacts](./barbican-secret-store-crd.md#retained-artefacts).
+  Each finalizer release is one update through
+  `commonreconcile.RemoveFinalizer`: the Barbican finalizer, the
+  remote-children finalizer that `commonreconcile.SweepRemoteChildren` releases
+  for a Barbican naming a target cluster, and the one of a
+  `BarbicanSecretStore`. A 404 on the update means an earlier pass already
+  released the object, and the pass ends; the metrics and the probe cache entry
+  are dropped all the same. A 409 means the pass read a stale copy: it logs the
+  Info line `finalizer removal conflict, requeueing` and requeues after
+  `RequeueNextPass` (1 s), so the next pass releases from a fresh read. Any
+  other failure returns the wrapped error, and controller-runtime retries the
+  pass with its error backoff.
 
 ## Watches
 

@@ -65,6 +65,7 @@ func TestImageSpec_EffectivePullPolicy(t *testing.T) {
 		{name: "tag", spec: ImageSpec{Repository: "r", Tag: "2025.2"}, want: corev1.PullAlways},
 		{name: "latest tag", spec: ImageSpec{Repository: "r", Tag: "latest"}, want: corev1.PullAlways},
 		{name: "digest", spec: ImageSpec{Repository: "r", Digest: digest}, want: corev1.PullIfNotPresent},
+		{name: "tag and digest", spec: ImageSpec{Repository: "r", Tag: "2026.1", Digest: digest}, want: corev1.PullIfNotPresent},
 		{name: "zero value", spec: ImageSpec{}, want: corev1.PullAlways},
 		{
 			name:        "explicit policy wins over process default",

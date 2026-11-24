@@ -750,14 +750,15 @@ reconciliation and only write when the secret has actually changed.
 
 **Note:** `eso-tenant` carries the per-ControlPlane grants for the c5c3
 operator's admin Application Credential
-(`kv-v2/{data,metadata}/openstack/keystone/{ns}/+/admin/app-credential`) and its
+(`kv-v2/{data,metadata}/openstack/keystone/{ns}/+/admin/app-credential`), its
 declarative service-account passwords
-(`kv-v2/{data,metadata}/openstack/keystone/{ns}/+/service-accounts/+`), with
-`delete` on the data leaves so the `DeletionPolicy: Delete` PushSecrets can purge
-the KV leaf on teardown. It carries the backup of every
-[`RabbitMQVhost`](../c5c3/rabbitmqvhost-crd.md) order on the same terms
-(`kv-v2/{data,metadata}/openstack/rabbitmq/{ns}/+/credentials`, no `delete` on the
-metadata leaf). These paths are namespace-templated — `{ns}` resolves to
+(`kv-v2/{data,metadata}/openstack/keystone/{ns}/+/service-accounts/+`) and the
+backup of every [`RabbitMQVhost`](../c5c3/rabbitmqvhost-crd.md) order
+(`kv-v2/{data,metadata}/openstack/rabbitmq/{ns}/+/credentials`). `delete` sits on
+the data and the metadata leaves of all three path pairs. When a
+`DeletionPolicy: Delete` PushSecret is torn down, ESO soft-deletes the data leaf
+and then deletes the metadata leaf, which removes the key with every version.
+These paths are namespace-templated — `{ns}` resolves to
 the caller's own `service_account_namespace` — so a tenant's PushSecret cannot
 write another tenant's KV leaf. See the
 [infrastructure manifests reference](./infrastructure-manifests.md).
@@ -1092,6 +1093,148 @@ Common causes:
   mis-referenced client cert appears as a generic TLS handshake error in the
   ESO controller log (`remote error: tls: bad certificate` or similar), not as
   an HTTP 401/403.
+
+### Keys of deleted orders stay in the KV store
+
+The external-secrets log carries one `could not delete secret metadata <path>`
+error per deleted backup PushSecret, with `Code: 403` and `permission denied`
+on the `DELETE` of the `kv-v2/metadata/...` URL:
+
+```bash
+kubectl -n external-secrets logs deploy/external-secrets | grep 'could not delete secret metadata'
+```
+
+Each of those PushSecrets gets one `Errored` event,
+`failed to delete secrets from provider`, and is gone at the next reconcile.
+Where OpenBao telemetry is scraped, `vault_secret_kv_count{mount_point="kv-v2/"}`
+rises with every deleted order or ControlPlane.
+
+The live `eso-tenant` policy was written before it granted `delete` on the
+metadata leaves (see the [`eso-tenant` note](#operational-policies)), so ESO
+soft-deletes the data leaf, gets 403 on the metadata leaf and leaves the key in
+OpenBao with every version and its `custom_metadata`.
+
+1. Write the current policies: re-run `setup-policies.sh` with `BAO_TOKEN` set,
+   as in [Running the Full Bootstrap](#running-the-full-bootstrap), or run
+   `make deploy-infra` on a kind rig. `bao policy write` replaces the policy in
+   place and OpenBao evaluates a policy by name on each request, so the tokens
+   the tenant stores already hold get the grant without a restart of
+   external-secrets. From then on a deletion removes its key, unless the
+   metadata `DELETE` fails after the data `DELETE` went through. ESO does not
+   send it again: its retry reads the soft-deleted data as a missing key and
+   reports success. Run steps 2 and 3 again after an OpenBao restart, a Raft
+   leader change or an external-secrets restart that overlapped deletions.
+
+2. List the leftover keys of one namespace. Steps 2 and 3 need `jq`, a
+   kubeconfig that may list the PushSecrets of the namespace, and a `BAO_TOKEN`
+   that may list, read and delete under `kv-v2/metadata/openstack/`, for
+   example the root token the bootstrap uses. `bao_exec` hands the token to
+   `bao` over stdin, so it appears in no command line:
+
+   ```bash
+   NS=<namespace>
+   bao_exec() {
+     printf '%s\n' "${BAO_TOKEN}" | kubectl exec -i -n shared-services openbao-0 -- \
+       env BAO_ADDR=https://127.0.0.1:8200 VAULT_CACERT=/openbao/tls/ca.crt \
+       VAULT_CLIENT_CERT=/openbao/client-tls/tls.crt \
+       VAULT_CLIENT_KEY=/openbao/client-tls/tls.key \
+       sh -c 'read -r BAO_TOKEN; export BAO_TOKEN; exec "$@"' _ "$@"
+   }
+   # entries <prefix>: what kv list shows under <prefix>, nothing for an empty one.
+   entries() {
+     local out err
+     err="$(mktemp)"
+     if out="$(bao_exec bao kv list -format=json -mount=kv-v2 "$1" 2>"${err}")"; then
+       jq -r '.[]' <<<"${out}"
+     elif ! grep -qi 'no value found' "${err}" &&
+       ! jq -e 'length == 0' <<<"${out}" >/dev/null 2>&1; then
+       echo "ERROR: could not list $1: $(cat "${err}")" >&2
+     fi
+     rm -f "${err}"
+   }
+   # pushed <path>: succeeds when a PushSecret in ${NS} pushes to <path>, and
+   # when the PushSecrets cannot be listed.
+   pushed() {
+     local out
+     if ! out="$(kubectl get pushsecrets.external-secrets.io -n "${NS}" -o json)"; then
+       echo "ERROR: could not list the PushSecrets in ${NS}" >&2
+       return 0
+     fi
+     jq -e --arg path "$1" \
+       'any(.items[].spec.data[]?; .match.remoteRef.remoteKey == $path)' \
+       <<<"${out}" >/dev/null
+   }
+   # leftover <path>: prints <path> when ESO wrote it, its current version is
+   # soft-deleted (its deletion_time is set and has passed) and no PushSecret
+   # pushes to it.
+   leftover() {
+     local out err
+     err="$(mktemp)"
+     if out="$(bao_exec bao kv metadata get -format=json -mount=kv-v2 "$1" 2>"${err}")"; then
+       out="$(jq -r --arg path "$1" '
+         (.data.versions[(.data.current_version | tostring)].deletion_time // "") as $t |
+         select(
+           .data.custom_metadata."managed-by" == "external-secrets" and
+           $t != "" and
+           ($t | sub("\\.[0-9]+"; "") | fromdateiso8601) <= now
+         ) | $path' <<<"${out}")"
+       if [ -n "${out}" ] && ! pushed "$1"; then
+         echo "${out}"
+       fi
+     elif ! grep -qi 'no value found' "${err}"; then
+       echo "ERROR: could not read $1: $(cat "${err}")" >&2
+     fi
+     rm -f "${err}"
+   }
+   {
+     entries "openstack/keystone/${NS}" | grep '/$' | while IFS= read -r owner; do
+       leftover "openstack/keystone/${NS}/${owner}admin/app-credential"
+       entries "openstack/keystone/${NS}/${owner}service-accounts" | grep -v '/$' |
+         while IFS= read -r leaf; do
+           leftover "openstack/keystone/${NS}/${owner}service-accounts/${leaf}"
+         done
+     done
+     entries "openstack/rabbitmq/${NS}" | grep '/$' | while IFS= read -r owner; do
+       leftover "openstack/rabbitmq/${NS}/${owner}credentials"
+     done
+   } | tee leftovers.txt
+   ```
+
+   The walk takes every owner under `openstack/keystone/<namespace>` and
+   `openstack/rabbitmq/<namespace>` and checks its admin application credential,
+   its service-account leaves and its RabbitMQ credentials. It prints a path
+   only when the key carries `managed-by=external-secrets`, its current version
+   is soft-deleted, which means its `deletion_time` is set and has passed, and
+   no PushSecret in the namespace pushes to it. Every backup PushSecret lives
+   in the namespace its path names, and a deleted order's PushSecret is gone.
+   The current version of a live order's backup has an empty `deletion_time`.
+   Where the mount or the key sets `delete_version_after`, that version expires
+   too, and the order's PushSecret keeps the key out of the list. A prefix that
+   holds no key prints nothing. An `ERROR:` line means a list or a read failed
+   and `leftovers.txt` is incomplete, so run the step again. The walk runs one
+   `kubectl exec` per prefix and per candidate path and one `kubectl get` per
+   soft-deleted key, and its run time grows with the number of keys.
+
+3. Review `leftovers.txt`, then delete each key from the same shell, which still
+   defines `NS`, `bao_exec`, `pushed` and `leftover`. The delete is permanent: it
+   removes every version and the custom metadata, and OpenBao cannot restore the
+   key. A backup path follows from its owner's name, so an order or ControlPlane
+   re-created under the same name writes a live version to a path the list
+   holds. The loop therefore runs `leftover` on each path again right before it
+   deletes it, and keeps the key of an order or ControlPlane re-created after
+   step 2, which it reports with a `SKIP:` line.
+
+   ```bash
+   while IFS= read -r path; do
+     if [ -n "$(leftover "${path}")" ]; then
+       bao_exec bao kv metadata delete -mount=kv-v2 "${path}"
+     else
+       echo "SKIP: ${path} is no longer a leftover (live again, gone, or unreadable)" >&2
+     fi
+   done < leftovers.txt
+   ```
+
+   Step 2 prints nothing afterwards.
 
 ### Verify mTLS enforcement
 

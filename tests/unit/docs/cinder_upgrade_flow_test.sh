@@ -16,10 +16,10 @@
 #      Reverting the release alone triggers the abort and then parks the CR on
 #      ImageReleaseMismatch, because the lockstep guard is skipped only while a
 #      phase is set (reconcile_database.go).
-#   8. The same recipe carries the digest caveat. ImageSpec enforces
-#      `has(self.tag) != has(self.digest)` (internal/common/types/types.go), so
-#      on a digest-pinned Cinder the copied patch is rejected whole and the
-#      release revert does not land either.
+#   8. The same recipe carries the digest caveat. ImageSpec admits a tag beside
+#      a digest (`has(self.tag) || has(self.digest)`,
+#      internal/common/types/types.go), so on a digest-pinned Cinder a patch that
+#      reverts the tag alone is admitted and leaves the new build running.
 #
 # Usage: bash tests/unit/docs/cinder_upgrade_flow_test.sh
 #   UPGRADE_DOC=<path> overrides the page under test.
@@ -160,7 +160,7 @@ test_abort_recipe_reverts_image_tag() {
 
 # --- Test 8: the abort recipe warns about a digest-pinned image ---
 test_abort_recipe_carries_digest_caveat() {
-  echo "Test: the abort recipe warns that tag and digest are mutually exclusive"
+  echo "Test: the abort recipe tells a digest-pinned image to revert its digest"
 
   local recipe
   recipe="$(awk '/# Abort an in-flight upgrade/ {inside = 1} inside {print} inside && /^```$/ {exit}' "$UPGRADE_DOC")"
@@ -172,14 +172,14 @@ test_abort_recipe_carries_digest_caveat() {
   fi
 
   # The caveat has to sit inside the block: the prose below it is not copied
-  # under pressure, and a digest-pinned CR rejects the patch as a whole.
+  # under pressure, and a tag reverted alone leaves the new build running.
   local phrase
-  for phrase in 'Digest-pinned image' 'mutually'; do
+  for phrase in 'Digest-pinned image' 'revert "digest"'; do
     if grep -qF -- "$phrase" <<<"$recipe"; then
       echo "  PASS: the abort recipe names '$phrase'"
       PASS=$((PASS + 1))
     else
-      echo "  FAIL: the abort recipe does not name '$phrase'; a digest-pinned Cinder rejects the whole patch"
+      echo "  FAIL: the abort recipe does not name '$phrase'; a digest-pinned Cinder keeps running the new build"
       FAIL=$((FAIL + 1))
     fi
   done

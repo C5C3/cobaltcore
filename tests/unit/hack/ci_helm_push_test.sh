@@ -6,6 +6,11 @@
 # Verify hack/ci-helm-push.sh with a stubbed helm on PATH:
 #   - a push that succeeds runs helm once and passes the archive and the remote
 #     through;
+#   - after a successful push, and only then, the digest helm printed and the
+#     digest reference built from it go to GITHUB_OUTPUT when it is set and
+#     not empty, once however many attempts the push took;
+#   - a push that succeeds without a Pushed or a Digest line fails, since the
+#     chart jobs could not sign what they pushed;
 #   - the ghcr.io tag-fetch 404 (runs 39266486878 and 39922685226) is retried
 #     until the push succeeds, with a ::warning:: per retry;
 #   - the retries stop at HELM_PUSH_ATTEMPTS with an ::error:: and helm's exit
@@ -30,6 +35,10 @@ SKIP=0
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 REMOTE="oci://ghcr.io/c5c3/charts"
+PUSHED_DIGEST="sha256:c9defeda34763a1c725bdb3180c1dcc495b0d1b5e357849e2e8f476e9bd8c5cb"
+OUTPUTS="digest=$PUSHED_DIGEST
+ref=ghcr.io/c5c3/charts/placement-operator@$PUSHED_DIGEST"
+NO_DIGEST_ERROR="succeeded but printed no Pushed and Digest line; the pushed digest is unknown"
 TAG_404='Error: failed to perform "Tag" on destination: sha256:c9defeda34763a1c725bdb3180c1dcc495b0d1b5e357849e2e8f476e9bd8c5cb: not found'
 
 # ---------------------------------------------------------------------------
@@ -41,7 +50,7 @@ TAG_404='Error: failed to perform "Tag" on destination: sha256:c9defeda34763a1c7
 # <dir>/calls and plays the next outcome of HELM_STUB_OUTCOMES (space-separated;
 # the last one repeats): ok prints helm's success lines, tag404 the ghcr.io
 # tag-fetch 404, tag401 a tag failure with another cause, auth an unrelated
-# error.
+# error; nodigest and nopushed exit 0 with one of the two success lines only.
 make_stub() {
   local dir="$1"
   mkdir -p "$dir"
@@ -73,6 +82,14 @@ case "$1" in
     echo 'Error: unexpected status from HEAD request to https://ghcr.io/v2/c5c3/charts/placement-operator/manifests/0.7.0: 403 Forbidden' >&2
     exit 1
     ;;
+  nodigest)
+    echo "Pushed: ghcr.io/c5c3/charts/placement-operator:0.7.0"
+    exit 0
+    ;;
+  nopushed)
+    echo "Digest: sha256:c9defeda34763a1c725bdb3180c1dcc495b0d1b5e357849e2e8f476e9bd8c5cb"
+    exit 0
+    ;;
 esac
 exit 99
 STUB
@@ -81,6 +98,9 @@ STUB
 
 # run_push <stub_dir> <outcomes> [args...]
 # Runs the push script with the stub dir prepended to PATH and no retry delay.
+# GITHUB_OUTPUT is TEST_GITHUB_OUTPUT when that is set, even to the empty
+# string, and unset otherwise: the test-shell job runs inside GitHub Actions,
+# and a push here must not write to the runner's file.
 # Echoes combined stdout/stderr; returns the script's exit status.
 run_push() {
   local stub_dir="$1" outcomes="$2"
@@ -90,6 +110,11 @@ run_push() {
     HELM_STUB_OUTCOMES="$outcomes"
     HELM_PUSH_DELAY=0
     export PATH HELM_STUB_OUTCOMES HELM_PUSH_DELAY
+    if [ -n "${TEST_GITHUB_OUTPUT+set}" ]; then
+      export GITHUB_OUTPUT="$TEST_GITHUB_OUTPUT"
+    else
+      unset GITHUB_OUTPUT
+    fi
     bash "$PUSH_SH" "$@"
   ) 2>&1
 }
@@ -116,9 +141,10 @@ test_success_pushes_once() {
   trap 'rm -rf "$tmp"' RETURN
   make_stub "$tmp/bin"
   touch "$tmp/placement-operator-0.7.0.tgz"
+  : >"$tmp/github_output"
 
   local output exit_code
-  output="$(run_push "$tmp/bin" "ok" "$tmp/placement-operator-0.7.0.tgz" "$REMOTE")"
+  output="$(TEST_GITHUB_OUTPUT="$tmp/github_output" run_push "$tmp/bin" "ok" "$tmp/placement-operator-0.7.0.tgz" "$REMOTE")"
   exit_code=$?
 
   assert_eq "push exits 0" "0" "$exit_code"
@@ -127,6 +153,7 @@ test_success_pushes_once() {
     "push $tmp/placement-operator-0.7.0.tgz $REMOTE"
   assert_contains "helm's output reaches the log" "$output" "Pushed: ghcr.io/c5c3/charts/placement-operator:0.7.0"
   assert_not_contains "no retry warning on success" "$output" "::warning::"
+  assert_eq "GITHUB_OUTPUT holds the pushed digest and its reference" "$OUTPUTS" "$(cat "$tmp/github_output")"
 }
 
 test_tag_404_is_retried() {
@@ -138,11 +165,14 @@ test_tag_404_is_retried() {
   make_stub "$tmp/bin"
   touch "$tmp/placement-operator-0.7.0.tgz"
 
+  : >"$tmp/github_output"
+
   local output exit_code
-  output="$(run_push "$tmp/bin" "tag404 tag404 ok" "$tmp/placement-operator-0.7.0.tgz" "$REMOTE")"
+  output="$(TEST_GITHUB_OUTPUT="$tmp/github_output" run_push "$tmp/bin" "tag404 tag404 ok" "$tmp/placement-operator-0.7.0.tgz" "$REMOTE")"
   exit_code=$?
 
   assert_eq "push exits 0 once the third attempt tags the manifest" "0" "$exit_code"
+  assert_eq "GITHUB_OUTPUT holds the digest and its reference once" "$OUTPUTS" "$(cat "$tmp/github_output")"
   assert_eq "helm ran three times" "3" "$(call_count "$tmp/bin")"
   assert_contains "the first failure is logged" "$output" "$TAG_404"
   assert_contains "the first retry is announced" "$output" "::warning::helm push attempt 1 of"
@@ -159,13 +189,16 @@ test_retries_are_bounded() {
   make_stub "$tmp/bin"
   touch "$tmp/placement-operator-0.7.0.tgz"
 
+  : >"$tmp/github_output"
+
   local output exit_code
-  output="$(run_push "$tmp/bin" "tag404" "$tmp/placement-operator-0.7.0.tgz" "$REMOTE")"
+  output="$(TEST_GITHUB_OUTPUT="$tmp/github_output" run_push "$tmp/bin" "tag404" "$tmp/placement-operator-0.7.0.tgz" "$REMOTE")"
   exit_code=$?
 
   assert_eq "push exits with helm's status" "1" "$exit_code"
   assert_eq "helm ran the default three times" "3" "$(call_count "$tmp/bin")"
   assert_contains "the give-up is an ::error::" "$output" "could not tag it after 3 attempts"
+  assert_eq "a failed push writes no output" "" "$(cat "$tmp/github_output")"
 
   rm -f "$tmp/bin/calls"
   output="$(HELM_PUSH_ATTEMPTS=1 run_push "$tmp/bin" "tag404" "$tmp/placement-operator-0.7.0.tgz" "$REMOTE")"
@@ -193,6 +226,58 @@ test_other_errors_fail_at_once() {
     assert_eq "$outcome: helm ran once" "1" "$(call_count "$tmp/bin")"
     assert_not_contains "$outcome: no retry" "$output" "::warning::"
   done
+}
+
+test_outputs_need_github_output() {
+  echo "Test: without GITHUB_OUTPUT, or with it empty, a push writes no file"
+
+  local tmp mode output exit_code
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  make_stub "$tmp/bin"
+  touch "$tmp/placement-operator-0.7.0.tgz"
+
+  for mode in unset empty; do
+    if [ "$mode" = unset ]; then
+      output="$(cd "$tmp" && run_push "$tmp/bin" "ok" "$tmp/placement-operator-0.7.0.tgz" "$REMOTE")"
+    else
+      output="$(cd "$tmp" && TEST_GITHUB_OUTPUT="" run_push "$tmp/bin" "ok" "$tmp/placement-operator-0.7.0.tgz" "$REMOTE")"
+    fi
+    exit_code=$?
+    assert_eq "$mode GITHUB_OUTPUT: push exits 0" "0" "$exit_code"
+    assert_eq "$mode GITHUB_OUTPUT: no file appears beside the archive" \
+      "bin
+placement-operator-0.7.0.tgz" "$(ls -A "$tmp")"
+    assert_not_contains "$mode GITHUB_OUTPUT: no error" "$output" "::error::"
+  done
+}
+
+test_a_push_without_the_digest_lines_fails() {
+  echo "Test: a push that succeeds without a Pushed or a Digest line fails"
+
+  local tmp outcome output exit_code
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  make_stub "$tmp/bin"
+  touch "$tmp/placement-operator-0.7.0.tgz"
+
+  for outcome in nodigest nopushed; do
+    rm -f "$tmp/bin/calls"
+    : >"$tmp/github_output"
+    output="$(TEST_GITHUB_OUTPUT="$tmp/github_output" run_push "$tmp/bin" "$outcome" "$tmp/placement-operator-0.7.0.tgz" "$REMOTE")"
+    exit_code=$?
+
+    assert_eq "$outcome: push exits 1" "1" "$exit_code"
+    assert_eq "$outcome: helm ran once" "1" "$(call_count "$tmp/bin")"
+    assert_contains "$outcome: the error names the chart" "$output" \
+      "::error::helm push of $tmp/placement-operator-0.7.0.tgz $NO_DIGEST_ERROR"
+    assert_eq "$outcome: nothing is written to GITHUB_OUTPUT" "" "$(cat "$tmp/github_output")"
+  done
+
+  output="$(run_push "$tmp/bin" "nodigest" "$tmp/placement-operator-0.7.0.tgz" "$REMOTE")"
+  exit_code=$?
+  assert_eq "without GITHUB_OUTPUT the missing digest fails all the same" "1" "$exit_code"
+  assert_contains "it prints the same error" "$output" "$NO_DIGEST_ERROR"
 }
 
 test_bad_arguments_fail_before_helm() {
@@ -230,6 +315,8 @@ test_success_pushes_once
 test_tag_404_is_retried
 test_retries_are_bounded
 test_other_errors_fail_at_once
+test_outputs_need_github_output
+test_a_push_without_the_digest_lines_fails
 test_bad_arguments_fail_before_helm
 
 echo ""

@@ -905,10 +905,10 @@ proved with `rabbitmqctl` in `cp-rabbitmq-server-0`:
   refused. With `interval: 0s` a raised `passwordGeneration` rotates within 120s
   and `status.nextRotation` is absent.
 - **ORDER 4**: deleting `workflow` returns within 120s, removes every labelled
-  child and the delivered Secret, purges the backup path, and leaves the vhost on
-  the broker (`Retain`). `workflow-delete` (`deletionPolicy: Delete`) reaches
-  `Ready` within 300s and its vhost is gone from the broker once its deletion
-  returns.
+  child, the delivered Secret and the backup key in OpenBao (data and metadata),
+  and leaves the vhost on the broker (`Retain`). `workflow-delete`
+  (`deletionPolicy: Delete`) reaches `Ready` within 300s and its vhost is gone
+  from the broker once its deletion returns.
 - **ORDER 5**: withdrawing the namespace assignment freezes a re-created
   `workflow`, which reattached to the retained vhost, on `NamespaceNotAssigned`
   within 120s with its Secret kept; restoring the entry returns it to `Ready`,
@@ -1038,7 +1038,8 @@ cross-tenant isolation. Running in the ephemeral test namespace, the suite:
    the first `PushSecret` creates the leaf and ESO stamps
    `managed-by=external-secrets` itself (the managed-by guard's inverse), a
    read-back `ExternalSecret` materialises the exact value, and
-   `DeletionPolicy: Delete` purges the leaf via the `eso-tenant` delete grant —
+   `DeletionPolicy: Delete` makes ESO remove the key from OpenBao, data and
+   metadata, through the `eso-tenant` delete grants —
    with zero seeded state and nothing per-CP beyond the one-time cluster
    bootstrap.
 
@@ -1182,8 +1183,8 @@ Five legs run against the live stack:
    then removes the catalog row and the adopted user from Keystone.
 5. **Deletion**: deleting `workflow` leaves no K-ORC object under its labels, no
    consumer Secret, ExternalSecret, PushSecret, source Secret or password Secret,
-   no live value at the OpenBao leaf, and no service or user row in Keystone. The
-   plane stays `Ready=True` with `NoServiceRegistrationsProjected`.
+   no key in OpenBao (data or metadata), and no service or user row in Keystone.
+   The plane stays `Ready=True` with `NoServiceRegistrationsProjected`.
 
 Its ControlPlane is its own: the webhook admits one per namespace, so the suite
 runs a Keystone-only plane named `cp` in the ephemeral test namespace and seeds
@@ -1215,9 +1216,9 @@ purge check that follows cannot pass on a path that was never written. Once the
 plane is gone, the Keystone `cp-keystone` must be absent, the namespace must hold
 no `OpenBaoCleanupStalled` or `KeystoneTeardownStalled` event, and neither
 `openstack/keystone/{namespace}/cp-keystone/fernet-keys` nor
-`.../credential-keys` may hold a live value. A teardown that let the cascade
-reap the tenant store together with the Keystone would end through one of those
-stall breakers and leave the keys in OpenBao.
+`.../credential-keys` may still be in OpenBao, live or soft-deleted. A teardown
+that let the cascade reap the tenant store together with the Keystone would end
+through one of those stall breakers and leave the keys in OpenBao.
 
 Run it locally against a full ControlPlane stack with
 `E2E_REQUIRE_CONTROLPLANE_STACK=true make e2e-controlplane`, which runs it
@@ -1355,11 +1356,11 @@ itself, as the foreign-namespace suite does, and runs eleven steps:
     RoleAssignment in place, and deleting `workflow` then holds it at
     `ReferencedByRoleAssignments` naming `workflow-member`, with its K-ORC User
     in place. Deleting `workflow-appcred` removes its credentials, `mint-cloud`
-    document, source Secret, PushSecret and delivered Secret, and its OpenBao
-    path holds no live value. `workflow-member` then goes with its
+    document, source Secret, PushSecret and delivered Secret, and its key is
+    gone from OpenBao, data and metadata. `workflow-member` then goes with its
     RoleAssignment and Role import, and `workflow` follows: the Secret is gone,
     nothing carrying the user's labels is left in the plane's namespace, and its
-    OpenBao path holds no live value. Deleting `workflow-dns` and
+    key is gone from OpenBao, data and metadata. Deleting `workflow-dns` and
     `workflow-project` removes their Services, Endpoints, Region import and
     Project. The plane is then deleted in the order the foreign-namespace suite
     checks.

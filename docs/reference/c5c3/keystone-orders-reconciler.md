@@ -251,7 +251,11 @@ and the PushSecret `<prefix>backup` push it to
 `openstack/keystone/<controlplane namespace>/<prefix>/service-accounts/application-credential`.
 `stampOrderPush` sets the document hash under
 `c5c3.io/keystoneapplicationcredential-push-hash`, and nothing is delivered
-before `orderPushFresh` reports a push of it (`BackupNotSynced`). The Secret
+before `orderPushFresh` reports a push of it (`BackupNotSynced`). The
+PushSecret is read back through the cache, and one the cache does not hold
+yet, right after the pass applied it, reads `BackupNotSynced` too: the pass
+requeues without an error, and the PushSecret watch wakes the order once the
+cache has it. The Secret
 `<name>-credentials` is then applied beside the order with a controller owner
 reference, after a live read that refuses a Secret the order does not control
 (`DeliveryRefused`). A switch in the provision step therefore reaches the
@@ -292,6 +296,14 @@ pass.
 finalizer is held while any child is listed and the pass requeues after 10
 seconds; with it gone the deletes are issued and the finalizer is released at
 once. The assignment is not consulted, so a frozen order tears down too.
+
+The release is one update through `commonreconcile.RemoveFinalizer`. A 404 on
+it means an earlier pass already released the order, and the pass ends. A 409
+means the pass read a stale copy of the order: it logs the Info line
+`finalizer removal conflict, requeueing` and requeues after `RequeueNextPass`
+(1 s), so the next pass releases the finalizer from a fresh read. Any other
+failure returns the error wrapped as `removing <Kind> finalizer`, and
+controller-runtime retries the pass with its error backoff.
 
 ## Metrics Instrumentation
 

@@ -47,16 +47,16 @@ spec:
             ($error != null): true
             (contains($error, 'chassisRef.name')): true
             (contains($error, 'should be at least 1 chars long')): true
-  # spec.image with both tag and digest must be rejected by the ImageSpec XOR
+  # spec.image with neither tag nor digest must be rejected by the ImageSpec
   # CEL rule, which answers before the webhook's validateImage twin.
   - try:
     - apply:
-        file: 01-image-tag-and-digest.yaml
+        file: 01-image-neither-tag-nor-digest.yaml
         expect:
         - check:
             ($error != null): true
             (contains($error, 'image')): true
-            (contains($error, 'exactly one of image.tag or image.digest')): true
+            (contains($error, 'at least one of image.tag or image.digest')): true
   # spec.image without a repository must be rejected by the MinLength=1 marker:
   # the defaulting webhook materializes the field as an empty string, so the
   # marker answers rather than the required-properties list.

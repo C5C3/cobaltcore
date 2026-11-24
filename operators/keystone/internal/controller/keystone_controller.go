@@ -460,7 +460,7 @@ var KeystoneRemoteChildKinds = []schema.GroupVersionKind{
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;patch;delete
 // Unexercised by the e2e suites; used by internal/common/deployment/vpa_flow.go:190 (ReconcileVPAs) to create and patch verticalpodautoscalers.
 // Unexercised by the e2e suites; used by internal/common/deployment/vpa_flow.go:213 (ReconcileVPAs) to delete verticalpodautoscalers.
-// Unexercised by the e2e suites; used by operators/keystone/internal/controller/keystone_controller.go:1177 (setupWithOptions) to list and watch verticalpodautoscalers.
+// Unexercised by the e2e suites; used by operators/keystone/internal/controller/keystone_controller.go:1226 (setupWithOptions) to list and watch verticalpodautoscalers.
 // +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch;create;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;patch;delete
 // Required to create, patch and delete HTTPRoutes that expose Keystone API externally.
@@ -533,10 +533,11 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		// ESO purge the OpenBao flow waits for. The ordering mirrors the local
 		// one, where the garbage collection cascade starts only once every
 		// finalizer has been released.
-		if err := r.reconcileDeleteRemoteChildren(ctx, children, &keystone); err != nil {
+		result, err := r.reconcileDeleteRemoteChildren(ctx, children, &keystone)
+		if err != nil {
 			return r.updateStatus(ctx, &keystone, statusBefore, ctrl.Result{}, err)
 		}
-		return ctrl.Result{}, nil
+		return result, nil
 	}
 
 	// A suspended CR ends the pass here. The deletion branch above still runs
@@ -875,10 +876,15 @@ func (r *KeystoneReconciler) reconcileDelete(ctx context.Context, children clien
 			"MariaDB Database, User, and Grant marked for deletion; releasing finalizer")
 	}
 
-	controllerutil.RemoveFinalizer(keystone, keystoneFinalizer)
-	if err := r.Update(ctx, keystone); err != nil {
+	outcome, err := commonreconcile.RemoveFinalizer(ctx, r.Client, keystone, keystoneFinalizer)
+	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
 	}
+	if outcome == commonreconcile.FinalizerConflict {
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
+	}
+	// A CR already gone runs the clean-up below as well: it is keyed on the
+	// name and namespace alone, and no other path runs it.
 	metrics.DeleteForKeystone(keystone.Name, keystone.Namespace)
 	// Drop the per-CR hot-path caches so a CR recreated under the same
 	// name/namespace never serves a stale health probe or config-render entry
@@ -923,11 +929,7 @@ func (r *KeystoneReconciler) reconcileDeleteOpenBao(ctx context.Context, childre
 	if children == nil {
 		r.Recorder.Event(keystone, corev1.EventTypeWarning, "RemoteChildrenAbandoned",
 			"Target cluster is no longer registered; releasing the openbao-finalizer without deleting the backup PushSecrets on it")
-		controllerutil.RemoveFinalizer(keystone, keystoneOpenBaoFinalizer)
-		if err := r.Update(ctx, keystone); err != nil {
-			return ctrl.Result{}, fmt.Errorf("removing openbao finalizer: %w", err)
-		}
-		return ctrl.Result{}, nil
+		return r.removeOpenBaoFinalizer(ctx, keystone)
 	}
 
 	// Only emit FinalizingOpenBaoSecrets when a backup PushSecret is adopted
@@ -958,9 +960,19 @@ func (r *KeystoneReconciler) reconcileDeleteOpenBao(ctx context.Context, childre
 	r.Recorder.Event(keystone, corev1.EventTypeNormal, "OpenBaoSecretsFinalized",
 		"OpenBao backup PushSecrets deleted; releasing openbao-finalizer")
 
-	controllerutil.RemoveFinalizer(keystone, keystoneOpenBaoFinalizer)
-	if err := r.Update(ctx, keystone); err != nil {
+	return r.removeOpenBaoFinalizer(ctx, keystone)
+}
+
+// removeOpenBaoFinalizer releases the openbao finalizer. A conflict requeues
+// after RequeueNextPass and a CR already gone ends the pass, both without an
+// error.
+func (r *KeystoneReconciler) removeOpenBaoFinalizer(ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+	outcome, err := commonreconcile.RemoveFinalizer(ctx, r.Client, keystone, keystoneOpenBaoFinalizer)
+	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing openbao finalizer: %w", err)
+	}
+	if outcome == commonreconcile.FinalizerConflict {
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
 	}
 	return ctrl.Result{}, nil
 }
@@ -998,11 +1010,11 @@ func (r *KeystoneReconciler) hasLiveOpenBaoBackupPushSecrets(ctx context.Context
 
 // reconcileDeleteRemoteChildren deletes everything this Keystone projected onto
 // the target cluster it names and releases the remote-children finalizer, as
-// commonmulticluster.SweepRemoteChildren documents. The two cleanup flows above
+// commonreconcile.SweepRemoteChildren documents. The two cleanup flows above
 // it delete the handful of objects they track by name; this pass is what reaches
 // the rest, selected on the ownership labels Claim stamped on them.
-func (r *KeystoneReconciler) reconcileDeleteRemoteChildren(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone) error {
-	return commonmulticluster.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
+func (r *KeystoneReconciler) reconcileDeleteRemoteChildren(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+	return commonreconcile.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
 		keystone, keystone.Spec.TargetClusterRef, children, KeystoneRemoteChildKinds)
 }
 

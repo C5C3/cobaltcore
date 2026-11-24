@@ -27,7 +27,7 @@ Suspended (`.spec.suspend`) and Age.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `openStackRelease` | `string` | yes | The OpenStack release the operator deploys and drives; pattern `^\d{4}\.[12]$` (the `YYYY.N` cadence, `N` in {1,2}). It governs install and upgrade tracking: `status.installedRelease` is promoted to it after a successful migration. Kept separate from the image tag so a digest-pinned image still resolves a schema. The validating webhook rejects a value below `2026.1`, the oldest supported release, on create and on change, and warns on an unchanged one. |
-| `image` | `ImageSpec` | yes | The container image every process runs: API, scheduler, volume, backup, and the migration, purge and service-remove Jobs. Exactly one of `tag` or `digest` (shared CEL rule, re-checked by the webhook) |
+| `image` | `ImageSpec` | yes | The container image every process runs: API, scheduler, volume, backup, and the migration, purge and service-remove Jobs. At least one of `tag` or `digest` (shared CEL rule, re-checked by the webhook); with both, the digest decides what runs |
 | `database` | `DatabaseSpec` | yes | MariaDB connection. Exactly one of `clusterRef` (managed) or `host` (brownfield); `credentialsMode` (`Static` \| `Dynamic`, where `Dynamic` requires `clusterRef`), `secretRef`, and optional `tls`. The rules are inherited from `commonv1.DatabaseSpec` |
 | `cache` | `CacheSpec` | yes | Memcached. Exactly one of `clusterRef` (managed) or `servers` (brownfield). It backs `[keystone_authtoken] memcached_servers`. The `[coordination]` lock backend is the tooz file driver below `/var/lib/cinder`, not Memcached |
 | `messaging` | `MessagingSpec` | yes | The RabbitMQ connection. Required rather than optional: every volume request travels the bus, so a Cinder without a broker accepts requests nothing acts on. Exactly one of `clusterRef` (managed) or `secretRef` (brownfield), plus optional `tls` |
@@ -211,7 +211,7 @@ when they carry none, fills the cache backend, and materializes the
 time.
 
 The validating webhook accumulates every violation into one admission response.
-It repeats the schema-layer rules as defense in depth (image tag/digest XOR,
+It repeats the schema-layer rules as defense in depth (image tag-or-digest rule,
 the database, cache and messaging mutual-exclusivity rules, the
 Dynamic-requires-clusterRef rule, the secret-store-ref shape, the replica floor,
 the autoscaling bounds including the implicit `minReplicas` default from

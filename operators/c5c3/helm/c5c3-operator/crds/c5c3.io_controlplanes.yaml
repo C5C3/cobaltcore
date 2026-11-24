@@ -1373,9 +1373,10 @@ spec:
                           digest:
                             description: |-
                               Digest pins the image by immutable content digest (e.g.
-                              "sha256:<64 hex chars>"). Optional: exactly one of Tag or Digest must be
+                              "sha256:<64 hex chars>"). Optional: at least one of Tag or Digest must be
                               set. A pinned digest closes the supply-chain gap where a mutable tag can be
-                              re-pushed behind a stable name, at the cost of disabling release tracking.
+                              re-pushed behind a stable name. Without a Tag beside it, release tracking
+                              that reads the tag is off.
                             pattern: ^sha256:[a-f0-9]{64}$
                             type: string
                           pullPolicy:
@@ -1405,17 +1406,18 @@ spec:
                             description: |-
                               Tag is the OCI image tag (e.g. "2026.1"). It follows the OCI tag grammar:
                               up to 128 characters of word characters, dots, and dashes, and must not
-                              begin with a dot or dash. Optional: exactly one of Tag or Digest must be
-                              set. The pattern is enforced only when a tag is present.
+                              begin with a dot or dash. Optional: at least one of Tag or Digest must be
+                              set. Beside a Digest the tag only names the release; the digest decides
+                              what runs. The pattern is enforced only when a tag is present.
                             pattern: ^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$
                             type: string
                         required:
                         - repository
                         type: object
                         x-kubernetes-validations:
-                        - message: exactly one of image.tag or image.digest must be
-                            set
-                          rule: has(self.tag) != has(self.digest)
+                        - message: at least one of image.tag or image.digest must
+                            be set
+                          rule: has(self.tag) || has(self.digest)
                       namespace:
                         description: |-
                           Namespace places the Barbican service — and the backing services, secret
@@ -2386,9 +2388,10 @@ spec:
                           digest:
                             description: |-
                               Digest pins the image by immutable content digest (e.g.
-                              "sha256:<64 hex chars>"). Optional: exactly one of Tag or Digest must be
+                              "sha256:<64 hex chars>"). Optional: at least one of Tag or Digest must be
                               set. A pinned digest closes the supply-chain gap where a mutable tag can be
-                              re-pushed behind a stable name, at the cost of disabling release tracking.
+                              re-pushed behind a stable name. Without a Tag beside it, release tracking
+                              that reads the tag is off.
                             pattern: ^sha256:[a-f0-9]{64}$
                             type: string
                           pullPolicy:
@@ -2418,17 +2421,18 @@ spec:
                             description: |-
                               Tag is the OCI image tag (e.g. "2026.1"). It follows the OCI tag grammar:
                               up to 128 characters of word characters, dots, and dashes, and must not
-                              begin with a dot or dash. Optional: exactly one of Tag or Digest must be
-                              set. The pattern is enforced only when a tag is present.
+                              begin with a dot or dash. Optional: at least one of Tag or Digest must be
+                              set. Beside a Digest the tag only names the release; the digest decides
+                              what runs. The pattern is enforced only when a tag is present.
                             pattern: ^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$
                             type: string
                         required:
                         - repository
                         type: object
                         x-kubernetes-validations:
-                        - message: exactly one of image.tag or image.digest must be
-                            set
-                          rule: has(self.tag) != has(self.digest)
+                        - message: at least one of image.tag or image.digest must
+                            be set
+                          rule: has(self.tag) || has(self.digest)
                       namespace:
                         description: |-
                           Namespace places the block-storage service, and the backing services, secret
@@ -2989,9 +2993,10 @@ spec:
                           digest:
                             description: |-
                               Digest pins the image by immutable content digest (e.g.
-                              "sha256:<64 hex chars>"). Optional: exactly one of Tag or Digest must be
+                              "sha256:<64 hex chars>"). Optional: at least one of Tag or Digest must be
                               set. A pinned digest closes the supply-chain gap where a mutable tag can be
-                              re-pushed behind a stable name, at the cost of disabling release tracking.
+                              re-pushed behind a stable name. Without a Tag beside it, release tracking
+                              that reads the tag is off.
                             pattern: ^sha256:[a-f0-9]{64}$
                             type: string
                           pullPolicy:
@@ -3021,17 +3026,18 @@ spec:
                             description: |-
                               Tag is the OCI image tag (e.g. "2026.1"). It follows the OCI tag grammar:
                               up to 128 characters of word characters, dots, and dashes, and must not
-                              begin with a dot or dash. Optional: exactly one of Tag or Digest must be
-                              set. The pattern is enforced only when a tag is present.
+                              begin with a dot or dash. Optional: at least one of Tag or Digest must be
+                              set. Beside a Digest the tag only names the release; the digest decides
+                              what runs. The pattern is enforced only when a tag is present.
                             pattern: ^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$
                             type: string
                         required:
                         - repository
                         type: object
                         x-kubernetes-validations:
-                        - message: exactly one of image.tag or image.digest must be
-                            set
-                          rule: has(self.tag) != has(self.digest)
+                        - message: at least one of image.tag or image.digest must
+                            be set
+                          rule: has(self.tag) || has(self.digest)
                       imageCache:
                         description: |-
                           ImageCache turns on the local image cache on the child Glance: every
@@ -3680,9 +3686,10 @@ spec:
                           digest:
                             description: |-
                               Digest pins the image by immutable content digest (e.g.
-                              "sha256:<64 hex chars>"). Optional: exactly one of Tag or Digest must be
+                              "sha256:<64 hex chars>"). Optional: at least one of Tag or Digest must be
                               set. A pinned digest closes the supply-chain gap where a mutable tag can be
-                              re-pushed behind a stable name, at the cost of disabling release tracking.
+                              re-pushed behind a stable name. Without a Tag beside it, release tracking
+                              that reads the tag is off.
                             pattern: ^sha256:[a-f0-9]{64}$
                             type: string
                           pullPolicy:
@@ -3712,17 +3719,18 @@ spec:
                             description: |-
                               Tag is the OCI image tag (e.g. "2026.1"). It follows the OCI tag grammar:
                               up to 128 characters of word characters, dots, and dashes, and must not
-                              begin with a dot or dash. Optional: exactly one of Tag or Digest must be
-                              set. The pattern is enforced only when a tag is present.
+                              begin with a dot or dash. Optional: at least one of Tag or Digest must be
+                              set. Beside a Digest the tag only names the release; the digest decides
+                              what runs. The pattern is enforced only when a tag is present.
                             pattern: ^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$
                             type: string
                         required:
                         - repository
                         type: object
                         x-kubernetes-validations:
-                        - message: exactly one of image.tag or image.digest must be
-                            set
-                          rule: has(self.tag) != has(self.digest)
+                        - message: at least one of image.tag or image.digest must
+                            be set
+                          rule: has(self.tag) || has(self.digest)
                       multiDomain:
                         description: |-
                           MultiDomain turns on the login form's domain field, or a domain dropdown,
@@ -4419,9 +4427,10 @@ spec:
                           digest:
                             description: |-
                               Digest pins the image by immutable content digest (e.g.
-                              "sha256:<64 hex chars>"). Optional: exactly one of Tag or Digest must be
+                              "sha256:<64 hex chars>"). Optional: at least one of Tag or Digest must be
                               set. A pinned digest closes the supply-chain gap where a mutable tag can be
-                              re-pushed behind a stable name, at the cost of disabling release tracking.
+                              re-pushed behind a stable name. Without a Tag beside it, release tracking
+                              that reads the tag is off.
                             pattern: ^sha256:[a-f0-9]{64}$
                             type: string
                           pullPolicy:
@@ -4451,17 +4460,18 @@ spec:
                             description: |-
                               Tag is the OCI image tag (e.g. "2026.1"). It follows the OCI tag grammar:
                               up to 128 characters of word characters, dots, and dashes, and must not
-                              begin with a dot or dash. Optional: exactly one of Tag or Digest must be
-                              set. The pattern is enforced only when a tag is present.
+                              begin with a dot or dash. Optional: at least one of Tag or Digest must be
+                              set. Beside a Digest the tag only names the release; the digest decides
+                              what runs. The pattern is enforced only when a tag is present.
                             pattern: ^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$
                             type: string
                         required:
                         - repository
                         type: object
                         x-kubernetes-validations:
-                        - message: exactly one of image.tag or image.digest must be
-                            set
-                          rule: has(self.tag) != has(self.digest)
+                        - message: at least one of image.tag or image.digest must
+                            be set
+                          rule: has(self.tag) || has(self.digest)
                       gateway:
                         description: |-
                           Gateway optionally exposes the projected Keystone API externally via a
@@ -4530,9 +4540,10 @@ spec:
                           digest:
                             description: |-
                               Digest pins the image by immutable content digest (e.g.
-                              "sha256:<64 hex chars>"). Optional: exactly one of Tag or Digest must be
+                              "sha256:<64 hex chars>"). Optional: at least one of Tag or Digest must be
                               set. A pinned digest closes the supply-chain gap where a mutable tag can be
-                              re-pushed behind a stable name, at the cost of disabling release tracking.
+                              re-pushed behind a stable name. Without a Tag beside it, release tracking
+                              that reads the tag is off.
                             pattern: ^sha256:[a-f0-9]{64}$
                             type: string
                           pullPolicy:
@@ -4562,17 +4573,18 @@ spec:
                             description: |-
                               Tag is the OCI image tag (e.g. "2026.1"). It follows the OCI tag grammar:
                               up to 128 characters of word characters, dots, and dashes, and must not
-                              begin with a dot or dash. Optional: exactly one of Tag or Digest must be
-                              set. The pattern is enforced only when a tag is present.
+                              begin with a dot or dash. Optional: at least one of Tag or Digest must be
+                              set. Beside a Digest the tag only names the release; the digest decides
+                              what runs. The pattern is enforced only when a tag is present.
                             pattern: ^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$
                             type: string
                         required:
                         - repository
                         type: object
                         x-kubernetes-validations:
-                        - message: exactly one of image.tag or image.digest must be
-                            set
-                          rule: has(self.tag) != has(self.digest)
+                        - message: at least one of image.tag or image.digest must
+                            be set
+                          rule: has(self.tag) || has(self.digest)
                       mode:
                         default: Managed
                         description: |-
@@ -5131,9 +5143,10 @@ spec:
                           digest:
                             description: |-
                               Digest pins the image by immutable content digest (e.g.
-                              "sha256:<64 hex chars>"). Optional: exactly one of Tag or Digest must be
+                              "sha256:<64 hex chars>"). Optional: at least one of Tag or Digest must be
                               set. A pinned digest closes the supply-chain gap where a mutable tag can be
-                              re-pushed behind a stable name, at the cost of disabling release tracking.
+                              re-pushed behind a stable name. Without a Tag beside it, release tracking
+                              that reads the tag is off.
                             pattern: ^sha256:[a-f0-9]{64}$
                             type: string
                           pullPolicy:
@@ -5163,17 +5176,18 @@ spec:
                             description: |-
                               Tag is the OCI image tag (e.g. "2026.1"). It follows the OCI tag grammar:
                               up to 128 characters of word characters, dots, and dashes, and must not
-                              begin with a dot or dash. Optional: exactly one of Tag or Digest must be
-                              set. The pattern is enforced only when a tag is present.
+                              begin with a dot or dash. Optional: at least one of Tag or Digest must be
+                              set. Beside a Digest the tag only names the release; the digest decides
+                              what runs. The pattern is enforced only when a tag is present.
                             pattern: ^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$
                             type: string
                         required:
                         - repository
                         type: object
                         x-kubernetes-validations:
-                        - message: exactly one of image.tag or image.digest must be
-                            set
-                          rule: has(self.tag) != has(self.digest)
+                        - message: at least one of image.tag or image.digest must
+                            be set
+                          rule: has(self.tag) || has(self.digest)
                       namespace:
                         description: |-
                           Namespace places the network service, and the backing services, secret
@@ -5828,9 +5842,10 @@ spec:
                           digest:
                             description: |-
                               Digest pins the image by immutable content digest (e.g.
-                              "sha256:<64 hex chars>"). Optional: exactly one of Tag or Digest must be
+                              "sha256:<64 hex chars>"). Optional: at least one of Tag or Digest must be
                               set. A pinned digest closes the supply-chain gap where a mutable tag can be
-                              re-pushed behind a stable name, at the cost of disabling release tracking.
+                              re-pushed behind a stable name. Without a Tag beside it, release tracking
+                              that reads the tag is off.
                             pattern: ^sha256:[a-f0-9]{64}$
                             type: string
                           pullPolicy:
@@ -5860,17 +5875,18 @@ spec:
                             description: |-
                               Tag is the OCI image tag (e.g. "2026.1"). It follows the OCI tag grammar:
                               up to 128 characters of word characters, dots, and dashes, and must not
-                              begin with a dot or dash. Optional: exactly one of Tag or Digest must be
-                              set. The pattern is enforced only when a tag is present.
+                              begin with a dot or dash. Optional: at least one of Tag or Digest must be
+                              set. Beside a Digest the tag only names the release; the digest decides
+                              what runs. The pattern is enforced only when a tag is present.
                             pattern: ^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$
                             type: string
                         required:
                         - repository
                         type: object
                         x-kubernetes-validations:
-                        - message: exactly one of image.tag or image.digest must be
-                            set
-                          rule: has(self.tag) != has(self.digest)
+                        - message: at least one of image.tag or image.digest must
+                            be set
+                          rule: has(self.tag) || has(self.digest)
                       metadataGateway:
                         description: |-
                           MetadataGateway optionally exposes the projected metadata API externally
@@ -6442,9 +6458,10 @@ spec:
                           digest:
                             description: |-
                               Digest pins the image by immutable content digest (e.g.
-                              "sha256:<64 hex chars>"). Optional: exactly one of Tag or Digest must be
+                              "sha256:<64 hex chars>"). Optional: at least one of Tag or Digest must be
                               set. A pinned digest closes the supply-chain gap where a mutable tag can be
-                              re-pushed behind a stable name, at the cost of disabling release tracking.
+                              re-pushed behind a stable name. Without a Tag beside it, release tracking
+                              that reads the tag is off.
                             pattern: ^sha256:[a-f0-9]{64}$
                             type: string
                           pullPolicy:
@@ -6474,17 +6491,18 @@ spec:
                             description: |-
                               Tag is the OCI image tag (e.g. "2026.1"). It follows the OCI tag grammar:
                               up to 128 characters of word characters, dots, and dashes, and must not
-                              begin with a dot or dash. Optional: exactly one of Tag or Digest must be
-                              set. The pattern is enforced only when a tag is present.
+                              begin with a dot or dash. Optional: at least one of Tag or Digest must be
+                              set. Beside a Digest the tag only names the release; the digest decides
+                              what runs. The pattern is enforced only when a tag is present.
                             pattern: ^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$
                             type: string
                         required:
                         - repository
                         type: object
                         x-kubernetes-validations:
-                        - message: exactly one of image.tag or image.digest must be
-                            set
-                          rule: has(self.tag) != has(self.digest)
+                        - message: at least one of image.tag or image.digest must
+                            be set
+                          rule: has(self.tag) || has(self.digest)
                       namespace:
                         description: |-
                           Namespace places the Placement service — and the backing services, secret

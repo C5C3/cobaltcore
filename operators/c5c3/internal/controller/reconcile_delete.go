@@ -39,6 +39,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	"github.com/c5c3/cobaltcore/internal/common/messaging"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
+	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
 	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
@@ -383,17 +384,22 @@ func (r *ControlPlaneReconciler) reconcileDelete(ctx context.Context, cp *c5c3v1
 		// all — either way nothing is left for it to hold the CR open for.
 		//
 		// The event reports a release that happened, so it follows the update: a
-		// failed update emits nothing and the next pass retries. A process that dies
-		// between the two loses the event. No reconcile logic reads it; only the
-		// external-keystone and controlplane-deletion-korc-outage suites assert it.
-		controllerutil.RemoveFinalizer(cp, controlPlaneORCFinalizer)
-		controllerutil.RemoveFinalizer(cp, commonmulticluster.RemoteChildrenFinalizer)
-		if err := r.Update(ctx, cp); err != nil {
-			if apierrors.IsNotFound(err) {
-				log.FromContext(ctx).V(1).Info("ControlPlane already released; skipping the completion event")
-				return ctrl.Result{}, nil
-			}
+		// failed update emits nothing and the next pass retries, a conflict
+		// requeues after RequeueNextPass, and a CR already gone ends the pass. A
+		// process that dies between the update and the event loses the event. No
+		// reconcile logic reads it; only the external-keystone and
+		// controlplane-deletion-korc-outage suites assert it.
+		outcome, err := commonreconcile.RemoveFinalizer(ctx, r.Client, cp,
+			controlPlaneORCFinalizer, commonmulticluster.RemoteChildrenFinalizer)
+		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
+		}
+		if outcome == commonreconcile.FinalizerConflict {
+			return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
+		}
+		if outcome == commonreconcile.FinalizerObjectGone {
+			log.FromContext(ctx).V(1).Info("ControlPlane already released; skipping the completion event")
+			return ctrl.Result{}, nil
 		}
 		if !metav1.HasAnnotation(cp.ObjectMeta, orcTeardownStalledAnnotation) {
 			r.Recorder.Event(cp, "Normal", "ORCTeardownComplete",
@@ -575,9 +581,12 @@ func (r *ControlPlaneReconciler) reconcileDelete(ctx context.Context, cp *c5c3v1
 			return ctrl.Result{RequeueAfter: namespaceRequeueAfter}, nil
 		}
 	}
-	controllerutil.RemoveFinalizer(cp, controlPlaneORCFinalizer)
-	if err := client.IgnoreNotFound(r.Update(ctx, cp)); err != nil {
+	outcome, err := commonreconcile.RemoveFinalizer(ctx, r.Client, cp, controlPlaneORCFinalizer)
+	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing finalizer after force-remove: %w", err)
+	}
+	if outcome == commonreconcile.FinalizerConflict {
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
 	}
 	return ctrl.Result{}, nil
 }
@@ -622,9 +631,12 @@ func (r *ControlPlaneReconciler) reconcileDeleteRemoteChildren(
 		return ctrl.Result{RequeueAfter: namespaceRequeueAfter}, nil
 	}
 
-	controllerutil.RemoveFinalizer(cp, commonmulticluster.RemoteChildrenFinalizer)
-	if err := client.IgnoreNotFound(r.Update(ctx, cp)); err != nil {
+	outcome, err := commonreconcile.RemoveFinalizer(ctx, r.Client, cp, commonmulticluster.RemoteChildrenFinalizer)
+	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing the remote-children finalizer: %w", err)
+	}
+	if outcome == commonreconcile.FinalizerConflict {
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
 	}
 	return ctrl.Result{}, nil
 }

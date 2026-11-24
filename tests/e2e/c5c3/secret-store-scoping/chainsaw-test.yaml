@@ -408,40 +408,43 @@ spec:
           fi
           echo "OK: read-back materialised the exact pushed value — full round-trip verified"
 
-          # (f) DeletionPolicy: Delete teardown. Deleting the PushSecret drives ESO's
-          #     finalizer to remove the data leaf via the eso-tenant delete grant.
-          #     For the app-credential shape the eso-tenant policy grants delete on
-          #     the DATA leaf but NOT the metadata path, so ESO soft-deletes the data
-          #     (the leaf then reports data:null); a hypothetical hard delete would
-          #     make kv get fail outright. Either outcome proves the delete grant
-          #     drove the purge, so accept both — a leaf still holding the pushed
-          #     value fails the poll and surfaces a real regression.
+          # (f) DeletionPolicy: Delete teardown. Deleting the PushSecret makes ESO
+          #     delete the key through the eso-tenant delete grants: it
+          #     soft-deletes the data path and then deletes the metadata path.
+          #     The key, data and metadata, must be gone. A soft-deleted key whose
+          #     metadata is still there fails the poll (#1860), and only OpenBao's
+          #     own missing-path wording ends the loop: a kubectl transport error
+          #     (openbao-0 restarting, a broken stream) retries.
           kubectl delete externalsecret "${PROBE_ES}" -n "${TENANT_NS}" --ignore-not-found >/dev/null 2>&1 || true
           kubectl delete pushsecret "${PROBE_PUSH}" -n "${TENANT_NS}" --ignore-not-found >/dev/null 2>&1 || true
           deadline=$(( $(date +%s) + 90 ))
           purged=0
+          err="$(mktemp)"
           while [ "$(date +%s)" -lt "${deadline}" ]; do
-            if json="$(bao_exec bao kv get -format=json -mount=kv-v2 "${PROBE_KV}" 2>/dev/null)"; then
-              if echo "${json}" | jq -e '.data.data == null' >/dev/null 2>&1; then
+            if ! bao_exec bao kv metadata get -format=json -mount=kv-v2 "${PROBE_KV}" >/dev/null 2>"${err}"; then
+              if grep -qiE 'no value found|no secret found' "${err}"; then
                 purged=1
                 break
               fi
-            else
-              purged=1
-              break
+              echo "WARN: could not read ${PROBE_KV} ($(cat "${err}")); retrying"
             fi
             sleep 3
           done
+          rm -f "${err}"
           if [ "${purged}" -ne 1 ]; then
-            echo "ERROR: ${PROBE_KV} still holds a live value 90s after PushSecret deletion; DeletionPolicy: Delete / the eso-tenant delete grant did not purge it"
+            echo "ERROR: ${PROBE_KV} is still in OpenBao 90s after PushSecret deletion (live, or soft-deleted with its metadata); the eso-tenant delete grants did not remove the key, data and metadata"
+            # Shows whether the metadata DELETE got 403 or failed once: ESO does
+            # not retry it once the data is soft-deleted. No key material.
+            bao_exec bao kv metadata get -format=json -mount=kv-v2 "${PROBE_KV}" |
+              jq -c '{current_version: .data.current_version, deletion_time: .data.versions[(.data.current_version | tostring)].deletion_time, custom_metadata: .data.custom_metadata}' || true
+            kubectl -n external-secrets logs deploy/external-secrets --since=10m |
+              grep -F "could not delete secret metadata ${PROBE_KV}" || true
             exit 1
           fi
-          echo "OK: DeletionPolicy: Delete purged the never-seeded leaf via the eso-tenant delete grant"
+          echo "OK: DeletionPolicy: Delete removed the key, data and metadata, via the eso-tenant delete grants"
 
-          # Best-effort teardown of the probe source Secret + the KV metadata the
-          # soft-delete leaves behind (a root metadata delete clears it).
+          # Best-effort teardown of the probe source Secret.
           kubectl delete secret "${PROBE_SRC}" -n "${TENANT_NS}" --ignore-not-found >/dev/null 2>&1 || true
-          bao_exec bao kv metadata delete -mount=kv-v2 "${PROBE_KV}" >/dev/null 2>&1 || true
 
           # Best-effort cleanup of the probe secrets (KV-v2 hard delete).
           bao_exec bao kv metadata delete -mount=kv-v2 "${OWN_KV}" >/dev/null 2>&1 || true

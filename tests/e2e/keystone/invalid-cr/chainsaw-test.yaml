@@ -316,15 +316,15 @@ spec:
         - check:
             ($error != null): true
             (contains($error, 'perLoggerLevels')): true
-  # Validation-marker wave: spec.image with BOTH tag and digest set, rejected by
-  # the ImageSpec tag/digest XOR XValidation rule (CRD schema).
+  # Validation-marker wave: spec.image with NEITHER tag nor digest set, rejected
+  # by the ImageSpec tag-or-digest XValidation rule (CRD schema).
   - try:
     - apply:
-        file: 21-image-tag-and-digest.yaml
+        file: 21-image-neither-tag-nor-digest.yaml
         expect:
         - check:
             ($error != null): true
-            (contains($error, 'digest')): true
+            (contains($error, 'at least one of image.tag or image.digest')): true
   # spec.federation.trustedDashboards entries must be http(s) URLs: Keystone
   # matches the dashboard origin verbatim.
   - try:

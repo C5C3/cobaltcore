@@ -33,8 +33,10 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/job"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	mctestutil "github.com/c5c3/cobaltcore/internal/common/testutil/multicluster"
 	"github.com/c5c3/cobaltcore/internal/common/testutil/simulators"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	ovnv1alpha1 "github.com/c5c3/cobaltcore/operators/ovn/api/v1alpha1"
 )
 
@@ -418,7 +420,7 @@ func TestReconcileFabric_RefusedListAddsNoFinalizer(t *testing.T) {
 	g.Expect(getOVNChassis(t, r.Client, testOVNChassisName).Finalizers).NotTo(ContainElement(fabricFinalizer))
 
 	calls.lists.Store(0)
-	g.Expect(r.reconcileDeleteFabric(ctx, r.Client, cr)).To(Succeed())
+	g.Expect(r.reconcileDeleteFabric(ctx, r.Client, cr)).To(BeZero())
 	g.Expect(calls.any()).To(BeFalse())
 }
 
@@ -605,6 +607,111 @@ func TestReconcileFabric_TargetCluster(t *testing.T) {
 	g.Expect(readFRRConfiguration(ctx, t, r.Client, testFRRConfigurationNodeA)).To(BeNil())
 }
 
+// TestRemoveFabricFinalizer_ConflictRequeues pins a release on a copy older
+// than the stored CR, once the CR wants no FRRConfiguration: the pass requeues
+// after RequeueNextPass without an error, and both the stored CR and the one in
+// hand keep the finalizer. The next pass releases it.
+func TestRemoveFabricFinalizer_ConflictRequeues(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cr := fabricChassis()
+	cr.Finalizers = []string{fabricFinalizer}
+	r, _ := newFabricReconciler(t, true, interceptor.Funcs{}, cr)
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), testutil.ConflictFirstUpdate())
+
+	res, err := r.reconcileFRRConfigurations(ctx, r.Client, cr, renderedNodes{})
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
+	g.Expect(cr.Finalizers).To(ContainElement(fabricFinalizer))
+	g.Expect(getOVNChassis(t, r.Client, testOVNChassisName).Finalizers).To(ContainElement(fabricFinalizer))
+
+	_, err = r.reconcileFRRConfigurations(ctx, r.Client, cr, renderedNodes{})
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(cr.Finalizers).NotTo(ContainElement(fabricFinalizer))
+	g.Expect(getOVNChassis(t, r.Client, testOVNChassisName).Finalizers).To(BeEmpty())
+}
+
+// TestRemoveFabricFinalizer_GoneCRKeepsTheCopyInHand pins a release that finds
+// the CR already gone, once the CR wants no FRRConfiguration: the pass goes on
+// without an error, and the CR in hand keeps the finalizer, because nothing was
+// written.
+func TestRemoveFabricFinalizer_GoneCRKeepsTheCopyInHand(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cr := fabricChassis()
+	cr.Finalizers = []string{fabricFinalizer}
+	r, _ := newFabricReconciler(t, true, interceptor.Funcs{}, cr)
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), testutil.NotFoundOnUpdate())
+
+	res, err := r.reconcileFRRConfigurations(context.Background(), r.Client, cr, renderedNodes{})
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.IsZero()).To(BeTrue())
+	g.Expect(cr.Finalizers).To(ContainElement(fabricFinalizer))
+}
+
+// TestReconcileDeleteFabric_ConflictRequeues pins the deletion path's release
+// on a copy older than the stored CR: the pass requeues after RequeueNextPass
+// without an error and keeps the finalizer, and the next pass releases it from
+// a fresh read.
+func TestReconcileDeleteFabric_ConflictRequeues(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cr := fabricChassis()
+	cr.Finalizers = []string{fabricFinalizer}
+	r, _ := newFabricReconciler(t, true, interceptor.Funcs{}, cr)
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), testutil.ConflictFirstUpdate())
+
+	res, err := r.reconcileDeleteFabric(ctx, r.Client, cr)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
+	fresh := getOVNChassis(t, r.Client, testOVNChassisName)
+	g.Expect(fresh.Finalizers).To(ContainElement(fabricFinalizer))
+
+	g.Expect(r.reconcileDeleteFabric(ctx, r.Client, fresh)).To(BeZero())
+	g.Expect(getOVNChassis(t, r.Client, testOVNChassisName).Finalizers).To(BeEmpty())
+}
+
+// TestReconcileChassis_FabricReleaseConflictRequeuesBeforeTheSweep pins the
+// deletion pass of a fabric chassis on a target cluster whose fabric release
+// conflicts: the pass requeues after RequeueNextPass without an error, and the
+// remote-children sweep does not run on the copy the conflict showed to be
+// stale, so the target's children and both finalizers stay. The next pass
+// releases both from a fresh read.
+func TestReconcileChassis_FabricReleaseConflictRequeuesBeforeTheSweep(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cr := fabricChassis()
+	cr.Finalizers = []string{fabricFinalizer, commonmulticluster.RemoteChildrenFinalizer}
+	cr.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge-a"}
+	r, _ := newFabricReconciler(t, true, interceptor.Funcs{}, cr)
+	child := ownedRemoteChild(t, cr,
+		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: testOVNChassisName + "-nodes", Namespace: testNamespace}})
+	target := ovnChassisFakeClientBuilder(t, child).Build()
+	r.Resolver = mctestutil.ResolverFor(mctestutil.TargetCluster{Client: target})
+	g.Expect(r.Delete(ctx, cr)).To(Succeed())
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), testutil.ConflictFirstUpdate())
+
+	res, err := r.Reconcile(ctx, ovnChassisRequest)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
+	g.Expect(getOVNChassis(t, r.Client, testOVNChassisName).Finalizers).
+		To(ConsistOf(fabricFinalizer, commonmulticluster.RemoteChildrenFinalizer))
+	g.Expect(target.Get(ctx, client.ObjectKeyFromObject(child), &corev1.ConfigMap{})).To(Succeed(),
+		"the sweep must not run in a pass whose fabric release conflicted")
+
+	_, err = r.Reconcile(ctx, ovnChassisRequest)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	err = target.Get(ctx, client.ObjectKeyFromObject(child), &corev1.ConfigMap{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the second pass sweeps the target, got %v", err)
+	err = r.Get(ctx, ovnChassisRequest.NamespacedName, &ovnv1alpha1.OVNChassis{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the second pass releases both finalizers, got %v", err)
+}
+
 // The deletion path: a CR without the finalizer issues nothing; a CR whose
 // target cluster was given up on releases it without a request; otherwise every
 // object this CR controls goes before the finalizer, and other objects stay.
@@ -614,7 +721,7 @@ func TestReconcileDeleteFabric(t *testing.T) {
 		cr := fabricChassis()
 		r, calls := newFabricReconciler(t, true, interceptor.Funcs{}, cr)
 
-		g.Expect(r.reconcileDeleteFabric(context.Background(), r.Client, cr)).To(Succeed())
+		g.Expect(r.reconcileDeleteFabric(context.Background(), r.Client, cr)).To(BeZero())
 		g.Expect(calls.any()).To(BeFalse())
 	})
 
@@ -624,7 +731,7 @@ func TestReconcileDeleteFabric(t *testing.T) {
 		cr.Finalizers = []string{fabricFinalizer}
 		r, calls := newFabricReconciler(t, true, interceptor.Funcs{}, cr)
 
-		g.Expect(r.reconcileDeleteFabric(context.Background(), nil, cr)).To(Succeed())
+		g.Expect(r.reconcileDeleteFabric(context.Background(), nil, cr)).To(BeZero())
 		g.Expect(calls.any()).To(BeFalse())
 		g.Expect(getOVNChassis(t, r.Client, testOVNChassisName).Finalizers).To(BeEmpty())
 	})
@@ -637,7 +744,7 @@ func TestReconcileDeleteFabric(t *testing.T) {
 		_, err := passFabric(ctx, t, r, cr, renderedNodes{testNodeA: fabricEntry(true)})
 		g.Expect(err).NotTo(HaveOccurred())
 
-		g.Expect(r.reconcileDeleteFabric(ctx, r.Client, cr)).To(Succeed())
+		g.Expect(r.reconcileDeleteFabric(ctx, r.Client, cr)).To(BeZero())
 
 		g.Expect(readFRRConfiguration(ctx, t, r.Client, testFRRConfigurationNodeA)).To(BeNil())
 		g.Expect(readFRRConfiguration(ctx, t, r.Client, "someone-elses")).NotTo(BeNil())
@@ -655,7 +762,7 @@ func TestReconcileDeleteFabric(t *testing.T) {
 			},
 		}, cr)
 
-		err := r.reconcileDeleteFabric(context.Background(), r.Client, cr)
+		_, err := r.reconcileDeleteFabric(context.Background(), r.Client, cr)
 
 		g.Expect(apierrors.IsForbidden(err)).To(BeTrue())
 		g.Expect(getOVNChassis(t, r.Client, testOVNChassisName).Finalizers).To(ContainElement(fabricFinalizer))
@@ -673,7 +780,7 @@ func TestReconcileDeleteFabric(t *testing.T) {
 			},
 		}, cr)
 
-		g.Expect(r.reconcileDeleteFabric(context.Background(), r.Client, cr)).To(Succeed())
+		g.Expect(r.reconcileDeleteFabric(context.Background(), r.Client, cr)).To(BeZero())
 		g.Expect(calls.deletes.Load()).To(BeZero())
 		g.Expect(getOVNChassis(t, r.Client, testOVNChassisName).Finalizers).To(BeEmpty())
 	})
@@ -693,7 +800,7 @@ func TestReconcileDeleteFabric(t *testing.T) {
 		g.Expect(err).NotTo(HaveOccurred())
 
 		deleteErr = boom
-		err = r.reconcileDeleteFabric(ctx, r.Client, cr)
+		_, err = r.reconcileDeleteFabric(ctx, r.Client, cr)
 
 		g.Expect(errors.Is(err, boom)).To(BeTrue())
 		g.Expect(getOVNChassis(t, r.Client, testOVNChassisName).Finalizers).To(ContainElement(fabricFinalizer))
@@ -701,7 +808,7 @@ func TestReconcileDeleteFabric(t *testing.T) {
 
 		deleteErr = apierrors.NewNotFound(frrConfigurationGVK.GroupVersion().WithResource("frrconfigurations").GroupResource(),
 			testFRRConfigurationNodeA)
-		g.Expect(r.reconcileDeleteFabric(ctx, r.Client, cr)).To(Succeed())
+		g.Expect(r.reconcileDeleteFabric(ctx, r.Client, cr)).To(BeZero())
 		g.Expect(getOVNChassis(t, r.Client, testOVNChassisName).Finalizers).To(BeEmpty())
 	})
 }

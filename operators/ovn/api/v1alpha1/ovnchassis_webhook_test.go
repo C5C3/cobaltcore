@@ -45,6 +45,16 @@ func TestOVNChassisValidateCreate_AcceptedShapes(t *testing.T) {
 			mutate: func(*OVNChassis) {},
 		},
 		{
+			name: "image with tag and digest",
+			mutate: func(o *OVNChassis) {
+				o.Spec.Image = &commonv1.ImageSpec{
+					Repository: "ghcr.io/c5c3/ovn",
+					Tag:        "25.03",
+					Digest:     "sha256:" + strings.Repeat("a", 64),
+				}
+			},
+		},
+		{
 			name: "every optional block set",
 			mutate: func(o *OVNChassis) {
 				o.Spec.Image = &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/ovn", Tag: "25.03"}
@@ -213,15 +223,11 @@ func TestOVNChassisValidateCreate_Rejections(t *testing.T) {
 			wantMsg: `maxUnavailable must be an integer or a percentage such as "25%"`,
 		},
 		{
-			name: "image pins both a tag and a digest",
+			name: "image pins neither a tag nor a digest",
 			mutate: func(o *OVNChassis) {
-				o.Spec.Image = &commonv1.ImageSpec{
-					Repository: "ghcr.io/c5c3/ovn",
-					Tag:        "25.03",
-					Digest:     strings.Repeat("a", 64),
-				}
+				o.Spec.Image = &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/ovn"}
 			},
-			wantMsg: "exactly one of image.tag or image.digest must be set",
+			wantMsg: "at least one of image.tag or image.digest must be set",
 		},
 		{
 			name: "targetClusterRef has an empty name",

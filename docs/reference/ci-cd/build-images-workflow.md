@@ -174,15 +174,16 @@ and composite action conventions.
 
 ### setup-docker-registry
 
-Configures Docker Buildx, authenticates to a container registry, and optionally installs
-cosign for image signing. Replaces the three-step setup sequence (buildx + login + cosign)
-that was previously inlined in every job.
+Configures Docker Buildx unless `setup-buildx` is `'false'`, authenticates to a container
+registry, and optionally installs cosign for image signing. Replaces the three-step setup
+sequence (buildx + login + cosign) that was previously inlined in every job.
 
 | Input | Required | Default | Description |
 | --- | --- | --- | --- |
 | `registry` | no | `ghcr.io` | Container registry URL |
 | `username` | yes | — | Registry username |
 | `password` | yes | — | Registry password/token |
+| `setup-buildx` | no | `'true'` | Whether to set up Docker Buildx; `'false'` starts no BuildKit builder |
 | `install-cosign` | no | `'true'` | Whether to install cosign |
 
 **Usage:** Every job that pulls or pushes images calls this composite action: 23 of the
@@ -190,6 +191,10 @@ that was previously inlined in every job.
 `prepare`, `generate-matrix` and `test-service-images`. Jobs
 that do not need cosign (build jobs, verification jobs) pass `install-cosign: 'false'`.
 Only merge jobs (which run attestation and signing) leave it at the default `'true'`.
+The three publish jobs of `ci.yaml` (`merge-operator-images`, `helm-push` and
+`helm-push-target-cluster`) also call the action with `install-cosign` at its default,
+for the signatures [Cosign Signing](ci-workflow.md#cosign-signing) describes. The two
+chart jobs build no image and pass `setup-buildx: 'false'`.
 
 ### supply-chain-attest
 

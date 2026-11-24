@@ -514,7 +514,7 @@ func TestReconcileChassisDeleteRemoteChildren_SweepsEveryLabelledChild(t *testin
 	target := ovnChassisFakeClientBuilder(t, daemonSet, configMap, job, unlabelled, foreign).Build()
 
 	ctx := context.Background()
-	err := r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), terminating)
+	_, err := r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), terminating)
 
 	g.Expect(err).NotTo(HaveOccurred())
 
@@ -541,7 +541,7 @@ func TestReconcileChassisDeleteRemoteChildren_NilChildrenAbandonsAndReleases(t *
 	g := NewGomegaWithT(t)
 	r, terminating := terminatingRemoteChassis(t)
 
-	err := r.reconcileDeleteRemoteChildren(context.Background(), nil, terminating)
+	_, err := r.reconcileDeleteRemoteChildren(context.Background(), nil, terminating)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).
@@ -565,7 +565,7 @@ func TestReconcileChassisDeleteRemoteChildren_WithoutFinalizerIsANoOp(t *testing
 	target := ovnChassisFakeClientBuilder(t, child).Build()
 
 	ctx := context.Background()
-	err := r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), cr)
+	_, err := r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), cr)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(target.Get(ctx, client.ObjectKeyFromObject(child), &appsv1.DaemonSet{})).To(Succeed(),
@@ -594,7 +594,7 @@ func TestReconcileChassisDeleteRemoteChildren_SweepFailureKeepsFinalizer(t *test
 		}).Build()
 
 	ctx := context.Background()
-	err := r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), terminating)
+	_, err := r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), terminating)
 
 	g.Expect(err).To(MatchError(ContainSubstring("listing remote DaemonSet children for teardown")))
 	g.Expect(target.Get(ctx, client.ObjectKeyFromObject(child), &appsv1.DaemonSet{})).To(Succeed())

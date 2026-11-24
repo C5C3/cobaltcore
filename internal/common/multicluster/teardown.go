@@ -8,17 +8,12 @@ import (
 	"context"
 	"fmt"
 
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-
-	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
 
 // teardownPageSize bounds one LIST the sweep issues. The sweep cannot narrow its
@@ -38,66 +33,6 @@ import (
 // exceed the operator's entire memory limit several times over at any page size
 // worth issuing.
 const teardownPageSize = 500
-
-// SweepRemoteChildren is the teardown pass every service operator runs from its
-// deletion path: it deletes what a CR projected onto the target cluster it names
-// and then releases RemoteChildrenFinalizer, the finalizer that held the CR in
-// etcd long enough to do it.
-//
-// It is a no-op for a CR that does not carry the finalizer, which is every CR
-// that keeps its children on the management cluster: those are collected from
-// their owner references, and only a CR naming a target cluster ever carries it.
-// Callers therefore run it unconditionally from their cleanup path.
-//
-// children is what ResolveChildrenClientForDeletion returned. A nil client means
-// the target cluster was deregistered and has stayed unresolvable past
-// AbandonAfter. Its children cannot be reached, so they are left running, a
-// Warning event records that they were, and the finalizer is released anyway:
-// holding it would only strand the CR in Terminating.
-//
-// The sweep reads through the target cluster's uncached API reader rather than
-// through the children client's cache. Its success licenses the finalizer
-// release, and a child the cache has not caught up on would be missed, leaving
-// no CR behind to delete it.
-func SweepRemoteChildren(
-	ctx context.Context,
-	mgmt client.Client,
-	resolver ClusterResolver,
-	recorder record.EventRecorder,
-	scheme *runtime.Scheme,
-	owner client.Object,
-	ref *commonv1.TargetClusterRefSpec,
-	children client.Client,
-	kinds []schema.GroupVersionKind,
-) error {
-	if !controllerutil.ContainsFinalizer(owner, RemoteChildrenFinalizer) {
-		return nil
-	}
-
-	if children == nil {
-		gvk, err := ownerGVK(scheme, owner)
-		if err != nil {
-			return err
-		}
-		recorder.Event(owner, corev1.EventTypeWarning, "RemoteChildrenAbandoned",
-			fmt.Sprintf("Target cluster is no longer registered; releasing the remote-children finalizer without "+
-				"deleting the objects on it labelled as owned by this %s", gvk.Kind))
-	} else {
-		reader, err := ResolveChildrenAPIReader(ctx, resolver, children, ref)
-		if err != nil {
-			return err
-		}
-		if err := DeleteRemoteChildren(ctx, reader, children, scheme, owner, owner.GetNamespace(), kinds); err != nil {
-			return err
-		}
-	}
-
-	controllerutil.RemoveFinalizer(owner, RemoteChildrenFinalizer)
-	if err := mgmt.Update(ctx, owner); err != nil {
-		return fmt.Errorf("removing remote-children finalizer: %w", err)
-	}
-	return nil
-}
 
 // DeleteRemoteChildren deletes every object of the given kinds that owner owns
 // in namespace. It is the cleanup half of the ownership contract: no garbage

@@ -2,19 +2,17 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# spec.image with both tag and digest violates the ImageSpec XOR CEL rule.
+# spec.image with neither tag nor digest violates the ImageSpec CEL rule.
 apiVersion: horizon.openstack.c5c3.io/v1alpha1
 kind: Horizon
 metadata:
-  name: horizon-invalid-image-both
+  name: horizon-invalid-image-neither
   namespace: openstack
 spec:
   deployment:
     replicas: 1
   image:
     repository: ghcr.io/c5c3/horizon
-    tag: "2026.1"
-    digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
   cache:
     clusterRef:
       name: openstack-memcached

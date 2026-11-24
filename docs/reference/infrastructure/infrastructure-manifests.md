@@ -1703,9 +1703,9 @@ own namespace's leaves:
 | Path | Capabilities | Purpose |
 | --- | --- | --- |
 | `kv-v2/data/openstack/keystone/{ns}/+/admin/app-credential` | `create`, `update`, `read`, `delete` | Write (and soft-delete on teardown) each ControlPlane's admin Application Credential `clouds.yaml` data leaf (`{ns}` is templated to the caller's namespace; the `+` segment is the ControlPlane name) |
-| `kv-v2/metadata/openstack/keystone/{ns}/+/admin/app-credential` | `create`, `update`, `read` | Allow ESO's Vault provider to write `custom_metadata` on the KV-v2 PushSecret (a data-only grant 403s on the metadata PUT and the PushSecret never reaches Ready) |
+| `kv-v2/metadata/openstack/keystone/{ns}/+/admin/app-credential` | `create`, `update`, `read`, `delete` | ESO's Vault provider writes `custom_metadata` here on every push of the KV-v2 PushSecret (a data-only grant 403s on the metadata PUT and the PushSecret never reaches Ready). On teardown it deletes the path, which removes the key with every version |
 | `kv-v2/data/openstack/keystone/{ns}/+/service-accounts/+` | `create`, `update`, `read`, `delete` | Write (and soft-delete on teardown) each declared service account's password `clouds.yaml` data leaf; the `+` segments are the ControlPlane's name and the account name (each a DNS-1123 label, so a single `+` leaf suffices) |
-| `kv-v2/metadata/openstack/keystone/{ns}/+/service-accounts/+` | `create`, `update`, `read` | Allow ESO's Vault provider to write `custom_metadata` on the service-account KV-v2 PushSecret |
+| `kv-v2/metadata/openstack/keystone/{ns}/+/service-accounts/+` | `create`, `update`, `read`, `delete` | ESO's Vault provider writes `custom_metadata` here on every push of the service-account KV-v2 PushSecret. On teardown it deletes the path, which removes the key with every version |
 
 `{ns}` is substituted by OpenBao ACL identity templating with the caller's own
 service-account namespace, and each `+` matches exactly one path segment, so the

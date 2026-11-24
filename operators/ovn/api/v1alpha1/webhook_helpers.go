@@ -28,9 +28,9 @@ func validateImage(fldPath *field.Path, image *commonv1.ImageSpec) field.ErrorLi
 	if image.Repository == "" {
 		errs = append(errs, field.Required(fldPath.Child("repository"), "repository must be set"))
 	}
-	if (image.Tag != "") == (image.Digest != "") {
+	if image.Tag == "" && image.Digest == "" {
 		errs = append(errs, field.Invalid(
-			fldPath, image, "exactly one of image.tag or image.digest must be set",
+			fldPath, image, "at least one of image.tag or image.digest must be set",
 		))
 	}
 	return errs

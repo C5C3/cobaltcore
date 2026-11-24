@@ -295,7 +295,7 @@ var NeutronRemoteChildKinds = []schema.GroupVersionKind{
 // +kubebuilder:rbac:groups=neutron.openstack.c5c3.io,resources=neutrons/status,verbs=get;update
 // Unexercised by the e2e suites; used by operators/neutron/internal/controller/reconcile_deployment.go:157 (reconcileDeployment) to update neutrons/finalizers.
 // +kubebuilder:rbac:groups=neutron.openstack.c5c3.io,resources=neutrons/finalizers,verbs=update
-// Unexercised by the e2e suites; used by operators/neutron/internal/controller/neutronmetadataagent_controller.go:363 (Reconcile) to update neutronmetadataagents.
+// Unexercised by the e2e suites; used by operators/neutron/internal/controller/neutronmetadataagent_controller.go:360 (Reconcile) to update neutronmetadataagents.
 // +kubebuilder:rbac:groups=neutron.openstack.c5c3.io,resources=neutronmetadataagents,verbs=get;list;watch;update
 // +kubebuilder:rbac:groups=neutron.openstack.c5c3.io,resources=neutronmetadataagents/status,verbs=get;update
 // Unexercised by the e2e suites; used by operators/neutron/internal/controller/reconcile_daemonset.go:155 (reconcileDaemonSet) to update neutronmetadataagents/finalizers.
@@ -350,7 +350,7 @@ var NeutronRemoteChildKinds = []schema.GroupVersionKind{
 // Unexercised by the e2e suites; used by operators/neutron/internal/controller/reconcile_hpa.go:30 (reconcileHPA) to create and patch horizontalpodautoscalers.
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;patch;delete
 // Unexercised by the e2e suites; used by operators/neutron/internal/controller/reconcile_vpa.go:21 (reconcileVPA) to create, patch and delete verticalpodautoscalers.
-// Unexercised by the e2e suites; used by operators/neutron/internal/controller/neutron_controller.go:814 (setupWithOptions) to list and watch verticalpodautoscalers.
+// Unexercised by the e2e suites; used by operators/neutron/internal/controller/neutron_controller.go:852 (setupWithOptions) to list and watch verticalpodautoscalers.
 // +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch;create;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;patch;delete
 // Required to create, patch and delete HTTPRoutes that expose the Neutron API
@@ -417,10 +417,7 @@ func (r *NeutronReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		// sweep running first would delete them out from under it. The ordering
 		// mirrors the local one, where the garbage collection cascade starts only
 		// once every finalizer has been released.
-		if err := r.reconcileDeleteRemoteChildren(ctx, children, &neutron); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, nil
+		return r.reconcileDeleteRemoteChildren(ctx, children, &neutron)
 	}
 
 	// A suspended CR ends the pass here. The deletion branch above still runs
@@ -698,10 +695,15 @@ func (r *NeutronReconciler) reconcileDelete(ctx context.Context, children client
 			"MariaDB Database, User, and Grant marked for deletion; releasing finalizer")
 	}
 
-	controllerutil.RemoveFinalizer(neutron, neutronFinalizer)
-	if err := r.Update(ctx, neutron); err != nil {
+	outcome, err := commonreconcile.RemoveFinalizer(ctx, r.Client, neutron, neutronFinalizer)
+	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
 	}
+	if outcome == commonreconcile.FinalizerConflict {
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
+	}
+	// A CR already gone runs the clean-up below as well: it is keyed on the
+	// name and namespace alone, and no other path runs it.
 	neutronmetrics.DeleteForNeutron(neutron.Name, neutron.Namespace)
 	// Drop the per-CR health-probe cache so a CR recreated under the same
 	// name/namespace never serves a stale probe keyed on the deleted CR's UID.
@@ -711,11 +713,11 @@ func (r *NeutronReconciler) reconcileDelete(ctx context.Context, children client
 
 // reconcileDeleteRemoteChildren deletes everything this Neutron projected onto
 // the target cluster it names and releases the remote-children finalizer, as
-// commonmulticluster.SweepRemoteChildren documents. reconcileDelete above deletes
+// commonreconcile.SweepRemoteChildren documents. reconcileDelete above deletes
 // the three MariaDB CRs it tracks by name; this pass is what reaches the rest,
 // selected on the ownership labels Claim stamped on them.
-func (r *NeutronReconciler) reconcileDeleteRemoteChildren(ctx context.Context, children client.Client, neutron *neutronv1alpha1.Neutron) error {
-	return commonmulticluster.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
+func (r *NeutronReconciler) reconcileDeleteRemoteChildren(ctx context.Context, children client.Client, neutron *neutronv1alpha1.Neutron) (ctrl.Result, error) {
+	return commonreconcile.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
 		neutron, neutron.Spec.TargetClusterRef, children, NeutronRemoteChildKinds)
 }
 

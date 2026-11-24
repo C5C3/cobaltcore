@@ -213,7 +213,7 @@ var HorizonRemoteChildKinds = []schema.GroupVersionKind{
 	httpRouteGVK,
 }
 
-// Unexercised by the e2e suites; used by internal/common/reconcile/finalizer.go:25 (EnsureFinalizer) to update horizons.
+// Unexercised by the e2e suites; used by internal/common/reconcile/finalizer.go:27 (EnsureFinalizer) to update horizons.
 // +kubebuilder:rbac:groups=horizon.openstack.c5c3.io,resources=horizons,verbs=get;list;watch;update
 // +kubebuilder:rbac:groups=horizon.openstack.c5c3.io,resources=horizons/status,verbs=get;update
 // Unexercised by the e2e suites; used by internal/common/apply/apply.go:53 (EnsureObject) to update horizons/finalizers.
@@ -237,7 +237,7 @@ var HorizonRemoteChildKinds = []schema.GroupVersionKind{
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;patch;delete
 // Unexercised by the e2e suites; used by internal/common/deployment/vpa_flow.go:190 (ReconcileVPAs) to create and patch verticalpodautoscalers.
 // Unexercised by the e2e suites; used by internal/common/deployment/vpa_flow.go:213 (ReconcileVPAs) to delete verticalpodautoscalers.
-// Unexercised by the e2e suites; used by operators/horizon/internal/controller/horizon_controller.go:590 (SetupWithManager) to list and watch verticalpodautoscalers.
+// Unexercised by the e2e suites; used by operators/horizon/internal/controller/horizon_controller.go:627 (SetupWithManager) to list and watch verticalpodautoscalers.
 // +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch;create;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;patch;delete
 // Required to create, patch and delete HTTPRoutes that expose the dashboard externally.
@@ -307,8 +307,8 @@ func (r *HorizonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				return r.updateStatus(ctx, &horizon, statusBefore,
 					ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil)
 			}
-			if err := r.reconcileDeleteRemoteChildren(ctx, children, &horizon); err != nil {
-				return ctrl.Result{}, err
+			if result, err := r.reconcileDeleteRemoteChildren(ctx, children, &horizon); err != nil || !result.IsZero() {
+				return result, err
 			}
 		}
 		log.FromContext(ctx).V(1).Info("Horizon resource is being deleted; owned resources are garbage-collected via ownerReferences")
@@ -469,9 +469,9 @@ func (r *HorizonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 // reconcileDeleteRemoteChildren deletes everything this Horizon projected onto
 // the target cluster it names, selected on the ownership labels Claim stamped on
 // those objects, and releases the remote-children finalizer that held the CR in
-// etcd for it, as commonmulticluster.SweepRemoteChildren documents.
-func (r *HorizonReconciler) reconcileDeleteRemoteChildren(ctx context.Context, children client.Client, horizon *horizonv1alpha1.Horizon) error {
-	return commonmulticluster.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
+// etcd for it, as commonreconcile.SweepRemoteChildren documents.
+func (r *HorizonReconciler) reconcileDeleteRemoteChildren(ctx context.Context, children client.Client, horizon *horizonv1alpha1.Horizon) (ctrl.Result, error) {
+	return commonreconcile.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
 		horizon, horizon.Spec.TargetClusterRef, children, HorizonRemoteChildKinds)
 }
 

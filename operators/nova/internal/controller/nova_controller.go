@@ -304,7 +304,7 @@ var NovaRemoteChildKinds = []schema.GroupVersionKind{
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;patch;delete
 // Unexercised by the e2e suites; used by internal/common/deployment/vpa_flow.go:190 (ReconcileVPAs) to create and patch verticalpodautoscalers.
 // Unexercised by the e2e suites; used by internal/common/deployment/vpa_flow.go:213 (ReconcileVPAs) to delete verticalpodautoscalers.
-// Unexercised by the e2e suites; used by operators/nova/internal/controller/nova_controller.go:842 (setupWithOptions) to list and watch verticalpodautoscalers.
+// Unexercised by the e2e suites; used by operators/nova/internal/controller/nova_controller.go:880 (setupWithOptions) to list and watch verticalpodautoscalers.
 // +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch;create;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;patch;delete
 // Required to create/update/delete the HTTPRoutes that expose the Nova API, the
@@ -371,10 +371,7 @@ func (r *NovaReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		// sweep running first would delete them out from under it. The ordering
 		// mirrors the local one, where the garbage collection cascade starts only
 		// once every finalizer has been released.
-		if err := r.reconcileDeleteRemoteChildren(ctx, children, &nova); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, nil
+		return r.reconcileDeleteRemoteChildren(ctx, children, &nova)
 	}
 
 	// A suspended CR ends the pass here. The deletion branch above still runs
@@ -728,10 +725,15 @@ func (r *NovaReconciler) reconcileDelete(ctx context.Context, children client.Cl
 			"MariaDB Databases, Users, and Grants marked for deletion; releasing finalizer")
 	}
 
-	controllerutil.RemoveFinalizer(nova, novaFinalizer)
-	if err := r.Update(ctx, nova); err != nil {
+	outcome, err := commonreconcile.RemoveFinalizer(ctx, r.Client, nova, novaFinalizer)
+	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
 	}
+	if outcome == commonreconcile.FinalizerConflict {
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
+	}
+	// A CR already gone runs the clean-up below as well: it is keyed on the
+	// name and namespace alone, and no other path runs it.
 	metrics.DeleteForNova(nova.Name, nova.Namespace)
 	// Drop the per-CR health-probe cache so a CR recreated under the same
 	// name/namespace never serves a stale probe keyed on the deleted CR's UID.
@@ -742,13 +744,13 @@ func (r *NovaReconciler) reconcileDelete(ctx context.Context, children client.Cl
 
 // reconcileDeleteRemoteChildren deletes everything this Nova projected onto the
 // target cluster it names and releases the remote-children finalizer, as
-// commonmulticluster.SweepRemoteChildren documents. reconcileDelete above deletes
+// commonreconcile.SweepRemoteChildren documents. reconcileDelete above deletes
 // the MariaDB CRs it tracks by name; this pass is what reaches the rest, selected
 // on the ownership labels Claim stamped on them.
 func (r *NovaReconciler) reconcileDeleteRemoteChildren(ctx context.Context, children client.Client,
 	nova *novav1alpha1.Nova,
-) error {
-	return commonmulticluster.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
+) (ctrl.Result, error) {
+	return commonreconcile.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
 		nova, nova.Spec.TargetClusterRef, children, NovaRemoteChildKinds)
 }
 

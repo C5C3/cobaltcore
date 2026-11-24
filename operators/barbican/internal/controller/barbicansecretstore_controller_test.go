@@ -43,6 +43,7 @@ import (
 	commonconditions "github.com/c5c3/cobaltcore/internal/common/conditions"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	mctestutil "github.com/c5c3/cobaltcore/internal/common/testutil/multicluster"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
@@ -1887,6 +1888,30 @@ func TestSecretStoreDelete_DeletesRemoteCredentialsWithoutTheParent(t *testing.T
 	err = children.Get(ctx, credentialsKey, &corev1.Secret{})
 	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
 		"nothing on the target cluster deletes the Secret, so the teardown has to")
+	g.Expect(f.store(t).Finalizers).To(ConsistOf("foreign.example.com/keep-alive"))
+}
+
+// TestBarbicanSecretStore_FinalizerReleaseConflictRequeues pins a release on a
+// copy older than the stored store: the pass requeues after RequeueNextPass
+// without an error and keeps the finalizer, and the next pass releases it from
+// a fresh read.
+func TestBarbicanSecretStore_FinalizerReleaseConflictRequeues(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	store := terminatingRemoteStore("edge-1", testClock)
+	f := newStoreFixtureWithoutParent(newProvisionedFakeClient(), store)
+	f.reconciler.Resolver = &childrenResolver{children: childrenFake(t)}
+	f.reconciler.Client = interceptor.NewClient(f.reconciler.Client.(client.WithWatch), testutil.ConflictFirstUpdate())
+
+	result, err := f.reconcile(t, store)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
+	g.Expect(f.store(t).Finalizers).To(ContainElement(commonmulticluster.RemoteChildrenFinalizer))
+
+	_, err = f.reconcile(t, store)
+
+	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(f.store(t).Finalizers).To(ConsistOf("foreign.example.com/keep-alive"))
 }
 

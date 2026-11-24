@@ -21,6 +21,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -227,6 +228,45 @@ func TestKeystoneApplicationCredentialDelivery_WaitsForTheBackup(t *testing.T) {
 	_, found = kacDelivered(t, h)
 	g.Expect(found).To(BeTrue(), "the pass that sees the push delivers")
 	g.Expect(kacDeliveryReady(t, h).Reason).To(Equal(reasonKeystoneUserDelivered))
+}
+
+// pushSecretNotInCache answers every Get of a PushSecret with a 404, the
+// answer of an informer cache that has not received the Create event of the
+// PushSecret the pass has just applied.
+func pushSecretNotInCache() *interceptor.Funcs {
+	return &interceptor.Funcs{
+		Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*esov1alpha1.PushSecret); ok {
+				return apierrors.NewNotFound(schema.GroupResource{Group: esov1alpha1.Group, Resource: "pushsecrets"}, key.Name)
+			}
+			return cl.Get(ctx, key, obj, opts...)
+		},
+	}
+}
+
+// TestKeystoneApplicationCredentialDelivery_PushSecretNotInCacheWaits pins a
+// read-back that misses the PushSecret the pass has just applied: the pass
+// treats the backup as not pushed yet and waits for it, rather than failing
+// with an error, and delivers nothing.
+func TestKeystoneApplicationCredentialDelivery_PushSecretNotInCacheWaits(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	order := keystoneApplicationCredentialCR()
+	cp := kacControlPlane("")
+	objs := append([]client.Object{order, cp}, kacReadyReferences("")...)
+	objs = append(objs, kacMinted(order, "", 1, "ac-1", kacTestClock)...)
+	objs = append(objs, kacPushed(order, cp, "", "ac-1", "secret-of-ac-1"))
+	h := newKACHarness(t, c5c3v1alpha1.ManagementCluster, pushSecretNotInCache(), nil, objs...)
+
+	result, err := h.reconcile(context.Background())
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(And(BeNumerically(">", 0), BeNumerically("<=", 10*time.Second)))
+	cond := kacDeliveryReady(t, h)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonKeystoneUserBackupNotSynced))
+	_, found := kacDelivered(t, h)
+	g.Expect(found).To(BeFalse(), "nothing is delivered before the backup is read back")
 }
 
 // TestKeystoneApplicationCredentialDelivery_RotationSwitchesTheSecret switches

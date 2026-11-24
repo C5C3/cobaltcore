@@ -248,6 +248,18 @@ func TestCinderValidateCreate_ValidSpecAccepted(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 }
 
+// TestCinderValidateCreate_ImageTagAndDigestAccepted pins the at-least-one
+// image rule from the admitting side: a tag beside a digest is admitted.
+func TestCinderValidateCreate_ImageTagAndDigestAccepted(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &CinderWebhook{}
+	o := validCinder()
+	o.Spec.Image.Digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+	_, err := w.ValidateCreate(context.Background(), o)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+}
+
 func TestCinderValidateCreate_RejectionTable(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -260,11 +272,9 @@ func TestCinderValidateCreate_RejectionTable(t *testing.T) {
 			wantSub: "replicas must be at least 1",
 		},
 		{
-			name: "image tag and digest both set rejected",
-			mutate: func(o *Cinder) {
-				o.Spec.Image.Digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-			},
-			wantSub: "exactly one of image.tag or image.digest",
+			name:    "image with neither tag nor digest rejected",
+			mutate:  func(o *Cinder) { o.Spec.Image.Tag = "" },
+			wantSub: "at least one of image.tag or image.digest must be set",
 		},
 		{
 			name:    "database clusterRef and host both set rejected",

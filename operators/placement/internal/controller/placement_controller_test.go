@@ -25,6 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
+	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
@@ -33,6 +34,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	placementv1alpha1 "github.com/c5c3/cobaltcore/operators/placement/api/v1alpha1"
+	placementmetrics "github.com/c5c3/cobaltcore/operators/placement/internal/metrics"
 )
 
 func TestReconcile_AddsFinalizerOnFirstPass(t *testing.T) {
@@ -394,6 +396,66 @@ func TestReconcileDelete_NoLiveResourcesReleasesFinalizer(t *testing.T) {
 		"the finalizer is released when no live MariaDB resource remains")
 }
 
+// TestReconcile_FinalizerReleaseConflictRequeues pins a release on a copy
+// older than the stored CR: the pass requeues after RequeueNextPass without an
+// error and keeps the finalizer, and the next pass releases it from a fresh
+// read.
+func TestReconcile_FinalizerReleaseConflictRequeues(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	placement := testPlacement()
+	placement.Finalizers = []string{placementFinalizer}
+	r := newPlacementTestReconciler(placement) // no MariaDB CRs
+	g.Expect(r.Delete(ctx, placement)).To(Succeed())
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), testutil.ConflictFirstUpdate())
+	req := placementRequest
+
+	res, err := r.Reconcile(ctx, req)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
+	var persisted placementv1alpha1.Placement
+	g.Expect(r.Get(ctx, req.NamespacedName, &persisted)).To(Succeed())
+	g.Expect(persisted.Finalizers).To(ContainElement(placementFinalizer))
+
+	_, err = r.Reconcile(ctx, req)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(apierrors.IsNotFound(r.Get(ctx, req.NamespacedName, &persisted))).To(BeTrue())
+}
+
+// TestReconcile_FinalizerReleaseOnAGoneCRStillDropsMetrics pins the clean-up of
+// a pass whose release finds the CR already gone: the per-CR series and the
+// health probe entry are dropped all the same, because no later pass sees the
+// CR to drop them.
+func TestReconcile_FinalizerReleaseOnAGoneCRStillDropsMetrics(t *testing.T) {
+	g := NewGomegaWithT(t)
+	g.Expect(placementmetrics.Register()).To(Succeed())
+	ctx := context.Background()
+	placement := testPlacement()
+	placement.Name = "gone-drops-metrics"
+	placement.Finalizers = []string{placementFinalizer}
+	t.Cleanup(func() { placementmetrics.DeleteForPlacement(placement.Name, placement.Namespace) })
+	labels := map[string]string{"placement": placement.Name, "namespace": placement.Namespace, "result": "failed"}
+	placementmetrics.RecordDBSync(placement.Name, placement.Namespace, "failed", time.Second)
+	g.Expect(findMetricByLabels(t, ctrlmetrics.Registry, "placement_operator_db_sync_total", labels)).NotTo(BeNil(), "the fixture series must exist to be dropped")
+
+	r := newPlacementTestReconciler(placement) // no MariaDB CRs
+	key := client.ObjectKeyFromObject(placement)
+	r.healthProbeCache.Store(key, placement.UID, "http://placement-api", time.Minute)
+	g.Expect(r.Delete(ctx, placement)).To(Succeed())
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), testutil.NotFoundOnUpdate())
+
+	res, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.IsZero()).To(BeTrue())
+	g.Expect(findMetricByLabels(t, ctrlmetrics.Registry, "placement_operator_db_sync_total", labels)).To(BeNil(),
+		"the per-CR series must not outlive the CR they are labelled with")
+	g.Expect(r.healthProbeCache.Has(key)).To(BeFalse(),
+		"a CR recreated under the same name must not inherit the probe entry")
+}
+
 func TestReconcileDelete_WithoutFinalizerIsNoOp(t *testing.T) {
 	g := NewGomegaWithT(t)
 	placement := testPlacement()
@@ -533,7 +595,7 @@ func TestReconcileDeleteRemoteChildren_SweepsEveryLabelledChild(t *testing.T) {
 		WithObjects(deployment, service, job, grant, unlabelled, foreign).Build()
 
 	ctx := context.Background()
-	err := r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), terminating)
+	_, err := r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), terminating)
 
 	g.Expect(err).NotTo(HaveOccurred())
 
@@ -560,7 +622,7 @@ func TestReconcileDeleteRemoteChildren_NilChildrenAbandonsAndReleases(t *testing
 	g := NewGomegaWithT(t)
 	r, terminating := terminatingRemotePlacement(t)
 
-	err := r.reconcileDeleteRemoteChildren(context.Background(), nil, terminating)
+	_, err := r.reconcileDeleteRemoteChildren(context.Background(), nil, terminating)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).
@@ -583,7 +645,7 @@ func TestReconcileDeleteRemoteChildren_WithoutFinalizerIsANoOp(t *testing.T) {
 	target := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(child).Build()
 
 	ctx := context.Background()
-	err := r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), placement)
+	_, err := r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), placement)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(target.Get(ctx, client.ObjectKeyFromObject(child), &appsv1.Deployment{})).To(Succeed(),
@@ -612,7 +674,7 @@ func TestReconcileDeleteRemoteChildren_SweepFailureKeepsFinalizer(t *testing.T) 
 		}).Build()
 
 	ctx := context.Background()
-	err := r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), terminating)
+	_, err := r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), terminating)
 
 	g.Expect(err).To(MatchError(ContainSubstring("listing remote Deployment children for teardown")))
 	g.Expect(target.Get(ctx, client.ObjectKeyFromObject(child), &appsv1.Deployment{})).To(Succeed())

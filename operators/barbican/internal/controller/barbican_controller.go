@@ -330,7 +330,7 @@ var BarbicanRemoteChildKinds = []schema.GroupVersionKind{
 // Unexercised by the e2e suites; used by internal/common/policy/policy.go:30 (LoadPolicyFromConfigMap) to list and watch configmaps.
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch
 // Unexercised by the e2e suites; used by operators/barbican/internal/controller/reconcile_config.go:147 (reconcileConfig) to delete secrets.
-// Unexercised by the e2e suites; used by operators/barbican/internal/controller/barbicansecretstore_controller.go:845 (mintCredentials) to update secrets.
+// Unexercised by the e2e suites; used by operators/barbican/internal/controller/barbicansecretstore_controller.go:848 (mintCredentials) to update secrets.
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;delete
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
 // NOTE: create on serviceaccounts/token is deliberately NOT part of this rule
@@ -371,7 +371,7 @@ var BarbicanRemoteChildKinds = []schema.GroupVersionKind{
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;patch;delete
 // Unexercised by the e2e suites; used by internal/common/deployment/vpa_flow.go:190 (ReconcileVPAs) to create and patch verticalpodautoscalers.
 // Unexercised by the e2e suites; used by internal/common/deployment/vpa_flow.go:213 (ReconcileVPAs) to delete verticalpodautoscalers.
-// Unexercised by the e2e suites; used by operators/barbican/internal/controller/barbican_controller.go:814 (SetupWithManager) to list and watch verticalpodautoscalers.
+// Unexercised by the e2e suites; used by operators/barbican/internal/controller/barbican_controller.go:854 (SetupWithManager) to list and watch verticalpodautoscalers.
 // +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch;create;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;patch;delete
 // Required to create, patch and delete HTTPRoutes that expose the Barbican API externally.
@@ -436,10 +436,7 @@ func (r *BarbicanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		// sweep running first would delete them out from under it. The ordering
 		// mirrors the local one, where the garbage collection cascade starts only
 		// once every finalizer has been released.
-		if err := r.reconcileDeleteRemoteChildren(ctx, children, &barbican); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, nil
+		return r.reconcileDeleteRemoteChildren(ctx, children, &barbican)
 	}
 
 	// A suspended CR ends the pass here. The deletion branch above still runs
@@ -696,10 +693,15 @@ func (r *BarbicanReconciler) reconcileDelete(ctx context.Context, children clien
 			"MariaDB Database, User, and Grant marked for deletion; releasing finalizer")
 	}
 
-	controllerutil.RemoveFinalizer(barbican, barbicanFinalizer)
-	if err := r.Update(ctx, barbican); err != nil {
+	outcome, err := commonreconcile.RemoveFinalizer(ctx, r.Client, barbican, barbicanFinalizer)
+	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
 	}
+	if outcome == commonreconcile.FinalizerConflict {
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
+	}
+	// A CR already gone runs the clean-up below as well: it is keyed on the
+	// name and namespace alone, and no other path runs it.
 	barbicanmetrics.DeleteForBarbican(barbican.Name, barbican.Namespace)
 	// Drop the per-CR health-probe cache so a CR recreated under the same
 	// name/namespace never serves a stale probe keyed on the deleted CR's UID.
@@ -709,11 +711,11 @@ func (r *BarbicanReconciler) reconcileDelete(ctx context.Context, children clien
 
 // reconcileDeleteRemoteChildren deletes everything this Barbican projected onto
 // the target cluster it names and releases the remote-children finalizer, as
-// commonmulticluster.SweepRemoteChildren documents. reconcileDelete above
+// commonreconcile.SweepRemoteChildren documents. reconcileDelete above
 // deletes the three MariaDB CRs it tracks by name; this pass is what reaches the
 // rest, selected on the ownership labels Claim stamped on them.
-func (r *BarbicanReconciler) reconcileDeleteRemoteChildren(ctx context.Context, children client.Client, barbican *barbicanv1alpha1.Barbican) error {
-	return commonmulticluster.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
+func (r *BarbicanReconciler) reconcileDeleteRemoteChildren(ctx context.Context, children client.Client, barbican *barbicanv1alpha1.Barbican) (ctrl.Result, error) {
+	return commonreconcile.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
 		barbican, barbican.Spec.TargetClusterRef, children, BarbicanRemoteChildKinds)
 }
 

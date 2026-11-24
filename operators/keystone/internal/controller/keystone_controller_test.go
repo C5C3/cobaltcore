@@ -54,6 +54,7 @@ import (
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
 	"github.com/c5c3/cobaltcore/internal/common/testutil"
+	mctestutil "github.com/c5c3/cobaltcore/internal/common/testutil/multicluster"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 	"github.com/c5c3/cobaltcore/operators/keystone/internal/metrics"
@@ -2612,13 +2613,11 @@ func TestReconcile_TerminatingCR_SentinelSuppressesEventAfterUpdateConflict(t *t
 	// Pass 1: RemoveFinalizer Update fails with Conflict, so the keystone
 	// finalizer remains on the persisted CR. Delete has already been issued
 	// on the MariaDB CRs, transitioning them to Terminating.
-	_, err := r.Reconcile(ctx, req)
-	g.Expect(err).To(HaveOccurred(),
-		"first pass must surface the Conflict on the finalizer-removing Update")
-	g.Expect(err.Error()).To(ContainSubstring("removing finalizer"),
-		"error must preserve the 'removing finalizer' wrapper from reconcileDelete")
-	g.Expect(apierrors.IsConflict(err)).To(BeTrue(),
-		"wrapped Conflict must remain recognizable via apierrors.IsConflict")
+	result, err := r.Reconcile(ctx, req)
+	g.Expect(err).NotTo(HaveOccurred(),
+		"a Conflict on the finalizer-removing Update must not surface as a Reconciler error")
+	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}),
+		"the Conflict requeues the pass so the next one releases from a fresh read")
 
 	// Verify both preconditions for the sentinel path on pass 2:
 	// (a) the keystone finalizer is still on the persisted CR, so pass 2
@@ -2993,6 +2992,88 @@ drain:
 	getErr := r.Get(ctx, req.NamespacedName, &keystonev1alpha1.Keystone{})
 	g.Expect(apierrors.IsNotFound(getErr)).To(BeTrue(),
 		"Keystone must be removed after the openbao finalizer is released")
+}
+
+// TestReconcile_FinalizerReleaseOnAGoneCREndsThePass pins a pass that read the
+// CR from a cache still holding it after an earlier pass released it: every
+// release finds the CR gone, and the pass ends without the Reconciler error
+// controller-runtime would log and count.
+func TestReconcile_FinalizerReleaseOnAGoneCREndsThePass(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	r := newTestReconciler(ks)
+	terminating := markKeystoneTerminating(t, r.Client, ks)
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), testutil.NotFoundOnUpdate())
+
+	result, err := r.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: client.ObjectKeyFromObject(terminating),
+	})
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{}))
+}
+
+// TestReconcile_FinalizerReleaseOnAGoneCRStillDropsMetrics pins the clean-up of
+// a pass whose release finds the CR already gone: the per-CR series, the health
+// probe entry and the config-render entry are dropped all the same, because no
+// later pass sees the CR to drop them.
+func TestReconcile_FinalizerReleaseOnAGoneCRStillDropsMetrics(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	ks.Name = "gone-drops-metrics"
+	ks.Namespace = "ns-gone-drops-metrics"
+	t.Cleanup(func() { metrics.DeleteForKeystone(ks.Name, ks.Namespace) })
+	labels := map[string]string{"keystone": ks.Name, "namespace": ks.Namespace, "result": "failed"}
+	metrics.RecordDBSync(ks.Name, ks.Namespace, "failed", time.Second)
+	g.Expect(counterValue(t, "keystone_operator_db_sync_total", labels)).To(Equal(1.0),
+		"the fixture series must exist to be dropped")
+
+	r := newTestReconciler(ks)
+	key := client.ObjectKeyFromObject(ks)
+	r.healthProbeCache.Store(key, ks.UID, internalAPIURL(ks), healthcheck.HealthCheckCacheTTL)
+	r.configRenderCache = map[types.NamespacedName]configRenderCacheEntry{key: {uid: ks.UID}}
+	_ = markKeystoneTerminating(t, r.Client, ks)
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), testutil.NotFoundOnUpdate())
+
+	_, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: key})
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(findMetricByLabels(t, ctrlmetrics.Registry, "keystone_operator_db_sync_total", labels)).To(BeNil(),
+		"the per-CR series must not outlive the CR they are labelled with")
+	g.Expect(r.healthProbeCache.Has(key)).To(BeFalse(),
+		"a CR recreated under the same name must not inherit the probe entry")
+	g.Expect(r.configRenderCache).NotTo(HaveKey(key),
+		"a CR recreated under the same name must not inherit the config-render entry")
+}
+
+// TestReconcile_OpenBaoFinalizerReleaseConflictRequeues pins an openbao
+// release on a copy older than the stored CR: the pass requeues after
+// RequeueNextPass without an error and keeps the finalizer, and the next pass
+// releases it from a fresh read.
+func TestReconcile_OpenBaoFinalizerReleaseConflictRequeues(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	// Isolate the openbao path: no MariaDB finalizer means its release is the
+	// first Update of the pass.
+	ks.Finalizers = []string{keystoneOpenBaoFinalizer}
+	r := newTestReconciler(ks)
+	ctx := context.Background()
+	_ = markKeystoneTerminating(t, r.Client, ks)
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), testutil.ConflictFirstUpdate())
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}}
+
+	result, err := r.Reconcile(ctx, req)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
+	persisted := &keystonev1alpha1.Keystone{}
+	g.Expect(r.Get(ctx, req.NamespacedName, persisted)).To(Succeed())
+	g.Expect(persisted.Finalizers).To(ContainElement(keystoneOpenBaoFinalizer))
+
+	_, err = r.Reconcile(ctx, req)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(apierrors.IsNotFound(r.Get(ctx, req.NamespacedName, persisted))).To(BeTrue())
 }
 
 // TestReconcile_TerminatingCR_NoDuplicateStartEventOnRequeue guards the
@@ -4616,7 +4697,7 @@ func TestReconcileDeleteRemoteChildren_SweepsEveryLabelledChild(t *testing.T) {
 		WithObjects(deployment, service, pushSecret, grant, unlabelled, foreign).Build()
 
 	ctx := context.Background()
-	err := r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), terminating)
+	_, err := r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), terminating)
 
 	g.Expect(err).NotTo(HaveOccurred())
 
@@ -4647,7 +4728,7 @@ func TestReconcileDeleteRemoteChildren_NilChildrenAbandonsAndReleases(t *testing
 	r, terminating := terminatingRemoteKeystone(t)
 
 	ctx := context.Background()
-	err := r.reconcileDeleteRemoteChildren(ctx, nil, terminating)
+	_, err := r.reconcileDeleteRemoteChildren(ctx, nil, terminating)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	expectEvent(g, r, "Warning RemoteChildrenAbandoned")
@@ -4673,7 +4754,7 @@ func TestReconcileDeleteRemoteChildren_WithoutFinalizerIsANoOp(t *testing.T) {
 	target := fake.NewClientBuilder().WithScheme(s).WithObjects(child).Build()
 
 	ctx := context.Background()
-	err := r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), ks)
+	_, err := r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), ks)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(target.Get(ctx, client.ObjectKeyFromObject(child), &appsv1.Deployment{})).To(Succeed(),
@@ -4703,7 +4784,7 @@ func TestReconcileDeleteRemoteChildren_SweepFailureKeepsFinalizer(t *testing.T) 
 		}).Build()
 
 	ctx := context.Background()
-	err := r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), terminating)
+	_, err := r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), terminating)
 
 	g.Expect(err).To(MatchError(ContainSubstring("listing remote Deployment children for teardown")))
 	g.Expect(target.Get(ctx, client.ObjectKeyFromObject(child), &appsv1.Deployment{})).To(Succeed())
@@ -4712,6 +4793,36 @@ func TestReconcileDeleteRemoteChildren_SweepFailureKeepsFinalizer(t *testing.T) 
 	g.Expect(r.Get(ctx, client.ObjectKeyFromObject(terminating), &updated)).To(Succeed())
 	g.Expect(controllerutil.ContainsFinalizer(&updated, commonmulticluster.RemoteChildrenFinalizer)).To(BeTrue(),
 		"a failed sweep must keep the finalizer so the next pass retries")
+}
+
+// TestReconcile_RemoteChildrenReleaseConflictRequeues pins the answer to a
+// remote-children release that loses to a newer copy of the CR: the pass
+// requeues after RequeueNextPass without an error and keeps the finalizer,
+// and the next pass releases it from a fresh read.
+func TestReconcile_RemoteChildrenReleaseConflictRequeues(t *testing.T) {
+	g := NewGomegaWithT(t)
+	r, terminating := terminatingRemoteKeystone(t)
+	r.Resolver = mctestutil.ResolverFor(mctestutil.TargetCluster{
+		Client: fake.NewClientBuilder().WithScheme(remoteChildrenScheme(t)).Build(),
+	})
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), testutil.ConflictFirstUpdate())
+	ctx := context.Background()
+	req := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(terminating)}
+
+	result, err := r.Reconcile(ctx, req)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
+	var updated keystonev1alpha1.Keystone
+	g.Expect(r.Get(ctx, req.NamespacedName, &updated)).To(Succeed())
+	g.Expect(updated.Finalizers).To(ContainElement(commonmulticluster.RemoteChildrenFinalizer))
+
+	result, err = r.Reconcile(ctx, req)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.IsZero()).To(BeTrue())
+	g.Expect(r.Get(ctx, req.NamespacedName, &updated)).To(Succeed())
+	g.Expect(updated.Finalizers).To(ConsistOf("foreign.example.com/keep-alive"))
 }
 
 // TestReconcile_InstallsRemoteChildrenFinalizerForATargetCluster verifies that

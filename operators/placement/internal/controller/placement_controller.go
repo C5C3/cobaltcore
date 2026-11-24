@@ -294,7 +294,7 @@ var PlacementRemoteChildKinds = []schema.GroupVersionKind{
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;patch;delete
 // Unexercised by the e2e suites; used by internal/common/deployment/vpa_flow.go:190 (ReconcileVPAs) to create and patch verticalpodautoscalers.
 // Unexercised by the e2e suites; used by internal/common/deployment/vpa_flow.go:213 (ReconcileVPAs) to delete verticalpodautoscalers.
-// Unexercised by the e2e suites; used by operators/placement/internal/controller/placement_controller.go:697 (SetupWithManager) to list and watch verticalpodautoscalers.
+// Unexercised by the e2e suites; used by operators/placement/internal/controller/placement_controller.go:735 (SetupWithManager) to list and watch verticalpodautoscalers.
 // +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch;create;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;patch;delete
 // Required to create, patch and delete HTTPRoutes that expose the Placement API externally.
@@ -360,10 +360,7 @@ func (r *PlacementReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		// sweep running first would delete them out from under it. The ordering
 		// mirrors the local one, where the garbage collection cascade starts only
 		// once every finalizer has been released.
-		if err := r.reconcileDeleteRemoteChildren(ctx, children, &placement); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, nil
+		return r.reconcileDeleteRemoteChildren(ctx, children, &placement)
 	}
 
 	// A suspended CR ends the pass here. The deletion branch above still runs
@@ -574,10 +571,15 @@ func (r *PlacementReconciler) reconcileDelete(ctx context.Context, children clie
 			"MariaDB Database, User, and Grant marked for deletion; releasing finalizer")
 	}
 
-	controllerutil.RemoveFinalizer(placement, placementFinalizer)
-	if err := r.Update(ctx, placement); err != nil {
+	outcome, err := commonreconcile.RemoveFinalizer(ctx, r.Client, placement, placementFinalizer)
+	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
 	}
+	if outcome == commonreconcile.FinalizerConflict {
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
+	}
+	// A CR already gone runs the clean-up below as well: it is keyed on the
+	// name and namespace alone, and no other path runs it.
 	placementmetrics.DeleteForPlacement(placement.Name, placement.Namespace)
 	// Drop the per-CR health-probe cache so a CR recreated under the same
 	// name/namespace never serves a stale probe keyed on the deleted CR's UID.
@@ -587,11 +589,11 @@ func (r *PlacementReconciler) reconcileDelete(ctx context.Context, children clie
 
 // reconcileDeleteRemoteChildren deletes everything this Placement projected onto
 // the target cluster it names and releases the remote-children finalizer, as
-// commonmulticluster.SweepRemoteChildren documents. reconcileDelete above
+// commonreconcile.SweepRemoteChildren documents. reconcileDelete above
 // deletes the three MariaDB CRs it tracks by name; this pass is what reaches the
 // rest, selected on the ownership labels Claim stamped on them.
-func (r *PlacementReconciler) reconcileDeleteRemoteChildren(ctx context.Context, children client.Client, placement *placementv1alpha1.Placement) error {
-	return commonmulticluster.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
+func (r *PlacementReconciler) reconcileDeleteRemoteChildren(ctx context.Context, children client.Client, placement *placementv1alpha1.Placement) (ctrl.Result, error) {
+	return commonreconcile.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
 		placement, placement.Spec.TargetClusterRef, children, PlacementRemoteChildKinds)
 }
 

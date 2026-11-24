@@ -245,6 +245,18 @@ func TestNeutronValidateCreate_ValidSpecAccepted(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 }
 
+// TestNeutronValidateCreate_ImageTagAndDigestAccepted pins the at-least-one
+// image rule from the admitting side: a tag beside a digest is admitted.
+func TestNeutronValidateCreate_ImageTagAndDigestAccepted(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &NeutronWebhook{}
+	o := validNeutron()
+	o.Spec.Image.Digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+	_, err := w.ValidateCreate(context.Background(), o)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+}
+
 func TestNeutronValidateCreate_RejectionTable(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -257,11 +269,9 @@ func TestNeutronValidateCreate_RejectionTable(t *testing.T) {
 			wantSub: "replicas must be at least 1",
 		},
 		{
-			name: "image tag and digest both set rejected",
-			mutate: func(o *Neutron) {
-				o.Spec.Image.Digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-			},
-			wantSub: "exactly one of image.tag or image.digest",
+			name:    "image with neither tag nor digest rejected",
+			mutate:  func(o *Neutron) { o.Spec.Image.Tag = "" },
+			wantSub: "at least one of image.tag or image.digest must be set",
 		},
 		{
 			name:    "database clusterRef and host both set rejected",

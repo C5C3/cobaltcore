@@ -311,10 +311,10 @@ var controlPlaneRemoteChildKinds = []schema.GroupVersionKind{
 // to the ControlPlane reconciler, which projects one registration per built-in
 // service, resets foreign spec fields on one, and sweeps it on the deletion
 // opt-in.
-// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_delete.go:1710 (deleteProjectedRegistrations) to delete keystoneservices.
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_delete.go:1843 (deleteProjectedRegistrations) to delete keystoneservices.
 // +kubebuilder:rbac:groups=c5c3.io,resources=keystoneservices,verbs=create;update;patch;delete
 // Projected and Owned by reconcileInfrastructure.
-// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_delete.go:1573 (sweepExternalNamespaceResidue) to delete mariadbs.
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_delete.go:1688 (sweepExternalNamespaceResidue) to delete mariadbs.
 // Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_infrastructure.go:810 (ensureMariaDB) to update mariadbs.
 // +kubebuilder:rbac:groups=k8s.mariadb.com,resources=mariadbs,verbs=get;list;watch;create;update;delete
 // Read by mariaDBDatabaseEndpoint (database.ResolveEndpoint) through the
@@ -432,7 +432,7 @@ var controlPlaneRemoteChildKinds = []schema.GroupVersionKind{
 // deleteBarbicanEnsembleIn both re-check isControlPlaneChild against the live
 // object before deleting. Removing the grant entirely needs the binding to move
 // to the openbao-operator, which already creates the ServiceAccount it binds.
-// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_delete.go:1240 (deleteBarbicanAuthDelegatorBinding) to delete clusterrolebindings.
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_delete.go:1355 (deleteBarbicanAuthDelegatorBinding) to delete clusterrolebindings.
 // Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_barbican.go:830 (deleteOwnedEnsembleObject) to delete rolebindings and roles.
 // Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_barbican.go:820 (deleteOwnedEnsembleObject) to get rolebindings and roles.
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings;clusterrolebindings,verbs=get;create;patch;delete
@@ -453,7 +453,7 @@ var controlPlaneRemoteChildKinds = []schema.GroupVersionKind{
 // (korc_unlatch.go) uses to clear a latched transport error from a child's
 // Progressing condition. No other status verb is granted.
 // Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_credentialrotation.go:520 (clearPasswordHashAnnotation) to update applicationcredentials.
-// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_delete.go:2260 (forceRemoveKORCFinalizers) to update domains, endpoints, regions and services.
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_delete.go:2393 (forceRemoveKORCFinalizers) to update domains, endpoints, regions and services.
 // +kubebuilder:rbac:groups=openstack.k-orc.cloud,resources=applicationcredentials;services;endpoints;users;domains;regions,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=openstack.k-orc.cloud,resources=projects;roles;roleassignments,verbs=get;list;watch;create;patch;delete
 // Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_korc.go:389 (reconcileKORC) to patch applicationcredentials/status.
@@ -477,7 +477,7 @@ var controlPlaneRemoteChildKinds = []schema.GroupVersionKind{
 // Password generator that mints the metadata shared secret.
 // +kubebuilder:rbac:groups=generators.external-secrets.io,resources=vaultdynamicsecrets,verbs=get;list;watch;create;patch;delete
 // Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_nova_metadata_secret.go:275 (deleteGeneratedNovaMetadataSecret) to delete passwords.
-// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_delete.go:1562 (sweepExternalNamespaceResidue) to get passwords.
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_delete.go:1677 (sweepExternalNamespaceResidue) to get passwords.
 // +kubebuilder:rbac:groups=generators.external-secrets.io,resources=passwords,verbs=get;create;patch;delete
 // Required so reconcileDBCredentials can project the per-ControlPlane mTLS client
 // Certificate the VaultDynamicSecret generator presents to the OpenBao listener.
@@ -1080,8 +1080,8 @@ func setServicesStatus(cp *c5c3v1alpha1.ControlPlane, releases map[string]string
 // migrations completed, so a fresh child reports "" until its first db-sync
 // finished. Horizon has no installed release: it reports spec.image.tag once the
 // child is Ready at its current generation, and keeps the release its entry
-// carried at the start of the pass until then; a digest-pinned image has no tag
-// and reports "". A missing child reports "", and a Keystone in External mode has
+// carried at the start of the pass until then; an image without a tag reports
+// "". A missing child reports "", and a Keystone in External mode has
 // no child, so it is not read. Any other read error keeps the entry's previous
 // release and is logged rather than returned, so a cache that has not synced
 // never fails the status write. Every read goes through the informer cache the

@@ -199,8 +199,8 @@ var OVNCentralRemoteChildKinds = []schema.GroupVersionKind{
 // No create and no delete: both CR kinds are written by whoever deploys the
 // control plane. The operator reads them, stamps their status and manages their
 // finalizers, and never brings one into being or takes it away.
-// Unexercised by the e2e suites; used by operators/ovn/internal/controller/ovncentral_controller.go:345 (Reconcile) to update ovncentrals.
-// Unexercised by the e2e suites; used by operators/ovn/internal/controller/ovnchassis_controller.go:249 (Reconcile) to update ovnchassis.
+// Unexercised by the e2e suites; used by operators/ovn/internal/controller/ovncentral_controller.go:353 (Reconcile) to update ovncentrals.
+// Unexercised by the e2e suites; used by operators/ovn/internal/controller/ovnchassis_controller.go:265 (Reconcile) to update ovnchassis.
 // +kubebuilder:rbac:groups=ovn.openstack.c5c3.io,resources=ovncentrals;ovnchassis,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=ovn.openstack.c5c3.io,resources=ovncentrals/status,verbs=get;update
 // +kubebuilder:rbac:groups=ovn.openstack.c5c3.io,resources=ovnchassis/status,verbs=get;update
@@ -248,7 +248,7 @@ var OVNCentralRemoteChildKinds = []schema.GroupVersionKind{
 // relay and the chassis DaemonSets.
 // Unexercised by the e2e suites; used by internal/common/deployment/vpa_flow.go:190 (ReconcileVPAs) to create and patch verticalpodautoscalers.
 // Unexercised by the e2e suites; used by internal/common/deployment/vpa_flow.go:213 (ReconcileVPAs) to delete verticalpodautoscalers.
-// Unexercised by the e2e suites; used by operators/ovn/internal/controller/ovncentral_controller.go:594 (setupWithOptions) to list and watch verticalpodautoscalers.
+// Unexercised by the e2e suites; used by operators/ovn/internal/controller/ovncentral_controller.go:602 (setupWithOptions) to list and watch verticalpodautoscalers.
 // +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch;create;patch;delete
 // The validating webhooks look up every priorityClassName the two CR kinds
 // reference, through the uncached API reader that runs as this ServiceAccount.
@@ -309,10 +309,7 @@ func (r *OVNCentralReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			return r.updateStatus(ctx, &cr, statusBefore,
 				ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil)
 		}
-		if err := r.reconcileDeleteRemoteChildren(ctx, children, &cr); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, nil
+		return r.reconcileDeleteRemoteChildren(ctx, children, &cr)
 	}
 
 	// A suspended CR ends the pass here. The deletion branch above still runs
@@ -477,12 +474,12 @@ func (r *OVNCentralReconciler) reconcileParallelGroup(
 
 // reconcileDeleteRemoteChildren deletes everything this OVNCentral projected
 // onto the target cluster it names and releases the remote-children finalizer,
-// as commonmulticluster.SweepRemoteChildren documents. It is the operator's
+// as commonreconcile.SweepRemoteChildren documents. It is the operator's
 // whole teardown path: nothing else outlives the CR, because the databases and
 // their volumes are children like the rest, and a CR that kept its children
 // local is left to the garbage collection cascade.
-func (r *OVNCentralReconciler) reconcileDeleteRemoteChildren(ctx context.Context, children client.Client, cr *ovnv1alpha1.OVNCentral) error {
-	return commonmulticluster.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
+func (r *OVNCentralReconciler) reconcileDeleteRemoteChildren(ctx context.Context, children client.Client, cr *ovnv1alpha1.OVNCentral) (ctrl.Result, error) {
+	return commonreconcile.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
 		cr, cr.Spec.TargetClusterRef, children, OVNCentralRemoteChildKinds)
 }
 

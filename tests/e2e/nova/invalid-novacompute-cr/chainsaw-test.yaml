@@ -152,16 +152,16 @@ spec:
             ($error != null): true
             (contains($error, 'updateStrategy.maxUnavailable')): true
             (contains($error, 'maxUnavailable applies to RollingUpdate only')): true
-  # An image with both a tag and a digest must be rejected by the CEL rule on
-  # the shared ImageSpec.
+  # An image with neither a tag nor a digest must be rejected by the CEL rule
+  # on the shared ImageSpec.
   - try:
     - apply:
-        file: 12-image-tag-and-digest.yaml
+        file: 12-image-neither-tag-nor-digest.yaml
         expect:
         - check:
             ($error != null): true
             (contains($error, 'spec.image')): true
-            (contains($error, 'exactly one of image.tag or image.digest must be set')): true
+            (contains($error, 'at least one of image.tag or image.digest')): true
   # A foreign spec.verticalAutoscaling.minAllowed key must be rejected by the
   # CEL rule on VerticalAutoscalingSpec.
   - try:
