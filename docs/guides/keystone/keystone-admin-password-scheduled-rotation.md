@@ -133,14 +133,17 @@ shell history:
 printf 'current admin password: '
 IFS= read -r -s PW
 printf '\n'
-if [ -z "$PW" ]; then
+if [ -n "$PW" ]; then
+  printf '%s' "$PW" | bao kv put kv-v2/bootstrap/openstack/keystone/admin password=-
+else
   printf 'current admin password must not be empty\n' >&2
-  unset PW
-  exit 1
 fi
-printf '%s' "$PW" | bao kv put kv-v2/bootstrap/openstack/keystone/admin password=-
 unset PW
+```
 
+Only continue after the password has been written successfully:
+
+```bash
 # The metadata marker carries no secret, so a plain argument is fine here.
 bao kv metadata put \
   -custom-metadata=managed-by=external-secrets \

@@ -176,13 +176,12 @@ on the host and run a one-shot in-cluster client, the pattern the
 against `GET /v2/info/stores`.
 The probe keeps its pod until it reads the logs, so a fast response is still
 available if `kubectl run -i` misses the attach window.
+If a previous probe left `glance-stores-probe` behind, delete that pod before
+running the command again.
 
 ```bash
-(
 POD=glance-stores-probe
-kubectl delete pod "$POD" -n openstack --ignore-not-found
-set -o pipefail
-if openstack --insecure token issue -f value -c id \
+openstack --insecure token issue -f value -c id \
   | kubectl run "$POD" -n openstack -i --restart=Never \
       --image=ghcr.io/c5c3/glance:2026.1 \
       --command -- python3 -c '
@@ -190,29 +189,15 @@ import json, sys, urllib.request
 req = urllib.request.Request(
     "http://controlplane-glance.openstack.svc.cluster.local:9292/v2/info/stores",
     headers={"X-Auth-Token": sys.stdin.read().strip()})
-print(json.dumps(json.load(urllib.request.urlopen(req, timeout=30)), indent=2))' >/dev/null; then
-  probe_status=0
-else
-  probe_status=$?
-fi
-if kubectl logs "$POD" -n openstack; then
-  logs_status=0
-else
-  logs_status=$?
-fi
-if kubectl delete pod "$POD" -n openstack --ignore-not-found; then
-  cleanup_status=0
-else
-  cleanup_status=$?
-fi
-if [ "$probe_status" -ne 0 ]; then
-  exit "$probe_status"
-elif [ "$logs_status" -ne 0 ]; then
-  exit "$logs_status"
-else
-  exit "$cleanup_status"
-fi
-)
+print(json.dumps(json.load(urllib.request.urlopen(req, timeout=30)), indent=2))' >/dev/null
+kubectl logs "$POD" -n openstack
+```
+
+If the pod is still starting, repeat the logs command. After reading the
+result, remove the probe:
+
+```bash
+kubectl delete pod "$POD" -n openstack
 ```
 
 Both store ids appear, with the default flagged:

@@ -255,53 +255,37 @@ A raised `keyGeneration` has Rook rotate the key of `cinder-backup`. The
 PushSecret and ExternalSecret each refresh every minute. Allow a few minutes for
 the new key to reach `openstack/ceph-client-cinder-backup`.
 The changed Secret re-renders the target's projection under a new name, and the
-backup service rolls onto it. The patch raises the generation it reads by one,
-so it rotates the key also where an earlier run raised it before:
+backup service rolls onto it. Record the current projection Secret and key
+generation:
 
 ```bash
-backup_secret() {
-  kubectl -n openstack get deploy controlplane-cinder-backup \
-    -o jsonpath='{.spec.template.spec.volumes[?(@.name=="backup")].secret.secretName}'
-}
-before=$(backup_secret)
-if [ -z "$before" ]; then
-  echo "FAIL: the backup Deployment does not reference a projection Secret" >&2
-  exit 1
-fi
+kubectl -n openstack get deploy controlplane-cinder-backup \
+  -o jsonpath='{.spec.template.spec.volumes[?(@.name=="backup")].secret.secretName}{"\n"}'
 generation=$(kubectl -n rook-ceph get cephclient cinder-backup -o jsonpath='{.spec.security.cephx.keyGeneration}')
-if [ -z "$generation" ]; then
-  echo "FAIL: could not read the cinder-backup keyGeneration" >&2
-  exit 1
-fi
-kubectl -n rook-ceph patch cephclient cinder-backup --type merge \
-  -p "{\"spec\":{\"security\":{\"cephx\":{\"keyGeneration\":$((generation + 1))}}}}"
-after=""
-for _ in $(seq 60); do
-  after=$(backup_secret)
-  if [ -n "$after" ] && [ "$after" != "$before" ]; then
-    break
-  fi
-  sleep 5
-done
-if [ -z "$after" ] || [ "$after" = "$before" ]; then
-  echo "FAIL: the backup projection Secret did not change within five minutes" >&2
-  exit 1
-fi
-printf '%s -> %s\n' "$before" "$after"
-kubectl -n openstack rollout status deploy/controlplane-cinder-backup --timeout=300s
-secret_hash=$(kubectl -n openstack get secret ceph-client-cinder-backup \
-  -o jsonpath='{.data.userKey}' | base64 -d | tr -d '\r\n' | sha256sum)
-ceph_hash=$(kubectl -n rook-ceph exec deploy/rook-ceph-tools -- \
-  ceph auth get-key client.cinder-backup | tr -d '\r\n' | sha256sum)
-if [ "$secret_hash" != "$ceph_hash" ]; then
-  echo "FAIL: the OpenStack Secret key does not match the key Ceph accepts" >&2
-  exit 1
-fi
-printf '%s\n' "$secret_hash"
+echo "Key generation: $generation"
 ```
 
-The script fails if it cannot read a new projection Secret within five minutes
-or if the OpenStack Secret's key does not match the key Ceph accepts. `cephbk`,
+Check that both values are present, then raise the generation by one:
+
+```bash
+kubectl -n rook-ceph patch cephclient cinder-backup --type merge \
+  -p "{\"spec\":{\"security\":{\"cephx\":{\"keyGeneration\":$((generation + 1))}}}}"
+kubectl -n openstack get deploy controlplane-cinder-backup \
+  -o jsonpath='{.spec.template.spec.volumes[?(@.name=="backup")].secret.secretName}{"\n"}'
+```
+
+Repeat the last command until the projection Secret name changes, then check
+the rollout and compare the key fingerprints:
+
+```bash
+kubectl -n openstack rollout status deploy/controlplane-cinder-backup --timeout=300s
+kubectl -n openstack get secret ceph-client-cinder-backup \
+  -o jsonpath='{.data.userKey}' | base64 -d | tr -d '\r\n' | sha256sum
+kubectl -n rook-ceph exec deploy/rook-ceph-tools -- \
+  ceph auth get-key client.cinder-backup | tr -d '\r\n' | sha256sum
+```
+
+The fingerprints must match. `cephbk`,
 which Step 6 puts back, reads the same Secret, so it starts on the rotated key.
 A backup taken now reaches `available` with the rotated key:
 
@@ -322,22 +306,40 @@ delete a backup an incremental one still depends on; `nfs-on-rbd` exists only
 when Step 4 ran. Then delete the RBD volume and the target:
 
 ```bash
-backups=$(openstack volume backup list -f value -c Name)
-for bk in rbdbk-rotated rbdbk-incr rbdbk-full nfs-on-rbd; do
-  if printf '%s\n' "$backups" | grep -Fxq "$bk"; then
-    openstack volume backup delete "$bk"
-    timeout 300 bash -c '
-      while :; do
-        backups=$(openstack volume backup list -f value -c Name) || exit 1
-        if ! printf "%s\n" "$backups" | grep -Fxq "$1"; then
-          exit 0
-        fi
-        sleep 2
-      done
-    ' _ "$bk"
-  fi
-done
+openstack volume backup delete rbdbk-rotated
+openstack volume backup list
+```
+
+Repeat the list until `rbdbk-rotated` is gone. Delete `rbdbk-incr`, wait for it
+to disappear, then delete `rbdbk-full` and wait again:
+
+```bash
+openstack volume backup delete rbdbk-incr
+openstack volume backup list
+```
+
+```bash
+openstack volume backup delete rbdbk-full
+openstack volume backup list
+```
+
+If Step 4 ran, delete `nfs-on-rbd` and wait until it disappears too:
+
+```bash
+openstack volume backup delete nfs-on-rbd
+openstack volume backup list
+```
+
+Delete the volume and repeat the list until it is gone:
+
+```bash
 openstack volume delete rbdbk-vol
+openstack volume list
+```
+
+Then delete the target:
+
+```bash
 kubectl -n openstack delete cinderbackupbackend rbdbk
 kubectl -n rook-ceph exec deploy/rook-ceph-tools -- rbd ls backups
 ```

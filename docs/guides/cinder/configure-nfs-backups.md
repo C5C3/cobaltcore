@@ -145,21 +145,20 @@ chunks are written, so wait for the backup to reach `available`:
 
 ```bash
 openstack --insecure volume backup create --name demo-bk demo-vol
-timeout 600 bash -c 'until [ "$(openstack --insecure volume backup show demo-bk -c status -f value)" = available ]; do sleep 5; done'
 openstack --insecure volume backup show demo-bk -c status -f value
 ```
 
-Restore it into the same volume:
+Repeat the `show` command until the status is `available`, then restore it into
+the same volume:
 
 ```bash
 openstack --insecure volume backup restore --force demo-bk demo-vol
-timeout 600 bash -c 'until [ "$(openstack --insecure volume show demo-vol -c status -f value)" = available ]; do sleep 5; done'
 openstack --insecure volume show demo-vol -c status -f value
 ```
 
-The restore also returns before the volume is ready. These polls wait up to ten
-minutes; if one times out, inspect the backup or volume status and the
-`controlplane-cinder-backup` pod logs before retrying.
+The restore also returns before the volume is ready. Repeat the `show` command
+until the status is `available`. If it does not become available, inspect the
+volume status and the `controlplane-cinder-backup` pod logs.
 
 `--force` is what openstackclient requires to restore into a volume that already
 exists. Without it the command refuses before any API call, with
@@ -183,16 +182,10 @@ Delete the test backup and wait until Cinder no longer lists it:
 
 ```bash
 openstack --insecure volume backup delete demo-bk
-timeout 600 bash -c '
-  while :; do
-    backups=$(openstack --insecure volume backup list -f value -c Name) || exit 1
-    if ! grep -Fxq demo-bk <<<"$backups"; then
-      exit 0
-    fi
-    sleep 5
-  done'
 openstack --insecure volume backup list
 ```
+
+Repeat the list command until `demo-bk` is gone.
 
 ## Step 3: Size the backup service
 

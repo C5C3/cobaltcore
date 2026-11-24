@@ -103,39 +103,11 @@ that need it, and alert when the Cinder user deletes a secret in another project
 
 ## Step 1: Create an encrypted type and a volume
 
-Keep this shell open through Step 3; that step compares the secret count with
-`BASELINE_SECRETS`. The volume API returns before the NFS driver finishes
-creating the volume, so the polling function waits for `available` and reports
-an error state or timeout:
+Record the current number of Barbican secrets so you can compare it after
+creating and deleting the volume:
 
 ```bash
-set -e
-wait_volume_status() {
-  local name=$1 wanted=$2 timeout=$3 deadline status
-  deadline=$(( $(date +%s) + timeout ))
-  while true; do
-    status=$(openstack --insecure volume show "$name" -f value -c status 2>/dev/null || true)
-    if [ "$status" = "$wanted" ]; then
-      return 0
-    fi
-    case "$status" in
-      error*|killed)
-        echo "ERROR: volume $name reached $status" >&2
-        openstack --insecure volume show "$name" >&2 || true
-        return 1
-        ;;
-    esac
-    if [ "$(date +%s)" -ge "$deadline" ]; then
-      echo "ERROR: volume $name status '${status:-<none>}' != $wanted within ${timeout}s" >&2
-      openstack --insecure volume show "$name" >&2 || true
-      return 1
-    fi
-    sleep 5
-  done
-}
-
-BASELINE_SECRETS=$(openstack --insecure secret list -f value -c 'Secret href' | wc -l)
-printf 'Baseline Barbican secrets: %s\n' "$BASELINE_SECRETS"
+openstack --insecure secret list --limit 100
 ```
 
 Create a volume type with a LUKS encryption profile and a volume of that type.
@@ -147,15 +119,20 @@ openstack --insecure volume type create --encryption-provider luks \
   --encryption-cipher aes-xts-plain64 --encryption-key-size 256 \
   --encryption-control-location front-end demo-luks
 openstack --insecure volume create --size 1 --type demo-luks demo-enc
-wait_volume_status demo-enc available 120
-AFTER_CREATE=$(openstack --insecure secret list -f value -c 'Secret href' | wc -l)
-if [ "$AFTER_CREATE" -ne "$((BASELINE_SECRETS + 1))" ]; then
-  echo "ERROR: Barbican secret count $AFTER_CREATE != $((BASELINE_SECRETS + 1)) after creating an encrypted volume" >&2
-  exit 1
-fi
+openstack --insecure volume show demo-enc -c status -f value
 ```
 
-In this devstack, the count should increase by one. The volume can reach
+The volume API returns before the NFS driver finishes creating the volume.
+Repeat the `show` command until the status is `available`, then list the
+Barbican secrets again:
+
+```bash
+openstack --insecure secret list --limit 100
+```
+
+In this devstack, one secret should have been added. If there are more than
+100 secrets, use `--offset` to inspect the remaining pages. Concurrent changes
+to other secrets also affect the comparison. The volume can reach
 `available` even if Cinder never calls a key manager, so the secret-count check
 verifies that Barbican stored the key.
 
@@ -187,42 +164,18 @@ Castellan when it writes the file.
 
 ## Step 3: Delete the volume
 
-Delete the volume and wait for Cinder to remove it before checking Barbican.
-The deletion is asynchronous, so the polling loop avoids a false orphan report:
+Delete the volume and wait for Cinder to remove it before checking Barbican:
 
 ```bash
-wait_volume_gone() {
-  local id=$1 timeout=$2 deadline ids
-  deadline=$(( $(date +%s) + timeout ))
-  while true; do
-    ids=$(openstack --insecure volume list -f value -c ID) || {
-      echo "ERROR: could not list volumes while waiting for $id" >&2
-      return 1
-    }
-    if ! printf '%s\n' "$ids" | grep -Fxq "$id"; then
-      return 0
-    fi
-    if [ "$(date +%s)" -ge "$deadline" ]; then
-      echo "ERROR: volume $id is still listed after ${timeout}s" >&2
-      openstack --insecure volume show "$id" >&2 || true
-      return 1
-    fi
-    sleep 5
-  done
-}
-
-test -n "$BASELINE_SECRETS" || {
-  echo "ERROR: run Step 1 in this shell first" >&2
-  exit 1
-}
-VOLUME_ID=$(openstack --insecure volume show demo-enc -f value -c id)
 openstack --insecure volume delete demo-enc
-wait_volume_gone "$VOLUME_ID" 120
-AFTER_DELETE=$(openstack --insecure secret list -f value -c 'Secret href' | wc -l)
-if [ "$AFTER_DELETE" -ne "$BASELINE_SECRETS" ]; then
-  echo "ERROR: Barbican secret count $AFTER_DELETE != baseline $BASELINE_SECRETS after deleting the volume" >&2
-  exit 1
-fi
+openstack --insecure volume list
+```
+
+Repeat the list command until `demo-enc` is gone. Then confirm that the
+Barbican secret list matches the baseline from Step 1, and delete the type:
+
+```bash
+openstack --insecure secret list --limit 100
 openstack --insecure volume type delete demo-luks
 ```
 

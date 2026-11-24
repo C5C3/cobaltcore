@@ -70,17 +70,13 @@ The bound is a ControlPlane setting projected onto the Glance child:
 ```bash
 kubectl patch controlplane controlplane -n openstack --type merge \
   -p '{"spec":{"services":{"glance":{"staging":{"sizeLimit":"40Gi"}}}}}'
-projected=
-for _ in $(seq 1 60); do
-  projected="$(kubectl get deploy controlplane-glance -n openstack \
-    -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="staging")].emptyDir.sizeLimit}')"
-  [ "$projected" = "40Gi" ] && break
-  sleep 5
-done
-if [ "$projected" != "40Gi" ]; then
-  echo "Timed out waiting for the ControlPlane to project staging.sizeLimit=40Gi" >&2
-  exit 1
-fi
+kubectl get deploy controlplane-glance -n openstack \
+  -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="staging")].emptyDir.sizeLimit}{"\n"}'
+```
+
+Repeat the `get` command until it prints `40Gi`, then check the rollout:
+
+```bash
 kubectl rollout status deploy/controlplane-glance -n openstack --timeout=5m
 ```
 

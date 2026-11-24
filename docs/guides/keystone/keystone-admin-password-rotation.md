@@ -123,13 +123,12 @@ history and command arguments:
 printf 'new admin password: '
 IFS= read -r -s NEW_PASSWORD
 printf '\n'
-if [ -z "$NEW_PASSWORD" ]; then
+if [ -n "$NEW_PASSWORD" ]; then
+  printf '%s' "$NEW_PASSWORD" \
+    | bao kv put kv-v2/bootstrap/openstack/controlplane-keystone/admin password=-
+else
   echo "admin password must not be empty" >&2
-  unset NEW_PASSWORD
-  exit 1
 fi
-printf '%s' "$NEW_PASSWORD" \
-  | bao kv put kv-v2/bootstrap/openstack/controlplane-keystone/admin password=-
 unset NEW_PASSWORD
 ```
 

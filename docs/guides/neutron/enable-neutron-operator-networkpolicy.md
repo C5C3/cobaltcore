@@ -215,68 +215,36 @@ kubectl -n neutron-system describe networkpolicy neutron-operator
 ```
 
 Then confirm reconciliation still works end-to-end by driving a change through
-the `ControlPlane` CR and watching the projected network service roll out. The
-block records the ControlPlane's current count, which is empty while the
-ControlPlane leaves it at the default, scales the API one replica above the size
-it runs at, and puts the count back:
+the `ControlPlane` CR and watching the projected network service roll out.
+Record the ControlPlane's current override and the Deployment's current count:
 
 ```bash
-if CUR=$(kubectl get controlplane controlplane -n openstack \
-     -o jsonpath='{.spec.sizing.neutron.api.replicas}') &&
-   RUN=$(kubectl get deploy/controlplane-neutron -n openstack \
-     -o jsonpath='{.spec.replicas}'); then
-  case "$RUN" in
-    ''|*[!0-9]*)
-      echo "Deployment replica count is not an integer: $RUN" >&2
-      exit 1
-      ;;
-  esac
-  case "$CUR" in
-    ''|*[!0-9]*) ;;
-    *)
-      echo "ControlPlane replica override is not an integer: $CUR" >&2
-      exit 1
-      ;;
-  esac
-
-  NEW=$((RUN + 1))
-
-  restore_replicas() {
-    kubectl patch controlplane controlplane -n openstack --type merge \
-      -p "{\"spec\":{\"sizing\":{\"neutron\":{\"api\":{\"replicas\":${CUR:-null}}}}}}"
-  }
-
-  if ! kubectl patch controlplane controlplane -n openstack --type merge \
-       -p "{\"spec\":{\"sizing\":{\"neutron\":{\"api\":{\"replicas\":$NEW}}}}}"; then
-    echo "could not change the ControlPlane replica count" >&2
-    restore_replicas
-    exit 1
-  fi
-  if ! kubectl wait deploy/controlplane-neutron -n openstack --timeout=5m \
-       --for=jsonpath='{.spec.replicas}'="$NEW"; then
-    echo "the operator did not apply the requested replica count" >&2
-    restore_replicas
-    exit 1
-  fi
-  if ! kubectl rollout status deploy/controlplane-neutron -n openstack --timeout=5m; then
-    echo "the Neutron API Deployment did not finish rolling out" >&2
-    restore_replicas
-    exit 1
-  fi
-
-  # Restore the recorded count; null drops the override again.
-  restore_replicas
-else
-  echo "could not read the replica counts; nothing was patched" >&2
-  exit 1
-fi
+CUR=$(kubectl get controlplane controlplane -n openstack \
+  -o jsonpath='{.spec.sizing.neutron.api.replicas}')
+RUN=$(kubectl get deploy/controlplane-neutron -n openstack \
+  -o jsonpath='{.spec.replicas}')
+echo "Configured: ${CUR:-unset}; running: $RUN"
 ```
 
-The `if` stops the block before the first patch when either read fails. A
-failed read prints the same empty string as a ControlPlane without an override,
-so without the guard the revert would drop an override the ControlPlane
-carries, and a failed Deployment read would set `NEW` to 1 and shrink the API
-instead of growing it.
+Check that both reads succeeded and the running count is a number. Keep this
+shell open, then scale the API one replica above its current size:
+
+```bash
+NEW=$((RUN + 1))
+kubectl patch controlplane controlplane -n openstack --type merge \
+  -p "{\"spec\":{\"sizing\":{\"neutron\":{\"api\":{\"replicas\":$NEW}}}}}"
+kubectl wait deploy/controlplane-neutron -n openstack --timeout=5m \
+  --for=jsonpath='{.spec.replicas}'="$NEW"
+kubectl rollout status deploy/controlplane-neutron -n openstack --timeout=5m
+```
+
+Restore the recorded count even if a check fails. An unset override reads as an
+empty string, so `null` removes it again:
+
+```bash
+kubectl patch controlplane controlplane -n openstack --type merge \
+  -p "{\"spec\":{\"sizing\":{\"neutron\":{\"api\":{\"replicas\":${CUR:-null}}}}}}"
+```
 
 The `kubectl wait` is the check that proves the operator still reconciles: the
 patch travels from the ControlPlane to the `Neutron` CR to the Deployment, and

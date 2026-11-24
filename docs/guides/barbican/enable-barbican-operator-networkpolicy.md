@@ -222,48 +222,37 @@ kubectl -n barbican-system describe networkpolicy barbican-operator
 ```
 
 Then confirm reconciliation still works end-to-end by driving a change through
-the `ControlPlane` CR and watching the projected key manager roll out. The
-block records the ControlPlane's current count, which is empty while the
-ControlPlane leaves it at the default, scales the API one replica above the size
-it runs at, and puts the count back. Its subshell restores the count if a patch,
-wait, or rollout command fails and preserves a nonzero exit status for that
-failure:
+the `ControlPlane` CR and watching the projected key manager roll out. Record
+the ControlPlane's current override and the Deployment's current count:
 
 ```bash
-(
-  set -e
-  if CUR=$(kubectl get controlplane controlplane -n openstack \
-       -o jsonpath='{.spec.sizing.barbican.api.replicas}') &&
-     RUN=$(kubectl get deploy/controlplane-barbican -n openstack \
-       -o jsonpath='{.spec.replicas}'); then
-    NEW=$((RUN + 1))
-
-    restore_replicas() {
-      # null drops the override when the ControlPlane used its default.
-      kubectl patch controlplane controlplane -n openstack --type merge \
-        -p "{\"spec\":{\"sizing\":{\"barbican\":{\"api\":{\"replicas\":${CUR:-null}}}}}}"
-    }
-    trap restore_replicas EXIT
-
-    kubectl patch controlplane controlplane -n openstack --type merge \
-      -p "{\"spec\":{\"sizing\":{\"barbican\":{\"api\":{\"replicas\":$NEW}}}}}"
-    kubectl wait deploy/controlplane-barbican -n openstack --timeout=5m \
-      --for=jsonpath='{.spec.replicas}'="$NEW"
-    kubectl rollout status deploy/controlplane-barbican -n openstack --timeout=5m
-
-    trap - EXIT
-    restore_replicas
-  else
-    echo "could not read the replica counts; nothing was patched" >&2
-  fi
-)
+CUR=$(kubectl get controlplane controlplane -n openstack \
+  -o jsonpath='{.spec.sizing.barbican.api.replicas}')
+RUN=$(kubectl get deploy/controlplane-barbican -n openstack \
+  -o jsonpath='{.spec.replicas}')
+echo "Configured: ${CUR:-unset}; running: $RUN"
 ```
 
-The `if` stops the block before the first patch when either read fails. A
-failed read prints the same empty string as a ControlPlane without an override,
-so without the guard the revert would drop an override the ControlPlane
-carries, and a failed Deployment read would set `NEW` to 1 and shrink the API
-instead of growing it.
+An empty ControlPlane count means it uses the default. Check that both reads
+succeeded and the running count is a number. Keep this shell open, then scale
+the API one replica above its current size:
+
+```bash
+NEW=$((RUN + 1))
+kubectl patch controlplane controlplane -n openstack --type merge \
+  -p "{\"spec\":{\"sizing\":{\"barbican\":{\"api\":{\"replicas\":$NEW}}}}}"
+kubectl wait deploy/controlplane-barbican -n openstack --timeout=5m \
+  --for=jsonpath='{.spec.replicas}'="$NEW"
+kubectl rollout status deploy/controlplane-barbican -n openstack --timeout=5m
+```
+
+Restore the recorded ControlPlane count afterward, even if a check fails.
+If the count was empty, `null` removes the override again:
+
+```bash
+kubectl patch controlplane controlplane -n openstack --type merge \
+  -p "{\"spec\":{\"sizing\":{\"barbican\":{\"api\":{\"replicas\":${CUR:-null}}}}}}"
+```
 
 The `kubectl wait` is the check that proves the operator still reconciles: the
 patch travels from the ControlPlane to the `Barbican` CR to the Deployment, and

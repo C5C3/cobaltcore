@@ -83,35 +83,20 @@ ControlPlane has not updated the Deployment yet, `rollout status` can return
 for the old, already-stable revision:
 
 ```bash
-set -o pipefail
-projected=
-for _ in $(seq 60); do
-  if config_map=$(kubectl get deploy controlplane-glance -n openstack \
-      -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="config")].configMap.name}' 2>/dev/null) \
-    && [ -n "$config_map" ] \
-    && kubectl get cm "$config_map" -n openstack \
-      -o 'jsonpath={.data.glance-api\.conf}' 2>/dev/null \
-      | grep -F 'image_import_plugins = ' | grep -Fq 'image_conversion'; then
-    projected=yes
-    break
-  fi
-  sleep 5
-done
-if [ "$projected" != yes ]; then
-  echo "Timed out after 5 minutes waiting for the projected conversion config" >&2
-  exit 1
-fi
-kubectl rollout status deploy/controlplane-glance -n openstack --timeout=5m
-```
-
-Read back what the pods actually mounted. The plugin list and the plugin's own
-section are separate keys in the rendered config:
-
-```bash
 kubectl get cm -n openstack "$(kubectl get deploy controlplane-glance -n openstack \
   -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="config")].configMap.name}')" \
   -o 'jsonpath={.data.glance-api\.conf}' | grep -A1 -E '^\[(image_conversion|image_import_opts)\]$'
 ```
+
+Repeat the command until the plugin list includes `image_conversion`, then
+check the rollout:
+
+```bash
+kubectl rollout status deploy/controlplane-glance -n openstack --timeout=5m
+```
+
+The plugin list and the plugin's own section are separate keys in the rendered
+config:
 
 ```
 [image_conversion]
@@ -149,26 +134,11 @@ The import call returns at once and the API pod fetches the image in the
 background. Wait for the record to go `active`:
 
 ```bash
-set -e
-status=
-seen_importing=
-for _ in $(seq 120); do
-  status=$(openstack --insecure image show conversion-demo -f value -c status)
-  [ "$status" = active ] && break
-  if [ "$status" = importing ]; then
-    seen_importing=yes
-  elif [ "$status" = queued ] && [ "$seen_importing" = yes ]; then
-    echo "Import returned to queued; check the Glance API logs for the conversion error" >&2
-    exit 1
-  fi
-  sleep 5
-done
-if [ "$status" != active ]; then
-  echo "Timed out after 10 minutes; conversion-demo is still $status" >&2
-  exit 1
-fi
 openstack --insecure image show conversion-demo -f value -c status
 ```
+
+Repeat the command until the status is `active`. If it returns to `queued`
+after `importing`, inspect the Glance API logs below.
 
 The record was created as `qcow2`. Glance rewrote the staged file before it
 reached the S3 store and updated the image accordingly:
@@ -242,32 +212,19 @@ kubectl patch controlplane controlplane -n openstack --type merge \
 Wait for the projected config to lose the plugin before checking the rollout:
 
 ```bash
-set -o pipefail
-projected=
-for _ in $(seq 60); do
-  if config_map=$(kubectl get deploy controlplane-glance -n openstack \
-      -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="config")].configMap.name}' 2>/dev/null) \
-    && [ -n "$config_map" ] \
-    && config=$(kubectl get cm "$config_map" -n openstack \
-      -o 'jsonpath={.data.glance-api\.conf}' 2>/dev/null) \
-    && ! printf '%s\n' "$config" \
-      | grep -F 'image_import_plugins = ' | grep -Fq 'image_conversion' \
-    && ! printf '%s\n' "$config" | grep -Fqx '[image_conversion]'; then
-    projected=yes
-    break
-  fi
-  sleep 5
-done
-if [ "$projected" != yes ]; then
-  echo "Timed out after 5 minutes waiting for the projected conversion-free config" >&2
-  exit 1
-fi
+kubectl get cm -n openstack "$(kubectl get deploy controlplane-glance -n openstack \
+  -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="config")].configMap.name}')" \
+  -o 'jsonpath={.data.glance-api\.conf}' | grep -A1 -E '^\[(image_conversion|image_import_opts)\]$'
+```
+
+Repeat the command until `image_conversion` disappears from the plugin list
+and its `[image_conversion]` section is gone, then check the rollout:
+
+```bash
 kubectl rollout status deploy/controlplane-glance -n openstack --timeout=5m
 ```
 
-The new render removes `image_conversion` from the plugin list and drops its
-`[image_conversion]` section, which the read-back command above shows once the
-new ConfigMap is mounted. On the fresh devstack, the plugin list returns to
+On the fresh devstack, the plugin list returns to
 `[]`; any other enabled plugins stay in the list. Images converted while the
 plugin was on stay as they are: the conversion happened at import time and
 nothing reverses it.

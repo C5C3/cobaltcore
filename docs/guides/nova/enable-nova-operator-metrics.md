@@ -152,22 +152,16 @@ In another terminal, query the targets:
 
 ```bash
 curl --fail --silent --show-error 'http://localhost:9090/api/v1/targets?state=active' \
-  | jq -e '
-      [.data.activeTargets[]? |
+  | jq '
+      [.data.activeTargets[] |
         select(.labels.namespace == "nova-system") |
-        {health, lastScrape, lastError}] as $targets |
-      if ($targets | length) == 0 then
-        error("no Nova operator target; check Prometheus ServiceMonitor selectors")
-      elif any($targets[]; .health != "up") then
-        error("a Nova operator target is not up: " + ($targets | tojson))
-      else $targets end'
+        {health, lastScrape, lastError}]'
 ```
 
-The query fails if Prometheus has not selected a target or if one is down;
-inspect `lastError` in the output. If no target appears, recheck both
-ServiceMonitor selectors. If a target is down, confirm Prometheus can reach the
-metrics port. When the Nova NetworkPolicy is enabled, add the Prometheus source
-to `networkPolicy.allowMetricsFrom`; see
+Expect at least one target and `health: "up"` for each. If no target appears,
+recheck both ServiceMonitor selectors. If a target is down, inspect `lastError`
+and confirm Prometheus can reach the metrics port. When the Nova NetworkPolicy
+is enabled, add the Prometheus source to `networkPolicy.allowMetricsFrom`; see
 [Enable the Nova Operator NetworkPolicy](./enable-nova-operator-networkpolicy.md).
 
 Then confirm the series exist:
@@ -175,15 +169,13 @@ Then confirm the series exist:
 ```bash
 curl --fail --silent --show-error \
   'http://localhost:9090/api/v1/query?query=nova_operator_reconcile_duration_seconds_count' \
-  | jq -r '
-      if .status != "success" then
-        error("Prometheus query failed: " + (.error // "unknown error"))
-      else (.data.result | length) end'
+  | jq '{status, error, count: (.data.result | length)}'
 ```
 
-A non-zero result count means the operator has recorded at least one reconcile
-observation for a `Nova` or `NovaCompute` since its process started. Prometheus
-scrapes the histogram's cumulative count; restarting the operator resets it.
+Expect `status: "success"`. A non-zero result count means the operator has
+recorded at least one reconcile observation for a `Nova` or `NovaCompute` since
+its process started. Prometheus scrapes the histogram's cumulative count;
+restarting the operator resets it.
 
 The two job pairs stay empty until a Job terminates, and each fills from a
 different event:
@@ -191,13 +183,8 @@ different event:
 ```bash
 curl --fail --silent --show-error \
   'http://localhost:9090/api/v1/query?query=nova_operator_db_sync_total' \
-  | jq -r '
-      if .status != "success" then
-        error("Prometheus query failed: " + (.error // "unknown error"))
-      else
-        .data.result[]? |
-        {nova: .metric.nova, result: .metric.result, value: .value[1]}
-      end'
+  | jq '{status, error, results: [.data.result[]? |
+      {nova: .metric.nova, result: .metric.result, value: .value[1]}]}'
 ```
 
 The db-sync pair takes its sample when the `{name}-db-sync` Job of a `Nova`
@@ -217,13 +204,8 @@ says otherwise:
 ```bash
 curl --fail --silent --show-error \
   'http://localhost:9090/api/v1/query?query=nova_operator_db_archive_total' \
-  | jq -r '
-      if .status != "success" then
-        error("Prometheus query failed: " + (.error // "unknown error"))
-      else
-        .data.result[]? |
-        {nova: .metric.nova, result: .metric.result, value: .value[1]}
-      end'
+  | jq '{status, error, results: [.data.result[]? |
+      {nova: .metric.nova, result: .metric.result, value: .value[1]}]}'
 ```
 
 Only the Jobs that CronJob controls are counted, so a Job created by hand from
