@@ -221,8 +221,8 @@ func (r *OVNChassisReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		// The FRRConfigurations of a fabric chassis live in frr-k8s-system, which
 		// the sweep does not reach, and are deleted first under their own
 		// finalizer.
-		if err := r.reconcileDeleteFabric(ctx, children, &cr); err != nil {
-			return ctrl.Result{}, err
+		if result, err := r.reconcileDeleteFabric(ctx, children, &cr); err != nil || !result.IsZero() {
+			return result, err
 		}
 		return r.reconcileDeleteRemoteChildren(ctx, children, &cr)
 	}

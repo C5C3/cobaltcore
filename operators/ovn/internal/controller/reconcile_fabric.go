@@ -478,8 +478,12 @@ func (r *OVNChassisReconciler) reconcileFRRConfigurations(ctx context.Context, c
 	}
 
 	if len(desired) == 0 {
-		if err := r.removeFabricFinalizer(ctx, cr); err != nil {
+		result, err := r.removeFabricFinalizer(ctx, cr)
+		if err != nil {
 			return fail(err)
+		}
+		if !result.IsZero() {
+			return result, nil
 		}
 	}
 
@@ -647,19 +651,26 @@ func (r *OVNChassisReconciler) addFabricFinalizer(ctx context.Context, cr *ovnv1
 }
 
 // removeFabricFinalizer releases fabricFinalizer when the CR carries it, in the
-// same way addFabricFinalizer installs it.
-func (r *OVNChassisReconciler) removeFabricFinalizer(ctx context.Context, cr *ovnv1alpha1.OVNChassis) error {
+// same way addFabricFinalizer installs it. A conflict requeues after
+// RequeueNextPass, and a CR already gone leaves cr as it is; neither is an
+// error.
+func (r *OVNChassisReconciler) removeFabricFinalizer(ctx context.Context, cr *ovnv1alpha1.OVNChassis) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(cr, fabricFinalizer) {
-		return nil
+		return ctrl.Result{}, nil
 	}
 	updated := cr.DeepCopy()
-	controllerutil.RemoveFinalizer(updated, fabricFinalizer)
-	if err := r.Update(ctx, updated); err != nil {
-		return fmt.Errorf("removing finalizer %q: %w", fabricFinalizer, err)
+	outcome, err := commonreconcile.RemoveFinalizer(ctx, r.Client, updated, fabricFinalizer)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("removing finalizer %q: %w", fabricFinalizer, err)
 	}
-	cr.Finalizers = updated.Finalizers
-	cr.ResourceVersion = updated.ResourceVersion
-	return nil
+	if outcome == commonreconcile.FinalizerConflict {
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
+	}
+	if outcome == commonreconcile.FinalizerRemoved {
+		cr.Finalizers = updated.Finalizers
+		cr.ResourceVersion = updated.ResourceVersion
+	}
+	return ctrl.Result{}, nil
 }
 
 // reconcileDeleteFabric deletes the FRRConfigurations of a CR that is being
@@ -672,29 +683,32 @@ func (r *OVNChassisReconciler) removeFabricFinalizer(ctx context.Context, cr *ov
 // longer serves the kind has nothing left to delete.
 func (r *OVNChassisReconciler) reconcileDeleteFabric(ctx context.Context, children client.Client,
 	cr *ovnv1alpha1.OVNChassis,
-) error {
+) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(cr, fabricFinalizer) {
-		return nil
+		return ctrl.Result{}, nil
 	}
 	if children != nil {
 		live, err := listFRRConfigurations(ctx, children)
 		if err != nil {
-			return err
+			return ctrl.Result{}, err
 		}
 		for _, name := range slices.Sorted(maps.Keys(live)) {
 			if !r.controls(cr, live[name]) {
 				continue
 			}
 			if err := deleteFRRConfiguration(ctx, children, live[name]); err != nil {
-				return err
+				return ctrl.Result{}, err
 			}
 		}
 	}
-	controllerutil.RemoveFinalizer(cr, fabricFinalizer)
-	if err := r.Update(ctx, cr); err != nil {
-		return fmt.Errorf("removing finalizer %q: %w", fabricFinalizer, err)
+	outcome, err := commonreconcile.RemoveFinalizer(ctx, r.Client, cr, fabricFinalizer)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("removing finalizer %q: %w", fabricFinalizer, err)
 	}
-	return nil
+	if outcome == commonreconcile.FinalizerConflict {
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
+	}
+	return ctrl.Result{}, nil
 }
 
 // routeProbeJob builds the Job that counts the Southbound routes. It is a
