@@ -554,9 +554,12 @@ func (r *KeystoneIdentityBackendReconciler) applyDomainDeletionPolicy(ctx contex
 // removeFinalizer releases the identity-backend finalizer and persists the
 // update.
 func (r *KeystoneIdentityBackendReconciler) removeFinalizer(ctx context.Context, backend *keystonev1alpha1.KeystoneIdentityBackend) (ctrl.Result, error) {
-	controllerutil.RemoveFinalizer(backend, identityBackendFinalizerName)
-	if err := r.Update(ctx, backend); err != nil {
+	outcome, err := commonreconcile.RemoveFinalizer(ctx, r.Client, backend, identityBackendFinalizerName)
+	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing identity-backend finalizer: %w", err)
+	}
+	if outcome == commonreconcile.FinalizerConflict {
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
 	}
 	return ctrl.Result{}, nil
 }
