@@ -21,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -557,6 +558,81 @@ func TestReconcileVolumeServices_DetachCompletes(t *testing.T) {
 		job.JobUIDAnnotationKey(serviceRemoveJobSuffix("nfs")), "nfs-service-remove-uid"),
 		"the terminal state is counted at most once per Job UID")
 	g.Expect(cinderCondition(cinder, "VolumeServicesReady").Reason).To(Equal(conditionReasonNoBackends))
+}
+
+// backendReleaseAnswers answers the first n Updates of a CinderBackend with
+// answer and passes every other Update through, so the release of a detaching
+// backend meets answer while the writes around it go through.
+func backendReleaseAnswers(n int, answer func(obj client.Object) error) interceptor.Funcs {
+	return interceptor.Funcs{
+		Update: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+			if _, ok := obj.(*cinderv1alpha1.CinderBackend); ok && n > 0 {
+				n--
+				return answer(obj)
+			}
+			return cl.Update(ctx, obj, opts...)
+		},
+	}
+}
+
+// TestDetachBackend_FinalizerReleaseConflictRequeues pins a release on a copy
+// older than the stored backend: the pass requeues after RequeueNextPass
+// without an error, keeps the finalizer, and reports no removal, since none
+// was written. The next pass releases from a fresh read and reports it once.
+func TestDetachBackend_FinalizerReleaseConflictRequeues(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cinder := workloadCinder()
+	backend := detachingBackend("nfs")
+	r := newCinderTestReconciler(cinder, backend, terminalServiceRemoveJob(cinder, "nfs", batchv1.JobComplete))
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), backendReleaseAnswers(1, func(obj client.Object) error {
+		return apierrors.NewConflict(cinderv1alpha1.GroupVersion.WithResource("cinderbackends").GroupResource(),
+			obj.GetName(), errors.New("the object has been modified"))
+	}))
+	recorder := r.Recorder.(*record.FakeRecorder)
+
+	res, err := r.reconcileVolumeServices(ctx, r.Client, cinder, nil,
+		workloadArtifacts(), workloadDigests{}, testEgressPort)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
+	var held cinderv1alpha1.CinderBackend
+	g.Expect(r.Get(ctx, client.ObjectKeyFromObject(backend), &held)).To(Succeed())
+	g.Expect(held.Finalizers).To(ContainElement(CinderBackendServiceRemoveFinalizer))
+	g.Expect(collectEvents(recorder)).NotTo(ContainElement(ContainSubstring(eventReasonServiceRemoved)))
+
+	res, err = r.reconcileVolumeServices(ctx, r.Client, cinder, nil,
+		workloadArtifacts(), workloadDigests{}, testEgressPort)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.IsZero()).To(BeTrue())
+	g.Expect(apierrors.IsNotFound(r.Get(ctx, client.ObjectKeyFromObject(backend), &held))).To(BeTrue())
+	g.Expect(collectEvents(recorder)).To(ContainElement(ContainSubstring("Normal ServiceRemoved")))
+}
+
+// TestDetachBackend_FinalizerReleaseOnAGoneBackendEmitsNoEvent pins a release
+// that finds the backend gone, because an earlier pass released it and the
+// cache still held it: the pass ends without an error and reports nothing,
+// neither the event nor the terminal state of the Job, which the pass that
+// wrote the release already reported.
+func TestDetachBackend_FinalizerReleaseOnAGoneBackendEmitsNoEvent(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cinder := workloadCinder()
+	backend := detachingBackend("nfs")
+	r := newCinderTestReconciler(cinder, backend, terminalServiceRemoveJob(cinder, "nfs", batchv1.JobComplete))
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), backendReleaseAnswers(1, func(obj client.Object) error {
+		return apierrors.NewNotFound(cinderv1alpha1.GroupVersion.WithResource("cinderbackends").GroupResource(), obj.GetName())
+	}))
+
+	res, err := r.reconcileVolumeServices(ctx, r.Client, cinder, nil,
+		workloadArtifacts(), workloadDigests{}, testEgressPort)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.IsZero()).To(BeTrue())
+	g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).NotTo(ContainElement(
+		ContainSubstring(eventReasonServiceRemoved)))
+	g.Expect(cinder.Annotations).NotTo(HaveKey(job.JobUIDAnnotationKey(serviceRemoveJobSuffix("nfs"))))
 }
 
 // TestReconcileVolumeServices_DetachJobFailed covers the wedged detach: the

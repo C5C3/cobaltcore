@@ -202,9 +202,17 @@ func (r *CinderBackendReconciler) reconcileDeleting(ctx context.Context, backend
 		if !apierrors.IsNotFound(err) {
 			return ctrl.Result{}, fmt.Errorf("fetching parent Cinder %s: %w", parentKey, err)
 		}
-		controllerutil.RemoveFinalizer(backend, CinderBackendServiceRemoveFinalizer)
-		if err := r.Update(ctx, backend); err != nil {
+		outcome, err := commonreconcile.RemoveFinalizer(ctx, r.Client, backend, CinderBackendServiceRemoveFinalizer)
+		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("removing the service-remove finalizer from %q: %w", backend.Name, err)
+		}
+		if outcome == commonreconcile.FinalizerConflict {
+			return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
+		}
+		// The event reports a release this pass wrote; a backend already gone
+		// was released by an earlier pass, which reported it.
+		if outcome == commonreconcile.FinalizerObjectGone {
+			return ctrl.Result{}, nil
 		}
 		r.Recorder.Eventf(backend, corev1.EventTypeNormal, eventReasonServiceRemoveSkipped,
 			"Parent Cinder %s no longer exists, so no service registry row can be removed; released the backend", parentKey)

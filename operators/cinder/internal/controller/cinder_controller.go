@@ -746,10 +746,15 @@ func (r *CinderReconciler) reconcileDelete(ctx context.Context, children client.
 			"MariaDB Database, User, and Grant marked for deletion; releasing finalizer")
 	}
 
-	controllerutil.RemoveFinalizer(cinder, cinderFinalizer)
-	if err := r.Update(ctx, cinder); err != nil {
+	outcome, err := commonreconcile.RemoveFinalizer(ctx, r.Client, cinder, cinderFinalizer)
+	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
 	}
+	if outcome == commonreconcile.FinalizerConflict {
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
+	}
+	// A CR already gone runs the clean-up below as well: it is keyed on the
+	// name and namespace alone, and no other path runs it.
 	metrics.DeleteForCinder(cinder.Name, cinder.Namespace)
 	// Drop the per-CR health-probe cache so a CR recreated under the same
 	// name/namespace never serves a stale probe keyed on the deleted CR's UID.
