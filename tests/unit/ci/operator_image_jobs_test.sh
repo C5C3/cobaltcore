@@ -13,6 +13,9 @@
 #     hack/ci-resolve-e2e-images.sh reads to `docker buildx imagetools
 #     create`, with the tags and the per-platform digests, and fails without
 #     a digest or without the metadata annotations;
+#   - the manifest step writes the index digest that `imagetools create`
+#     reports in its --metadata-file, under RUNNER_TEMP, to GITHUB_OUTPUT
+#     for the sign step, and fails without one;
 #   - the `Read the chart version` step of merge-operator-images writes the
 #     X.Y.Z version of the operator's Chart.yaml, quoted or not, for the
 #     chart-version tag the upgrade suites pin, and only warns on anything
@@ -25,8 +28,8 @@
 # dropped --annotation or OCI format would leave the index without the
 # revision, and every e2e run would then rebuild every operator image
 # without a red check. The manifest step runs here from ci.yaml against a
-# stub docker that logs its arguments, and the chart version step against a
-# scratch Chart.yaml.
+# stub docker that logs its arguments and writes the metadata file, and the
+# chart version step against a scratch Chart.yaml.
 #
 # Usage: bash tests/unit/ci/operator_image_jobs_test.sh
 
@@ -51,12 +54,33 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 
 SHA=0123456789abcdef0123456789abcdef01234567
 DIGEST=1111111111111111111111111111111111111111111111111111111111111111
+INDEX_DIGEST=2222222222222222222222222222222222222222222222222222222222222222
 
-# docker logs each argument on a line of its own to $DOCKER_LOG.
+# docker logs each argument on a line of its own to $DOCKER_LOG, then plays
+# DOCKER_STUB_OUTCOME: ok writes the metadata file buildx v0.39.0 writes,
+# with the index digest $INDEX_DIGEST, to the path after --metadata-file;
+# empty writes {} there; none writes nothing; fail exits 1.
 mkdir -p "$TMP_DIR/bin"
 cat >"$TMP_DIR/bin/docker" <<'EOF'
 #!/bin/bash
 printf '%s\n' "$@" >>"$DOCKER_LOG"
+metadata=""
+while [ $# -gt 1 ]; do
+  if [ "$1" = "--metadata-file" ]; then
+    metadata="$2"
+  fi
+  shift
+done
+case "$DOCKER_STUB_OUTCOME" in
+  ok)
+    [ -z "$metadata" ] ||
+      printf '{"containerimage.descriptor":{"mediaType":"application/vnd.oci.image.index.v1+json","digest":"sha256:%s","size":1609},"image.name":"ghcr.io/c5c3/keystone-operator:latest"}\n' \
+        "$INDEX_DIGEST" >"$metadata"
+    ;;
+  empty) [ -z "$metadata" ] || echo '{}' >"$metadata" ;;
+  none) ;;
+  fail) exit 1 ;;
+esac
 EOF
 chmod +x "$TMP_DIR/bin/docker"
 
@@ -70,14 +94,22 @@ merge_script() {
 
 # run_merge <digest dir> [<metadata JSON>] runs the manifest step the way a
 # runner does, with the given metadata-action output or, by default, the one
-# of a push to main. Stores the combined output in OUTPUT, the exit status in
-# RC and the docker arguments in ARGS.
+# of a push to main, with RUNNER_TEMP and GITHUB_OUTPUT under TMP_DIR and no
+# metadata file left from an earlier call. The docker stub plays
+# DOCKER_STUB_OUTCOME (default ok). Stores the combined output in OUTPUT, the
+# exit status in RC, the docker arguments in ARGS and what the step wrote to
+# GITHUB_OUTPUT in WRITTEN.
 run_merge() {
-  local log="$TMP_DIR/docker.log"
+  local log="$TMP_DIR/docker.log" runner_temp="$TMP_DIR/runner-temp"
   : >"$log"
+  mkdir -p "$runner_temp"
+  rm -f "$runner_temp/imagetools-metadata.json"
+  : >"$TMP_DIR/github_output"
   RC=0
   OUTPUT=$(
     PATH="$TMP_DIR/bin:$PATH" DOCKER_LOG="$log" IMAGE=ghcr.io/c5c3/keystone-operator \
+      DOCKER_STUB_OUTCOME="${DOCKER_STUB_OUTCOME:-ok}" INDEX_DIGEST="$INDEX_DIGEST" \
+      RUNNER_TEMP="$runner_temp" GITHUB_OUTPUT="$TMP_DIR/github_output" \
       GITHUB_SHA="$SHA" DOCKER_METADATA_OUTPUT_JSON="${2:-$(jq -cn --arg sha "$SHA" '{
         tags: ["ghcr.io/c5c3/keystone-operator:sha-\($sha)", "ghcr.io/c5c3/keystone-operator:latest"],
         annotations: [
@@ -87,6 +119,7 @@ run_merge() {
         ]}')}" bash --noprofile --norc -eo pipefail -c "$(merge_script "$1")" 2>&1
   ) || RC=$?
   ARGS=$(cat "$log")
+  WRITTEN=$(cat "$TMP_DIR/github_output")
 }
 
 # ---------------------------------------------------------------------------
@@ -141,6 +174,8 @@ test_the_manifest_step_writes_the_annotations() {
   expected="buildx
 imagetools
 create
+--metadata-file
+$TMP_DIR/runner-temp/imagetools-metadata.json
 --annotation
 index:org.opencontainers.image.revision=$SHA
 --annotation
@@ -154,7 +189,8 @@ ghcr.io/c5c3/keystone-operator:sha-$SHA
 -t
 ghcr.io/c5c3/keystone-operator:latest
 ghcr.io/c5c3/keystone-operator@sha256:$DIGEST"
-  assert_eq "docker gets the annotations, the explicit revision, the tags and the digest" "$expected" "$ARGS"
+  assert_eq "docker gets the metadata file, the annotations, the explicit revision, the tags and the digest" "$expected" "$ARGS"
+  assert_eq "the step writes the index digest for the sign step" "digest=sha256:$INDEX_DIGEST" "$WRITTEN"
   assert_file_contains_fixed "the resolver reads the revision annotation the step writes" \
     "$PROJECT_ROOT/hack/ci-resolve-e2e-images.sh" '.annotations["org.opencontainers.image.revision"]'
 
@@ -163,11 +199,32 @@ ghcr.io/c5c3/keystone-operator@sha256:$DIGEST"
   assert_nonzero_exit "the step fails without a digest" "$RC"
   assert_contains "it names the operator" "$OUTPUT" "::error::No digests found for keystone-operator"
   assert_eq "it creates no index" "" "$ARGS"
+  assert_eq "it writes no index digest" "" "$WRITTEN"
 
   run_merge "$digests" "$(jq -cn --arg sha "$SHA" '{tags: ["ghcr.io/c5c3/keystone-operator:sha-\($sha)"]}')"
   assert_nonzero_exit "the step fails when the metadata output has no annotations" "$RC"
   assert_contains "it names the missing annotations" "$OUTPUT" "docker/metadata-action wrote no annotations"
   assert_eq "it creates no index without them" "" "$ARGS"
+}
+
+test_the_manifest_step_fails_without_an_index_digest() {
+  echo "Test: the manifest step fails when imagetools create reports no index digest"
+
+  local digests="$TMP_DIR/digests" outcome
+  mkdir -p "$digests"
+  : >"$digests/$DIGEST"
+
+  for outcome in none empty; do
+    DOCKER_STUB_OUTCOME=$outcome run_merge "$digests"
+    assert_eq "$outcome: the step exits 1" "1" "$RC"
+    assert_contains "$outcome: it names the metadata file" "$OUTPUT" \
+      "::error::docker buildx imagetools create wrote no index digest to $TMP_DIR/runner-temp/imagetools-metadata.json"
+    assert_not_contains "$outcome: it writes no digest" "$WRITTEN" "digest="
+  done
+
+  DOCKER_STUB_OUTCOME=fail run_merge "$digests"
+  assert_nonzero_exit "a failed imagetools create fails the step" "$RC"
+  assert_not_contains "it writes no digest" "$WRITTEN" "digest="
 }
 
 # run_chart_version <Chart.yaml version line> runs the chart version step of
@@ -243,6 +300,7 @@ fi
 test_build_and_push_publishes_through_build_nix_image
 test_metadata_annotations_go_onto_the_index
 test_the_manifest_step_writes_the_annotations
+test_the_manifest_step_fails_without_an_index_digest
 test_the_chart_version_step_reads_an_x_y_z_version
 test_verify_codegen_checks_the_operator_vendor_hashes
 
