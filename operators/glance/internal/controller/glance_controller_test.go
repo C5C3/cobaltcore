@@ -25,6 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
+	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
@@ -33,6 +34,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/operators/glance/internal/metrics"
 )
 
 func TestReconcile_AddsFinalizerOnFirstPass(t *testing.T) {
@@ -384,6 +386,66 @@ func TestReconcileDelete_NoLiveResourcesReleasesFinalizer(t *testing.T) {
 	err = r.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "test-glance"}, &gone)
 	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
 		"the finalizer is released when no live MariaDB resource remains")
+}
+
+// TestReconcile_FinalizerReleaseConflictRequeues pins a release on a copy
+// older than the stored CR: the pass requeues after RequeueNextPass without an
+// error and keeps the finalizer, and the next pass releases it from a fresh
+// read.
+func TestReconcile_FinalizerReleaseConflictRequeues(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	glance := testGlance()
+	glance.Finalizers = []string{glanceFinalizer}
+	r := newGlanceTestReconciler(glance) // no MariaDB CRs
+	g.Expect(r.Delete(ctx, glance)).To(Succeed())
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), testutil.ConflictFirstUpdate())
+	req := glanceRequest
+
+	res, err := r.Reconcile(ctx, req)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
+	var persisted glancev1alpha1.Glance
+	g.Expect(r.Get(ctx, req.NamespacedName, &persisted)).To(Succeed())
+	g.Expect(persisted.Finalizers).To(ContainElement(glanceFinalizer))
+
+	_, err = r.Reconcile(ctx, req)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(apierrors.IsNotFound(r.Get(ctx, req.NamespacedName, &persisted))).To(BeTrue())
+}
+
+// TestReconcile_FinalizerReleaseOnAGoneCRStillDropsMetrics pins the clean-up of
+// a pass whose release finds the CR already gone: the per-CR series and the
+// health probe entry are dropped all the same, because no later pass sees the
+// CR to drop them.
+func TestReconcile_FinalizerReleaseOnAGoneCRStillDropsMetrics(t *testing.T) {
+	g := NewGomegaWithT(t)
+	g.Expect(metrics.Register()).To(Succeed())
+	ctx := context.Background()
+	glance := testGlance()
+	glance.Name = "gone-drops-metrics"
+	glance.Finalizers = []string{glanceFinalizer}
+	t.Cleanup(func() { metrics.DeleteForGlance(glance.Name, glance.Namespace) })
+	labels := map[string]string{"glance": glance.Name, "namespace": glance.Namespace, "result": "failed"}
+	metrics.RecordDBSync(glance.Name, glance.Namespace, "failed", time.Second)
+	g.Expect(findMetricByLabels(t, ctrlmetrics.Registry, "glance_operator_db_sync_total", labels)).NotTo(BeNil(), "the fixture series must exist to be dropped")
+
+	r := newGlanceTestReconciler(glance) // no MariaDB CRs
+	key := client.ObjectKeyFromObject(glance)
+	r.healthProbeCache.Store(key, glance.UID, "http://glance-api", time.Minute)
+	g.Expect(r.Delete(ctx, glance)).To(Succeed())
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), testutil.NotFoundOnUpdate())
+
+	res, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.IsZero()).To(BeTrue())
+	g.Expect(findMetricByLabels(t, ctrlmetrics.Registry, "glance_operator_db_sync_total", labels)).To(BeNil(),
+		"the per-CR series must not outlive the CR they are labelled with")
+	g.Expect(r.healthProbeCache.Has(key)).To(BeFalse(),
+		"a CR recreated under the same name must not inherit the probe entry")
 }
 
 func TestSetReadyCondition_TrueOnlyWhenAllSubConditionsTrue(t *testing.T) {
