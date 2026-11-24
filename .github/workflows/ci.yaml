@@ -6376,6 +6376,7 @@ jobs:
           merge-multiple: true
 
       - name: Create and push manifest list
+        id: manifest
         env:
           IMAGE: ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}-operator
         run: |
@@ -6393,12 +6394,24 @@ jobs:
           # process substitution feeding mapfile would not.
           annotations=$(jq -er '.annotations // error("docker/metadata-action wrote no annotations") | .[] | ("--annotation", .)' <<< "$DOCKER_METADATA_OUTPUT_JSON")
           mapfile -t annotation_args <<< "$annotations"
+          # The index digest the sign step names comes from this push. A read
+          # of the sha- tag afterwards can return the index of an earlier
+          # attempt when the job is re-run. The metadata file stays out of
+          # /tmp/digests, whose * names the source digests.
+          metadata="${RUNNER_TEMP}/imagetools-metadata.json"
           # shellcheck disable=SC2046 # deliberate: both substitutions expand to argument lists
           docker buildx imagetools create \
+            --metadata-file "${metadata}" \
             "${annotation_args[@]}" \
             --annotation "index:org.opencontainers.image.revision=${GITHUB_SHA}" \
             $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
             $(printf "${IMAGE}@sha256:%s " *)
+          digest="$(jq -er '.["containerimage.descriptor"].digest' "${metadata}")" || digest=""
+          if [[ ! "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::docker buildx imagetools create wrote no index digest to ${metadata}"
+            exit 1
+          fi
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
   # Package and push operator Helm charts to GHCR OCI registry.
   # Runs only on push events after E2E passed. Uses versioned chart packaging
