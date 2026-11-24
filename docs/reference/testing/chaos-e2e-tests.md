@@ -464,7 +464,7 @@ dispatched run never reports.
 
 **Runner budget:** D6 of #1386 gave the night ten runner hours, counted in
 measured self-hosted minutes. #1395 raised the budget to 720 minutes for the
-random run, and #1392 to 780 for the `multinode` entry. The seven walls below sum
+random run, and #1392 to 780 for the `multinode` entry. The seven job timeouts sum
 to 845 minutes and `build-e2e-images` adds a wall of 120. The scheduled nights of
 2026-11-01 and 2026-11-02 measured 574 and 591 minutes, and the `multinode` entry
 adds about 130. A night over 780 minutes files the budget issue above.
@@ -579,19 +579,8 @@ too.
 Every entry but `ovn` loads `ghcr.io/c5c3/tempest:2026.1` with the keystone
 stack, the image the [workload pod](#workload-and-consistency-harness) runs on.
 
-**Timeout:** 170 minutes for the `nova` entry, 160 for `multinode`, 135 for
-`network`, 135 for `pod`, 120 for `controlplane`, 80 for `upgrade` and 45 for
-`ovn`, 845 minutes in all, to accommodate serial test execution and longer
-recovery assertion windows. The author of #1394 accepted 685 for the first six on
-2026-10-25, against the 600 minutes D6 of #1386 allows; their estimated run is
-about 575 minutes. The `multinode` entry is estimated at about 130 minutes: 45 for
-the bring-up (nineteen images on three nodes, the stack and eight operator
-deploys), 80 for its suites (10, 10, 12, 8, 18 and 22 in entry order) and 5 for
-the diagnostics. Its wall adds 30 for one stalled step of a suite. The last full run, on
-PR #1444 (2026-10-17), took 110 minutes on `pod`, 140 on `network`, where it hit
-the wall, 12 on `ovn`, 133 on `nova` and 46 on `controlplane`. The suites of #1394
-add about 12 minutes each to `pod`, `nova` and `controlplane`, and the `upgrade`
-entry runs two Cinder upgrades of about 20 minutes each after the bring-up.
+See [e2e-chaos](../ci-cd/ci-workflow.md#e2e-chaos) for the job timeout
+rationale.
 
 ## Random runs
 
