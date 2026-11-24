@@ -689,10 +689,15 @@ func (r *GlanceReconciler) reconcileDelete(ctx context.Context, children client.
 			"MariaDB Database, User, and Grant marked for deletion; releasing finalizer")
 	}
 
-	controllerutil.RemoveFinalizer(glance, glanceFinalizer)
-	if err := r.Update(ctx, glance); err != nil {
+	outcome, err := commonreconcile.RemoveFinalizer(ctx, r.Client, glance, glanceFinalizer)
+	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
 	}
+	if outcome == commonreconcile.FinalizerConflict {
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
+	}
+	// A CR already gone runs the clean-up below as well: it is keyed on the
+	// name and namespace alone, and no other path runs it.
 	glancemetrics.DeleteForGlance(glance.Name, glance.Namespace)
 	// Drop the per-CR health-probe cache so a CR recreated under the same
 	// name/namespace never serves a stale probe keyed on the deleted CR's UID.

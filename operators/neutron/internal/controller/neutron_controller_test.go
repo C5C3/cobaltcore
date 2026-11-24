@@ -30,6 +30,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	neutronv1alpha1 "github.com/c5c3/cobaltcore/operators/neutron/api/v1alpha1"
+	neutronmetrics "github.com/c5c3/cobaltcore/operators/neutron/internal/metrics"
 )
 
 // --- field indexes ---------------------------------------------------------
@@ -548,6 +549,66 @@ func TestReconcileDelete_NoLiveResourcesReleasesFinalizer(t *testing.T) {
 	err = r.Get(context.Background(), neutronRequest.NamespacedName, &gone)
 	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
 		"the finalizer is released when no live MariaDB resource remains")
+}
+
+// TestReconcile_FinalizerReleaseConflictRequeues pins a release on a copy
+// older than the stored CR: the pass requeues after RequeueNextPass without an
+// error and keeps the finalizer, and the next pass releases it from a fresh
+// read.
+func TestReconcile_FinalizerReleaseConflictRequeues(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	neutron := validNeutron()
+	neutron.Finalizers = []string{neutronFinalizer}
+	r := newNeutronTestReconciler(neutron) // no MariaDB CRs
+	g.Expect(r.Delete(ctx, neutron)).To(Succeed())
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), testutil.ConflictFirstUpdate())
+	req := neutronRequest
+
+	res, err := r.Reconcile(ctx, req)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
+	var persisted neutronv1alpha1.Neutron
+	g.Expect(r.Get(ctx, req.NamespacedName, &persisted)).To(Succeed())
+	g.Expect(persisted.Finalizers).To(ContainElement(neutronFinalizer))
+
+	_, err = r.Reconcile(ctx, req)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(apierrors.IsNotFound(r.Get(ctx, req.NamespacedName, &persisted))).To(BeTrue())
+}
+
+// TestReconcile_FinalizerReleaseOnAGoneCRStillDropsMetrics pins the clean-up of
+// a pass whose release finds the CR already gone: the per-CR series and the
+// health probe entry are dropped all the same, because no later pass sees the
+// CR to drop them.
+func TestReconcile_FinalizerReleaseOnAGoneCRStillDropsMetrics(t *testing.T) {
+	g := NewGomegaWithT(t)
+	g.Expect(neutronmetrics.Register()).To(Succeed())
+	ctx := context.Background()
+	neutron := validNeutron()
+	neutron.Name = "gone-drops-metrics"
+	neutron.Finalizers = []string{neutronFinalizer}
+	t.Cleanup(func() { neutronmetrics.DeleteForNeutron(neutron.Name, neutron.Namespace) })
+	labels := map[string]string{"neutron": neutron.Name, "namespace": neutron.Namespace, "result": "failed"}
+	neutronmetrics.RecordDBSync(neutron.Name, neutron.Namespace, "failed", time.Second)
+	g.Expect(findMetricByLabels(t, "neutron_operator_db_sync_total", labels)).NotTo(BeNil(), "the fixture series must exist to be dropped")
+
+	r := newNeutronTestReconciler(neutron) // no MariaDB CRs
+	key := client.ObjectKeyFromObject(neutron)
+	r.healthProbeCache.Store(key, neutron.UID, "http://neutron-api", time.Minute)
+	g.Expect(r.Delete(ctx, neutron)).To(Succeed())
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), testutil.NotFoundOnUpdate())
+
+	res, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.IsZero()).To(BeTrue())
+	g.Expect(findMetricByLabels(t, "neutron_operator_db_sync_total", labels)).To(BeNil(),
+		"the per-CR series must not outlive the CR they are labelled with")
+	g.Expect(r.healthProbeCache.Has(key)).To(BeFalse(),
+		"a CR recreated under the same name must not inherit the probe entry")
 }
 
 func TestReconcileDelete_WithoutFinalizerIsNoOp(t *testing.T) {
