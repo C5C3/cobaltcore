@@ -474,10 +474,9 @@ and `WITH_NFS`.
      HelmRepository and HelmRelease.
    - `WITH_CONTROLPLANE=true` with `CONTROLPLANE_OPERATORS=flux` resumes the
      nine service-operator HelmReleases and the `k-orc` Kustomization. The
-     `c5c3-operator` pod restarts until the K-ORC CRDs exist, and the kubelet
-     lengthens the pause between restarts up to 300 s. Resuming `k-orc` in
-     this step lands the CRDs before that pause can outlast the
-     `WEBHOOK_TIMEOUT` of the ControlPlane admission. Every other run suspends
+     `c5c3-operator` HelmRelease stays suspended from the base apply until
+     the `WITH_CONTROLPLANE` step has seen `k-orc` Ready, so the operator pod
+     first starts with the K-ORC CRDs installed. Every other run suspends
      the `c5c3-operator` HelmRelease and the `k-orc` Kustomization with their
      sources. `INFRA_ONLY=true` suspends all ten operator HelmReleases and
      scales their Deployments to zero.
@@ -710,9 +709,16 @@ of the `e2e-controlplane` job enforces.
 | Operator HelmReleases (`spec.values.replicas`) | `2` (chart default) | `1` |
 | Flux controllers (CPU request) | `100m` (upstream manifests) | `25m`, through `spec.kustomize.patches` on the FluxInstance |
 
-The overlay applies the nine service-operator HelmReleases suspended and the
-`c5c3-operator` one active, because the `CONTROLPLANE_OPERATORS=flux` path
-relies on it. The patches lower requests and change no limit.
+The overlay applies all ten operator HelmReleases suspended: the nine service
+operators and `c5c3-operator`. `hack/deploy-infra.sh` resumes them on the
+`CONTROLPLANE_OPERATORS=flux` path. If you apply `deploy/overlays/kind/base`
+without the script, resume the c5c3-operator yourself:
+
+```bash
+kubectl patch helmrelease c5c3-operator -n c5c3-system --type merge -p '{"spec":{"suspend":false}}'
+```
+
+The patches lower requests and change no limit.
 
 ### Infrastructure Overlay Patches
 
@@ -906,7 +912,7 @@ The deployment script supports configurable timeouts via environment variables:
 | `OPENBAO_NAMESPACE` | `shared-services` | OpenBao namespace (propagated to the bootstrap scripts, which resolve the same variable in `common.sh`). The generic `NAMESPACE` variable is deliberately ignored — chainsaw injects `NAMESPACE=<test namespace>` into e2e script steps |
 | `INSTALL_DIR` | `~/.local/bin` | Directory for `install-test-deps.sh` to install tools |
 | `WITH_CONTROLPLANE` | `false` | When `true`, the c5c3 `ControlPlane` provisions MariaDB/Memcached in managed mode: deploy-infra skips the shared MariaDB/Memcached CRs and seeds the per-CR OpenBao admin-password paths instead |
-| `CONTROLPLANE_OPERATORS` | `flux` | How the ControlPlane operator stack is provided (only when `WITH_CONTROLPLANE=true`). `flux` deploys the published c5c3-operator chart + K-ORC Flux source, un-suspends the keystone-, horizon-, glance-, placement-, barbican-, ovn-, neutron-, cinder- and nova-operator releases, and pins the self-built operators' `:latest` images to their current digests via `hack/refresh-operator-image-digests.sh` (per-operator image-digest ConfigMaps consumed via `valuesFrom`; re-run with `make refresh-operator-digests` after a merge). On this path the run fails when the `k-orc` Kustomization is not Ready within `HELMRELEASE_TIMEOUT`, because the c5c3-operator cannot start without the K-ORC CRDs; the error prints the state of the `k-orc` GitRepository and Kustomization. The run then waits for the ten operator HelmReleases (the nine service operators and `c5c3-operator`) to be Ready within `HELMRELEASE_TIMEOUT` and for one primary CRD per operator to be registered within `POD_TIMEOUT`, and fails when either is not; after that it waits up to `WEBHOOK_TIMEOUT` for the API server to admit a server-side dry-run of the ControlPlane manifests. The two waits, and the probe before the by-hand hint, are skipped under `INFRA_ONLY=true`, and preflight refuses `INFRA_ONLY=true` together with `WITH_CONTROLPLANE_CR=true`, because such a cluster runs no operator to admit the bundled CR. `.github/workflows/flux-path.yaml` runs this default every night against `main` ([Scheduled Flux path run](../testing/controlplane-e2e-tests.md#scheduled-flux-path-run)). `external` suspends the Flux stack and expects the operators to be deployed out of band (as the `e2e-controlplane` CI job does with local dev images + `hack/ci-deploy-korc.sh`) |
+| `CONTROLPLANE_OPERATORS` | `flux` | How the ControlPlane operator stack is provided (only when `WITH_CONTROLPLANE=true`). `flux` deploys the published c5c3-operator chart + K-ORC Flux source, un-suspends the keystone-, horizon-, glance-, placement-, barbican-, ovn-, neutron-, cinder- and nova-operator releases, and pins the self-built operators' `:latest` images to their current digests via `hack/refresh-operator-image-digests.sh` (per-operator image-digest ConfigMaps consumed via `valuesFrom`; re-run with `make refresh-operator-digests` after a merge). On this path the run fails when the `k-orc` Kustomization is not Ready within `HELMRELEASE_TIMEOUT`, because the c5c3-operator cannot start without the K-ORC CRDs; the error prints the state of the `k-orc` GitRepository and Kustomization. Once that Kustomization is Ready, the run resumes the `c5c3-operator` release. The run then waits for the ten operator HelmReleases (the nine service operators and `c5c3-operator`) to be Ready within `HELMRELEASE_TIMEOUT` and for one primary CRD per operator to be registered within `POD_TIMEOUT`, and fails when either is not; after that it waits up to `WEBHOOK_TIMEOUT` for the API server to admit a server-side dry-run of the ControlPlane manifests. The two waits, and the probe before the by-hand hint, are skipped under `INFRA_ONLY=true`, and preflight refuses `INFRA_ONLY=true` together with `WITH_CONTROLPLANE_CR=true`, because such a cluster runs no operator to admit the bundled CR. `.github/workflows/flux-path.yaml` runs this default every night against `main` ([Scheduled Flux path run](../testing/controlplane-e2e-tests.md#scheduled-flux-path-run)). `external` suspends the Flux stack and expects the operators to be deployed out of band (as the `e2e-controlplane` CI job does with local dev images + `hack/ci-deploy-korc.sh`) |
 | `CONTROLPLANE_NAME` | `controlplane` | Name of the ControlPlane CR under `WITH_CONTROLPLANE=true`; the per-CR OpenBao admin-password bootstrap path derives from it, so it must match the applied CR (the `e2e-controlplane` job sets `controlplane-keystone`) |
 | `WITH_OVN_KERNEL_MODULES` | `false` | When `true`, `modprobe` `openvswitch` and `geneve` on the host before the cluster is created, so the OVN chassis suites find the datapath and tunnel modules in the kernel the kind nodes share. Linux only, and it needs root or passwordless sudo: without either the script logs a warning and continues |
 | `WITH_FRR_K8S` | `false` | When `true`, in kind mode only, apply `deploy/overlays/kind/frr-k8s` in Step 3 (the Namespace `frr-k8s-system`, the HelmRepository and the HelmRelease `frr-k8s`) and append `frr-k8s` to the Phase 3 HelmRelease wait. The release stays inert until a node carries the label `openstack.c5c3.io/frr-k8s=true`; the [BGP Node Substrate](../networking/bgp-node-substrate.md) describes it. Only the literal `true` installs it. `EXTERNAL_CLUSTER=true` refuses it |

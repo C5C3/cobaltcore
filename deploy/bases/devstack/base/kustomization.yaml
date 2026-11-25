@@ -308,10 +308,11 @@ patches:
         values:
           replicas: 1
 
-  # c5c3-operator: one replica, like keystone-operator. Unlike the service
-  # operators it is not suspended here: hack/deploy-infra.sh suspends it at
-  # runtime unless CONTROLPLANE_OPERATORS=flux, and that flux path relies on
-  # the base applying it active.
+  # c5c3-operator: one replica, like keystone-operator, and suspended like
+  # the nine service operators, so that Flux cannot install the published
+  # chart before hack/deploy-infra.sh reaches its ControlPlane block. The
+  # CONTROLPLANE_OPERATORS=flux path resumes it once the k-orc Kustomization
+  # below is Ready.
   - target:
       group: helm.toolkit.fluxcd.io
       version: v2
@@ -325,6 +326,7 @@ patches:
         name: c5c3-operator
         namespace: c5c3-system
       spec:
+        suspend: true
         values:
           replicas: 1
 
@@ -340,8 +342,8 @@ patches:
   # <name>@<digest>).
   # Suspended at apply time, nothing reconciles K-ORC until a path lifts the
   # suspension; the CONTROLPLANE_OPERATORS=flux branch of hack/deploy-infra.sh
-  # does so in Step 3 with the operator HelmReleases, because the c5c3-operator
-  # crash-loops until the K-ORC CRDs exist.
+  # does so in Step 3 with the operator HelmReleases, so that the wait for this
+  # Kustomization in front of the c5c3-operator resume is short.
   - target:
       group: kustomize.toolkit.fluxcd.io
       version: v1
