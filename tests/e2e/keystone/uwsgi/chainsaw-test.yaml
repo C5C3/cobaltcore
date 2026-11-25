@@ -10,6 +10,8 @@
 #   - Setting spec.uwsgi.httpKeepAliveTimeout renders --http-keepalive=<n>, the
 #     pods start with it, and an idle keep-alive connection closes after n
 #     seconds
+#   - The uWSGI master of an API pod runs with the open-files limit 65536 that
+#     --max-fd sets, soft and hard
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -290,6 +292,40 @@ spec:
               raise SystemExit("FAIL: idle keep-alive connection closed after %.1f s, expected about 5 s" % idle)
           print("OK: idle keep-alive connection closed after %.1f s" % idle)
           '
+    catch:
+    - podLogs:
+        selector: app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-uwsgi,app.kubernetes.io/component=api
+        namespace: openstack
+        tail: 50
+    - events:
+        namespace: openstack
+  # ── Step 8: Assert the uWSGI master's open-files limit is 65536 ─────────
+  # --max-fd 65536 makes uWSGI set its soft and hard open-files limit before
+  # the HTTP router sizes a table by it. On the kind node, which hands pods
+  # 1048576, the limit drops visibly. PID 1 is the uWSGI master, because the
+  # command is in exec form. The step reads /proc/1/limits instead of calling
+  # ulimit: a process that kubectl exec starts gets the runtime's limit, not
+  # the one uWSGI set for itself.
+  - try:
+    - script:
+        timeout: 2m
+        shell: bash
+        content: |
+          set -euo pipefail
+          POD=$(kubectl get pods -n openstack \
+            -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-uwsgi,app.kubernetes.io/component=api \
+            -o json | jq -r '[.items[] | select(.metadata.deletionTimestamp == null and .status.phase == "Running")][0].metadata.name // empty')
+          if [ -z "$POD" ]; then
+            echo "FAIL: no running API pod of keystone-uwsgi found"
+            exit 1
+          fi
+          LIMITS=$(kubectl exec -n openstack "$POD" -c keystone -- python3 -c 'print(open("/proc/1/limits").read())')
+          NOFILE=$(awk '/^Max open files/ {print $4, $5}' <<<"$LIMITS")
+          if [ "$NOFILE" != "65536 65536" ]; then
+            echo "FAIL: Max open files of the uWSGI master is $NOFILE, expected 65536 65536"
+            exit 1
+          fi
+          echo "OK: Max open files of the uWSGI master is $NOFILE"
     catch:
     - podLogs:
         selector: app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-uwsgi,app.kubernetes.io/component=api

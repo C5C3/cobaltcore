@@ -2372,6 +2372,7 @@ deployed and reconciling.
 | Step 5 | Patch CR with `spec.uwsgi: {httpKeepAlive: true, httpKeepAliveTimeout: 5}` | Patch applied |
 | Step 6 | Assert Deployment command carries the idle timeout, then wait for the rollout | Container command includes `--http-keepalive=5`; `kubectl rollout status` completes, so the pods start with the flag |
 | Step 7 | Time an idle keep-alive connection inside a new API pod | After one `GET /` on `127.0.0.1:5000`, the router closes the idle connection after 4 to 10 seconds: not at once (keep-alive off) and not after 30 s (no idle timer) |
+| Step 8 | Read the open-files limit of the uWSGI master (PID 1) in a running API pod | The `Max open files` line of `/proc/1/limits` in the `keystone` container shows `65536` as soft and hard limit ([Open-files limit](#open-files-limit)) |
 
 ---
 
