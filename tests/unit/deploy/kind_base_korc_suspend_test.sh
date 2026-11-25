@@ -20,10 +20,11 @@
 #     CONTROLPLANE_OPERATORS=flux path, so the base-level suspend does not
 #     strand the Flux-driven ControlPlane deploy.
 #   - main() lifts it before its first HelmRelease wait on the flux path and
-#     on no other path. The c5c3-operator has no dependsOn edge to K-ORC and
-#     crash-loops until the K-ORC CRDs exist; lifted minutes after the pod
-#     started, the kubelet's back-off outlasted the 120 s admission probe
-#     (#1568). Lifted on the external path, the conflict above comes back.
+#     on no other path, so that the wait for it in front of the c5c3-operator
+#     resume is short. Lifted at the end of the run, minutes after the
+#     c5c3-operator pod started, the kubelet's back-off outlasted the 120 s
+#     admission probe (#1568). Lifted on the external path, the conflict
+#     above comes back.
 # Usage: bash tests/unit/deploy/kind_base_korc_suspend_test.sh
 
 set -euo pipefail

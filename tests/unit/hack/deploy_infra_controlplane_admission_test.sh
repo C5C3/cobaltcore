@@ -13,9 +13,11 @@
 # it never applies anything for real; and it exits 1 with the operators'
 # pods and logs on timeout. The static tests at the end check the
 # WITH_CONTROLPLANE block of main(): the ten-release and CRD waits behind
-# the INFRA_ONLY gate, a probe before each of the three endings, and one
-# apply of the bundled CR that ends the run when it fails. The last test
-# runs preflight_checks, which refuses the bundled CR under INFRA_ONLY=true.
+# the INFRA_ONLY gate, the one resume of the c5c3-operator between the
+# k-orc wait and the release wait, a probe before each of the three
+# endings, and one apply of the bundled CR that ends the run when it
+# fails. The last test runs preflight_checks, which refuses the bundled
+# CR under INFRA_ONLY=true.
 #
 # Follows the stub-kubectl + source-and-invoke pattern of
 # deploy_infra_cert_manager_webhook_test.sh. The stub answers the n-th
@@ -453,7 +455,7 @@ test_no_manifest_exits_one_before_polling() {
 }
 
 # ---------------------------------------------------------------------------
-# Tests 13-16: the WITH_CONTROLPLANE block of main() (static text, so these
+# Tests 13-17: the WITH_CONTROLPLANE block of main() (static text, so these
 # stay independent of the stub plumbing above)
 # ---------------------------------------------------------------------------
 test_main_waits_for_every_operator_release_and_its_crd() {
@@ -461,8 +463,9 @@ test_main_waits_for_every_operator_release_and_its_crd() {
 
   # The expected set is the flux path's un-suspend list, which
   # check-service-parity requires of every service the kind base suspends,
-  # plus the c5c3-operator, which the base applies active. An operator that
-  # is added to that list but missing from either wait fails here.
+  # plus the c5c3-operator, which the base applies suspended and the
+  # WITH_CONTROLPLANE block resumes. An operator that is added to that list
+  # but missing from either wait fails here.
   local unsuspended releases_call want got
   unsuspended="$(awk '
     pending && index($0, "\"suspend\":false") { print pending }
@@ -507,6 +510,26 @@ test_main_waits_for_every_operator_release_and_its_crd() {
   ops="$(sed -E 's/^[a-z0-9]+\.([a-z0-9]+).*$/\1/' <<<"$names" | sort -u | tr '\n' ' ' | sed 's/ $//')"
   assert_eq "one CRD per operator" \
     "$(tr ' ' '\n' <<<"$want" | sed -E 's#^.*/([a-z0-9]+)-operator$#\1#' | sort | tr '\n' ' ' | sed 's/ $//')" "$ops"
+}
+
+test_main_resumes_the_c5c3_operator_after_the_korc_wait() {
+  echo "Test: main() resumes the c5c3-operator release once, between the k-orc wait and the release wait"
+
+  # The devstack base applies the release suspended, so this patch is the one
+  # place that starts the c5c3-operator on the flux path. Before the k-orc
+  # wait, its pod could start without the K-ORC CRDs; without the patch, the
+  # release wait times out on a suspended release.
+  local resume_calls resume_line
+  resume_calls="$(continued_call 'kubectl patch helmrelease/c5c3-operator -n c5c3-system')"
+  assert_eq "exactly one command resumes the c5c3-operator release" \
+    "1" "$(grep -c . <<<"$resume_calls")"
+  assert_contains "that command lifts the suspension" "$resume_calls" '"suspend":false'
+
+  resume_line="$(line_of 'kubectl patch helmrelease/c5c3-operator -n c5c3-system')"
+  assert_before "the k-orc wait is before the resume" \
+    "$(line_of 'kubectl wait kustomization/k-orc -n flux-system')" "$resume_line"
+  assert_before "the resume is before the release wait" \
+    "$resume_line" "$(line_of 'nova-system/nova-operator c5c3-system/c5c3-operator')"
 }
 
 test_main_applies_the_bundled_cr_once_after_the_probe() {
@@ -611,7 +634,7 @@ test_main_gates_the_waits_on_infra_only() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 17: preflight refuses the bundled CR on a cluster without operators
+# Test 18: preflight refuses the bundled CR on a cluster without operators
 # ---------------------------------------------------------------------------
 
 # run_preflight <stub_dir> [env_var=value...]
@@ -686,6 +709,7 @@ test_a_stderr_without_a_record_keeps_polling
 test_timeout_dumps_operator_diagnostics_and_exits_one
 test_no_manifest_exits_one_before_polling
 test_main_waits_for_every_operator_release_and_its_crd
+test_main_resumes_the_c5c3_operator_after_the_korc_wait
 test_main_applies_the_bundled_cr_once_after_the_probe
 test_main_probes_before_each_by_hand_hint
 test_main_gates_the_waits_on_infra_only

@@ -319,8 +319,9 @@ CONTROLPLANE_NAME="${CONTROLPLANE_NAME:-controlplane}"
 # Selects HOW the ControlPlane operator stack (keystone-operator, K-ORC,
 # c5c3-operator) is provided under WITH_CONTROLPLANE=true:
 #   flux     — the default: deploy the published c5c3-operator chart and the
-#              K-ORC Flux GitRepository/Kustomization, and un-suspend
-#              keystone-operator so the c5c3-operator dependsOn is satisfied.
+#              K-ORC Flux GitRepository/Kustomization. Step 3 resumes the nine
+#              service operators and k-orc, and the WITH_CONTROLPLANE step
+#              resumes the c5c3-operator once k-orc is Ready.
 #   external — the operators are deployed OUT OF BAND (e.g. the e2e-controlplane
 #              CI job installs keystone-operator + c5c3-operator as local dev
 #              images via hack/ci-deploy-operator.sh and K-ORC via
@@ -3950,20 +3951,19 @@ main() {
     # chart and the K-ORC GitRepository/Kustomization. The kind base overlay
     # suspends the keystone-, horizon-, glance-, placement-, barbican-, ovn-,
     # neutron-, cinder- and nova-operator HelmReleases for the local-build E2E
-    # path; un-suspend all nine here so the c5c3-operator HelmRelease's
-    # dependsOn is satisfied and the projected service CRs can reconcile.
-    # Without the glance-operator the Glance CRDs never install and the
-    # c5c3-operator's controlplane cache never syncs, so the ControlPlane CR
-    # stays status-less.
-    # c5c3-operator and the c5c3-charts / k-orc sources are left un-suspended
-    # (the base applied them active). The k-orc Kustomization is the exception:
-    # the base applies it suspended (see deploy/bases/devstack/base/kustomization.yaml),
-    # so it is lifted here with the operators. The c5c3-operator cannot start
-    # without the K-ORC CRDs, and its release has no dependsOn edge to hold the
-    # pod back. Lifted at the end of this run, the CRDs landed minutes after the
-    # pod started, when the kubelet had backed the crash loop off to 160 s or
-    # 300 s, and the pod missed the 120 s admission probe (#1568). The
-    # WITH_CONTROLPLANE step below still waits for the Kustomization.
+    # path; un-suspend all nine here so the projected service CRs can
+    # reconcile.
+    # The base applies the c5c3-operator HelmRelease and the k-orc
+    # Kustomization suspended as well (see
+    # deploy/bases/devstack/base/kustomization.yaml), and the c5c3-charts and
+    # k-orc sources active. The c5c3-operator stays suspended here: the
+    # WITH_CONTROLPLANE step below waits for the k-orc Kustomization and only
+    # then resumes the release, so the operator pod first starts with the
+    # K-ORC CRDs in place. The Kustomization is lifted here, with the
+    # operators, so that wait is short. Until #1568 it was lifted at the end
+    # of this run, minutes after the c5c3-operator pod started; the kubelet
+    # had backed the crash loop off to 160 s or 300 s, and the pod missed the
+    # 120 s admission probe.
     log "WITH_CONTROLPLANE=true: deploying the c5c3 ControlPlane stack (keystone-operator, horizon-operator, glance-operator, placement-operator, barbican-operator, ovn-operator, neutron-operator, cinder-operator, nova-operator, k-orc, c5c3-operator)."
     kubectl patch helmrelease keystone-operator -n keystone-system \
       --type merge -p '{"spec":{"suspend":false}}' 2>/dev/null || true
@@ -4623,6 +4623,7 @@ main() {
         exit 1
       fi
 
+      # The devstack base applies the c5c3-operator release suspended; this resumes it.
       kubectl patch helmrelease/c5c3-operator -n c5c3-system --type merge \
         -p '{"spec":{"suspend":false}}' 2>/dev/null || true
 

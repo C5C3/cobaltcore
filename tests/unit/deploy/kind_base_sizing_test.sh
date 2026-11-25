@@ -7,9 +7,9 @@
 # within the one 4 vCPU / 16 GiB node that the e2e-controlplane job checks
 # with hack/ci-check-node-budget.sh:
 #   - every CobaltCore OpenStack operator HelmRelease renders
-#     spec.values.replicas: 1; the nine service operators stay suspended, and
-#     c5c3-operator stays active because the CONTROLPLANE_OPERATORS=flux path of
-#     hack/deploy-infra.sh relies on the base applying it active;
+#     spec.values.replicas: 1 and spec.suspend: true, the nine service
+#     operators and c5c3-operator alike; the CONTROLPLANE_OPERATORS=flux path
+#     of hack/deploy-infra.sh resumes them;
 #   - the operator patches keep the production values they merge into;
 #   - OpenBao renders a 100m CPU request and keeps its memory request, its
 #     memory limit and standalone mode;
@@ -88,8 +88,8 @@ test_operator_replicas() {
 
   assert_eq "c5c3-operator renders spec.values.replicas: 1" \
     "1" "$(field "$file" "$(helmrelease c5c3-operator)" '.spec.values.replicas')"
-  assert_eq "c5c3-operator is not suspended by the base (the flux path needs it active)" \
-    "null" "$(field "$file" "$(helmrelease c5c3-operator)" '.spec.suspend')"
+  assert_eq "c5c3-operator is suspended by the base (the flux path resumes it)" \
+    "true" "$(field "$file" "$(helmrelease c5c3-operator)" '.spec.suspend')"
 
   assert_eq "keystone-operator keeps leaderElection.enabled from production" \
     "true" "$(field "$file" "$(helmrelease keystone-operator)" '.spec.values.leaderElection.enabled')"
