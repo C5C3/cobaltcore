@@ -30,6 +30,15 @@
 # nix/lib/patches/uwsgi-2.0.31-flush-logs-under-threaded-logger-lock.patch, or
 # the atexit log drain races the --threaded-logger thread and writes heap
 # memory in their place.
+#
+# The operators also run uWSGI with --max-fd 65536 (UWSGIMaxFDArgs). uWSGI
+# sets the value as its soft and hard open-files limit before the HTTP router
+# writes a table of 8 bytes per descriptor of that limit, so a runtime that
+# hands out 1073741816, the largest value fs.nr_open takes, no longer gets the
+# router OOM-killed at start. assert_uwsgi_max_fd starts the image's uwsgi at
+# 368 MiB under the host's fs.nr_open, under a lower soft limit, and under a
+# hard limit below 65536, where setrlimit fails and uWSGI serves with the
+# runtime's limit.
 
 # assert_uwsgi_imports <module>
 # Assert that `uwsgi --pyrun` imports <module>. Needs $IMAGE and the caller's
@@ -292,4 +301,67 @@ EOF
   assert_eq "SIGTERM does not reload uwsgi" "no" "$reload"
   assert_eq "a request on a new connection after SIGTERM ends before the stream is due to" "yes" "$late_new"
   assert_eq "a request on a kept-alive connection after SIGTERM ends before the stream is due to" "yes" "$late_keepalive"
+}
+
+# uwsgi_max_fd_case <max_fd> <case> <soft:hard> <detected> <setrlimit>
+# One case of assert_uwsgi_max_fd: start uwsgi with --max-fd <max_fd> and an
+# HTTP router under the open-files limit <soft:hard>, then assert the limit it
+# detects, its setrlimit() lines without their source location (<setrlimit>,
+# empty for none), and that the container runs and saw no OOM kill.
+uwsgi_max_fd_case() {
+  local max_fd="$1" name="$2" nofile="$3" want_detected="$4" want_setrlimit="$5"
+  local container="uwsgi-max-fd-$$" run_error="" log="" state="" tries=0
+  local detected setrlimit
+  if run_error=$(docker run -d --name "$container" --memory 368m --memory-swap 368m \
+    --ulimit "nofile=$nofile" "$IMAGE" \
+    uwsgi --http :5000 --max-fd "$max_fd" --master --processes 1 --threads 1 2>&1 >/dev/null); then
+    while [ "$tries" -lt 150 ]; do
+      log=$(docker logs "$container" 2>&1) || true
+      if grep -qF 'spawned uWSGI http 1' <<<"$log"; then break; fi
+      sleep 0.2
+      tries=$((tries + 1))
+    done
+    # The router writes its table right after the spawn, and the kernel's
+    # OOM kill follows within a second.
+    sleep 3
+    log=$(docker logs "$container" 2>&1) || true
+    state=$(docker inspect -f '{{.State.Status}} {{.State.OOMKilled}}' "$container" 2>/dev/null) || true
+  fi
+  docker rm -f "$container" >/dev/null 2>&1 || true
+  detected=$(sed -n 's/^detected max file descriptor number: //p' <<<"$log")
+  setrlimit=$(grep -F 'setrlimit()' <<<"$log" | sed 's/ \[core\/.*$//' || true)
+  if [ "$detected" != "$want_detected" ] || [ "$setrlimit" != "$want_setrlimit" ] ||
+    [ "$state" != "running false" ]; then
+    [ -z "$run_error" ] || sed 's/^/    /' <<<"$run_error"
+    tail -n 20 <<<"$log" | sed 's/^/    /'
+  fi
+  assert_eq "--max-fd $name: uwsgi detects $want_detected file descriptors" "$want_detected" "$detected"
+  assert_eq "--max-fd $name: uwsgi logs ${want_setrlimit:-no setrlimit() line}" "$want_setrlimit" "$setrlimit"
+  assert_eq "--max-fd $name: the container runs" "running" "${state% *}"
+  assert_eq "--max-fd $name: the kernel OOM-kills no process of the container" "false" "${state#* }"
+}
+
+# assert_uwsgi_max_fd
+# Assert that uwsgi with --max-fd 65536 and an HTTP router runs at 368 MiB
+# under three open-files limits: the host's fs.nr_open as soft and hard limit
+# and 1024:524288, where uWSGI sets 65536, and 1024:4096, where setrlimit
+# fails once and uWSGI keeps 1024. Needs $IMAGE and the caller's PASS/FAIL
+# counters.
+assert_uwsgi_max_fd() {
+  # 65536 mirrors UWSGIMaxFD in internal/common/deployment/uwsgi.go.
+  local max_fd=65536 nr_open reported=no
+  # Read inside a container, so the value is the one of the kernel that runs
+  # the containers, also where the Docker host is a VM.
+  nr_open=$(docker run --rm "$IMAGE" cat /proc/sys/fs/nr_open 2>&1) || true
+  if [[ "$nr_open" =~ ^[0-9]+$ ]]; then
+    reported=yes
+  else
+    tail -n 20 <<<"$nr_open" | sed 's/^/    /'
+  fi
+  assert_eq "the image reports fs.nr_open" "yes" "$reported"
+  [ "$reported" = yes ] || return 0
+  uwsgi_max_fd_case "$max_fd" "above (nofile=$nr_open:$nr_open)" "$nr_open:$nr_open" "$max_fd" ""
+  uwsgi_max_fd_case "$max_fd" "soft below (nofile=1024:524288)" 1024:524288 "$max_fd" ""
+  uwsgi_max_fd_case "$max_fd" "hard below (nofile=1024:4096)" 1024:4096 1024 \
+    "setrlimit(): Operation not permitted"
 }

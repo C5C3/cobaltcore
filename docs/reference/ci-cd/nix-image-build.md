@@ -219,7 +219,12 @@ graceful shutdown in the eight uWSGI API images: a 128 MiB response streamed
 across SIGTERM arrives whole, a request sent after SIGTERM on a new or a
 kept-alive connection ends before that stream is due to end, and uWSGI exits 0
 after logging `goodbye to uWSGI.` once, with no byte outside printable ASCII,
-tab and newline in its log. The image runs as 42424, sets `PATH` to
+tab and newline in its log. `assert_uwsgi_max_fd` checks the operators'
+`--max-fd 65536` in the same images: under the host's `fs.nr_open`, under
+1024:524288 and under 1024:4096, uwsgi has to run at 368 MiB without an OOM
+kill and detect 65536, 65536 and 1024 file descriptors, with one
+`setrlimit()` error line in the last case only. The image runs as 42424,
+sets `PATH` to
 `/var/lib/openstack/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
 and has no `Cmd` and no `Entrypoint`.
 

@@ -100,6 +100,7 @@ test_uwsgi_runnable() {
   assert_not_empty "uwsgi version output is non-empty" "$version"
   assert_uwsgi_imports openstack_dashboard
   assert_uwsgi_graceful_shutdown
+  assert_uwsgi_max_fd
 }
 
 # --- Test 7: the rendered pymemcache OPTIONS bound Django's cache ---
