@@ -1417,10 +1417,10 @@ func TestUWSGICommand_KeepAliveEnabled(t *testing.T) {
 }
 
 // TestUWSGICommand_FixedFlagsAlwaysPresent verifies that regardless of uwsgi
-// config, the command always includes --http :5000, --wsgi-file, --master,
-// --lazy-apps, --need-app, the graceful-shutdown flags --hook-master-start
-// "unix_signal:15 gracefully_kill_them_all", --shutdown-sockets and
-// --threaded-logger, and --pyargv.
+// config, the command always includes --http :5000, --wsgi-file, --max-fd
+// 65536, --master, --lazy-apps, --need-app, the graceful-shutdown flags
+// --hook-master-start "unix_signal:15 gracefully_kill_them_all",
+// --shutdown-sockets and --threaded-logger, and --pyargv.
 func TestUWSGICommand_FixedFlagsAlwaysPresent(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -1438,6 +1438,8 @@ func TestUWSGICommand_FixedFlagsAlwaysPresent(t *testing.T) {
 		g.Expect(cmd).To(ContainElement(":5000"))
 		g.Expect(cmd).To(ContainElement("--wsgi-file"))
 		g.Expect(cmd).To(ContainElement("/var/lib/openstack/bin/keystone-wsgi-public"))
+		g.Expect(cmd).To(ContainElement("--max-fd"))
+		g.Expect(cmd).To(ContainElement("65536"))
 		g.Expect(cmd).To(ContainElement("--master"))
 		g.Expect(cmd).To(ContainElement("--lazy-apps"))
 		g.Expect(cmd).To(ContainElement("--need-app"))

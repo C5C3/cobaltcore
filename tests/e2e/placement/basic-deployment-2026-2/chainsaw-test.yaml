@@ -110,6 +110,8 @@ spec:
                   - "%(method) %(uri) => generated %(rsize) bytes in %(msecs) msecs (%(proto) %(status))"
                   - "--wsgi-file"
                   - "/var/lib/openstack/bin/placement-api"
+                  - "--max-fd"
+                  - "65536"
                   - "--master"
                   - "--lazy-apps"
                   - "--need-app"

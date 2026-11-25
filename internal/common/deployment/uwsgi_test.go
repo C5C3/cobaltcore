@@ -72,6 +72,22 @@ func expectGracefulShutdownFlags(t *testing.T, cmd []string) {
 	g.Expect(cmd[end]).To(gomega.Equal("--processes"))
 }
 
+// maxFDTokens is the literal UWSGIMaxFDArgs returns, spelled out so a change
+// to the flag or its value fails here first.
+var maxFDTokens = []string{"--max-fd", "65536"}
+
+// expectMaxFDFlags asserts that cmd carries --max-fd once, with its value, and
+// that the two tokens sit directly before --master.
+func expectMaxFDFlags(t *testing.T, cmd []string) {
+	t.Helper()
+	g := gomega.NewWithT(t)
+
+	g.Expect(countOf(cmd, "--max-fd")).To(gomega.Equal(1))
+	i := indexOf(cmd, "--master")
+	g.Expect(i).To(gomega.BeNumerically(">=", len(maxFDTokens)))
+	g.Expect(cmd[i-len(maxFDTokens) : i]).To(gomega.Equal(maxFDTokens))
+}
+
 // keepAliveTokens returns every token with the prefix --http-keepalive: the bare
 // flag, the --http-keepalive=<n> form, and any stray flag that shares the prefix.
 func keepAliveTokens(cmd []string) []string {
@@ -369,6 +385,75 @@ func TestBuildUWSGICommand_GracefulShutdownFlags(t *testing.T) {
 	})
 }
 
+// uWSGI's HTTP router sizes a table by the open-files limit, so every params
+// value renders --max-fd 65536 once, directly before --master, and none
+// switches it off. Each call of UWSGIMaxFDArgs hands out a slice of its own: a
+// caller that changes its copy changes no later command.
+func TestBuildUWSGICommand_MaxFD(t *testing.T) {
+	t.Run("nil spec", func(t *testing.T) {
+		expectMaxFDFlags(t, BuildUWSGICommand(UWSGICommandParams{
+			Bind:         ":5000",
+			WSGIFilePath: "/var/lib/openstack/bin/svc-wsgi",
+		}))
+	})
+
+	t.Run("full spec with module and raw tokens", func(t *testing.T) {
+		expectMaxFDFlags(t, BuildUWSGICommand(UWSGICommandParams{
+			UWSGI: &commonv1.UWSGISpec{
+				Processes:            4,
+				Threads:              8,
+				HTTPKeepAlive:        ptr.To(true),
+				HTTPKeepAliveTimeout: ptr.To(int32(15)),
+				Harakiri:             ptr.To(int32(30)),
+			},
+			Bind:          ":9311",
+			ArgsAfterHTTP: []string{"--buffer-size", "65535"},
+			Module:        "barbican.wsgi.api:application",
+			TrailingArgs:  []string{"--pyargv", "--config-dir /etc/svc/svc.conf.d/"},
+		}))
+	})
+
+	t.Run("no launch mode", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+
+		cmd := BuildUWSGICommand(UWSGICommandParams{Bind: ":5000"})
+
+		expectMaxFDFlags(t, cmd)
+		i := indexOf(cmd, "--max-fd")
+		g.Expect(cmd[i-2 : i]).To(gomega.Equal([]string{"--log-format", UWSGILogFormat}))
+	})
+
+	t.Run("empty and nil raw-token slices", func(t *testing.T) {
+		expectMaxFDFlags(t, BuildUWSGICommand(UWSGICommandParams{
+			Bind:          ":5000",
+			ArgsAfterHTTP: []string{},
+			WSGIFilePath:  "/var/lib/openstack/bin/svc-wsgi",
+			TrailingArgs:  []string{},
+		}))
+		expectMaxFDFlags(t, BuildUWSGICommand(UWSGICommandParams{
+			Bind:          ":5000",
+			ArgsAfterHTTP: nil,
+			WSGIFilePath:  "/var/lib/openstack/bin/svc-wsgi",
+			TrailingArgs:  nil,
+		}))
+	})
+
+	t.Run("new slice on every call", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+
+		args := UWSGIMaxFDArgs()
+		g.Expect(args).To(gomega.Equal(maxFDTokens))
+
+		args[1] = "1048576"
+
+		g.Expect(UWSGIMaxFDArgs()).To(gomega.Equal(maxFDTokens))
+		expectMaxFDFlags(t, BuildUWSGICommand(UWSGICommandParams{
+			Bind:         ":5000",
+			WSGIFilePath: "/var/lib/openstack/bin/svc-wsgi",
+		}))
+	})
+}
+
 // The launch mode is a single flag with a value behind it: --module for a
 // service image that ships an importable WSGI application, --wsgi-file for one
 // that ships an entry script. Params that set both fall to --module, params that
@@ -393,6 +478,7 @@ func TestBuildUWSGICommand_LaunchMode(t *testing.T) {
 				"--log-master",
 				"--log-format", UWSGILogFormat,
 				"--module", "barbican.wsgi.api:application",
+				"--max-fd", "65536",
 				"--master",
 				"--lazy-apps",
 				"--need-app",
@@ -419,6 +505,7 @@ func TestBuildUWSGICommand_LaunchMode(t *testing.T) {
 				"--log-master",
 				"--log-format", UWSGILogFormat,
 				"--wsgi-file", "/var/lib/openstack/bin/svc-wsgi",
+				"--max-fd", "65536",
 				"--master",
 				"--lazy-apps",
 				"--need-app",
@@ -441,6 +528,7 @@ func TestBuildUWSGICommand_LaunchMode(t *testing.T) {
 				"--http-keepalive",
 				"--log-master",
 				"--log-format", UWSGILogFormat,
+				"--max-fd", "65536",
 				"--master",
 				"--lazy-apps",
 				"--need-app",
@@ -468,6 +556,7 @@ func TestBuildUWSGICommand_LaunchMode(t *testing.T) {
 				"--log-master",
 				"--log-format", UWSGILogFormat,
 				"--module", "barbican.wsgi.api:application",
+				"--max-fd", "65536",
 				"--master",
 				"--lazy-apps",
 				"--need-app",
@@ -511,6 +600,7 @@ func TestBuildUWSGICommand_RealParameterizations(t *testing.T) {
 				"--log-master",
 				"--log-format", UWSGILogFormat,
 				"--wsgi-file", "/var/lib/openstack/bin/keystone-wsgi-public",
+				"--max-fd", "65536",
 				"--master",
 				"--lazy-apps",
 				"--need-app",
@@ -541,6 +631,7 @@ func TestBuildUWSGICommand_RealParameterizations(t *testing.T) {
 				"--log-master",
 				"--log-format", UWSGILogFormat,
 				"--wsgi-file", "/var/lib/openstack/bin/keystone-wsgi-public",
+				"--max-fd", "65536",
 				"--master",
 				"--lazy-apps",
 				"--need-app",
@@ -574,6 +665,7 @@ func TestBuildUWSGICommand_RealParameterizations(t *testing.T) {
 				"--log-master",
 				"--log-format", UWSGILogFormat,
 				"--wsgi-file", "/var/lib/openstack/bin/glance-wsgi-api",
+				"--max-fd", "65536",
 				"--master",
 				"--lazy-apps",
 				"--need-app",
@@ -601,6 +693,7 @@ func TestBuildUWSGICommand_RealParameterizations(t *testing.T) {
 				"--log-master",
 				"--log-format", UWSGILogFormat,
 				"--wsgi-file", "/var/lib/openstack/bin/placement-api",
+				"--max-fd", "65536",
 				"--master",
 				"--lazy-apps",
 				"--need-app",

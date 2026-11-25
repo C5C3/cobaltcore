@@ -71,6 +71,8 @@ spec:
           %(status))'
         - --wsgi-file
         - /var/lib/openstack/bin/keystone-wsgi-public
+        - --max-fd
+        - "65536"
         - --master
         - --lazy-apps
         - --need-app
@@ -233,6 +235,8 @@ spec:
           %(status))'
         - --wsgi-file
         - /var/lib/openstack/bin/keystone-wsgi-public
+        - --max-fd
+        - "65536"
         - --master
         - --lazy-apps
         - --need-app
@@ -393,6 +397,8 @@ spec:
           %(status))'
         - --wsgi-file
         - /var/lib/openstack/bin/keystone-wsgi-public
+        - --max-fd
+        - "65536"
         - --master
         - --lazy-apps
         - --need-app
@@ -581,6 +587,8 @@ spec:
           %(status))'
         - --wsgi-file
         - /var/lib/openstack/bin/keystone-wsgi-public
+        - --max-fd
+        - "65536"
         - --master
         - --lazy-apps
         - --need-app
@@ -831,6 +839,8 @@ spec:
           %(status))'
         - --wsgi-file
         - /var/lib/openstack/bin/keystone-wsgi-public
+        - --max-fd
+        - "65536"
         - --master
         - --lazy-apps
         - --need-app

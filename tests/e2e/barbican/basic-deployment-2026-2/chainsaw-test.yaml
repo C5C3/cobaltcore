@@ -124,6 +124,8 @@ spec:
                   - "%(method) %(uri) => generated %(rsize) bytes in %(msecs) msecs (%(proto) %(status))"
                   - "--module"
                   - "barbican.wsgi.api:application"
+                  - "--max-fd"
+                  - "65536"
                   - "--master"
                   - "--lazy-apps"
                   - "--need-app"

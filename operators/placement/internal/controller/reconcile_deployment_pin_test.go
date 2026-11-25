@@ -70,6 +70,8 @@ spec:
           %(status))'
         - --wsgi-file
         - /var/lib/openstack/bin/placement-api
+        - --max-fd
+        - "65536"
         - --master
         - --lazy-apps
         - --need-app
@@ -217,6 +219,8 @@ spec:
           %(status))'
         - --wsgi-file
         - /var/lib/openstack/bin/placement-api
+        - --max-fd
+        - "65536"
         - --master
         - --lazy-apps
         - --need-app
@@ -365,6 +369,8 @@ spec:
           %(status))'
         - --wsgi-file
         - /var/lib/openstack/bin/placement-api
+        - --max-fd
+        - "65536"
         - --master
         - --lazy-apps
         - --need-app
@@ -535,6 +541,8 @@ spec:
           %(status))'
         - --wsgi-file
         - /var/lib/openstack/bin/placement-api
+        - --max-fd
+        - "65536"
         - --master
         - --lazy-apps
         - --need-app

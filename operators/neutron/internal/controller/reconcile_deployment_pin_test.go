@@ -75,6 +75,8 @@ spec:
           %(status))'
         - --module
         - neutron.wsgi.api
+        - --max-fd
+        - "65536"
         - --master
         - --lazy-apps
         - --need-app
@@ -249,6 +251,8 @@ spec:
           %(status))'
         - --module
         - neutron.wsgi.api
+        - --max-fd
+        - "65536"
         - --master
         - --lazy-apps
         - --need-app
@@ -428,6 +432,8 @@ spec:
           %(status))'
         - --module
         - neutron.wsgi.api
+        - --max-fd
+        - "65536"
         - --master
         - --lazy-apps
         - --need-app
@@ -603,6 +609,8 @@ spec:
           %(status))'
         - --module
         - neutron.wsgi.api
+        - --max-fd
+        - "65536"
         - --master
         - --lazy-apps
         - --need-app
@@ -796,6 +804,8 @@ spec:
           %(status))'
         - --module
         - neutron.wsgi.api
+        - --max-fd
+        - "65536"
         - --master
         - --lazy-apps
         - --need-app

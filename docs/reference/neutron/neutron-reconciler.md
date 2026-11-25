@@ -524,7 +524,9 @@ path.
 entry script, so the API container runs
 `uwsgi --http :9696 … --module neutron.wsgi.api`, with the shared
 `deployment.BuildUWSGICommand` emitting the process, thread, keep-alive and
-harakiri parameters and the graceful-shutdown flags
+harakiri parameters, `--max-fd 65536`
+([open-files limit](../keystone/keystone-crd.md#open-files-limit)) and the
+graceful-shutdown flags
 `--hook-master-start "unix_signal:15 gracefully_kill_them_all"`,
 `--shutdown-sockets` and `--threaded-logger`
 ([Keystone shutdown sequence](../keystone/keystone-crd.md#shutdown-sequence)),

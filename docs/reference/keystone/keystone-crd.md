@@ -672,6 +672,7 @@ of configuration:
 | `--http :5000` | Fixed — Keystone API listen port |
 | `--http-keepalive` or `--http-keepalive=<n>` | Bare `--http-keepalive` when `httpKeepAlive` is `true` (or default) and no timeout is set; `--http-keepalive=<n>` when `httpKeepAliveTimeout` is set; omitted when `httpKeepAlive` is `false` |
 | `--wsgi-file /var/lib/openstack/bin/keystone-wsgi-public` | Fixed — Keystone WSGI entry point |
+| `--max-fd 65536` | Fixed — bounds uWSGI's open-files limit, see [Open-files limit](#open-files-limit) |
 | `--master` | Fixed — enables uWSGI master process |
 | `--lazy-apps` | Fixed — loads apps in each worker after fork |
 | `--need-app` | Fixed — exits if no WSGI app is found |
@@ -681,6 +682,32 @@ of configuration:
 | `--processes <N>` | `spec.uwsgi.processes` (default: 2) |
 | `--threads <N>` | `spec.uwsgi.threads` (default: 1) |
 | `--pyargv=--config-dir=/etc/keystone/keystone.conf.d/` | Fixed — passes config directory to Keystone |
+
+### Open-files limit
+
+uWSGI runs with `--max-fd 65536` in the API containers of keystone, glance,
+placement, barbican, neutron, cinder and nova, and in nova's metadata
+container. At start, the uWSGI master sets 65536 as its soft and hard
+open-files limit (`RLIMIT_NOFILE`) and logs
+`detected max file descriptor number: 65536`.
+
+The flag bounds a table of uWSGI's HTTP router. The router allocates 8 bytes
+for every descriptor of the open-files limit and writes each entry at start.
+On a node whose container runtime hands pods a limit of 1073741816, the router
+writes 8 GiB and the kernel OOM-kills it, whatever memory limit the pod has.
+With the flag, the table takes 512 KiB on every node.
+
+The limit the node hands out decides what the flag changes:
+
+| Node limit (soft:hard) | Limit of the uWSGI master | Container log at start |
+| --- | --- | --- |
+| Above 65536, such as 1048576:1048576 or 1073741816:1073741816 | Lowered to 65536:65536 | `detected max file descriptor number: 65536` |
+| Soft limit below 65536 and hard limit at or above it, such as 1024:524288 | 65536:65536, the soft limit raised | `detected max file descriptor number: 65536` |
+| Hard limit below 65536, such as 1024:4096 | The node's limit: the master may not raise its hard limit | `setrlimit(): Operation not permitted`, then `detected max file descriptor number: 1024`; uWSGI serves |
+
+The `setrlimit()` line repeats at every start of such a pod. The operator
+upgrade that brings the flag changes the pod template, so each of these
+Deployments rolls once under its update strategy.
 
 ### HTTPKeepAlive Defaulting
 
