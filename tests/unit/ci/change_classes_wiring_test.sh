@@ -3,13 +3,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify the ci.yaml side of the change classes: every filter is declared,
-# handed to the resolver and consumed, every job gates on its own flag, and no
-# job reads an output the changes job does not export.
+# Verify the workflow side of the change classes: every filter of
+# .github/ci-filters.yaml is declared, handed to the resolver and consumed,
+# every job of ci.yaml gates on its own flag, and no job reads an output the
+# changes job does not export.
 #
 # Every mistake this file looks for is silent. GitHub Actions resolves an
 # unknown `needs.<job>.outputs.<name>` to the empty string rather than failing,
-# so a renamed output or a missing FILTER_ env var leaves a job skipped on every
+# so a renamed output or an undeclared filter leaves a job skipped on every
 # pull request from then on, and the pipeline stays green while it stops testing
 # something. The resolver's own behaviour is pinned separately, in
 # tests/unit/ci/resolve_changes_scenarios_test.sh.
@@ -34,37 +35,29 @@ ALL_OPS="keystone c5c3 horizon glance placement barbican ovn neutron cinder nova
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/ci_resolve.sh
 source "$PROJECT_ROOT/tests/lib/ci_resolve.sh"
+# shellcheck source=tests/lib/ci_yaml.sh
+source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-# Echo every filter key declared under the paths-filter step, one per line.
+# Echo every filter key of .github/ci-filters.yaml, one per line.
 declared_filters() {
-  awk '
-    /^          filters: \|$/ { in_filters = 1; next }
-    in_filters && /^      [a-z-]/ { exit }
-    in_filters && /^            [a-z0-9_]+:$/ {
-      gsub(/[ :]/, "", $0); print
-    }
-  ' "$CI_YAML"
+  filter_names
 }
 
-# Echo the path globs filter <name> lists under the paths-filter step, one per
-# line, without their quotes.
+# Echo the path globs filter <name> lists, one per line, without their quotes.
 filter_paths() {
-  awk -v key="            $1:" '
-    /^          filters: \|$/ { in_filters = 1; next }
-    in_filters && /^      [a-z-]/ { exit }
-    in_filters && $0 == key { in_key = 1; next }
-    in_key && /^            [a-z0-9_]+:$/ { exit }
-    in_key && /^              - / { sub(/^              - /, ""); print }
-  ' "$CI_YAML" | tr -d "'"
+  filter_block "$1" | sed -n 's/^  - //p' | tr -d "'"
 }
 
-# Echo every filter name handed to the resolve step as FILTER_<name>.
-wired_filters() {
-  grep -oE '^          FILTER_[a-z0-9_]+:' "$CI_YAML" | sed 's/^ *FILTER_//;s/:$//'
+# Echo every filter name the resolver reads by a literal name, one per line.
+# The names it builds at runtime (filter_on "$op", "image_${svc}", ...) are
+# covered by test_every_filter_steers_something instead.
+resolver_filters() {
+  grep -v '^[[:space:]]*#' "$PROJECT_ROOT/hack/ci-resolve-changes.sh" |
+    grep -oE 'filter_on [a-z0-9_]+' | sed 's/^filter_on //' | sort -u
 }
 
 # Echo the operator names the resolve step env var <name> carries in <file>,
@@ -86,14 +79,6 @@ service_image_operators() {
     done | sort -u)
 }
 
-# Echo the body of the top-level ci.yaml job <name>.
-job_block() {
-  awk -v key="  $1:" '
-    $0 == key { in_block = 1; next }
-    in_block && /^  [#a-z0-9-]/ { exit }
-    in_block { print }
-  ' "$CI_YAML"
-}
 
 # ---------------------------------------------------------------------------
 # Tests
@@ -102,14 +87,68 @@ job_block() {
 test_every_filter_is_wired_both_ways() {
   echo "Test: every declared filter reaches the resolver, and nothing else does"
 
-  local declared wired
+  local declared unknown="" name
   declared=$(declared_filters | sort)
-  wired=$(wired_filters | sort)
+  assert_not_empty "ci-filters.yaml declares filters" "$declared"
 
-  assert_not_empty "the paths-filter step declares filters" "$declared"
-  assert_eq "every declared filter is passed as FILTER_<name>, and no others" \
-    "$declared" "$wired"
+  # The paths-filter step reads the file, and the resolve step gets the names
+  # of the filters that matched in one value. A per-filter FILTER_ line left
+  # beside it would be a second wiring that drifts from the file.
+  assert_contains "the paths-filter step reads ci-filters.yaml" \
+    "$(job_block changes)" "          filters: .github/ci-filters.yaml"
+  assert_contains "the resolve step gets the matched filter names" \
+    "$(job_step changes "Resolve effective changes")" \
+    'MATCHED_FILTERS: ${{ steps.filter.outputs.changes }}'
+  assert_eq "no filter is passed one by one" "0" \
+    "$(grep -c '^          FILTER_[a-z0-9_]*:' "$CI_YAML")"
 
+  # A name the resolver reads that no filter declares stays false for ever.
+  for name in $(resolver_filters); do
+    grep -qx -- "$name" <<<"$declared" || unknown="${unknown} ${name}"
+  done
+  assert_eq "every filter the resolver reads by name is declared" "" "$unknown"
+
+  # The matched names arrive as one JSON array; each must resolve exactly like
+  # its own FILTER_<name>=true, and a value that is no such array fails.
+  for name in tests_chaos image_keystone e2e_shared; do
+    assert_eq "MATCHED_FILTERS [\"$name\"] resolves like FILTER_$name=true" \
+      "$(resolve_outputs refs/heads/main "$ALL_OPS" "FILTER_${name}=true")" \
+      "$(resolve_outputs refs/heads/main "$ALL_OPS" "MATCHED_FILTERS=[\"${name}\"]")"
+  done
+  assert_eq "an empty match resolves like no filter at all" \
+    "$(resolve_outputs refs/heads/main "$ALL_OPS")" \
+    "$(resolve_outputs refs/heads/main "$ALL_OPS" 'MATCHED_FILTERS=[]')"
+  assert_eq "a value that is not an array of names fails the step" \
+    "resolve script exited 1" \
+    "$(resolve_outputs refs/heads/main "$ALL_OPS" 'MATCHED_FILTERS={"tests_chaos":true}')"
+  assert_eq "a name that is no filter key fails the step" \
+    "resolve script exited 1" \
+    "$(resolve_outputs refs/heads/main "$ALL_OPS" 'MATCHED_FILTERS=["../x"]')"
+}
+
+test_every_called_workflow_runs_its_caller() {
+  echo "Test: an edit to a workflow ci.yaml calls runs the job that calls it"
+
+  # A workflow that moved out of ci.yaml takes its edits out of the reach of
+  # ci_plumbing, which lists ci.yaml: unless a filter that switches a job on
+  # lists the file, a pull request that edits it runs nothing that uses it.
+  # actionlint lints every edit and publish_legacy acts on a push alone, so
+  # neither counts.
+  local wf rel name listed missing=""
+  while IFS= read -r wf; do
+    rel=".github/workflows/${wf##*/}"
+    [ "$rel" = ".github/workflows/ci.yaml" ] && continue
+    listed=""
+    for name in $(declared_filters); do
+      case "$name" in actionlint | publish_legacy) continue ;; esac
+      if filter_paths "$name" | grep -qxF -- "$rel"; then
+        listed="$name"
+        break
+      fi
+    done
+    [ -n "$listed" ] || missing="${missing} ${rel}"
+  done < <(ci_workflows)
+  assert_eq "every called workflow is listed by a filter that runs a job" "" "$missing"
 }
 
 test_every_filter_steers_something() {
@@ -321,11 +360,7 @@ webhooks ^unit-,^integration-" \
 # Echo the body of the step <name> of the ci.yaml job <job>: the lines after
 # its `      - name: <name>` line up to the next step or comment.
 job_step_body() {
-  job_block "$1" | awk -v key="      - name: $2" '
-    $0 == key { in_block = 1; next }
-    in_block && /^      [-#]/ { exit }
-    in_block { print }
-  '
+  job_step "$1" "$2"
 }
 
 test_coverage_legs_collect_and_upload_before_teardown() {
@@ -370,7 +405,7 @@ test_coverage_legs_collect_and_upload_before_teardown() {
     assert_contains "$job: a failed upload never fails the job" "$upload" "fail_ci_if_error: false"
   done
   assert_eq "no other job runs the collector" "3" \
-    "$(grep -c '^        run: hack/ci-collect-e2e-coverage.sh ' "$CI_YAML")"
+    "$(ci_workflows | xargs cat | grep -c '^        run: hack/ci-collect-e2e-coverage.sh ')"
 }
 
 test_every_job_gates_on_its_own_flag() {
@@ -527,6 +562,7 @@ test_no_job_reads_an_unexported_output() {
 # Run
 # ---------------------------------------------------------------------------
 test_every_filter_is_wired_both_ways
+test_every_called_workflow_runs_its_caller
 test_every_filter_steers_something
 test_service_operators_match_the_release_configs
 test_service_operators_catch_a_missing_operator

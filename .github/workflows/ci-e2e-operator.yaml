@@ -1,0 +1,494 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+---
+# End-to-end operator tests using kind cluster and Chainsaw, one leg per
+# operator. Each leg pulls the images build-e2e-images resolved, deploys the
+# operator via Helm and runs the operator's Chainsaw suites.
+#
+# The e2e-operator job of ci.yaml calls this workflow and decides when it runs.
+name: E2E Operator
+
+"on":
+  workflow_call:
+    inputs:
+      image-map:
+        description: >
+          JSON object mapping each canonical image ref the job loads to the
+          reference to pull for it (see .github/actions/load-e2e-images).
+        type: string
+        required: true
+      matrix:
+        description: >
+          The legs, {"include":[{"operator":...,"shard":...}]}: one per operator
+          the change selects, nova as two shards.
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  packages: read
+
+# A called workflow does not inherit the env of ci.yaml, so the values its
+# steps and scripts read are declared here. kind is not pinned here: the
+# create-kind-cluster action installs the KIND_VERSION of
+# hack/install-test-deps.sh.
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/c5c3
+  KIND_CLUSTER: cobaltcore
+
+jobs:
+  e2e-operator:
+    runs-on: self-hosted
+    # 150 minutes for the nova leg: the kind broker, fourteen extra image loads
+    # (about 4 minutes) and five sibling deploys (about 2 minutes) come before
+    # its suites, and each suite brings five services up. On 2026-09-18 the leg
+    # reached its first suite after 14.5 minutes and spent the next 76 on twelve
+    # of its fifteen suites, two at a time and without a failed step, before a
+    # 90-minute wall cancelled it with three full-tier suites unfinished. A wall
+    # that arrives first kills chainsaw outright: no catch block runs and no
+    # JUnit report is written, so the job says nothing about which suite it
+    # stopped in. Under a 150-minute wall the leg took 125 to 137 minutes,
+    # until compute-node-pool, 27 minutes that no other suite runs beside,
+    # pushed it past 150 on 2026-09-24 with one suite unfinished. It now runs
+    # as two shards (the matrix below), each with the bring-up and about half
+    # the suites: about 80 to 95 minutes, so 150 is the wall per shard with
+    # headroom for a slow runner. Move a suite between the shards, or
+    # re-derive, if one overruns. The other legs keep 68; the neutron leg,
+    # with one sibling, took 41 minutes on 2026-09-17.
+    timeout-minutes: ${{ matrix.operator == 'nova' && 150 || 68 }}
+    # The operators run the coverage-instrumented :cover images, which the
+    # load steps fetch with operator-variant: cover, and
+    # hack/ci-deploy-operator.sh gives each a counter volume and GOCOVERDIR.
+    # "Collect operator coverage" reads the counters back before the cluster
+    # is deleted.
+    env:
+      E2E_COVERAGE: "true"
+    # e2e-operators with the nova leg split into shards 1 and 2 (see "Shard
+    # the e2e-operator matrix" in the changes job). A leg without a shard is
+    # named as before, e2e-operator (<operator>).
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(inputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.work
+      # The audit config makes the API server write the audit log the
+      # Report RBAC usage step reads.
+      - name: Create kind cluster
+        uses: ./.github/actions/create-kind-cluster
+        with:
+          config: hack/kind-config-audit.yaml
+          cluster-name: ${{ env.KIND_CLUSTER }}
+      # Resolve which images this operator needs: always its operator image,
+      # plus one service image per release that ships one. The release list
+      # comes from source-refs.yaml (ci-service-image-releases.sh), so an
+      # orchestration operator without a service image — e.g. c5c3 —
+      # loads no service image of its own instead of failing to pull a
+      # non-existent c5c3:<release>; the c5c3 block below adds the keystone
+      # image its env-key-material suite needs, and the ovn block adds it for
+      # the probe pods of its network-policy-egress suite.
+      - name: Resolve E2E images
+        id: e2e-images
+        env:
+          OPERATOR: ${{ matrix.operator }}
+          IMAGE_PREFIX: ${{ env.IMAGE_PREFIX }}
+        run: |
+          releases="$(OPERATOR="${OPERATOR}" hack/ci-service-image-releases.sh)"
+          OVN_VERSION="$(hack/ci-resolve-ovn-version.sh)"
+          refs="${IMAGE_PREFIX}/${OPERATOR}-operator:dev"
+          for release in ${releases}; do
+            refs="${refs}"$'\n'"${IMAGE_PREFIX}/${OPERATOR}:${release}"
+          done
+          # The oidc-federation suite projects the mod_auth_openidc sidecar,
+          # so the keystone leg also pulls the federation proxy image.
+          if [ "${OPERATOR}" = "keystone" ]; then
+            refs="${refs}"$'\n'"${IMAGE_PREFIX}/keystone-federation-proxy:dev"
+          fi
+          # ovn ships no per-release service image: its DaemonSets and Pods all
+          # run the one OVN daemon image the operator hard-codes at the pin
+          # hack/ci-resolve-ovn-version.sh reads from images/ovn/source.json.
+          # The probe pods of the network-policy-egress suite run python3,
+          # which the OVN image leaves out (images/ovn/ovn.nix), so the leg
+          # loads the keystone image for them, as the c5c3 leg does.
+          if [ "${OPERATOR}" = "ovn" ]; then
+            refs="${refs}"$'\n'"${IMAGE_PREFIX}/ovn:${OVN_VERSION}"
+            refs="${refs}"$'\n'"${IMAGE_PREFIX}/keystone:2026.1"
+          fi
+          # A Neutron never reaches Ready without a live OVNCentral, so the
+          # neutron leg deploys the ovn-operator as well and needs both the
+          # operator image and the daemon image that operator rolls out.
+          if [ "${OPERATOR}" = "neutron" ]; then
+            refs="${refs}"$'\n'"${IMAGE_PREFIX}/ovn-operator:dev"$'\n'"${IMAGE_PREFIX}/ovn:${OVN_VERSION}"
+          fi
+          # The env-key-material suite reads the c5c3-operator's process
+          # environment from an ephemeral container, which needs a shell the
+          # static operator image lacks. c5c3 ships no service image, so the
+          # leg loads the keystone one for that suite alone.
+          if [ "${OPERATOR}" = "c5c3" ]; then
+            refs="${refs}"$'\n'"${IMAGE_PREFIX}/keystone:2026.1"
+          fi
+          # A Nova has no identity-free posture (spec.keystoneEndpoint and
+          # spec.serviceUser are required), and its functional suites boot a
+          # server, which needs a Placement allocation, a Glance image and a
+          # Neutron backed by an OVNCentral. The nova leg therefore deploys
+          # five sibling operators and needs their images plus every service
+          # image each sibling ships, so the per-release Nova suites can pair
+          # a release with its own siblings.
+          if [ "${OPERATOR}" = "nova" ]; then
+            for sibling in keystone placement glance ovn neutron; do
+              refs="${refs}"$'\n'"${IMAGE_PREFIX}/${sibling}-operator:dev"
+              for release in $(OPERATOR="${sibling}" hack/ci-service-image-releases.sh); do
+                refs="${refs}"$'\n'"${IMAGE_PREFIX}/${sibling}:${release}"
+              done
+            done
+            # The compute-node-pool suite runs a NovaCompute, whose pods run
+            # the nova-compute image of each nova release.
+            for release in $(OPERATOR=nova hack/ci-service-image-releases.sh); do
+              refs="${refs}"$'\n'"${IMAGE_PREFIX}/nova-compute:${release}"
+            done
+            refs="${refs}"$'\n'"${IMAGE_PREFIX}/ovn:${OVN_VERSION}"
+            # The catalog, seed and verify Jobs of the functional Nova suites
+            # run the `openstack` client the tempest image bundles, at 2026.1
+            # in every suite, so it is loaded once.
+            refs="${refs}"$'\n'"${IMAGE_PREFIX}/tempest:2026.1"
+          fi
+          {
+            echo "releases<<EOF"; echo "${releases}"; echo "EOF"
+            echo "refs<<EOF"; echo "${refs}"; echo "EOF"
+            echo "ovn-version=${OVN_VERSION}"
+          } >> "$GITHUB_OUTPUT"
+      # GH-310: Pull pre-built images from GHCR (run-scoped tag).
+      - name: Load E2E images
+        uses: ./.github/actions/load-e2e-images
+        with:
+          image-map: ${{ inputs.image-map }}
+          operator-variant: cover
+          images: ${{ steps.e2e-images.outputs.refs }}
+      - name: Load images into kind
+        env:
+          OPERATOR: ${{ matrix.operator }}
+          IMAGE_PREFIX: ${{ env.IMAGE_PREFIX }}
+          SERVICE_RELEASES: ${{ steps.e2e-images.outputs.releases }}
+          OVN_VERSION: ${{ steps.e2e-images.outputs.ovn-version }}
+          REFS: ${{ steps.e2e-images.outputs.refs }}
+          KIND_CLUSTER: ${{ env.KIND_CLUSTER }}
+        run: |
+          # The nova leg loads the resolve step's list as it stands, so the
+          # sibling images are named in one place, and in one call, so the Nix
+          # store layers the service images share are saved and imported once
+          # rather than once per image. It runs first because kind saves
+          # every image of a call as soon as one is missing: the per-image
+          # loads below then find the leg's own images on the node and skip
+          # them.
+          if [ "${OPERATOR}" = "nova" ]; then
+            # shellcheck disable=SC2086 # deliberate: split the ref list
+            kind load docker-image ${REFS} --name "${KIND_CLUSTER}"
+          fi
+          kind load docker-image "${IMAGE_PREFIX}/${OPERATOR}-operator:dev" --name "${KIND_CLUSTER}"
+          # shellcheck disable=SC2086 # deliberate: split the release list
+          for release in ${SERVICE_RELEASES}; do
+            kind load docker-image "${IMAGE_PREFIX}/${OPERATOR}:${release}" --name "${KIND_CLUSTER}"
+          done
+          if [ "${OPERATOR}" = "keystone" ]; then
+            kind load docker-image "${IMAGE_PREFIX}/keystone-federation-proxy:dev" --name "${KIND_CLUSTER}"
+          fi
+          # The ovn leg's network-policy-egress probe pods need the python3
+          # of the keystone image (see the resolve step).
+          if [ "${OPERATOR}" = "ovn" ]; then
+            kind load docker-image "${IMAGE_PREFIX}/ovn:${OVN_VERSION}" --name "${KIND_CLUSTER}"
+            kind load docker-image "${IMAGE_PREFIX}/keystone:2026.1" --name "${KIND_CLUSTER}"
+          fi
+          if [ "${OPERATOR}" = "neutron" ]; then
+            kind load docker-image "${IMAGE_PREFIX}/ovn-operator:dev" --name "${KIND_CLUSTER}"
+            kind load docker-image "${IMAGE_PREFIX}/ovn:${OVN_VERSION}" --name "${KIND_CLUSTER}"
+          fi
+          if [ "${OPERATOR}" = "c5c3" ]; then
+            kind load docker-image "${IMAGE_PREFIX}/keystone:2026.1" --name "${KIND_CLUSTER}"
+          fi
+          # The image-upgrade E2E test re-tags the 2026.1 service image; only
+          # operators that ship a 2026.1 service image need it loaded.
+          # shellcheck disable=SC2086 # deliberate: split the release list
+          if printf '%s\n' ${SERVICE_RELEASES} | grep -qx 2026.1; then
+            docker tag "${IMAGE_PREFIX}/${OPERATOR}:2026.1" \
+              "${IMAGE_PREFIX}/${OPERATOR}:2026.1-upgraded"
+            kind load docker-image "${IMAGE_PREFIX}/${OPERATOR}:2026.1-upgraded" --name "${KIND_CLUSTER}"
+          fi
+      # Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
+      # The ovn and neutron chassis DaemonSets open a Geneve tunnel from the
+      # kind node, which needs the openvswitch and geneve modules loaded on the
+      # host, and the nova leg's compute-node-pool suite runs a chassis on the
+      # node its nova-compute waits for. Empty on every other leg, where
+      # deploy-infra.sh keeps its default of not touching the host's modules.
+      - name: Setup E2E infrastructure
+        uses: ./.github/actions/setup-e2e-infra
+        env:
+          WITH_OVN_KERNEL_MODULES: ${{ (matrix.operator == 'ovn' || matrix.operator == 'neutron' || matrix.operator == 'nova') && 'true' || '' }}
+          # The cinder suites mount their volumes as inline CSI volumes from
+          # the kind NFS export, and each one takes its own vhost on the
+          # shared broker. Every Nova process dials the bus, and the
+          # scheduler and the conductor report ready off their broker
+          # connection, so the nova leg takes the broker and not the NFS
+          # export. Empty on every other leg, where deploy-infra.sh keeps
+          # its default of installing neither.
+          WITH_NFS: ${{ matrix.operator == 'cinder' && 'true' || '' }}
+          WITH_MESSAGING: ${{ (matrix.operator == 'cinder' || matrix.operator == 'nova') && 'true' || '' }}
+      # The c5c3 ControlPlane controller Owns()/Watches() the Keystone,
+      # KeystoneIdentityBackend, Horizon, Glance, GlanceBackend, and K-ORC kinds
+      # (ControlPlaneReconciler.SetupWithManager). controller-runtime informers
+      # for a kind whose CRD is absent never sync, so without these CRDs the
+      # elected leader dies on the controller's 2-minute cache-sync timeout and
+      # the ControlPlane reconciler never runs on this leg — the webhook keeps
+      # serving, so the breakage only surfaces in suites that need the
+      # reconciler. Install the sibling operators' CRDs (charts only — their
+      # controllers stay undeployed; suites that need them run in the
+      # e2e-controlplane job) and K-ORC via the shared pinned installer.
+      - name: Set up Buildx for K-ORC provenance
+        if: matrix.operator == 'c5c3'
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+        with:
+          driver: docker
+      - name: Install CRDs watched by the c5c3-operator
+        if: matrix.operator == 'c5c3'
+        env:
+          # Authenticates the K-ORC clone from github.com; see the script.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          kubectl apply -f operators/keystone/helm/keystone-operator/crds/
+          kubectl apply -f operators/horizon/helm/horizon-operator/crds/
+          kubectl apply -f operators/glance/helm/glance-operator/crds/
+          kubectl apply -f operators/placement/helm/placement-operator/crds/
+          hack/ci-deploy-korc.sh
+      # The nova leg runs the identity, placement, image, OVN and network
+      # operators beside the nova-operator: spec.keystoneEndpoint and
+      # spec.serviceUser are required on the CRD, and a booted server needs a
+      # Placement allocation, a Glance image and a Neutron port. The OVN
+      # control plane comes with the neutron-operator's need for a live
+      # OVNCentral, and the compute-node-pool suite runs a single-node
+      # OVNChassis beside it for the nova-compute of its NovaCompute.
+      - name: Deploy keystone-operator
+        if: matrix.operator == 'nova'
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: keystone
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/keystone-operator
+          NAMESPACE: keystone-system
+      - name: Deploy placement-operator
+        if: matrix.operator == 'nova'
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: placement
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/placement-operator
+          NAMESPACE: placement-system
+      - name: Deploy glance-operator
+        if: matrix.operator == 'nova'
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: glance
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/glance-operator
+          NAMESPACE: glance-system
+      # Both neutron reconcilers Watches() an OVN kind: the Neutron controller
+      # reads the OVNCentral's published Northbound and Southbound addresses,
+      # and the NeutronMetadataAgent controller resolves its OVNChassis. The
+      # CRDs alone would only keep the manager's cache sync from timing out;
+      # the objects those reconcilers read still have to exist and be Ready, so
+      # this leg deploys the ovn-operator itself into ovn-system. The deploy
+      # script installs the OVN CRDs on the way. The nova leg deploys a Neutron
+      # of its own, so it needs the same OVNCentral behind it.
+      - name: Deploy ovn-operator
+        if: matrix.operator == 'neutron' || matrix.operator == 'nova'
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: ovn
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/ovn-operator
+          NAMESPACE: ovn-system
+      # After the ovn-operator, whose OVNCentral CRD the neutron-operator
+      # watches, and before the nova-operator.
+      - name: Deploy neutron-operator
+        if: matrix.operator == 'nova'
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: neutron
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/neutron-operator
+          NAMESPACE: neutron-system
+      # Use shared operator deployment script. NAMESPACE mirrors what
+      # hack/ci-dump-diagnostics.sh derives (${OPERATOR}-system) so the
+      # diagnostics of a failed run actually find the operator's pods and logs
+      # — without it every matrix leg lands in the script default
+      # keystone-system while the dump looks elsewhere.
+      - name: Deploy operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: ${{ matrix.operator }}
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}-operator
+          NAMESPACE: ${{ matrix.operator }}-system
+          # kind's ClusterIPs fall in this range; allowlisting it lets the
+          # oidc-federation suite's discovery-mode backend fetch the in-cluster
+          # Keycloak metadata past the operator's SSRF guard. keystone-gated
+          # because only the keystone chart exposes federation.metadataAllowCidrs.
+          FEDERATION_METADATA_ALLOW_CIDRS: ${{ matrix.operator == 'keystone' && '10.96.0.0/12' || '' }}
+          # The barbican suites create managed BarbicanSecretStore objects in the
+          # openstack Namespace, and the operator only mints their OpenBaoCluster
+          # provisioner token where the chart granted it a TokenRequest Role,
+          # restricted to the provisioner account of the proving instance.
+          # ci-deploy-operator.sh applies the value for OPERATOR=barbican only,
+          # so the other matrix legs ignore it.
+          BARBICAN_SECRET_STORE_GRANTS: openstack=openbao-instance-provisioner
+      - name: Run E2E tests
+        env:
+          OPERATOR: ${{ matrix.operator }}
+          SHARD: ${{ matrix.shard }}
+        run: |
+          mkdir -p _output/reports
+          # Operator-chart-level tests (e.g. network-policy-egress)
+          # live under tests/e2e/<operator>-operator/ to keep them separate from
+          # the per-CR tests under tests/e2e/<operator>/. Include the directory
+          # only when it exists so operators without chart-level tests still run.
+          test_dirs=("tests/e2e/${OPERATOR}/")
+          if [ -d "tests/e2e/${OPERATOR}-operator/" ]; then
+            test_dirs+=("tests/e2e/${OPERATOR}-operator/")
+          fi
+          # The nova leg runs as two shards. Shard 2 runs the suites named
+          # below, shard 1 every other suite of both directories, so a new
+          # suite lands in shard 1 without an edit here. The split follows the
+          # durations measured on 2026-09-24: each shard takes three of the six
+          # suites that run 24 to 30 minutes, compute-node-pool among shard 2's,
+          # and shard 1 takes gateway-quick-start-smoke and scale, the two other
+          # suites that run alone (concurrent: false). The NovaCompute suites
+          # stay together in shard 2. Shard 1 runs the plain basic-deployment,
+          # so basic-deployment-2026-2 runs in shard 2. The last measurement,
+          # run 37593527630 on 2026-10-07 with three releases loaded, took 66
+          # minutes for shard 1 and 59 for shard 2, 16.3 of them for a 2026.1
+          # copy of basic-deployment that the plain suite covers, so measure
+          # both shards again before moving a suite between them. The
+          # namespace-scoped-rbac suite runs alone for about 10 minutes, so it
+          # joins shard 2 as well. The suites are passed as directories
+          # because chainsaw's include/exclude regex filters are no-ops.
+          if [ "${OPERATOR}" = "nova" ]; then
+            shard_two="compute-node-pool invalid-novacompute-cr basic-deployment-2026-2 release-upgrade healthcheck deletion-cleanup pod-security-restricted namespace-scoped-rbac"
+            test_dirs=()
+            for dir in tests/e2e/nova/*/ tests/e2e/nova-operator/*/; do
+              case " ${shard_two} " in
+                *" $(basename "${dir}") "*) shard=2 ;;
+                *) shard=1 ;;
+              esac
+              if [ "${shard}" = "${SHARD}" ]; then
+                test_dirs+=("${dir}")
+              fi
+            done
+            if [ "${#test_dirs[@]}" -eq 0 ]; then
+              echo "::error::no nova suite belongs to shard '${SHARD}'"
+              exit 1
+            fi
+          fi
+          # Every neutron suite carries its own OVNCentral beside the Neutron
+          # API, its two worker Deployments and a db-sync Job, so four of them
+          # at once do not fit one kind node: the workers and the db-sync Jobs
+          # stay Pending on "Insufficient cpu" and the CRs never reach Ready.
+          # A cinder suite is the same size: three or four Deployments, a
+          # db-sync Job and a probe pod, which four at once do not fit on a
+          # 4-vCPU node either.
+          # A Nova suite of #1039 carries a Keystone, an OVNCentral, a Neutron,
+          # a Placement, a Glance and the five Nova workloads, so four at once
+          # do not fit either; the nova leg is narrowed before the first such
+          # suite exists.
+          # Only these three legs are narrowed; the shared config's parallel: 4
+          # is what every other operator runs at.
+          parallel=()
+          if [ "${OPERATOR}" = "neutron" ] || [ "${OPERATOR}" = "cinder" ] || [ "${OPERATOR}" = "nova" ]; then
+            parallel=(--parallel 2)
+          fi
+          chainsaw test --config tests/e2e/chainsaw-config.yaml "${parallel[@]}" "${test_dirs[@]}"
+      # Use shared diagnostic dump script.
+      - name: Dump diagnostic info
+        if: always()
+        run: hack/ci-dump-diagnostics.sh
+        env:
+          OPERATOR: ${{ matrix.operator }}
+      # The neutron leg runs a second operator, in ovn-system. The dump above
+      # derives its Namespace from the matrix operator and never looks there.
+      - name: Dump diagnostic info (ovn)
+        if: always() && matrix.operator == 'neutron'
+        run: hack/ci-dump-diagnostics.sh
+        env:
+          OPERATOR: ovn
+      # The nova leg runs five more operators, each in its own Namespace the
+      # first dump never looks at. One call per operator, since the script
+      # reads a single OPERATOR. OPERATOR_ONLY keeps each pass to the sections
+      # that differ: the infrastructure block and the openstack Namespace's Job
+      # and pod logs do not change with OPERATOR, and the dump above already
+      # emitted them. Repeated five times they would bury the operator evidence
+      # this step exists for and spend the grace window `Delete kind cluster`
+      # below needs when the job wall cancels the run.
+      - name: Dump diagnostic info (nova siblings)
+        if: always() && matrix.operator == 'nova'
+        run: |
+          for op in keystone placement glance ovn neutron; do
+            OPERATOR="${op}" OPERATOR_ONLY=1 hack/ci-dump-diagnostics.sh
+          done
+      # Diffs the requests the operator's ServiceAccount made, as the audit
+      # log of hack/kind-config-audit.yaml recorded them, against the
+      # ClusterRole its markers render
+      # (docs/reference/testing/rbac-usage-audit.md). It reports and never
+      # gates: a path the suites skip is no reason to fail correct code, and a
+      # run that never deployed the operator has no events to report. The
+      # sibling operators of the neutron and nova legs are reported by their
+      # own legs.
+      - name: Report RBAC usage
+        if: always()
+        continue-on-error: true
+        env:
+          OPERATOR: ${{ matrix.operator }}
+        run: hack/ci-rbac-usage-report.sh
+      # Named like the JUnit report below, so each nova shard keeps its own:
+      # rbac-usage-nova-1 and rbac-usage-nova-2.
+      - name: Upload RBAC usage report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rbac-usage-${{ matrix.operator }}${{ matrix.shard && format('-{0}', matrix.shard) || '' }}
+          path: _output/rbac-usage/
+          retention-days: 14
+      # Two artifacts of one run cannot share a name, so each nova shard adds
+      # its number: e2e-nova-1-junit-report and e2e-nova-2-junit-report.
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-${{ matrix.operator }}${{ matrix.shard && format('-{0}', matrix.shard) || '' }}-junit-report
+          path: _output/reports/
+          retention-days: 14
+      # Scales the coverage-instrumented operators to 0 so each flushes its
+      # counters once more, copies the counters off the kind nodes and merges
+      # them into one profile per operator, with the totals in the job summary
+      # (hack/ci-collect-e2e-coverage.sh). It reports and never fails the job.
+      # A cancelled run skips the scale-down, so the step does not eat the
+      # grace window "Delete kind cluster" needs; cancelled() is allowed in an
+      # if: alone, so the env reads job.status.
+      - name: Collect operator coverage
+        id: coverage
+        if: always()
+        continue-on-error: true
+        env:
+          SCALE_DOWN: ${{ job.status != 'cancelled' }}
+        run: hack/ci-collect-e2e-coverage.sh e2e
+      # One upload per leg: every profile, each scoped to its tree by its
+      # flag in .codecov.yml, and no status gates on these flags.
+      # disable_search keeps the raw counter files out of the upload.
+      - name: Upload operator coverage
+        if: always() && steps.coverage.outputs.found == 'true'
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
+        with:
+          files: ${{ steps.coverage.outputs.files }}
+          flags: ${{ steps.coverage.outputs.flags }}
+          disable_search: true
+          fail_ci_if_error: false
+      # Last step of the job, so the dump above still had a cluster to read;
+      # `always()` covers the failed and timed-out runs.  Never fails the job
+      # (see hack/ci-delete-kind-cluster.sh).
+      - name: Delete kind cluster
+        if: always()
+        run: hack/ci-delete-kind-cluster.sh

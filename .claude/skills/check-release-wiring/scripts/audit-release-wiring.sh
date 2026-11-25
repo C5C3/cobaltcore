@@ -24,11 +24,11 @@
 #       release, every release pin in the tests/e2e*/ fixture trees resolves
 #       (the below-floor rejection fixtures of the invalid-* corpora, which
 #       must name a release that has no releases/ directory, are exempt; L8
-#       checks them), and the placed-services pins match the ci.yaml
+#       checks them), and the placed-services pins match the CI
 #       e2e-multicluster preloads
 #   L4  every default-release reference (deploy/overlays/kind ControlPlane, deploy-infra
 #       preload, ${VAR:-YYYY.N} fallbacks and the ci-run-tempest.sh slug
-#       fallbacks in hack/, image tags in ci.yaml, the kind fake compute, the
+#       fallbacks in hack/, image tags in the CI workflows, the kind fake compute, the
 #       metal-stack lab manifests) points at an existing releases/<version>/
 #       directory, and the fake compute's nova tags equal the kind default
 #   L5  the Renovate regression tests and the per-release renovate.json
@@ -549,8 +549,9 @@ tempest_tags="$(printf '%s\n' "${PIN_FILES}" | release_pins_list | awk '$1 == "t
 info "tempest client image tags the e2e fixtures run: ${tempest_tags:-<none>}"
 
 # The two-cluster placed-services fixtures pin one release per service image
-# (repository + tag); the ci.yaml e2e-multicluster job preloads exactly those
-# images into kind, so the two sides move together.
+# (repository + tag); the e2e-multicluster job (its steps in
+# .github/workflows/ci-e2e-multicluster.yaml) preloads exactly those images
+# into kind, so the two sides move together.
 MC_DIR="tests/e2e-multicluster/placed-services"
 if [[ -d "${MC_DIR}" ]]; then
   mc_pairs="$(awk '
@@ -561,18 +562,19 @@ if [[ -d "${MC_DIR}" ]]; then
     img != "" && /^[[:space:]]*tag:/ {
       v = $0; sub(/.*tag:[[:space:]]*"?/, "", v); sub(/[";[:space:]].*$/, "", v); print img, v; img = ""
     }' "${MC_DIR}"/*.yaml | sort -u)"
+  MC_WF=".github/workflows/ci-e2e-multicluster.yaml"
   mc_job="$(awk '/^  e2e-multicluster:[[:space:]]*$/ {f = 1; next}
                  f && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ {f = 0}
-                 f' .github/workflows/ci.yaml)"
+                 f' "${MC_WF}" 2>/dev/null || true)"
   if [[ -z "${mc_job}" ]]; then
-    fail ".github/workflows/ci.yaml: no e2e-multicluster job block — the job moved or was renamed; update this audit"
+    fail "${MC_WF}: no e2e-multicluster job block — the job moved or was renamed; update this audit"
   else
     while read -r img v; do
       [[ -z "${img}" ]] && continue
       if grep -qF "/${img}:${v}" <<< "${mc_job}"; then
-        pass "${MC_DIR} pins ${img}:${v} and the ci.yaml e2e-multicluster job preloads it"
+        pass "${MC_DIR} pins ${img}:${v} and the e2e-multicluster job preloads it"
       else
-        fail "${MC_DIR} pins ${img}:${v} but the ci.yaml e2e-multicluster job preloads no /${img}:${v}"
+        fail "${MC_DIR} pins ${img}:${v} but the e2e-multicluster job preloads no /${img}:${v}"
       fi
     done <<< "${mc_pairs}"
     job_pairs="$(grep -oE '/[a-z0-9_-]+:[0-9]{4}\.[12]' <<< "${mc_job}" | sed 's|^/||; s/:/ /' | sort -u || true)"
@@ -580,9 +582,9 @@ if [[ -d "${MC_DIR}" ]]; then
       [[ -z "${img}" ]] && continue
       pin="$(awk -v i="${img}" '$1 == i {print $2}' <<< "${mc_pairs}" | first)"
       if [[ -z "${pin}" ]]; then
-        info "the ci.yaml e2e-multicluster job preloads ${img}:${v}, which no ${MC_DIR} fixture pins"
+        info "the e2e-multicluster job preloads ${img}:${v}, which no ${MC_DIR} fixture pins"
       elif [[ "${pin}" != "${v}" ]]; then
-        fail "the ci.yaml e2e-multicluster job preloads ${img}:${v} but ${MC_DIR} pins ${img}:${pin}"
+        fail "the e2e-multicluster job preloads ${img}:${v} but ${MC_DIR} pins ${img}:${pin}"
       fi
     done <<< "${job_pairs}"
   fi
@@ -656,16 +658,20 @@ for f in deploy/overlays/metal-stack/controlplane/controlplane-lab.yaml \
   check_ref "${f}" "$(first_pin openStackRelease "${f}")" "openStackRelease"
 done
 
-# Image tags of the form <name>:<YYYY.N> hard-coded in ci.yaml (upgrade
-# re-tagging, kind image preloads). Colon-anchored so prose dates do not match.
-ci_versions="$(grep -oE ':[0-9]{4}\.[12]' .github/workflows/ci.yaml | tr -d ':' | sort -u || true)"
-if [[ -z "${ci_versions}" ]]; then
-  info ".github/workflows/ci.yaml: no hard-coded image-tag releases found"
-else
-  for v in ${ci_versions}; do
-    check_ref .github/workflows/ci.yaml "${v}" "hard-coded image tag"
-  done
-fi
+# Image tags of the form <name>:<YYYY.N> hard-coded in ci.yaml and the
+# ci-<job>.yaml workflows its E2E jobs call (upgrade re-tagging, kind image
+# preloads). Colon-anchored so prose dates do not match.
+for wf in .github/workflows/ci.yaml .github/workflows/ci-*.yaml; do
+  [[ -f "${wf}" ]] || continue
+  ci_versions="$(grep -oE ':[0-9]{4}\.[12]' "${wf}" | tr -d ':' | sort -u || true)"
+  if [[ -z "${ci_versions}" ]]; then
+    info "${wf}: no hard-coded image-tag releases found"
+  else
+    for v in ${ci_versions}; do
+      check_ref "${wf}" "${v}" "hard-coded image tag"
+    done
+  fi
+done
 
 # ---------------------------------------------------------------------------
 # L5 — Renovate regression tests and per-release rules reference existing releases

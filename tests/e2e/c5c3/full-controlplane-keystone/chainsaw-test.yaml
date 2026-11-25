@@ -2470,7 +2470,7 @@ spec:
         # Pinned for the same reason as catch above; one delete needs nothing
         # like the test's exec budget. Keeps the suite's ceiling at
         # exec + catch + finally + cleanup = 100 + 5 + 5 + 5 + 2 + 3 = 120m, which is
-        # the number .github/workflows/ci.yaml budgets against.
+        # the number .github/workflows/ci-e2e-controlplane.yaml budgets against.
         timeout: 5m
         shell: bash
         content: |

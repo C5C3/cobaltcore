@@ -34,6 +34,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
+CI_FILTERS="$PROJECT_ROOT/.github/ci-filters.yaml"
 
 PASS=0
 FAIL=0
@@ -62,9 +63,9 @@ test_all_operators_lists_ovn() {
 test_ovn_filter_is_wired() {
   echo "Test: the ovn paths filter reaches the resolve step"
 
-  assert_file_contains "the paths filter exists" "$CI_YAML" "^ *ovn:$"
-  assert_file_contains "the filter is passed to the resolve step" "$CI_YAML" \
-    "FILTER_ovn: \${{ steps.filter.outputs.ovn }}"
+  assert_file_contains "the paths filter exists" "$CI_FILTERS" "^ovn:$"
+  assert_file_contains "the matched filters reach the resolve step" "$CI_YAML" \
+    'MATCHED_FILTERS: ${{ steps.filter.outputs.changes }}'
 
   local block
   block=$(filter_block ovn)
@@ -73,9 +74,7 @@ test_ovn_filter_is_wired() {
   # The images live in a filter of their own: rebuilding the OVS/OVN daemons or
   # the backup shifter runs the ovn e2e leg without pulling the operator's Go
   # gates in with them.
-  assert_file_contains "the image filter exists" "$CI_YAML" "^ *image_ovn:$"
-  assert_file_contains "the image filter is passed to the resolve step" "$CI_YAML" \
-    "FILTER_image_ovn: \${{ steps.filter.outputs.image_ovn }}"
+  assert_file_contains "the image filter exists" "$CI_FILTERS" "^image_ovn:$"
   block=$(filter_block image_ovn)
   assert_contains "the OVN image is covered" "$block" "images/ovn/**"
   assert_contains "the backup-shifter image is covered" "$block" "images/backup-shifter/**"
@@ -203,9 +202,12 @@ test_build_e2e_images_builds_the_ovn_images() {
   assert_not_contains "no Docker build step builds the daemon image" "$job" \
     "name: Build OVN image"
   assert_not_contains "no Docker build script builds the daemon image" "$job" "build-ovn-image.sh"
-  assert_contains "the resolver learns whether the ovn inputs changed" \
+  assert_contains "the job passes whether the ovn inputs changed" \
+    "$(job_block build-e2e-images)" \
+    '      changed-ovn: ${{ needs.changes.outputs.changed-ovn }}'
+  assert_contains "and the resolver learns it" \
     "$(job_step build-e2e-images "Resolve images")" \
-    'CHANGED_OVN: ${{ needs.changes.outputs.changed-ovn }}'
+    'CHANGED_OVN: ${{ inputs.changed-ovn }}'
   local nix_step
   nix_step=$(job_step build-e2e-images "Build Nix images")
   assert_contains "the Nix step learns whether to build the ovn image" "$nix_step" \
@@ -281,9 +283,9 @@ test_e2e_leg_loads_the_probe_image() {
   dir=$(mktemp -d)
   mkdir "$dir/bin"
   yq -r '.jobs.e2e-operator.steps[] | select(.name == "Resolve E2E images") | .run' \
-    "$CI_YAML" >"$dir/resolve.sh"
+    "$(job_workflow e2e-operator)" >"$dir/resolve.sh"
   yq -r '.jobs.e2e-operator.steps[] | select(.name == "Load images into kind") | .run' \
-    "$CI_YAML" >"$dir/load.sh"
+    "$(job_workflow e2e-operator)" >"$dir/load.sh"
   pin=$("$PROJECT_ROOT/hack/ci-resolve-ovn-version.sh")
 
   # The script shells out to hack/ by relative path.

@@ -34,6 +34,8 @@ SKIP=0
 
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
+# shellcheck source=tests/lib/ci_yaml.sh
+source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -75,7 +77,7 @@ suite_ceiling() {
 # controlplane_suites — the suite directories the e2e-controlplane job runs, in
 # the order its steps run them.
 controlplane_suites() {
-  yq -r '.jobs.e2e-controlplane.steps[].run // ""' "$CI_YAML" \
+  yq -r '.jobs.e2e-controlplane.steps[].run // ""' "$(job_workflow e2e-controlplane)" \
     | grep -oE 'tests/e2e/[A-Za-z0-9/_-]+/' \
     | sed 's:/*$::' \
     | awk '!seen[$0]++'
@@ -101,7 +103,7 @@ test_no_suite_outlasts_the_job_wall() {
   echo "Test: no single suite ceiling exceeds the job's timeout-minutes"
 
   local wall suite ceiling
-  wall="$(yq -r '.jobs.e2e-controlplane."timeout-minutes"' "$CI_YAML")"
+  wall="$(yq -r '.jobs.e2e-controlplane."timeout-minutes"' "$(job_workflow e2e-controlplane)")"
   assert_not_empty "e2e-controlplane declares timeout-minutes" "$wall"
 
   for suite in $SUITES; do

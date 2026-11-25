@@ -6039,10 +6039,10 @@ tests/e2e-chaos/
    in place of the Keystone CR. Source
    `../lib/controlplane.sh` for `cp_bring_up`, `cp_teardown` and `cp_dump`, start
    the workload with `CHAOS_WORKLOAD_ADMIN_SECRET=<cp>-keystone-admin-credentials`,
-   and add the directory to the `controlplane` entry in `.github/workflows/ci.yaml`
+   and add the directory to the `controlplane` entry in `.github/workflows/ci-e2e-chaos.yaml`
    and to `CONTROLPLANE_SUITES` in `tests/unit/ci/controlplane_chaos_matrix_test.sh`
 9. For a suite that faults a release upgrade, add the directory to the `upgrade`
-   entry in `.github/workflows/ci.yaml`, the entry that loads the 2026.2 image, and
+   entry in `.github/workflows/ci-e2e-chaos.yaml`, the entry that loads the 2026.2 image, and
    to `UPGRADE_SUITES` in `tests/unit/ci/upgrade_chaos_matrix_test.sh`
 10. For a suite that needs two workers, give its Test
    `metadata.labels: {chaos.c5c3.io/topology: multinode}`, which keeps it out of

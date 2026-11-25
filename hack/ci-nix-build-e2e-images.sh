@@ -6,7 +6,7 @@
 # hack/ci-nix-build-e2e-images.sh — Build the Nix images of an e2e run.
 #
 # Runs inside the nixos/nix container step "Build Nix images" of the
-# build-e2e-images job (.github/workflows/ci.yaml), with the workspace as its
+# build-e2e-images job (.github/workflows/ci-build-e2e-images.yaml), with the workspace as its
 # working directory. It reads the image set hack/ci-resolve-e2e-images.sh
 # wrote:
 #

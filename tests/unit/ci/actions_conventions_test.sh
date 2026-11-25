@@ -34,8 +34,12 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 shopt -s nullglob
 # GitHub loads action.yml as well as action.yaml, and runs workflows under
 # either extension, so a file with the other one must not skip the checks.
+# The actions the E2E workflows share for their steps sit one level deeper,
+# under .github/actions/tests/.
 ACTION_FILES=("$PROJECT_ROOT"/.github/actions/*/action.yaml
-  "$PROJECT_ROOT"/.github/actions/*/action.yml)
+  "$PROJECT_ROOT"/.github/actions/*/action.yml
+  "$PROJECT_ROOT"/.github/actions/*/*/action.yaml
+  "$PROJECT_ROOT"/.github/actions/*/*/action.yml)
 WORKFLOW_FILES=("$PROJECT_ROOT"/.github/workflows/*.yaml
   "$PROJECT_ROOT"/.github/workflows/*.yml)
 shopt -u nullglob
@@ -58,7 +62,7 @@ test_the_file_sets_are_not_empty() {
 
   # An empty set would let every test below pass on nothing.
   if [ "${#ACTION_FILES[@]}" -eq 0 ]; then
-    echo "  FAIL: no .github/actions/*/action.y[a]ml found"
+    echo "  FAIL: no .github/actions/**/action.y[a]ml found"
     FAIL=$((FAIL + 1))
   else
     echo "  PASS: ${#ACTION_FILES[@]} composite actions found"

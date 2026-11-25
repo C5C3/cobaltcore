@@ -1,0 +1,352 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+---
+# The ControlPlane suites on one kind cluster: the infrastructure for the
+# ControlPlane path, K-ORC, the ten operators, then the ten suites under
+# tests/e2e/c5c3/ one chainsaw invocation after the other, the full chain
+# first. The images of both releases are loaded for the full chain's release
+# upgrade. The 540-minute wall and the suite budgets are explained in the
+# e2e-controlplane section of docs/reference/ci-cd/ci-workflow.md, and
+# tests/unit/ci/e2e_controlplane_suite_budget_test.sh holds every suite's
+# ceiling under it.
+#
+# The e2e-controlplane job of ci.yaml calls this workflow and decides when it runs.
+name: E2E ControlPlane
+
+"on":
+  workflow_call:
+    inputs:
+      image-map:
+        description: >
+          JSON object mapping each canonical image ref the job loads to the
+          reference to pull for it (see .github/actions/load-e2e-images).
+        type: string
+        required: true
+      measure-sizing:
+        description: >
+          "true" when the ci:measure-sizing label asks for the VPA sizing
+          measurement (hack/ci-vpa-recommendations.sh).
+        type: string
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+  packages: read
+
+# A called workflow does not inherit the env of ci.yaml, so the values its
+# steps and scripts read are declared here. kind is not pinned here: the
+# create-kind-cluster action installs the KIND_VERSION of
+# hack/install-test-deps.sh.
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/c5c3
+  KIND_CLUSTER: cobaltcore
+
+jobs:
+  e2e-controlplane:
+    runs-on: self-hosted
+    # Allow for setup, serial suites and a stalled suite's catch and cleanup.
+    # See the e2e-controlplane section of docs/reference/ci-cd/ci-workflow.md.
+    timeout-minutes: 540
+    continue-on-error: false
+    # Match the kind devstack footprint for the node budget check.
+    env:
+      OPERATOR_REPLICAS: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # The API server audit log is the input to Report RBAC usage.
+      - name: Create kind cluster
+        uses: ./.github/actions/create-kind-cluster
+        with:
+          config: hack/kind-config-audit.yaml
+          cluster-name: ${{ env.KIND_CLUSTER }}
+      - name: Resolve OVN version
+        run: echo "OVN_VERSION=$(hack/ci-resolve-ovn-version.sh)" >> "$GITHUB_ENV"
+      # Load both service releases for the full-chain upgrade.
+      - name: Load E2E images
+        uses: ./.github/actions/load-e2e-images
+        with:
+          image-map: ${{ inputs.image-map }}
+          images: |
+            ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
+            ${{ env.IMAGE_PREFIX }}/c5c3-operator:dev
+            ${{ env.IMAGE_PREFIX }}/horizon-operator:dev
+            ${{ env.IMAGE_PREFIX }}/glance-operator:dev
+            ${{ env.IMAGE_PREFIX }}/placement-operator:dev
+            ${{ env.IMAGE_PREFIX }}/barbican-operator:dev
+            ${{ env.IMAGE_PREFIX }}/ovn-operator:dev
+            ${{ env.IMAGE_PREFIX }}/neutron-operator:dev
+            ${{ env.IMAGE_PREFIX }}/cinder-operator:dev
+            ${{ env.IMAGE_PREFIX }}/nova-operator:dev
+            ${{ env.IMAGE_PREFIX }}/keystone:2026.1
+            ${{ env.IMAGE_PREFIX }}/horizon:2026.1
+            ${{ env.IMAGE_PREFIX }}/glance:2026.1
+            ${{ env.IMAGE_PREFIX }}/placement:2026.1
+            ${{ env.IMAGE_PREFIX }}/barbican:2026.1
+            ${{ env.IMAGE_PREFIX }}/neutron:2026.1
+            ${{ env.IMAGE_PREFIX }}/cinder:2026.1
+            ${{ env.IMAGE_PREFIX }}/nova:2026.1
+            ${{ env.IMAGE_PREFIX }}/keystone:2026.2
+            ${{ env.IMAGE_PREFIX }}/horizon:2026.2
+            ${{ env.IMAGE_PREFIX }}/glance:2026.2
+            ${{ env.IMAGE_PREFIX }}/placement:2026.2
+            ${{ env.IMAGE_PREFIX }}/barbican:2026.2
+            ${{ env.IMAGE_PREFIX }}/neutron:2026.2
+            ${{ env.IMAGE_PREFIX }}/cinder:2026.2
+            ${{ env.IMAGE_PREFIX }}/nova:2026.2
+            ${{ env.IMAGE_PREFIX }}/ovn:${{ env.OVN_VERSION }}
+            ${{ env.IMAGE_PREFIX }}/tempest:2026.1
+      - name: Load images into kind
+        run: |
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/c5c3-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/glance-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/placement-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/barbican-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/ovn-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/nova-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/glance:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/placement:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/barbican:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/nova:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2026.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon:2026.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/glance:2026.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/placement:2026.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/barbican:2026.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron:2026.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder:2026.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/nova:2026.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/ovn:${{ env.OVN_VERSION }} --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/tempest:2026.1 --name ${{ env.KIND_CLUSTER }}
+      - name: Setup E2E infrastructure
+        uses: ./.github/actions/setup-e2e-infra
+        env:
+          WITH_CONTROLPLANE: "true"
+          CONTROLPLANE_OPERATORS: external
+          # Match the fixture name so bootstrap seeds its OpenBao paths.
+          CONTROLPLANE_NAME: controlplane-keystone
+          WITH_CONTROLPLANE_CR: "false"
+          WITH_NFS: "true"
+          WITH_MESSAGING: "true"
+          # The suite's OVN chassis needs openvswitch and geneve on the host.
+          WITH_OVN_KERNEL_MODULES: "true"
+          WITH_VPA: ${{ inputs.measure-sizing == 'true' && 'true' || '' }}
+      # Sample throughout the run to capture workloads the suites later delete.
+      - name: Start the sizing measurement
+        if: inputs.measure-sizing == 'true'
+        run: mkdir -p _output/sizing && nohup hack/ci-vpa-recommendations.sh watch _output/sizing openstack >_output/sizing/watch.log 2>&1 &
+      - name: Set up Buildx for K-ORC provenance
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+        with:
+          driver: docker
+      - name: Deploy K-ORC
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: hack/ci-deploy-korc.sh
+      # Install service CRDs before c5c3-operator starts watching them.
+      - name: Deploy keystone-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: keystone
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/keystone-operator
+          NAMESPACE: keystone-system
+      - name: Deploy horizon-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: horizon
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/horizon-operator
+          NAMESPACE: horizon-system
+      - name: Deploy glance-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: glance
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/glance-operator
+          NAMESPACE: glance-system
+      - name: Deploy placement-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: placement
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/placement-operator
+          NAMESPACE: placement-system
+      # The ControlPlane creates the TokenRequest grant for its own Barbican
+      # instance at runtime, so BARBICAN_SECRET_STORE_GRANTS stays unset.
+      - name: Deploy barbican-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: barbican
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/barbican-operator
+          NAMESPACE: barbican-system
+      - name: Deploy ovn-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: ovn
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/ovn-operator
+          NAMESPACE: ovn-system
+      - name: Deploy neutron-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: neutron
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/neutron-operator
+          NAMESPACE: neutron-system
+      - name: Deploy cinder-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: cinder
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/cinder-operator
+          NAMESPACE: cinder-system
+      - name: Deploy nova-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: nova
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/nova-operator
+          NAMESPACE: nova-system
+      - name: Deploy c5c3-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: c5c3
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/c5c3-operator
+          NAMESPACE: c5c3-system
+      # Run the full chain first. Use separate Chainsaw invocations with
+      # distinct JUnit names and run them serially on the shared kind node.
+      - name: Run full ControlPlane chain E2E test
+        run: |
+          mkdir -p _output/reports
+          chainsaw test --config tests/e2e/chainsaw-config.yaml \
+            tests/e2e/c5c3/full-controlplane-keystone/
+        env:
+          E2E_REQUIRE_CONTROLPLANE_STACK: "true"
+          E2E_NODE_BUDGET: "true"
+      - name: Run foreign-namespace registration E2E test
+        run: |
+          mkdir -p _output/reports
+          chainsaw test --config tests/e2e/chainsaw-config.yaml \
+            --report-name chainsaw-report-keystone-service \
+            tests/e2e/c5c3/keystone-service-foreign-namespace/
+        env:
+          E2E_REQUIRE_CONTROLPLANE_STACK: "true"
+      - name: Run keystone-user order E2E test
+        run: |
+          mkdir -p _output/reports
+          chainsaw test --config tests/e2e/chainsaw-config.yaml \
+            --report-name chainsaw-report-keystone-user \
+            tests/e2e/c5c3/keystone-user/
+        env:
+          E2E_REQUIRE_CONTROLPLANE_STACK: "true"
+      - name: Run own-namespace registration E2E test
+        run: |
+          mkdir -p _output/reports
+          chainsaw test --config tests/e2e/chainsaw-config.yaml \
+            --report-name chainsaw-report-keystone-service-own-namespace \
+            tests/e2e/c5c3/keystone-service/
+        env:
+          E2E_REQUIRE_CONTROLPLANE_STACK: "true"
+      - name: Run ControlPlane healthcheck E2E test
+        run: |
+          mkdir -p _output/reports
+          chainsaw test --config tests/e2e/chainsaw-config.yaml \
+            --report-name chainsaw-report-controlplane-healthcheck \
+            tests/e2e/c5c3/healthcheck/
+        env:
+          E2E_REQUIRE_CONTROLPLANE_STACK: "true"
+      - name: Run ControlPlane pod-security-restricted E2E test
+        run: |
+          mkdir -p _output/reports
+          chainsaw test --config tests/e2e/chainsaw-config.yaml \
+            --report-name chainsaw-report-controlplane-pod-security-restricted \
+            tests/e2e/c5c3/pod-security-restricted/
+        env:
+          E2E_REQUIRE_CONTROLPLANE_STACK: "true"
+      - name: Run admin-password scoping E2E test
+        run: |
+          mkdir -p _output/reports
+          chainsaw test --config tests/e2e/chainsaw-config.yaml \
+            --report-name chainsaw-report-admin-password-scoping \
+            tests/e2e/c5c3/admin-password-scoping/
+        env:
+          E2E_REQUIRE_CONTROLPLANE_STACK: "true"
+      - name: Run DB-credential scoping E2E test
+        run: |
+          mkdir -p _output/reports
+          chainsaw test --config tests/e2e/chainsaw-config.yaml \
+            --report-name chainsaw-report-db-credential-scoping \
+            tests/e2e/c5c3/db-credential-scoping/
+        env:
+          E2E_REQUIRE_CONTROLPLANE_STACK: "true"
+      - name: Run multi-ControlPlane isolation E2E test
+        run: |
+          mkdir -p _output/reports
+          chainsaw test --config tests/e2e/chainsaw-config.yaml \
+            --report-name chainsaw-report-multi-controlplane \
+            tests/e2e/c5c3/multi-controlplane/
+        env:
+          E2E_REQUIRE_CONTROLPLANE_STACK: "true"
+      - name: Run deletion-orchestration E2E test
+        run: |
+          mkdir -p _output/reports
+          chainsaw test --config tests/e2e/chainsaw-config.yaml \
+            --report-name chainsaw-report-deletion-orchestration \
+            tests/e2e/c5c3/deletion-orchestration/
+        env:
+          E2E_REQUIRE_CONTROLPLANE_STACK: "true"
+      - name: Collect the sizing measurement
+        if: always() && inputs.measure-sizing == 'true'
+        run: |
+          kill "$(cat _output/sizing/watch.pid)" || true
+          hack/ci-vpa-recommendations.sh snapshot _output/sizing openstack ||
+            echo "::warning::the final sizing snapshot failed; reporting the watch's snapshots"
+          hack/ci-vpa-recommendations.sh report _output/sizing
+      - name: Upload the sizing measurement
+        if: always() && inputs.measure-sizing == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sizing-e2e-controlplane
+          path: _output/sizing/
+          retention-days: 14
+      - name: Dump diagnostic info
+        if: always()
+        run: hack/ci-dump-diagnostics.sh
+        env:
+          OPERATOR: c5c3
+      - name: Dump cinder diagnostic info
+        if: always()
+        run: hack/ci-dump-diagnostics.sh
+        env:
+          OPERATOR: cinder
+      - name: Dump nova diagnostic info
+        if: always()
+        run: hack/ci-dump-diagnostics.sh
+        env:
+          OPERATOR: nova
+      - name: Report RBAC usage
+        if: always()
+        continue-on-error: true
+        env:
+          OPERATOR: c5c3
+        run: hack/ci-rbac-usage-report.sh
+      - name: Upload RBAC usage report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rbac-usage-e2e-controlplane
+          path: _output/rbac-usage/
+          retention-days: 14
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-controlplane-junit-report
+          path: _output/reports/
+          retention-days: 14
+      - name: Delete kind cluster
+        if: always()
+        run: hack/ci-delete-kind-cluster.sh

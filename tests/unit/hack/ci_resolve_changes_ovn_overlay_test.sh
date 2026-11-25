@@ -42,6 +42,8 @@ SKIP=0
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/ci_resolve.sh
 source "$PROJECT_ROOT/tests/lib/ci_resolve.sh"
+# shellcheck source=tests/lib/ci_yaml.sh
+source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -145,13 +147,8 @@ test_ci_yaml_wires_the_signal() {
 test_filter_names_the_suite_and_its_overlay() {
   echo "Test: the filter lists the overlay suites and the frr-k8s overlay only"
 
-  # The filter block ends at the next filter key at the same indent.
   local block
-  block=$(awk '
-    /^            tests_ovn_overlay:$/ { in_block = 1; next }
-    in_block && /^            [a-z0-9_]+:$/ { exit }
-    in_block { print }
-  ' "$CI_YAML")
+  block=$(filter_block tests_ovn_overlay)
 
   assert_contains "the filter lists the overlay suite" \
     "$block" "tests/e2e-ovn-overlay/**"
@@ -174,14 +171,9 @@ test_filter_names_the_suite_and_its_overlay() {
 test_the_signal_reaches_its_consumers() {
   echo "Test: the job gates on the output and runs the Makefile target"
 
-  # The job body ends at the next 2-space line, which is the comment header of
-  # the job after it.
+  # The job's caller in ci.yaml and the steps of the workflow it calls.
   local job
-  job=$(awk '
-    /^  e2e-ovn-overlay:$/ { in_block = 1; next }
-    in_block && /^  [#a-z0-9-]/ { exit }
-    in_block { print }
-  ' "$CI_YAML")
+  job=$(job_block e2e-ovn-overlay)
 
   assert_not_empty "the e2e-ovn-overlay job exists" "$job"
   assert_contains "the job reads the output the resolve script wrote" "$job" \

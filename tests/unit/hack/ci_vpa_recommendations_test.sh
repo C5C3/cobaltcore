@@ -44,6 +44,8 @@ SKIP=0
 
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
+# shellcheck source=tests/lib/ci_yaml.sh
+source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
 # The script does its arithmetic in jq. The stub PATH below is tightened to
 # the stub dir plus /usr/bin and /bin, so a jq installed elsewhere (Homebrew,
@@ -565,13 +567,15 @@ test_wiring() {
   echo "Test: e2e-controlplane, e2e-controlplane-sso and tempest wire the measurement"
 
   if ! command -v yq >/dev/null 2>&1; then
-    echo "  SKIP: yq not installed (28 checks skipped)"
-    SKIP=$((SKIP + 28))
+    echo "  SKIP: yq not installed (31 checks skipped)"
+    SKIP=$((SKIP + 31))
     return
   fi
 
   local job last artifact steps idx_setup idx_start idx_last idx_collect idx_upload idx_dump
-  local gate="needs.changes.outputs.measure-sizing == 'true'"
+  # The jobs run their steps in the workflows they call, which read the flag
+  # their caller in ci.yaml passes them.
+  local gate="inputs.measure-sizing == 'true'"
   for job in e2e-controlplane e2e-controlplane-sso tempest; do
     case "$job" in
       e2e-controlplane)
@@ -584,7 +588,7 @@ test_wiring() {
         last="Upload Tempest results"
         artifact='sizing-tempest-${{ matrix.service }}-${{ matrix.release }}' ;;
     esac
-    steps="$(yq -r ".jobs[\"$job\"].steps[].name // \"-\"" "$CI_YAML")"
+    steps="$(yq -r ".jobs[\"$job\"].steps[].name // \"-\"" "$(job_workflow "$job")")"
     idx_setup="$(step_index "$steps" "Setup E2E infrastructure")"
     idx_start="$(step_index "$steps" "Start the sizing measurement")"
     idx_last="$(step_index "$steps" "$last")"
@@ -592,28 +596,30 @@ test_wiring() {
     idx_upload="$(step_index "$steps" "Upload the sizing measurement")"
     idx_dump="$(step_index "$steps" "Dump diagnostic info")"
 
+    assert_contains "$job: its caller passes the label's flag" "$(job_block "$job")" \
+      "      measure-sizing: \${{ needs.changes.outputs.measure-sizing }}"
     assert_eq "$job: setup passes WITH_VPA from the label" \
       "\${{ $gate && 'true' || '' }}" \
-      "$(yq -r ".jobs[\"$job\"].steps[] | select(.name == \"Setup E2E infrastructure\") | .env.WITH_VPA" "$CI_YAML")"
+      "$(yq -r ".jobs[\"$job\"].steps[] | select(.name == \"Setup E2E infrastructure\") | .env.WITH_VPA" "$(job_workflow "$job")")"
     assert_eq "$job: the start step follows the setup step" "$((idx_setup + 1))" "${idx_start:-none}"
     assert_eq "$job: the collect step follows the last suite step" "$((idx_last + 1))" "${idx_collect:-none}"
     assert_eq "$job: the upload step follows the collect step" "$((idx_collect + 1))" "${idx_upload:-none}"
     assert_eq "$job: the diagnostics dump follows the upload step" "$((idx_upload + 1))" "${idx_dump:-none}"
     assert_eq "$job: the start step runs only under the label" "$gate" \
-      "$(yq -r ".jobs[\"$job\"].steps[] | select(.name == \"Start the sizing measurement\") | .if" "$CI_YAML")"
+      "$(yq -r ".jobs[\"$job\"].steps[] | select(.name == \"Start the sizing measurement\") | .if" "$(job_workflow "$job")")"
     assert_eq "$job: collect and upload run always under the label" \
       "always() && $gate always() && $gate " \
-      "$(yq -r ".jobs[\"$job\"].steps[] | select(.name == \"Collect the sizing measurement\" or .name == \"Upload the sizing measurement\") | .if" "$CI_YAML" | tr '\n' ' ')"
+      "$(yq -r ".jobs[\"$job\"].steps[] | select(.name == \"Collect the sizing measurement\" or .name == \"Upload the sizing measurement\") | .if" "$(job_workflow "$job")" | tr '\n' ' ')"
     assert_eq "$job: the artifact name" "$artifact" \
-      "$(yq -r ".jobs[\"$job\"].steps[] | select(.name == \"Upload the sizing measurement\") | .with.name" "$CI_YAML")"
+      "$(yq -r ".jobs[\"$job\"].steps[] | select(.name == \"Upload the sizing measurement\") | .with.name" "$(job_workflow "$job")")"
     assert_eq "$job: the artifact is kept 14 days" "14" \
-      "$(yq -r ".jobs[\"$job\"].steps[] | select(.name == \"Upload the sizing measurement\") | .with[\"retention-days\"]" "$CI_YAML")"
+      "$(yq -r ".jobs[\"$job\"].steps[] | select(.name == \"Upload the sizing measurement\") | .with[\"retention-days\"]" "$(job_workflow "$job")")"
   done
 
   assert_eq "only the tempest leg names MEASURE_LEG" \
     'null null ${{ matrix.service }}-${{ matrix.release }} ' \
     "$(for job in e2e-controlplane e2e-controlplane-sso tempest; do
-         yq -r ".jobs[\"$job\"].steps[] | select(.name == \"Collect the sizing measurement\") | .env.MEASURE_LEG" "$CI_YAML"
+         yq -r ".jobs[\"$job\"].steps[] | select(.name == \"Collect the sizing measurement\") | .env.MEASURE_LEG" "$(job_workflow "$job")"
        done | tr '\n' ' ')"
 }
 

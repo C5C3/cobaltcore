@@ -55,6 +55,11 @@ source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
+# The scratch copies below call the workflows the real file calls, so
+# job_block finds those beside them.
+while IFS= read -r called; do
+  cp "$called" "$TMP_DIR/"
+done < <(CI_YAML="$WORKFLOW" ci_workflows | tail -n +2)
 
 REPORT_JOB="report-nightly-chaos"
 NIGHT_EVENTS="(github.event_name == 'pull_request' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&"

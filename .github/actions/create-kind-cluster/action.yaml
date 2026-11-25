@@ -33,6 +33,15 @@
 # context, the way setup-e2e-infra threads its opt-in flags: unset by every
 # caller today, which leaves them empty and lets the script's own defaults (2
 # attempts, a 60s wait, matching what helm/kind-action waited for) apply.
+#
+# The kind version is the KIND_VERSION of hack/install-test-deps.sh, the one
+# pin of kind: local development installs it, and every CI job creates its
+# cluster with it, so CI and a developer's kind enforce NetworkPolicy egress
+# alike. kind v0.31.0, the default of helm/kind-action, ships a kindnetd that
+# does not enforce egress against the post-DNAT destination, the posture
+# under which the OpenBao instances' NetworkPolicy needs an explicit API-server
+# allowance. No workflow repeats the pin: a called workflow does not inherit
+# the env of its caller, so a pin in each would be one copy per workflow.
 
 name: Create kind cluster
 description: >
@@ -42,8 +51,11 @@ description: >
 
 inputs:
   version:
-    description: kind version to install (the workflow's KIND_VERSION).
-    required: true
+    description: >
+      kind version to install. Empty installs the KIND_VERSION of
+      hack/install-test-deps.sh, which every workflow uses.
+    required: false
+    default: ""
   cluster-name:
     description: >
       Name of the kind cluster to create. Also what the post-job
@@ -60,6 +72,21 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Resolve the kind version
+      id: kind
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+      run: |
+        if [ -z "${VERSION}" ]; then
+          VERSION="$(sed -n 's/^KIND_VERSION="\(v[0-9.]*\)"$/\1/p' hack/install-test-deps.sh)"
+        fi
+        if [ -z "${VERSION}" ]; then
+          echo "::error::hack/install-test-deps.sh pins no KIND_VERSION=\"v<x.y.z>\""
+          exit 1
+        fi
+        echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
     # install_only: the binaries and the post-job cleanup, without the creation.
     # The kind directory lands on PATH through GITHUB_PATH, so the step below
     # (and every later step in the job) finds the pinned binary.
@@ -73,7 +100,7 @@ runs:
     - name: Install kind and kubectl
       uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
       with:
-        version: ${{ inputs.version }}
+        version: ${{ steps.kind.outputs.version }}
         cluster_name: ${{ inputs.cluster-name }}
         install_only: "true"
         ignore_failed_clean: "true"
@@ -85,7 +112,7 @@ runs:
         KIND_CONFIG: ${{ inputs.config }}
         # Lets the script fall back to the tool cache if the PATH entry above
         # did not carry over.
-        KIND_VERSION: ${{ inputs.version }}
+        KIND_VERSION: ${{ steps.kind.outputs.version }}
         # Optional overrides — empty unless the calling job sets them; the
         # script's defaults then apply.
         KIND_CREATE_ATTEMPTS: ${{ env.KIND_CREATE_ATTEMPTS }}

@@ -10,7 +10,7 @@
 # This keeps a single pre-load responsibility in the CI pipeline rather than
 # introducing a second alias.
 # The '2026.1-upgraded' tag is pre-loaded into kind by the "Load images into kind"
-# step within the `e2e-operator` job in .github/workflows/ci.yaml alongside
+# step within the `e2e-operator` job in .github/workflows/ci-e2e-operator.yaml alongside
 # 2026.1, enabling the image-tag patch without an external pull.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone

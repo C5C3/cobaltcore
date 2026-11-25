@@ -1,0 +1,479 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+---
+# The path filters of CI. The changes job of .github/workflows/ci.yaml hands
+# this file to dorny/paths-filter and the names of the filters that matched to
+# hack/ci-resolve-changes.sh, which turns them into one flag per job and the
+# legs of each matrix. hack/ci-resolve-e2e-images.sh reads the operator and
+# go_common filters here to decide whether an operator image main published
+# carries every commit to its sources.
+#
+# A filter steers nothing until the resolver reads it:
+# tests/unit/ci/change_classes_wiring_test.sh fails for a filter that changes
+# no output, and for a FILTER_<name> the resolver reads that no filter here
+# defines.
+# ---------------------------------------------------------------
+# Operator code. One filter per operator, its own source tree only:
+# a change here runs that operator's Go gates, its unit and envtest
+# legs, and its e2e leg. Nothing else.
+# ---------------------------------------------------------------
+keystone:
+  - 'operators/keystone/**'
+c5c3:
+  - 'operators/c5c3/**'
+horizon:
+  - 'operators/horizon/**'
+glance:
+  - 'operators/glance/**'
+placement:
+  - 'operators/placement/**'
+barbican:
+  - 'operators/barbican/**'
+ovn:
+  - 'operators/ovn/**'
+neutron:
+  - 'operators/neutron/**'
+cinder:
+  - 'operators/cinder/**'
+nova:
+  - 'operators/nova/**'
+# The keystone and placement unit tests check the nova chart's
+# Keystone and Placement egress rules against their own Service
+# ports and pod labels, so an edit to that hook adds their unit
+# and envtest legs to the nova change. Nothing else of theirs.
+nova_chart_egress:
+  - 'operators/nova/helm/nova-operator/templates/_helpers.tpl'
+# ---------------------------------------------------------------
+# Service image sources. A change runs that service's e2e leg
+# against a freshly built image; the operator binary is untouched.
+# ---------------------------------------------------------------
+image_keystone:
+  - 'images/keystone/**'
+  - 'nix/locks/*/keystone/**'
+  - 'patches/keystone/**'
+image_horizon:
+  - 'images/horizon/**'
+  - 'nix/locks/*/horizon/**'
+  - 'patches/horizon/**'
+image_glance:
+  - 'images/glance/**'
+  - 'nix/locks/*/glance/**'
+  - 'patches/glance/**'
+image_placement:
+  - 'images/placement/**'
+  - 'nix/locks/*/placement/**'
+  - 'patches/placement/**'
+image_barbican:
+  - 'images/barbican/**'
+  - 'nix/locks/*/barbican/**'
+  - 'patches/barbican/**'
+image_neutron:
+  - 'images/neutron/**'
+  - 'nix/locks/*/neutron/**'
+  - 'patches/neutron/**'
+image_cinder:
+  - 'images/cinder/**'
+  - 'nix/locks/*/cinder/**'
+  - 'patches/cinder/**'
+image_nova:
+  - 'images/nova/**'
+  - 'nix/locks/*/nova/**'
+  - 'images/nova-compute/**'
+  - 'patches/nova/**'
+# ovn ships the OVS/OVN daemons the CRs project and the rclone
+# shifter the OVNCentral backup CronJob uploads with. Neither is a
+# per-release service image, so they steer the ovn e2e leg rather
+# than changed-services. build-e2e-images builds the ovn image
+# from the flake (images/ovn/, flake.nix, flake.lock, nix/lib/)
+# with hack/ci-nix-build-e2e-images.sh when this filter matches,
+# and pulls the image main published otherwise.
+image_ovn:
+  - 'images/ovn/**'
+  - 'images/backup-shifter/**'
+  - 'flake.nix'
+  - 'flake.lock'
+  - 'nix/lib/**'
+  - 'hack/ci-nix-build-e2e-images.sh'
+# The libvirt image the libvirt suite starts libvirtd from.
+# build-e2e-images builds it from the flake (images/libvirt/,
+# nix/pkgs/libvirt.nix, flake.nix, flake.lock, nix/lib/) with
+# hack/ci-nix-build-e2e-images.sh when this filter matches, and
+# pulls the image main published as latest otherwise.
+image_libvirt:
+  - 'images/libvirt/**'
+  - 'nix/pkgs/libvirt.nix'
+  - 'flake.nix'
+  - 'flake.lock'
+  - 'nix/lib/**'
+  - 'hack/ci-nix-build-e2e-images.sh'
+# The federation sidecar the keystone oidc-federation and
+# saml-federation suites project. build-e2e-images builds it from
+# the flake (images/keystone-federation-proxy/, flake.nix,
+# flake.lock, nix/lib/) with hack/ci-nix-build-e2e-images.sh when
+# this filter matches, and pulls the image main published as
+# latest otherwise.
+image_proxy:
+  - 'images/keystone-federation-proxy/**'
+  - 'flake.nix'
+  - 'flake.lock'
+  - 'nix/lib/**'
+  - 'hack/ci-nix-build-e2e-images.sh'
+image_tempest:
+  - 'images/tempest/**'
+  - 'nix/locks/*/tempest/**'
+# ---------------------------------------------------------------
+# Shared code and shared image inputs.
+# ---------------------------------------------------------------
+# Every operator's binary and image is built from this: the
+# shared Go code and workspace, the flake inputs and the Nix
+# expressions of the operator images, and the script that builds
+# them for e2e. A change here runs every operator's Go gates and
+# e2e legs and publishes every operator image.
+go_common:
+  - 'internal/**'
+  - 'go.work'
+  - '.golangci.yml'
+  - 'flake.nix'
+  - 'flake.lock'
+  - 'nix/lib/operator-image.nix'
+  - 'nix/lib/static-image.nix'
+  - 'nix/lib/image-defaults.nix'
+  - 'hack/ci-nix-build-e2e-images.sh'
+# Every service image and both Tempest images are built from this:
+# the flake inputs, the Nix library and packages, the release
+# pins, and the scripts that build and place the images.
+images_base:
+  - 'flake.nix'
+  - 'flake.lock'
+  - 'nix/lib/**'
+  - 'nix/pkgs/**'
+  - 'releases/**'
+  - 'scripts/**'
+  - 'overrides/**'
+  - 'hack/ci-nix-build-e2e-images.sh'
+  - 'hack/ci-service-image-releases.sh'
+# ---------------------------------------------------------------
+# Tempest. tempest_src switches the job on; the per-service filters
+# narrow the matrix to the configuration that changed. Without a
+# label, this is the only path that runs Tempest on a pull request.
+# ---------------------------------------------------------------
+tempest_src:
+  - 'images/tempest/**'
+  - 'tests/tempest/**'
+  - 'hack/tempest/**'
+  - 'hack/ci-run-tempest.sh'
+  - 'nix/locks/*/tempest/**'
+  - 'hack/ci-generate-tempest-matrix.sh'
+  # The Tempest and plugin pins. images_base rebuilds the image on
+  # a bump; this entry runs the suites against it.
+  - 'releases/*/test-refs.yaml'
+  - '.github/workflows/ci-tempest.yaml'
+tempest_keystone:
+  - 'tests/tempest/keystone-*/**'
+tempest_glance:
+  - 'tests/tempest/glance-*/**'
+tempest_barbican:
+  - 'tests/tempest/barbican-*/**'
+tempest_neutron:
+  - 'tests/tempest/neutron-*/**'
+tempest_cinder:
+  - 'tests/tempest/cinder-*/**'
+tempest_nova:
+  - 'tests/tempest/nova-*/**'
+# ---------------------------------------------------------------
+# Per-operator e2e suites. Editing one operator's suite runs that
+# operator's leg, not the other nine.
+# ---------------------------------------------------------------
+tests_e2e_keystone:
+  - 'tests/e2e/keystone/**'
+  - 'tests/e2e/keystone-operator/**'
+  # The namespace-scoped-rbac suites of keystone, horizon, glance,
+  # placement, barbican, cinder and nova run the shared proof
+  # script under tests/e2e/lib/, and their env-key-material suites
+  # the environment scan beside it, so those seven filters list the
+  # directory. ovn and neutron run the scan, the metric-family
+  # check and the event budget, and list those three scripts.
+  # Both also list the NetworkPolicy probe: their
+  # network-policy-egress suites run it, and so does neutron's
+  # network-policy suite. c5c3 runs the scan and the metric-family
+  # check and lists those two scripts, so an edit to the proof runs
+  # none of the three.
+  - 'tests/e2e/lib/**'
+tests_e2e_c5c3:
+  - 'tests/e2e/c5c3/**'
+  - 'tests/e2e/c5c3-operator/**'
+  - 'tests/e2e/lib/assert-operator-env-clean.sh'
+  - 'tests/e2e/lib/assert-operator-metric-families.sh'
+tests_e2e_horizon:
+  - 'tests/e2e/horizon/**'
+  - 'tests/e2e/horizon-operator/**'
+  - 'tests/e2e/lib/**'
+tests_e2e_glance:
+  - 'tests/e2e/glance/**'
+  - 'tests/e2e/glance-operator/**'
+  - 'tests/e2e/lib/**'
+tests_e2e_placement:
+  - 'tests/e2e/placement/**'
+  - 'tests/e2e/placement-operator/**'
+  - 'tests/e2e/lib/**'
+tests_e2e_barbican:
+  - 'tests/e2e/barbican/**'
+  - 'tests/e2e/barbican-operator/**'
+  - 'tests/e2e/lib/**'
+tests_e2e_ovn:
+  - 'tests/e2e/ovn/**'
+  - 'tests/e2e/ovn-operator/**'
+  - 'tests/e2e/lib/assert-operator-env-clean.sh'
+  - 'tests/e2e/lib/assert-operator-metric-families.sh'
+  - 'tests/e2e/lib/assert-steady-state-events.sh'
+  - 'tests/e2e/lib/assert-networkpolicy-enforced.sh'
+tests_e2e_neutron:
+  - 'tests/e2e/neutron/**'
+  - 'tests/e2e/neutron-operator/**'
+  - 'tests/e2e/lib/assert-operator-env-clean.sh'
+  - 'tests/e2e/lib/assert-operator-metric-families.sh'
+  - 'tests/e2e/lib/assert-steady-state-events.sh'
+  - 'tests/e2e/lib/assert-networkpolicy-enforced.sh'
+tests_e2e_cinder:
+  - 'tests/e2e/cinder/**'
+  - 'tests/e2e/cinder-operator/**'
+  - 'tests/e2e/lib/**'
+tests_e2e_nova:
+  - 'tests/e2e/nova/**'
+  - 'tests/e2e/nova-operator/**'
+  - 'tests/e2e/lib/**'
+# ---------------------------------------------------------------
+# Suites that live in a job of their own. Each filter names exactly
+# the suite its job runs, so an edit schedules that job and no
+# other. The ControlPlane suites are split four ways because they
+# run on four separate clusters.
+# ---------------------------------------------------------------
+tests_controlplane:
+  - 'tests/e2e/c5c3/full-controlplane-keystone/**'
+  - 'tests/e2e/c5c3/keystone-service/**'
+  - 'tests/e2e/c5c3/keystone-service-foreign-namespace/**'
+  - 'tests/e2e/c5c3/keystone-user/**'
+  - 'tests/e2e/c5c3/healthcheck/**'
+  - 'tests/e2e/c5c3/pod-security-restricted/**'
+  - 'tests/e2e/c5c3/admin-password-scoping/**'
+  - 'tests/e2e/c5c3/db-credential-scoping/**'
+  - 'tests/e2e/c5c3/multi-controlplane/**'
+  - 'tests/e2e/c5c3/deletion-orchestration/**'
+  # The full-chain suite applies this overlay's fixtures.yaml.
+  - 'deploy/overlays/kind/hypervisor-operator-fixtures/**'
+  - 'deploy/bases/hypervisor-fixtures/**'
+  - '.github/workflows/ci-e2e-controlplane.yaml'
+tests_controlplane_sso:
+  - 'tests/e2e-controlplane-sso/**'
+  - '.github/workflows/ci-e2e-controlplane-sso.yaml'
+  - '.github/actions/tests/deploy-keystone-controlplane-operators/**'
+tests_external_keystone:
+  - 'tests/e2e/c5c3/external-keystone/**'
+  - '.github/workflows/ci-e2e-external-keystone.yaml'
+  - '.github/actions/tests/deploy-keystone-controlplane-operators/**'
+# The autoscaling suite, the metrics-server and VPA overlays its
+# job deploys, and the shared HPA and VPA code it drives.
+tests_autoscaling:
+  - 'tests/e2e-autoscaling/**'
+  - 'deploy/overlays/kind/metrics-server/**'
+  - 'deploy/overlays/kind/vpa/**'
+  - 'internal/common/deployment/builders.go'
+  - 'internal/common/deployment/hpa_flow.go'
+  - 'internal/common/deployment/vpa_flow.go'
+  - '.github/workflows/ci-e2e-autoscaling.yaml'
+tests_chaos:
+  - 'tests/e2e-chaos/**'
+  - '.github/workflows/ci-e2e-chaos.yaml'
+# The random chaos run's own files: the catalogue, the draw and
+# the kind plane, its runner, the soak it runs under and the
+# consistency checks it judges with. A suite header under
+# tests/e2e-chaos/ reaches it through the unit tests alone.
+tests_chaos_random:
+  - 'tests/chaos-random/**'
+  - 'hack/chaos-random.sh'
+  - 'hack/dizzy-soak.sh'
+  - 'hack/dizzy-soak-runner.sh'
+  - 'deploy/overlays/metal-stack/dizzy-soak/**'
+  - 'tests/e2e-chaos/lib/consistency.sh'
+  - '.github/workflows/ci-e2e-chaos-random.yaml'
+tests_multicluster:
+  - 'tests/e2e-multicluster/**'
+  - 'deploy/bases/target-cluster-access/**'
+  - '.github/workflows/ci-e2e-multicluster.yaml'
+tests_orders_multicluster:
+  - 'tests/e2e-orders-multicluster/**'
+  - 'deploy/bases/target-cluster-access/**'
+  - '.github/workflows/ci-e2e-orders-multicluster.yaml'
+tests_ovn_overlay:
+  - 'tests/e2e-ovn-overlay/**'
+  # The fabric suite peers through the frr-k8s overlay.
+  - 'deploy/overlays/kind/frr-k8s/**'
+  - '.github/workflows/ci-e2e-ovn-overlay.yaml'
+# The libvirt suite and the compute-node-pool fixtures it applies by
+# path. The operator and the images reach the job through the nova,
+# image_nova and image_libvirt filters.
+tests_nova_libvirt:
+  - 'tests/e2e-nova-libvirt/**'
+  - 'tests/e2e/nova/compute-node-pool/**'
+  # The suite creates and deletes its vhost with this script.
+  - 'tests/e2e/cinder/broker-vhost.sh'
+  - '.github/workflows/ci-e2e-nova-libvirt.yaml'
+# The BGP fabric suite and the frr-k8s overlay it peers through.
+tests_bgp_fabric:
+  - 'tests/e2e-bgp-fabric/**'
+  - 'deploy/overlays/kind/frr-k8s/**'
+  - '.github/workflows/ci-e2e-bgp-fabric.yaml'
+# The harness of the keystone-pressure job: the A/B script, the
+# dizzy pin it takes the client image from and the profiles. The
+# Keystone image reaches the job through the image_keystone filter.
+keystone_pressure:
+  - 'hack/keystone-pressure-ab.sh'
+  - 'hack/dizzy.sh'
+  - 'tests/load/keystone-pressure/**'
+  - '.github/workflows/ci-keystone-pressure.yaml'
+# The inputs every operator upgrade job shares: a change here runs
+# all ten. Each operator's own suite (and the scripts only some
+# suites call: the vhost script of cinder and nova, the CRD window
+# check and the chaos workload harness of keystone) runs that
+# operator's job alone.
+tests_operator_upgrade:
+  - 'tests/e2e-operator-upgrade/chainsaw-config.yaml'
+  - 'hack/ci-fetch-released-operator.sh'
+  - 'hack/ci-read-chart-version.sh'
+  - 'hack/ci-operator-upgrade-leg.sh'
+  - 'hack/ci-deploy-operator.sh'
+  - '.github/workflows/e2e-operator-upgrade.yaml'
+tests_operator_upgrade_keystone:
+  - 'tests/e2e-operator-upgrade/keystone-helm-upgrade/**'
+  - 'hack/ci-operator-upgrade-crd-window.sh'
+  - 'tests/e2e-operator-upgrade/keystone-helm-upgrade-pod-kill/**'
+  - 'tests/e2e-chaos/lib/workload.sh'
+  - 'tests/e2e-chaos/lib/workload.py'
+tests_operator_upgrade_c5c3:
+  - 'tests/e2e-operator-upgrade/c5c3-helm-upgrade/**'
+tests_operator_upgrade_horizon:
+  - 'tests/e2e-operator-upgrade/horizon-helm-upgrade/**'
+tests_operator_upgrade_glance:
+  - 'tests/e2e-operator-upgrade/glance-helm-upgrade/**'
+tests_operator_upgrade_placement:
+  - 'tests/e2e-operator-upgrade/placement-helm-upgrade/**'
+tests_operator_upgrade_barbican:
+  - 'tests/e2e-operator-upgrade/barbican-helm-upgrade/**'
+tests_operator_upgrade_ovn:
+  - 'tests/e2e-operator-upgrade/ovn-helm-upgrade/**'
+tests_operator_upgrade_neutron:
+  - 'tests/e2e-operator-upgrade/neutron-helm-upgrade/**'
+tests_operator_upgrade_cinder:
+  - 'tests/e2e-operator-upgrade/cinder-helm-upgrade/**'
+  - 'tests/e2e/cinder/broker-vhost.sh'
+tests_operator_upgrade_nova:
+  - 'tests/e2e-operator-upgrade/nova-helm-upgrade/**'
+  - 'tests/e2e/cinder/broker-vhost.sh'
+tests_prometheus:
+  - 'tests/e2e/keystone/prometheus-stack/**'
+  - 'tests/e2e/horizon/prometheus-stack/**'
+  - 'deploy/overlays/kind/prometheus/**'
+  - 'deploy/bases/prometheus/**'
+  - 'deploy/overlays/kind/prometheus-managed/**'
+  - 'operators/keystone/dashboards/**'
+  - 'operators/keystone/helm/keystone-operator/templates/servicemonitor.yaml'
+  - 'operators/horizon/helm/horizon-operator/templates/servicemonitor.yaml'
+  - '.github/workflows/ci-e2e-prometheus.yaml'
+e2e_infra:
+  - 'tests/e2e/infrastructure/**'
+  - '.github/workflows/ci-e2e-infra.yaml'
+# ---------------------------------------------------------------
+# The canary. A change to the substrate every e2e job stands on, or
+# to the workflow plumbing, proves itself against e2e-infra plus the
+# keystone leg rather than against the whole pipeline. ci:full is
+# how you ask for the rest.
+# ---------------------------------------------------------------
+e2e_shared:
+  - 'deploy/**'
+  - 'tests/e2e/chainsaw-config.yaml'
+  - 'hack/deploy-infra.sh'
+  - 'hack/deploy-mgmt-cluster.sh'
+  - 'hack/install-test-deps.sh'
+  - 'hack/kind-config.yaml'
+  - 'hack/kind-config-multinode.yaml'
+  - 'hack/kind-config-audit.yaml'
+  - 'hack/audit-policy.yaml'
+  - 'hack/ci-deploy-operator.sh'
+  - 'hack/ci-deploy-korc.sh'
+  - 'hack/ci-dump-diagnostics.sh'
+  - '.github/actions/setup-e2e-infra/**'
+  - '.github/actions/setup-test-deps/**'
+  - '.github/actions/load-e2e-images/**'
+  - '.github/actions/registry-login/**'
+# OpenBao is one piece of the substrate with an operator that
+# exercises it directly, so barbican joins the canary for it.
+e2e_openbao:
+  - 'deploy/bases/shared-openbao/**'
+# K-ORC is the other: only the jobs that run hack/ci-deploy-korc.sh
+# deploy its pinned commit and image, so the c5c3 leg (the
+# cheapest of them) joins the canary for a change to the pin.
+e2e_korc:
+  - 'deploy/bases/operators/sources/k-orc.yaml'
+  - 'deploy/bases/operators/releases/k-orc.yaml'
+  - 'hack/ci-deploy-korc.sh'
+ci_plumbing:
+  - '.github/workflows/ci.yaml'
+  - '.github/actions/**'
+  - 'hack/ci-*.sh'
+  - '.github/ci-filters.yaml'
+  - '.github/workflows/ci-e2e-operator.yaml'
+  - '.github/workflows/ci-build-e2e-images.yaml'
+actionlint:
+  - '.github/**'
+makefile:
+  - 'Makefile'
+# ---------------------------------------------------------------
+# Everything else.
+# ---------------------------------------------------------------
+docs:
+  - 'docs/**'
+  - 'package.json'
+  - 'package-lock.json'
+# The operator charts share the operator-library library chart and a
+# values.schema.json generator, so a change to any chart, the shared
+# library, either generator, the released-values check and its
+# waiver list, or the Makefile targets behind them must re-run Helm
+# validation.
+helm:
+  - 'operators/*/helm/**'
+  - 'deploy/bases/target-cluster-access/**'
+  - 'hack/gen-helm-values-schema.py'
+  - 'hack/gen-helm-rbac-rules.py'
+  - 'hack/verify-helm-released-values.sh'
+  - 'hack/helm-removed-values.yaml'
+  - 'Makefile'
+# The target-cluster-access chart is published outside the
+# per-operator helm-push matrix, so it needs its own gate. The two
+# scripts push and sign the chart, so a change to either publishes
+# and signs it again. ci.yaml stays out: it changes in most pull
+# requests, and each match pushes the same chart version again
+# under a new digest.
+target_cluster_chart:
+  - 'deploy/bases/target-cluster-access/**'
+  - 'hack/ci-helm-push.sh'
+  - 'hack/ci-cosign-sign.sh'
+# Push events only, and ignored on pull requests. Reproduces the
+# operator set today's go_common and e2e-test unions publish on a
+# push to main, so what lands in GHCR after a merge does not change
+# with this rewiring. Delete it when the post-merge behaviour is
+# revisited.
+publish_legacy:
+  - 'hack/**'
+  - 'scripts/**'
+  - 'releases/**'
+  - 'deploy/**'
+  - 'images/tempest/**'
+  - 'tests/e2e/**'
+  - 'tests/e2e-chaos/**'
+  - 'tests/e2e-operator-upgrade/**'
+  - 'tests/tempest/**'
+  - '.github/workflows/ci.yaml'
+  - '.github/actions/**'
+  - '.github/ci-filters.yaml'
+  - '.github/workflows/ci-*.yaml'

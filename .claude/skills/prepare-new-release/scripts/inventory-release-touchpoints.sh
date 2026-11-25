@@ -387,8 +387,8 @@ for lab in deploy/overlays/metal-stack/controlplane/controlplane-lab.yaml \
 done
 floor="$(sed -nE 's/.*MinimumSupported = Release\{Year: ([0-9]{4}), Minor: ([12]).*/\1.\2/p' internal/common/release/release.go | first)"
 printf '  [INFO] release floor: internal/common/release/release.go MinimumSupported -> %s\n' "${floor:-<unparsed>}"
-printf '  [INFO] ci.yaml hard-coded image tags: %s\n' \
-  "$(grep -oE ':[0-9]{4}\.[12]' .github/workflows/ci.yaml | tr -d ':' | sort -u | tr '\n' ' ' || true)"
+printf '  [INFO] hard-coded image tags in ci.yaml and the ci-<job>.yaml workflows: %s\n' \
+  "$(cat .github/workflows/ci.yaml .github/workflows/ci-*.yaml | grep -oE ':[0-9]{4}\.[12]' | tr -d ':' | sort -u | tr '\n' ' ' || true)"
 for svc in ${E2E_SERVICES}; do
   printf '  [INFO] plain basic-deployment suite: tests/e2e/%s/basic-deployment -> %s\n' "${svc}" \
     "$(first_pin tag "$(glob_one "tests/e2e/${svc}/basic-deployment" "[0-9][0-9]-${svc}-cr.yaml")")"

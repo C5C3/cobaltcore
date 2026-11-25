@@ -1,0 +1,129 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+---
+# End-to-end Prometheus stack tests using kind cluster,
+# kube-prometheus-stack, and Chainsaw.  Loads the keystone-operator and
+# horizon-operator images, brings up the monitoring stack (WITH_PROMETHEUS=true
+# on the shared composite action), deploys both operators with their
+# ServiceMonitors (WITH_PROMETHEUS=true on hack/ci-deploy-operator.sh), and
+# runs two chainsaw suites: tests/e2e/keystone/prometheus-stack (HelmRelease
+# readiness and kind posture, ServiceMonitor presence in keystone-system,
+# Prometheus target health for keystone-operator, Grafana dashboard
+# presence) and tests/e2e/horizon/prometheus-stack (ServiceMonitor presence
+# in horizon-system, Prometheus target health for horizon-operator, an
+# ingested controller_runtime_reconcile_total series).
+#
+# A single job on the self-hosted runner. The kube-prometheus stack is
+# deterministic, so the job runs `continue-on-error: false`.
+#
+# The e2e-prometheus job of ci.yaml calls this workflow and decides when it runs.
+name: E2E Prometheus
+
+"on":
+  workflow_call:
+    inputs:
+      image-map:
+        description: >
+          JSON object mapping each canonical image ref the job loads to the
+          reference to pull for it (see .github/actions/load-e2e-images).
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  packages: read
+
+# A called workflow does not inherit the env of ci.yaml, so the values its
+# steps and scripts read are declared here. kind is not pinned here: the
+# create-kind-cluster action installs the KIND_VERSION of
+# hack/install-test-deps.sh.
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/c5c3
+  KIND_CLUSTER: cobaltcore
+
+jobs:
+  e2e-prometheus:
+    runs-on: self-hosted
+    timeout-minutes: 68
+    continue-on-error: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Create kind cluster
+        uses: ./.github/actions/create-kind-cluster
+        with:
+          config: hack/kind-config.yaml
+          cluster-name: ${{ env.KIND_CLUSTER }}
+      # GH-310: Pull pre-built images from GHCR (run-scoped tag).
+      - name: Load E2E images
+        uses: ./.github/actions/load-e2e-images
+        with:
+          image-map: ${{ inputs.image-map }}
+          images: |
+            ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
+            ${{ env.IMAGE_PREFIX }}/keystone:2026.1
+            ${{ env.IMAGE_PREFIX }}/horizon-operator:dev
+      - name: Load images into kind
+        run: |
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon-operator:dev --name ${{ env.KIND_CLUSTER }}
+      # Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
+      # Opt in to kube-prometheus-stack — required for the prometheus suite.
+      - name: Setup E2E infrastructure
+        uses: ./.github/actions/setup-e2e-infra
+        env:
+          WITH_PROMETHEUS: "true"
+      # Use shared operator deployment script.
+      # WITH_PROMETHEUS=true gates --set monitoring.serviceMonitor.enabled=true
+      # on the helm install. Without it, the chart's gated ServiceMonitor template
+      # renders nothing and chainsaw step 2 (servicemonitor-exists) plus step 3
+      # (prometheus-target-up) cascade-fail. The kind/base kustomization keeps the
+      # keystone-operator HelmRelease suspended, so the patch in deploy-infra.sh
+      # cannot enable the ServiceMonitor reactively.
+      - name: Deploy operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: keystone
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/keystone-operator
+          WITH_PROMETHEUS: "true"
+      # A second live scrape target for tests/e2e/horizon/prometheus-stack.
+      # NAMESPACE matters: the script defaults to keystone-system, while the
+      # suite reads ServiceMonitor/horizon-operator in horizon-system and the
+      # horizon diagnostics pass below derives horizon-system as well. The
+      # kind Prometheus selects ServiceMonitors in every namespace
+      # (deploy/bases/prometheus/release.yaml).
+      - name: Deploy horizon-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: horizon
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/horizon-operator
+          NAMESPACE: horizon-system
+          WITH_PROMETHEUS: "true"
+      - name: Run prometheus E2E tests
+        run: |
+          mkdir -p _output/reports
+          chainsaw test --config tests/e2e/chainsaw-config.yaml \
+            tests/e2e/keystone/prometheus-stack/ tests/e2e/horizon/prometheus-stack/
+      # Use shared diagnostic dump script. The horizon pass adds the
+      # horizon-system sections the keystone pass never looks at;
+      # OPERATOR_ONLY skips the infrastructure block it already emitted.
+      - name: Dump diagnostic info
+        if: always()
+        run: |
+          OPERATOR=keystone hack/ci-dump-diagnostics.sh
+          OPERATOR=horizon OPERATOR_ONLY=1 hack/ci-dump-diagnostics.sh
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-prometheus-junit-report
+          path: _output/reports/
+          retention-days: 14
+      # Last step of the job, so the dump above still had a cluster to read;
+      # `always()` covers the failed and timed-out runs.  Never fails the job
+      # (see hack/ci-delete-kind-cluster.sh).
+      - name: Delete kind cluster
+        if: always()
+        run: hack/ci-delete-kind-cluster.sh

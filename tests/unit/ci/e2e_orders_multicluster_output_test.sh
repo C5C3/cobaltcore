@@ -39,6 +39,8 @@ SKIP=0
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/ci_resolve.sh
 source "$PROJECT_ROOT/tests/lib/ci_resolve.sh"
+# shellcheck source=tests/lib/ci_yaml.sh
+source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -55,23 +57,15 @@ run_resolve() {
     FILTER_tests_orders_multicluster="$filter" "$@"
 }
 
-# The job's text: from its key to the next job key or top-level comment, so
-# an assertion cannot pass on a line another job carries.
+# The job's text: its caller in ci.yaml and the steps of the workflow it
+# calls, so an assertion cannot pass on a line another job carries.
 job_text() {
-  awk '
-    /^  e2e-orders-multicluster:$/ { in_job = 1; next }
-    in_job && /^  ([a-z0-9-]+:$|#)/ { exit }
-    in_job { print }
-  ' "$CI_YAML"
+  job_block e2e-orders-multicluster
 }
 
 # One step of the job, from its name to the next step.
-job_step() { # <step name>
-  job_text | awk -v name="      - name: $1" '
-    $0 == name { in_step = 1; next }
-    in_step && /^      - / { exit }
-    in_step { print }
-  '
+orders_step() { # <step name>
+  job_step e2e-orders-multicluster "$1"
 }
 
 # ---------------------------------------------------------------------------
@@ -147,13 +141,8 @@ test_ci_yaml_wires_all_four_sides() {
 test_filter_covers_the_suite_and_the_chart() {
   echo "Test: the filter lists the suite and the chart the job runs on"
 
-  # The filter block ends at the next filter key at the same indent.
   local block
-  block=$(awk '
-    /^            tests_orders_multicluster:$/ { in_block = 1; next }
-    in_block && /^            [a-z0-9_]+:$/ { exit }
-    in_block { print }
-  ' "$CI_YAML")
+  block=$(filter_block tests_orders_multicluster)
 
   assert_contains "the filter lists the orders suite" \
     "$block" "tests/e2e-orders-multicluster/**"
@@ -209,7 +198,7 @@ test_job_registers_two_keys_from_the_chart_token() {
   echo "Test: the registration mints the chart's token and carries both scope keys"
 
   local block
-  block="$(job_step "Register the target cluster")"
+  block="$(orders_step "Register the target cluster")"
   assert_not_empty "the registration step exists" "$block"
   assert_contains "the registration reads the chart token Secret" \
     "$block" "target-cluster-access-token"
@@ -227,7 +216,7 @@ test_job_registers_two_keys_from_the_chart_token() {
     "$block" "kubeconfig=\$workdir/internal.kubeconfig"
 
   local chart
-  chart="$(job_step "Install the target-cluster-access chart on the target")"
+  chart="$(orders_step "Install the target-cluster-access chart on the target")"
   assert_contains "the chart assigns the same two namespaces" \
     "$chart" "assignedNamespaces={orders-tenant,orders-outsider}"
   assert_contains "the chart places openstack" "$chart" "namespaces={openstack}"
@@ -237,7 +226,7 @@ test_job_waits_for_both_operators_to_engage() {
   echo "Test: the job waits until the keystone- and the c5c3-operator engaged the target"
 
   local block
-  block="$(job_step "Wait for both operators to engage the target")"
+  block="$(orders_step "Wait for both operators to engage the target")"
   assert_not_empty "the wait step exists" "$block"
   assert_contains "the wait reads the engagement line" "$block" "cluster engaged"
   assert_contains "the wait reads the keystone-operator" "$block" "keystone-system keystone-operator"
@@ -248,7 +237,7 @@ test_job_checks_the_keystone_operator_stays_off_the_assigned_namespaces() {
   echo "Test: after the suite, a forbidden LIST of the keystone-operator in an assigned namespace fails the job"
 
   local block
-  block="$(job_step "Check the keystone-operator never lists an assigned namespace")"
+  block="$(orders_step "Check the keystone-operator never lists an assigned namespace")"
   assert_not_empty "the check step exists" "$block"
   assert_contains "the check reads the keystone-operator" \
     "$block" "-n keystone-system -l app.kubernetes.io/name=keystone-operator"
@@ -274,7 +263,7 @@ test_job_creates_two_clusters_through_the_action() {
   assert_eq "both through the composite action" "2" \
     "$(grep -c "uses: ./.github/actions/create-kind-cluster$" <<<"$job" | tr -d ' ')"
   local target_step
-  target_step="$(job_step "Create target kind cluster")"
+  target_step="$(orders_step "Create target kind cluster")"
   assert_contains "the target step names the target cluster" \
     "$target_step" 'cluster-name: ${{ env.TARGET_CLUSTER }}'
   assert_not_contains "the bare target takes no kind config" "$target_step" "config:"
@@ -284,7 +273,7 @@ test_cleanup_waits_for_the_job() {
   echo "Test: cleanup-e2e-tags waits for the job before it prunes the images"
 
   local needs
-  needs="$(awk '/^  cleanup-e2e-tags:$/ { getline; print; exit }' "$CI_YAML")"
+  needs="$(job_block cleanup-e2e-tags | grep -m1 '^    needs:')"
   assert_contains "cleanup-e2e-tags needs the job" "$needs" "e2e-orders-multicluster"
 }
 

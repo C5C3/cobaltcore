@@ -1,0 +1,169 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+---
+# Federated ControlPlane E2E: the end-user SSO experience (Horizon websso
+# choices, the multi-domain login dropdown, and the websso round trip through
+# the gateway).
+#
+# A SEPARATE job rather than a second suite directory on e2e-controlplane: the
+# ControlPlane webhook permits one ControlPlane per namespace, and the shared
+# `openstack-gw` Gateway sets `allowedRoutes.namespaces.from: Same` (the
+# operators deliberately do not manage ReferenceGrant), so the two suites can
+# share neither the `openstack` namespace nor the Gateway. Each therefore
+# needs its own kind cluster.
+#
+# The suite therefore also lives outside tests/e2e/ (mirroring
+# tests/e2e-operator-upgrade/): the per-CR e2e-operator matrix leg runs
+# `chainsaw test tests/e2e/<operator>/` over the whole directory and would
+# otherwise run this chain on a cluster that has neither keystone-operator,
+# horizon-operator nor K-ORC.
+#
+# It loads the keystone-federation-proxy sidecar image so the suite's
+# ControlPlane CR can pin `federationProxyImage.tag: dev` — without it the
+# suite would validate the sidecar already published on main.
+#
+# The e2e-controlplane-sso job of ci.yaml calls this workflow and decides when it runs.
+name: E2E ControlPlane SSO
+
+"on":
+  workflow_call:
+    inputs:
+      image-map:
+        description: >
+          JSON object mapping each canonical image ref the job loads to the
+          reference to pull for it (see .github/actions/load-e2e-images).
+        type: string
+        required: true
+      measure-sizing:
+        description: >
+          "true" when the ci:measure-sizing label asks for the VPA sizing
+          measurement (hack/ci-vpa-recommendations.sh).
+        type: string
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+  packages: read
+
+# A called workflow does not inherit the env of ci.yaml, so the values its
+# steps and scripts read are declared here. kind is not pinned here: the
+# create-kind-cluster action installs the KIND_VERSION of
+# hack/install-test-deps.sh.
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/c5c3
+  KIND_CLUSTER: cobaltcore
+
+jobs:
+  e2e-controlplane-sso:
+    runs-on: self-hosted
+    timeout-minutes: 90
+    continue-on-error: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Create kind cluster
+        uses: ./.github/actions/create-kind-cluster
+        with:
+          config: hack/kind-config.yaml
+          cluster-name: ${{ env.KIND_CLUSTER }}
+      - name: Load E2E images
+        uses: ./.github/actions/load-e2e-images
+        with:
+          image-map: ${{ inputs.image-map }}
+          images: |
+            ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
+            ${{ env.IMAGE_PREFIX }}/c5c3-operator:dev
+            ${{ env.IMAGE_PREFIX }}/horizon-operator:dev
+            ${{ env.IMAGE_PREFIX }}/keystone-federation-proxy:dev
+            ${{ env.IMAGE_PREFIX }}/keystone:2026.1
+            ${{ env.IMAGE_PREFIX }}/horizon:2026.1
+      - name: Load images into kind
+        run: |
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/c5c3-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-federation-proxy:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon:2026.1 --name ${{ env.KIND_CLUSTER }}
+      # CONTROLPLANE_NAME must match the fixture CR (controlplane-sso) so the
+      # OpenBao bootstrap seeds the per-CR admin-password and Horizon
+      # SECRET_KEY paths the chain reads.
+      - name: Setup E2E infrastructure
+        uses: ./.github/actions/setup-e2e-infra
+        env:
+          WITH_CONTROLPLANE: "true"
+          CONTROLPLANE_OPERATORS: external
+          CONTROLPLANE_NAME: controlplane-sso
+          WITH_CONTROLPLANE_CR: "false"
+          # The ci:measure-sizing label installs the VPA recommender (and with
+          # it metrics-server) for the sizing measurement; empty otherwise.
+          WITH_VPA: ${{ inputs.measure-sizing == 'true' && 'true' || '' }}
+      # The sizing measurement of the ci:measure-sizing label
+      # (docs/reference/testing/sizing-calibration.md): a snapshot of the VPA
+      # recommendations for every workload in `openstack` once a minute, so a
+      # workload a suite deletes keeps its last recommendation. The background
+      # process outlives this step and runs until the collect step below stops
+      # it.
+      - name: Start the sizing measurement
+        if: inputs.measure-sizing == 'true'
+        run: mkdir -p _output/sizing && nohup hack/ci-vpa-recommendations.sh watch _output/sizing openstack >_output/sizing/watch.log 2>&1 &
+      - name: Set up Buildx for K-ORC provenance
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+        with:
+          driver: docker
+      - name: Deploy K-ORC
+        env:
+          # Authenticates the K-ORC clone from github.com; see the script.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: hack/ci-deploy-korc.sh
+      # The keystone and horizon operators, the Glance and Placement CRDs the
+      # c5c3 manager watches, and the c5c3-operator, in that order. The
+      # suite's CR declares no services.glance or services.placement, so the
+      # glance-operator and the placement-operator stay undeployed.
+      - name: Deploy the ControlPlane operators
+        uses: ./.github/actions/tests/deploy-keystone-controlplane-operators
+      - name: Run federated ControlPlane E2E test
+        run: |
+          mkdir -p _output/reports
+          chainsaw test --config tests/e2e/chainsaw-config.yaml \
+            tests/e2e-controlplane-sso/
+        env:
+          E2E_REQUIRE_CONTROLPLANE_STACK: "true"
+      # Stops the watch, takes a last snapshot and writes the report. A
+      # failing last snapshot still reports what the watch recorded; a run
+      # that recorded nothing fails here and is re-run with
+      # `gh run rerun --failed`.
+      - name: Collect the sizing measurement
+        if: always() && inputs.measure-sizing == 'true'
+        run: |
+          kill "$(cat _output/sizing/watch.pid)" || true
+          hack/ci-vpa-recommendations.sh snapshot _output/sizing openstack ||
+            echo "::warning::the final sizing snapshot failed; reporting the watch's snapshots"
+          hack/ci-vpa-recommendations.sh report _output/sizing
+      - name: Upload the sizing measurement
+        if: always() && inputs.measure-sizing == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sizing-e2e-controlplane-sso
+          path: _output/sizing/
+          retention-days: 14
+      - name: Dump diagnostic info
+        if: always()
+        run: hack/ci-dump-diagnostics.sh
+        env:
+          OPERATOR: c5c3
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-controlplane-sso-junit-report
+          path: _output/reports/
+          retention-days: 14
+      # Last step of the job, so the dump above still had a cluster to read;
+      # `always()` covers the failed and timed-out runs.  Never fails the job
+      # (see hack/ci-delete-kind-cluster.sh).
+      - name: Delete kind cluster
+        if: always()
+        run: hack/ci-delete-kind-cluster.sh

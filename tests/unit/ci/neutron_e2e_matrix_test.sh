@@ -28,6 +28,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
+CI_FILTERS="$PROJECT_ROOT/.github/ci-filters.yaml"
 BASE_PATH="$PATH"
 
 PASS=0
@@ -57,9 +58,9 @@ test_all_operators_lists_neutron() {
 test_neutron_filter_is_wired() {
   echo "Test: the neutron paths filter reaches the resolve step"
 
-  assert_file_contains "the paths filter exists" "$CI_YAML" "^ *neutron:$"
-  assert_file_contains "the filter is passed to the resolve step" "$CI_YAML" \
-    "FILTER_neutron: \${{ steps.filter.outputs.neutron }}"
+  assert_file_contains "the paths filter exists" "$CI_FILTERS" "^neutron:$"
+  assert_file_contains "the matched filters reach the resolve step" "$CI_YAML" \
+    'MATCHED_FILTERS: ${{ steps.filter.outputs.changes }}'
 
   local block
   block=$(filter_block neutron)
@@ -67,9 +68,7 @@ test_neutron_filter_is_wired() {
 
   # The service image lives in a filter of their own, so rebuilding it runs the
   # neutron e2e leg without the operator's Go gates.
-  assert_file_contains "the image filter exists" "$CI_YAML" "^ *image_neutron:$"
-  assert_file_contains "the image filter is passed to the resolve step" "$CI_YAML" \
-    "FILTER_image_neutron: \${{ steps.filter.outputs.image_neutron }}"
+  assert_file_contains "the image filter exists" "$CI_FILTERS" "^image_neutron:$"
   assert_contains "the Neutron image is covered" \
     "$(filter_block image_neutron)" "images/neutron/**"
 }

@@ -193,8 +193,9 @@ test_the_job_reads_the_signal() {
     "runs-on: self-hosted"
   assert_contains "the job does not block the pull request" "$job" \
     "continue-on-error: true"
-  assert_contains "the job runs one leg per release" "$job" \
-    'matrix: ${{ fromJson(needs.changes.outputs.keystone-pressure-releases) }}'
+  assert_contains "the job passes its workflow one leg per release" "$job" \
+    '      matrix: ${{ needs.changes.outputs.keystone-pressure-releases }}'
+  assert_contains "which runs them" "$job" 'matrix: ${{ fromJson(inputs.matrix) }}'
   assert_contains "the job creates the single-node cluster" "$job" \
     "config: hack/kind-config.yaml"
 

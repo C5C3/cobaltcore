@@ -1,0 +1,78 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+---
+# The node side of the BGP fabric contract on frr-k8s. Brings up the
+# single-node cluster of hack/kind-config.yaml with the frr-k8s overlay
+# (WITH_FRR_K8S=true) and runs tests/e2e-bgp-fabric/: one kind node peers
+# with two FRR Pods over two unnumbered eBGP sessions with BFD in a VRF,
+# and the suite checks the routes at both ends, the node's untouched main
+# table and the raw snippet that announces kernel routes. See
+# docs/reference/networking/bgp-node-substrate.md.
+#
+# Its job in ci.yaml needs only changes: it builds and loads no run-scoped
+# image, so it joins neither build-e2e-images nor the needs of cleanup-e2e-tags.
+#
+# continue-on-error: true because the suite needs the vrf kernel module on
+# the runner host, which puts the job under the non-blocking entry rule of
+# `### Kernel-module-dependent suites` in docs/reference/ci-cd/ci-workflow.md.
+# The fork guard of that job keeps its privileged hostNetwork and hostPID Pods
+# off the self-hosted runner for a pull request from a fork.
+#
+# The e2e-bgp-fabric job of ci.yaml calls this workflow and decides when it runs.
+name: E2E BGP Fabric
+
+"on":
+  workflow_call:
+
+permissions:
+  contents: read
+
+# A called workflow does not inherit the env of ci.yaml, so the values its
+# steps and scripts read are declared here. kind is not pinned here: the
+# create-kind-cluster action installs the KIND_VERSION of
+# hack/install-test-deps.sh.
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/c5c3
+  KIND_CLUSTER: cobaltcore
+
+jobs:
+  e2e-bgp-fabric:
+    runs-on: self-hosted
+    timeout-minutes: 45
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.work
+      - name: Create kind cluster
+        uses: ./.github/actions/create-kind-cluster
+        with:
+          config: hack/kind-config.yaml
+          cluster-name: ${{ env.KIND_CLUSTER }}
+      - name: Setup E2E infrastructure
+        uses: ./.github/actions/setup-e2e-infra
+        env:
+          WITH_FRR_K8S: "true"
+      - name: Run the BGP fabric suite
+        run: |
+          mkdir -p _output/reports
+          make e2e-bgp-fabric
+      - name: Dump diagnostic info
+        if: always()
+        run: hack/ci-dump-diagnostics.sh
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-bgp-fabric-junit-report
+          path: _output/reports/
+          retention-days: 14
+      # Last step of the job, so the dump above still had a cluster to read;
+      # `always()` covers the failed and timed-out runs.  Never fails the job
+      # (see hack/ci-delete-kind-cluster.sh).
+      - name: Delete kind cluster
+        if: always()
+        run: hack/ci-delete-kind-cluster.sh

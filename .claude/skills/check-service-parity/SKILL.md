@@ -92,8 +92,9 @@ inventory. Exit code `1` means at least one `[FAIL]`. Interpret:
 - **P4** — observability: the Grafana dashboard JSON plus its
   `dashboard_test.go` drift test, which pins every referenced metric
   to a registered one.
-- **P5** — CI wiring: the paths-filter block, `ALL_OPERATORS`,
-  `FILTER_<svc>`, the unit/integration test matrices, the
+- **P5** — CI wiring: the `.github/ci-filters.yaml` paths filters (the
+  `<svc>` filter the resolver reads by name), `ALL_OPERATORS`, the
+  unit/integration test matrices, the
   helm-validate chart loop, and both GHCR
   cleanup package lists (`cleanup-packages` and `cleanup-e2e-packages`,
   each needing `<svc>-operator` and `<svc>`), with exact list-item

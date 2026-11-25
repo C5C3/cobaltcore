@@ -150,8 +150,12 @@ check_chaos_suites() {
     echo "missing $workflow"
     return
   fi
-  local legs
-  legs="$(CI_YAML="$workflow" job_block e2e-chaos | awk "$MATRIX_AWK")"
+  local legs=""
+  # job_block ends the test on a missing job; a fixture without one is a
+  # finding here.
+  if CI_YAML="$workflow" job_exists e2e-chaos; then
+    legs="$(CI_YAML="$workflow" job_block e2e-chaos | awk "$MATRIX_AWK")"
+  fi
   if [[ -z "$legs" ]]; then
     echo "no e2e-chaos matrix in $workflow"
     return

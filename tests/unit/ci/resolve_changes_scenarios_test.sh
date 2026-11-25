@@ -433,8 +433,8 @@ test_random_chaos_runs_on_its_own_files() {
   assert_contains "and the soak it runs under" "$block" "- 'hack/dizzy-soak-runner.sh'"
   assert_contains "and the consistency checks" "$block" "- 'tests/e2e-chaos/lib/consistency.sh'"
   assert_not_contains "but not the chaos suites" "$block" "tests/e2e-chaos/**"
-  assert_file_contains_fixed "the resolver step gets the filter" "$CI_YAML" \
-    'FILTER_tests_chaos_random: ${{ steps.filter.outputs.tests_chaos_random }}'
+  assert_file_contains_fixed "the resolver step gets the matched filters" "$CI_YAML" \
+    'MATCHED_FILTERS: ${{ steps.filter.outputs.changes }}'
 
   scenario "a change to tests/chaos-random/catalogue.yaml" refs/heads/main FILTER_tests_chaos_random=true
   expect_all true e2e-chaos-random build-e2e-images

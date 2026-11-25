@@ -60,7 +60,8 @@ test_no_bare_helm_push() {
 # the `version:` input it passes, or <none>.
 setup_helm_versions() {
   local f
-  for f in "$PROJECT_ROOT"/.github/workflows/*.yaml "$PROJECT_ROOT"/.github/actions/*/action.yaml; do
+  for f in "$PROJECT_ROOT"/.github/workflows/*.yaml "$PROJECT_ROOT"/.github/actions/*/action.yaml \
+    "$PROJECT_ROOT"/.github/actions/*/*/action.yaml; do
     [ -f "$f" ] || continue
     awk '
       function flush() { if (in_step) print (version == "" ? "<none>" : version); in_step = 0; version = "" }

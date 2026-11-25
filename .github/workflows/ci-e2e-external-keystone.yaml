@@ -1,0 +1,129 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+---
+# External-mode ControlPlane E2E: an External CR driven against a plain
+# Keystone the operator does NOT own (a brownfield-adoption stand-in).
+#
+# A SEPARATE job rather than a second suite directory on e2e-controlplane: the
+# ControlPlane webhook permits one ControlPlane per namespace, and this suite
+# brings up a wholly different infrastructure shape — a plain, operator-free
+# SQLite Keystone fixture in its own namespace plus four External ControlPlanes,
+# none of which provision MariaDB/Memcached. It shares the e2e-controlplane
+# change-detection output and path filter (the e2e_controlplane filter already
+# watches operators/c5c3/**, operators/keystone/**, tests/e2e/c5c3/** and the
+# deploy/hack wiring this job depends on), exactly as e2e-controlplane-sso does.
+#
+# The e2e-external-keystone job of ci.yaml calls this workflow and decides when it runs.
+name: E2E External Keystone
+
+"on":
+  workflow_call:
+    inputs:
+      image-map:
+        description: >
+          JSON object mapping each canonical image ref the job loads to the
+          reference to pull for it (see .github/actions/load-e2e-images).
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  packages: read
+
+# A called workflow does not inherit the env of ci.yaml, so the values its
+# steps and scripts read are declared here. kind is not pinned here: the
+# create-kind-cluster action installs the KIND_VERSION of
+# hack/install-test-deps.sh.
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/c5c3
+  KIND_CLUSTER: cobaltcore
+
+jobs:
+  e2e-external-keystone:
+    runs-on: self-hosted
+    timeout-minutes: 90
+    continue-on-error: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Create kind cluster
+        uses: ./.github/actions/create-kind-cluster
+        with:
+          config: hack/kind-config.yaml
+          cluster-name: ${{ env.KIND_CLUSTER }}
+      # The Horizon service image is NOT loaded: External mode never runs a
+      # Horizon workload (HorizonReady=HorizonNotManaged); the horizon-operator is
+      # deployed only so its CRD exists for the c5c3 manager's Owns(Horizon) watch.
+      - name: Load E2E images
+        uses: ./.github/actions/load-e2e-images
+        with:
+          image-map: ${{ inputs.image-map }}
+          images: |
+            ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
+            ${{ env.IMAGE_PREFIX }}/c5c3-operator:dev
+            ${{ env.IMAGE_PREFIX }}/horizon-operator:dev
+            ${{ env.IMAGE_PREFIX }}/keystone:2026.1
+            ${{ env.IMAGE_PREFIX }}/tempest:2026.1
+      - name: Load images into kind
+        run: |
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/c5c3-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/tempest:2026.1 --name ${{ env.KIND_CLUSTER }}
+      # CONTROLPLANE_NAME is left at its default: the OpenBao bootstrap only seeds
+      # bootstrap/openstack/<name>-keystone/admin (the managed-mode admin-password
+      # path), which the External ControlPlanes here — in their own namespaces,
+      # authenticating from user-supplied Secrets — never read. The suite asserts
+      # the External CP's own per-CR OpenBao paths are never-seeded, so no seed
+      # must target them (see deploy/bases/shared-openbao/bootstrap/write-bootstrap-secrets.sh).
+      - name: Setup E2E infrastructure
+        uses: ./.github/actions/setup-e2e-infra
+        env:
+          WITH_CONTROLPLANE: "true"
+          CONTROLPLANE_OPERATORS: external
+          WITH_CONTROLPLANE_CR: "false"
+      - name: Set up Buildx for K-ORC provenance
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+        with:
+          driver: docker
+      - name: Deploy K-ORC
+        env:
+          # Authenticates the K-ORC clone from github.com; see the script.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: hack/ci-deploy-korc.sh
+      # The keystone-operator before the c5c3-operator, whose manager Owns
+      # Keystone and Horizon children even in External mode; the
+      # horizon-operator only for its CRD, since External mode runs no
+      # Horizon. External mode forbids services.glance and
+      # services.placement, so only their CRDs are installed.
+      - name: Deploy the ControlPlane operators
+        uses: ./.github/actions/tests/deploy-keystone-controlplane-operators
+      # E2E_REQUIRE_CONTROLPLANE_STACK=true flips the suite's presence guard from
+      # SKIP to a hard failure, so missing wiring cannot go green.
+      - name: Run External-mode ControlPlane E2E test
+        run: |
+          mkdir -p _output/reports
+          chainsaw test --config tests/e2e/chainsaw-config.yaml \
+            tests/e2e/c5c3/external-keystone/
+        env:
+          E2E_REQUIRE_CONTROLPLANE_STACK: "true"
+      - name: Dump diagnostic info
+        if: always()
+        run: hack/ci-dump-diagnostics.sh
+        env:
+          OPERATOR: c5c3
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-external-keystone-junit-report
+          path: _output/reports/
+          retention-days: 14
+      # Last step of the job, so the dump above still had a cluster to read;
+      # `always()` covers the failed and timed-out runs.  Never fails the job
+      # (see hack/ci-delete-kind-cluster.sh).
+      - name: Delete kind cluster
+        if: always()
+        run: hack/ci-delete-kind-cluster.sh

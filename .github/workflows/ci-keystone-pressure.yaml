@@ -1,0 +1,147 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+---
+# Keystone token-path load: dizzy's `keystone pressure` against two
+# Keystones side by side, one on the keystone image main last published for
+# the release (base) and one on the image this pull request built
+# (patched), through hack/keystone-pressure-ab.sh, i.e.
+# `make keystone-pressure-ab`. One leg per release that ships a Keystone
+# image. Each profile of tests/load/keystone-pressure/ that a standalone
+# Keystone can run goes against both builds with the same seed, and
+# `dizzy keystone report --compare` puts the two side by side in the job
+# summary and the keystone-pressure-<release> artifact.
+#
+# The legs report numbers, not a verdict: a latency delta never fails them,
+# a failed deployment, run or comparison does, and the job does not block the
+# pull request. A leg whose release image the pull request did not change
+# compares main's image with itself, and its deltas show the noise of the
+# runner. See docs/reference/testing/keystone-pressure-testing.md.
+#
+# The keystone-pressure job of ci.yaml calls this workflow and decides when it runs.
+name: Keystone Pressure
+
+"on":
+  workflow_call:
+    inputs:
+      image-map:
+        description: >
+          JSON object mapping each canonical image ref the job loads to the
+          reference to pull for it (see .github/actions/load-e2e-images).
+        type: string
+        required: true
+      matrix:
+        description: >
+          The legs, {"release":[...]}: one per release that ships a Keystone
+          image.
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  packages: read
+
+# A called workflow does not inherit the env of ci.yaml, so the values its
+# steps and scripts read are declared here. kind is not pinned here: the
+# create-kind-cluster action installs the KIND_VERSION of
+# hack/install-test-deps.sh.
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/c5c3
+  KIND_CLUSTER: cobaltcore
+
+jobs:
+  keystone-pressure:
+    runs-on: self-hosted
+    timeout-minutes: 150
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(inputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Create kind cluster
+        uses: ./.github/actions/create-kind-cluster
+        with:
+          config: hack/kind-config.yaml
+          cluster-name: ${{ env.KIND_CLUSTER }}
+      - uses: ./.github/actions/registry-login
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # The base: the keystone image main last published for the release.
+      # It is pulled and kept under a tag of its own before "Load E2E images"
+      # points the canonical reference at the image of the map, which is this
+      # run's build when the pull request changed the image and main's
+      # otherwise.
+      - name: Pull main's keystone image
+        env:
+          RELEASE: ${{ matrix.release }}
+        run: |
+          ref="${IMAGE_PREFIX}/keystone:${RELEASE}"
+          for attempt in 1 2 3; do
+            if docker pull "${ref}"; then
+              break
+            fi
+            if [ "${attempt}" -eq 3 ]; then
+              echo "::error::docker pull ${ref} failed after 3 attempts"
+              exit 1
+            fi
+            sleep $((attempt * 10))
+          done
+          docker tag "${ref}" "${ref}-main"
+      - name: Load E2E images
+        uses: ./.github/actions/load-e2e-images
+        with:
+          image-map: ${{ inputs.image-map }}
+          images: |
+            ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
+            ${{ env.IMAGE_PREFIX }}/keystone:${{ matrix.release }}
+      # The harness loads the two Keystone images and the dizzy image itself,
+      # under tags of their own, so only the operator is loaded here.
+      - name: Load images into kind
+        run: kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name "${{ env.KIND_CLUSTER }}"
+      - name: Setup E2E infrastructure
+        uses: ./.github/actions/setup-e2e-infra
+      - name: Deploy keystone-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: keystone
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/keystone-operator
+          NAMESPACE: keystone-system
+      # Two minutes per run, and twelve for effective-fan: the last of the
+      # profile's four stages makes 2000 grants before it measures, and a
+      # Keystone on this runner grants 16 to 18 assignments a second, so a
+      # window of 180 s leaves stage 4 about a minute of draws. A leg took
+      # about 92 minutes with six; the twelve add about 12, most of a leg
+      # being the provisioning and teardown of effective-fan's 4000 projects
+      # on each build.
+      - name: Run keystone pressure
+        env:
+          KEYSTONE_PRESSURE_RELEASE: ${{ matrix.release }}
+          KEYSTONE_PRESSURE_BASE_IMAGE: ${{ env.IMAGE_PREFIX }}/keystone:${{ matrix.release }}-main
+          KEYSTONE_PRESSURE_PATCHED_IMAGE: ${{ env.IMAGE_PREFIX }}/keystone:${{ matrix.release }}
+          KEYSTONE_PRESSURE_DURATION: 2m
+          KEYSTONE_PRESSURE_PROFILE_DURATIONS: effective-fan=12m
+          KEYSTONE_PRESSURE_OUTPUT: _output/keystone-pressure/${{ matrix.release }}
+        run: make keystone-pressure-ab
+      - name: Dump diagnostic info
+        if: failure()
+        run: hack/ci-dump-diagnostics.sh
+        env:
+          OPERATOR: keystone
+      - name: Upload keystone pressure results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: keystone-pressure-${{ matrix.release }}
+          path: _output/keystone-pressure/${{ matrix.release }}/
+          if-no-files-found: ignore
+          retention-days: 30
+      # Last step of the job, so the dump above still had a cluster to read;
+      # `always()` covers the failed and timed-out runs.  Never fails the job
+      # (see hack/ci-delete-kind-cluster.sh).
+      - name: Delete kind cluster
+        if: always()
+        run: hack/ci-delete-kind-cluster.sh

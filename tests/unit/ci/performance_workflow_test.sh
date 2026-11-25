@@ -7,7 +7,7 @@
 # measures token and reconcile latency against tests/perf/baseline.json:
 #   - the triggers (a 01:30 UTC schedule and workflow_dispatch), read-only
 #     top-level permissions, a concurrency group that never cancels a night,
-#     and a KIND_VERSION pin;
+#     and no kind pin of its own (create-kind-cluster reads it);
 #   - two jobs, of which one is self-hosted: baseline, with a 75-minute wall
 #     and no permissions of its own;
 #   - the steps: the release resolved from the keystone service images, the
@@ -127,9 +127,9 @@ test_triggers_permissions_and_env() {
   assert_file_contains_fixed "IMAGE_PREFIX is ghcr.io/c5c3" "$WORKFLOW" 'IMAGE_PREFIX: ghcr.io/c5c3'
   assert_file_contains_fixed "KIND_CLUSTER is cobaltcore" "$WORKFLOW" 'KIND_CLUSTER: cobaltcore'
 
-  # tests/unit/renovate/workflow_pins_custommanager_test.sh asserts the pin
-  # agrees with ci.yaml's and hack/install-test-deps.sh's.
-  assert_not_empty "performance.yaml pins KIND_VERSION" "$(workflow_kind_pin "$WORKFLOW")"
+  # The kind version is the one hack/install-test-deps.sh pins, which the
+  # create-kind-cluster action reads (tests/unit/ci/create_kind_cluster_wiring_test.sh).
+  assert_eq "performance.yaml pins no KIND_VERSION of its own" "" "$(workflow_kind_pin "$WORKFLOW")"
 }
 
 test_one_self_hosted_job() {
@@ -155,7 +155,7 @@ test_the_steps() {
   step="$(job_step baseline "Create kind cluster")"
   assert_contains "the cluster comes from create-kind-cluster" "$step" "uses: ./.github/actions/create-kind-cluster"
   assert_contains "with hack/kind-config.yaml" "$step" "config: hack/kind-config.yaml"
-  assert_contains "at KIND_VERSION" "$step" 'version: ${{ env.KIND_VERSION }}'
+  assert_not_contains "at the kind of hack/install-test-deps.sh" "$step" 'version:'
 
   step="$(job_step baseline "Log in to GHCR")"
   assert_contains "the pulls log in first" "$step" "uses: ./.github/actions/registry-login"

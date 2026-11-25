@@ -216,7 +216,7 @@ those names collides with the running sibling, because the suites of one
 (`tests/e2e/chainsaw-config.yaml` sets `parallel: 4`). Name every slugged resource `<svc>-basic-<slug>` and
 `<svc>_basic_<slug>`, and check with
 `grep -rnE 'basic[-_]<year>([^-_0-9]|$)' tests/e2e/*/basic-deployment-<slug>/`.
-Add the nova variant to `shard_two` in `.github/workflows/ci.yaml`
+Add the nova variant to `shard_two` in `.github/workflows/ci-e2e-operator.yaml`
 (`tests/unit/ci/nova_e2e_matrix_test.sh` asserts every suite runs in one
 shard), and add the suite's row, section and tree entry to the reference
 pages that list suites
@@ -363,8 +363,8 @@ None of these are mechanical; decide and record each in the PR description:
   comment that names `neutron:<default>` for the multicluster target, the
   quick-start step `tests/unit/deploy/metal_stack_controlplane_test.sh` ties
   to the lab ControlPlane (`docs/quick-start-controlplane.md`), the image
-  tags hard-coded in `.github/workflows/ci.yaml` (image-upgrade re-tagging and
-  kind preloads), the tempest client image `ghcr.io/c5c3/tempest:<default>`
+  tags hard-coded in the `.github/workflows/ci-<job>.yaml` workflows of the E2E
+  jobs (image-upgrade re-tagging and kind preloads), the tempest client image `ghcr.io/c5c3/tempest:<default>`
   that e2e fixture Jobs run, and several hundred release pins across the
   `tests/e2e*/` fixture trees. Moving the default is one coordinated sweep;
   the inventory script prints every current value and the pin count.

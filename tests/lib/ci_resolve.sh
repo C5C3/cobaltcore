@@ -4,7 +4,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Shared helpers for the tests that pin a hack/ci-resolve-changes.sh output to
-# the ci.yaml jobs consuming it (tests/unit/ci/*_output_test.sh).
+# the ci.yaml jobs consuming it (tests/unit/ci/*_output_test.sh), and the path
+# filters of .github/ci-filters.yaml that feed it.
 #
 # The resolve-script invocation contract is one piece of knowledge, and three
 # output tests exercise it. Kept here so a change to that contract — a new
@@ -98,17 +99,19 @@ resolve_outputs() {
 
 # assert_filter_is_wired <filter-name> <output-key>
 #
-# Asserts the three declarative ci.yaml sides of a change signal: the paths
-# filter, the FILTER_ env var handed to the resolve step, and the output export
-# on the changes job. The consuming side stays with the caller — a signal may
-# have one consumer or several, and each test pins its own.
+# Asserts the three declarative sides of a change signal: the paths filter in
+# .github/ci-filters.yaml, the matched filter names handed to the resolve step,
+# and the output export on the changes job of ci.yaml. The consuming side stays
+# with the caller — a signal may have one consumer or several, and each test
+# pins its own.
 assert_filter_is_wired() {
-  local filter="$1" output="$2"
+  local filter="$1" output="$2" filters
+  filters="$(dirname "$(dirname "$CI_YAML")")/ci-filters.yaml"
 
-  assert_file_contains "the paths filter exists" "$CI_YAML" \
-    "^ *${filter}:$"
-  assert_file_contains "the filter is passed to the resolve step" "$CI_YAML" \
-    "FILTER_${filter}: \${{ steps.filter.outputs.${filter} }}"
+  assert_file_contains "the paths filter exists" "$filters" \
+    "^${filter}:$"
+  assert_file_contains "the matched filters reach the resolve step" "$CI_YAML" \
+    "MATCHED_FILTERS: \${{ steps.filter.outputs.changes }}"
   assert_file_contains "the changes job exports the output" "$CI_YAML" \
     "${output}: \${{ steps.result.outputs.${output} }}"
 }

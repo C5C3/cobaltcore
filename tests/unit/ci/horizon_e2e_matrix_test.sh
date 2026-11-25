@@ -38,6 +38,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
+CI_FILTERS="$PROJECT_ROOT/.github/ci-filters.yaml"
 
 PASS=0
 FAIL=0
@@ -101,9 +102,9 @@ test_service_operators_lists_horizon() {
 test_horizon_filter_is_wired() {
   echo "Test: the horizon paths filter reaches the resolve step"
 
-  assert_file_contains "the paths filter exists" "$CI_YAML" "^ *horizon:$"
-  assert_file_contains "the filter is passed to the resolve step" "$CI_YAML" \
-    "FILTER_horizon: \${{ steps.filter.outputs.horizon }}"
+  assert_file_contains "the paths filter exists" "$CI_FILTERS" "^horizon:$"
+  assert_file_contains "the matched filters reach the resolve step" "$CI_YAML" \
+    'MATCHED_FILTERS: ${{ steps.filter.outputs.changes }}'
 
   local block
   block=$(filter_block horizon)

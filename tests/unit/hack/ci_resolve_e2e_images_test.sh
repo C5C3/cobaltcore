@@ -155,11 +155,11 @@ run_resolve() {
 # they left behind.
 make_fixture_repo() {
   local dir="$1" op
-  mkdir -p "$dir/hack" "$dir/.github/workflows" "$dir/images/ovn"
+  mkdir -p "$dir/hack" "$dir/.github" "$dir/images/ovn"
   cp "$RESOLVE_SH" "$PROJECT_ROOT/hack/ci-service-image-releases.sh" \
     "$PROJECT_ROOT/hack/ci-resolve-ovn-version.sh" "$dir/hack/"
   cp "$PROJECT_ROOT/images/ovn/source.json" "$dir/images/ovn/"
-  cp "$PROJECT_ROOT/.github/workflows/ci.yaml" "$dir/.github/workflows/"
+  cp "$PROJECT_ROOT/.github/ci-filters.yaml" "$dir/.github/"
   for op in c5c3 keystone; do
     mkdir -p "$dir/operators/$op"
     echo "module example.com/$op" >"$dir/operators/$op/go.mod"
@@ -811,8 +811,8 @@ test_a_commit_to_shared_go_code_makes_an_older_image_stale() {
 
   # The flake builds every operator from internal/common and the shared Nix
   # inputs, which is why hack/ci-resolve-changes.sh marks every operator
-  # changed for go_common. The resolver reads that filter from the ci.yaml
-  # copy of the fixture, so each path here has to be in it.
+  # changed for go_common. The resolver reads that filter from the
+  # ci-filters.yaml copy of the fixture, so each path here has to be in it.
   local path repo published
   for path in internal/common/conditions.go flake.nix flake.lock nix/lib/operator-image.nix \
     nix/lib/static-image.nix nix/lib/image-defaults.nix hack/ci-nix-build-e2e-images.sh; do
@@ -865,7 +865,7 @@ test_an_image_whose_revision_cannot_be_checked_is_built() {
 }
 
 test_an_operator_without_a_change_filter_is_fatal() {
-  echo "Test: an operator with no change filter in ci.yaml fails the step"
+  echo "Test: an operator with no change filter in ci-filters.yaml fails the step"
 
   # Without its own filter only go_common would count against the image, and a
   # commit to the operator itself would never rebuild it.
@@ -877,7 +877,7 @@ test_an_operator_without_a_change_filter_is_fatal() {
 
   assert_nonzero_exit "the resolver fails the step" "$RC"
   assert_contains "it names the missing filter" "$OUTPUT" \
-    "::error::.github/workflows/ci.yaml has no change filter named unwired"
+    "::error::.github/ci-filters.yaml has no change filter named unwired"
 }
 
 # ---------------------------------------------------------------------------

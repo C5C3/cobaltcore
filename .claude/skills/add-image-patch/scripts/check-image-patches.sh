@@ -12,8 +12,8 @@
 #   P1  layout and naming: patches/<svc>/<release>/<file>, the file name
 #       matches ^[0-9]{4}-[a-z0-9-]+\.patch$ (the build globs *.patch only)
 #   P2  wiring: <release> exists under releases/, <svc> is a key of that
-#       release's source-refs.yaml, and patches/<svc>/** is in the
-#       build-images.yaml and ci.yaml paths filters
+#       release's source-refs.yaml, and patches/<svc>/** is in the paths
+#       filters of build-images.yaml and of CI (.github/ci-filters.yaml)
 #   P3  format: the file carries a diff (diff --git, or ---/+++ headers); the
 #       house header before it has the SPDX pair, an "Upstream status:" line,
 #       and names the upstream tag source-refs.yaml pins
@@ -44,7 +44,7 @@ cd "${REPO_ROOT}"
 
 DOCS="docs/reference/ci-cd/container-images.md"
 BUILD_WF=".github/workflows/build-images.yaml"
-CI_WF=".github/workflows/ci.yaml"
+CI_WF=".github/ci-filters.yaml"
 NAME_RE='^[0-9]{4}-[a-z0-9-]+\.patch$'
 TEST_PATH_RE='(^|/)tests?/|(^|/)test_[^/]*\.py$|_test\.py$'
 # Header phrases that explain a missing test hunk (case-insensitive).

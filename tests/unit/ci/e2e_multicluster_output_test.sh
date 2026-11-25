@@ -38,6 +38,8 @@ SKIP=0
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/ci_resolve.sh
 source "$PROJECT_ROOT/tests/lib/ci_resolve.sh"
+# shellcheck source=tests/lib/ci_yaml.sh
+source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -115,13 +117,8 @@ test_ci_yaml_wires_all_four_sides() {
 test_filter_covers_the_suite_and_the_chart() {
   echo "Test: the filter lists the suite and the chart the job runs on"
 
-  # The filter block ends at the next filter key at the same indent.
   local block
-  block=$(awk '
-    /^            tests_multicluster:$/ { in_block = 1; next }
-    in_block && /^            [a-z0-9_]+:$/ { exit }
-    in_block { print }
-  ' "$CI_YAML")
+  block=$(filter_block tests_multicluster)
 
   assert_contains "the filter lists the two-cluster suite" \
     "$block" "tests/e2e-multicluster/**"
@@ -141,8 +138,8 @@ test_job_runs_the_makefile_target() {
 
   # CI-to-Makefile parity: a developer reproduces the job by running the same
   # target, so the job must not drift into its own chainsaw invocation.
-  assert_file_contains "the job invokes make e2e-multicluster" "$CI_YAML" \
-    "make e2e-multicluster"
+  assert_contains "the job invokes make e2e-multicluster" \
+    "$(job_block e2e-multicluster)" "make e2e-multicluster"
 
   local makefile="$PROJECT_ROOT/Makefile"
   assert_file_contains "the Makefile declares the target" "$makefile" \
@@ -159,11 +156,7 @@ test_job_deploys_the_network_operators() {
   # job's text: every other e2e job also carries an `OPERATOR: ovn` block, so a
   # whole-file match would pass with nothing wired here at all.
   local job
-  job=$(awk '
-    /^  e2e-multicluster:$/ { in_job = 1; next }
-    in_job && /^  ([a-z0-9-]+:$|#)/ { exit }
-    in_job { print }
-  ' "$CI_YAML")
+  job=$(job_block e2e-multicluster)
 
   assert_not_empty "the job exists" "$job"
   assert_contains "the job deploys ovn-operator" "$job" "OPERATOR: ovn"
@@ -186,11 +179,7 @@ test_job_prepares_the_management_cluster_datapath() {
   # otherwise present on the management cluster, which loads only the
   # operators. Scoped to this job's text, like the test above.
   local job
-  job=$(awk '
-    /^  e2e-multicluster:$/ { in_job = 1; next }
-    in_job && /^  ([a-z0-9-]+:$|#)/ { exit }
-    in_job { print }
-  ' "$CI_YAML")
+  job=$(job_block e2e-multicluster)
 
   assert_not_empty "the job exists" "$job"
   assert_contains "the infrastructure step loads the OVN kernel modules" \
@@ -209,11 +198,7 @@ test_job_never_registers_an_admin_kubeconfig() {
   # that into the Secret would let the job pass with any grant set at all —
   # which is the one thing this job exists to check.
   local block
-  block=$(awk '
-    /^      - name: Register the target cluster$/ { in_block = 1; next }
-    in_block && /^      - name: / { exit }
-    in_block { print }
-  ' "$CI_YAML")
+  block=$(job_step e2e-multicluster "Register the target cluster")
 
   assert_not_empty "the registration step exists" "$block"
   assert_contains "the registration reads the chart token Secret" \

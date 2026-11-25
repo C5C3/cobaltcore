@@ -246,7 +246,7 @@ test_ci_yaml_calls_the_reusable_workflow() {
   assert_contains "it keeps its own gate" "$job" \
     "needs.changes.outputs.e2e-operator-upgrade == 'true'"
   assert_contains "it runs on pull requests only" "$job" "github.event_name == 'pull_request'"
-  assert_not_contains "it carries no steps of its own" "$job" "    steps:"
+  assert_not_contains "it carries no steps of its own" "$(job_caller e2e-operator-upgrade)" "    steps:"
   assert_contains "the changes job exports the matrix" "$(job_block changes)" \
     'e2e-operator-upgrade-operators: ${{ steps.result.outputs.e2e-operator-upgrade-operators }}'
   # The run-scoped e2e images are pruned only after every job that pulls them
@@ -300,10 +300,10 @@ test_the_reusable_workflow_runs_the_pinned_baseline() {
   done
 
   local ci_grants wf_grants
-  ci_grants="$(sed -n 's/^ *BARBICAN_SECRET_STORE_GRANTS: //p' "$CI_YAML" | sort -u)"
+  ci_grants="$(sed -n 's/^ *BARBICAN_SECRET_STORE_GRANTS: //p' "$(job_workflow e2e-operator)" | sort -u)"
   wf_grants="$(sed -n 's/^ *BARBICAN_SECRET_STORE_GRANTS: //p' "$UPGRADE_YAML")"
   assert_not_empty "the workflow sets the barbican grants" "$wf_grants"
-  assert_eq "the workflow's barbican grants equal ci.yaml's" "$ci_grants" "$wf_grants"
+  assert_eq "the workflow's barbican grants equal the e2e-operator job's" "$ci_grants" "$wf_grants"
 }
 
 test_the_keystone_job_runs_the_pod_kill_pass() {

@@ -21,10 +21,13 @@
 # what that costs — every suite passed, the deletion lost a docker race, and the
 # job was reported failed.
 #
-# Both rules hold for ci.yaml, for the reusable workflow
-# e2e-operator-upgrade.yaml, which runs the operator upgrade jobs for ci.yaml
-# and operator-upgrade.yaml, and for the two nightlies flux-path.yaml and
-# performance.yaml.
+# Both rules hold for ci.yaml and every workflow it calls (the ci-<job>.yaml
+# workflows of its E2E jobs and e2e-operator-upgrade.yaml, which
+# operator-upgrade.yaml calls too), and for the two nightlies flux-path.yaml
+# and performance.yaml.
+#
+# No workflow pins the kind version: the action installs the KIND_VERSION of
+# hack/install-test-deps.sh, the one pin local development installs too.
 #
 # Usage: bash tests/unit/ci/create_kind_cluster_wiring_test.sh
 
@@ -33,11 +36,9 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
-UPGRADE_YAML="$PROJECT_ROOT/.github/workflows/e2e-operator-upgrade.yaml"
 FLUX_PATH_YAML="$PROJECT_ROOT/.github/workflows/flux-path.yaml"
 PERF_YAML="$PROJECT_ROOT/.github/workflows/performance.yaml"
-# Every workflow whose jobs create a kind cluster.
-WORKFLOWS=("$CI_YAML" "$UPGRADE_YAML" "$FLUX_PATH_YAML" "$PERF_YAML")
+INSTALL_DEPS_SH="$PROJECT_ROOT/hack/install-test-deps.sh"
 ACTION_YAML="$PROJECT_ROOT/.github/actions/create-kind-cluster/action.yaml"
 CREATE_SH="$PROJECT_ROOT/hack/ci-create-kind-cluster.sh"
 RESET_SH="$PROJECT_ROOT/hack/ci-reset-kind-cluster.sh"
@@ -51,6 +52,14 @@ SKIP=0
 
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
+# shellcheck source=tests/lib/ci_yaml.sh
+source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
+
+# Every workflow whose jobs create a kind cluster: ci.yaml and the workflows it
+# calls, then the two nightlies.
+CI_WORKFLOWS=()
+while IFS= read -r wf; do CI_WORKFLOWS+=("$wf"); done < <(ci_workflows)
+WORKFLOWS=("${CI_WORKFLOWS[@]}" "$FLUX_PATH_YAML" "$PERF_YAML")
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -128,12 +137,25 @@ test_every_step_uses_the_action() {
 test_inputs_match() {
   echo "Test: the jobs pass the inputs the action declares"
 
-  local version_inputs cluster_inputs
-  version_inputs="$(count_lines "^          version: \${{ env.KIND_VERSION }}$")"
-  cluster_inputs="$(cluster_creating_steps | sed '/^$/d' | wc -l | tr -d ' ')"
-
-  assert_eq "each cluster-creating step pins the kind version from env.KIND_VERSION" \
-    "$cluster_inputs" "$version_inputs"
+  # One pin, read by the action: a version input or a KIND_VERSION env in a
+  # workflow would be a second pin, and a called workflow would need a third.
+  assert_eq "no cluster-creating step passes a kind version" "0" \
+    "$(awk -v ref="$ACTION_REF" '
+      $0 == "        uses: " ref { in_step = 1; next }
+      in_step && /^        [a-z]/ && !/^        with:/ { in_step = 0 }
+      /^      - / { in_step = 0 }
+      in_step && /^          version: / { n++ }
+      END { print n + 0 }
+    ' "${WORKFLOWS[@]}")"
+  assert_eq "no workflow pins KIND_VERSION" "0" "$(count_lines "^ *KIND_VERSION:")"
+  assert_file_contains "install-test-deps.sh pins kind" "$INSTALL_DEPS_SH" \
+    '^KIND_VERSION="v[0-9][0-9.]*"$'
+  assert_file_contains "the action reads that pin when no version is passed" "$ACTION_YAML" \
+    "hack/install-test-deps.sh)\"$"
+  assert_file_contains "kind is installed at the resolved version" "$ACTION_YAML" \
+    "version: \${{ steps.kind.outputs.version }}"
+  assert_file_contains "and the creation script falls back to it" "$ACTION_YAML" \
+    "KIND_VERSION: \${{ steps.kind.outputs.version }}"
 
   assert_file_contains "the action declares version" "$ACTION_YAML" "^  version:"
   assert_file_contains "the action declares cluster-name" "$ACTION_YAML" "^  cluster-name:"
@@ -165,7 +187,7 @@ job_kind_configs() {
     $0 == "        uses: " ref { in_step = 1; config = ""; next }
     in_step && /^          config: / { config = $0; sub(/^          config: /, "", config) }
     END { flush() }
-  ' "$CI_YAML"
+  ' "${CI_WORKFLOWS[@]}"
 }
 
 # expected_kind_config <job> — the config(s) a job's create-kind-cluster steps

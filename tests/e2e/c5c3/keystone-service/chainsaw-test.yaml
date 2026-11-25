@@ -1195,7 +1195,7 @@ spec:
         # Pinned for the same reason as catch above. The waits below are bounded
         # and add up to 840s; 20m covers them plus the deletes that drive them,
         # and keeps the suite's ceiling at exec + catch + finally + cleanup =
-        # 90m, which is the number .github/workflows/ci.yaml budgets against.
+        # 90m, which is the number .github/workflows/ci-e2e-controlplane.yaml budgets against.
         timeout: 20m
         shell: bash
         content: |
