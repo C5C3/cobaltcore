@@ -41,6 +41,8 @@ This guide is written against the **[Quick Start (ControlPlane)](../../quick-sta
 KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true WITH_OVN_KERNEL_MODULES=true make deploy-infra
 ```
 
+:::
+
 Follow [Boot a first server](../../quick-start-controlplane.md#boot-a-first-server)
 through its catalog and compute-service checks, but skip the optional
 fake-compute block: this guide creates its own pool and server. Keep the
@@ -48,7 +50,6 @@ fake-compute block: this guide creates its own pool and server. Keep the
 registers under the kind node's name as well, so remove it first, as
 [Run a Fake Compute for Testing](./run-a-fake-compute-for-testing.md#removing-the-fake-compute)
 describes.
-:::
 
 1. A Linux host with root or passwordless sudo, the requirement
    [Label a Node as a Compute or Network Node](../ovn/label-a-chassis-node.md)
