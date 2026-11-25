@@ -27,12 +27,14 @@
 <text x="725" y="680.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">openbao-operator</text>
 <rect x="580" y="712" width="290" height="48" rx="20" fill="#6F5600"/>
 <text x="725" y="744.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">ovn-operator</text>
-<rect x="940" y="40" width="410" height="168" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<rect x="940" y="40" width="410" height="232" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
 <text x="959" y="79.36" font-size="26" font-weight="700" fill="#2B3440">Layer 3</text>
-<text x="959" y="113.2" font-size="20" font-weight="400" fill="#55606E">waits for database, cache and secrets</text>
+<text x="959" y="113.2" font-size="20" font-weight="400" fill="#55606E">wait for database, cache and secrets</text>
 <rect x="960" y="140" width="260" height="48" rx="20" fill="#1D47A6"/>
 <text x="1090" y="172.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">keystone-operator</text>
-<rect x="1400" y="228" width="330" height="616" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<rect x="960" y="204" width="260" height="48" rx="20" fill="#1E6B40"/>
+<text x="1090" y="236.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">c5c3-operator</text>
+<rect x="1400" y="228" width="330" height="552" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
 <text x="1419" y="267.36" font-size="26" font-weight="700" fill="#2B3440">Layer 4</text>
 <text x="1419" y="301.2" font-size="20" font-weight="400" fill="#55606E">wait for keystone-operator</text>
 <rect x="1420" y="328" width="290" height="48" rx="20" fill="#1D47A6"/>
@@ -49,8 +51,6 @@
 <text x="1565" y="680.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">barbican-operator</text>
 <rect x="1420" y="712" width="290" height="48" rx="20" fill="#1D47A6"/>
 <text x="1565" y="744.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">neutron-operator</text>
-<rect x="1420" y="776" width="290" height="48" rx="20" fill="#1E6B40"/>
-<text x="1565" y="808.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">c5c3-operator</text>
 <rect x="80" y="910" width="388" height="320" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
 <text x="99" y="949.36" font-size="26" font-weight="700" fill="#2B3440">Flux Kustomizations</text>
 <text x="99" y="983.2" font-size="20" font-weight="400" fill="#55606E">no HelmRelease names them</text>
@@ -67,12 +67,13 @@
 <polygon points="580,352 565,359.2 565,344.8" fill="#3A4452"/>
 <polyline points="448,292 498,292 498,416 569.5,416" fill="none" stroke="#3A4452" stroke-width="3"/>
 <polygon points="580,416 565,423.2 565,408.8" fill="#3A4452"/>
-<polyline points="870,352 1010,352 1010,198.5" fill="none" stroke="#3A4452" stroke-width="3"/>
-<polygon points="1010,188 1017.2,203 1002.8,203" fill="#3A4452"/>
-<polyline points="870,416 1090,416 1090,198.5" fill="none" stroke="#3A4452" stroke-width="3"/>
-<polygon points="1090,188 1097.2,203 1082.8,203" fill="#3A4452"/>
-<polyline points="870,480 1170,480 1170,198.5" fill="none" stroke="#3A4452" stroke-width="3"/>
-<polygon points="1170,188 1177.2,203 1162.8,203" fill="#3A4452"/>
+<polyline points="870,352 1010,352 1010,282.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1010,272 1017.2,287 1002.8,287" fill="#3A4452"/>
+<polyline points="870,416 1090,416 1090,282.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1090,272 1097.2,287 1082.8,287" fill="#3A4452"/>
+<polyline points="870,480 1170,480 1170,282.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1170,272 1177.2,287 1162.8,287" fill="#3A4452"/>
+<text x="900" y="515.2" font-size="20" font-weight="400" fill="#2B3440">every release of layer 3</text>
 <polyline points="1220,164 1640,164 1640,217.5" fill="none" stroke="#3A4452" stroke-width="3"/>
 <polygon points="1640,228 1632.8,213 1647.2,213" fill="#3A4452"/>
 <text x="1364" y="145.2" font-size="20" font-weight="400" fill="#2B3440">every release of layer 4</text>
@@ -84,8 +85,8 @@
 <polygon points="410,1010 402.8,995 417.2,995" fill="#3A4452"/>
 <text x="80" y="823.2" font-size="20" font-weight="400" fill="#2B3440">its Issuer and Certificates need cert-manager's CRDs</text>
 <text x="80" y="851.2" font-size="20" font-weight="400" fill="#55606E">retryInterval 2m, until they exist</text>
-<polyline points="448,1186 1480,1186 1480,834.5" fill="none" stroke="#3A4452" stroke-width="3" stroke-dasharray="3 9"/>
-<polygon points="1480,824 1487.2,839 1472.8,839" fill="#3A4452"/>
+<polyline points="448,1186 1300,1186 1300,228 1230.5,228" fill="none" stroke="#3A4452" stroke-width="3" stroke-dasharray="3 9"/>
+<polygon points="1220,228 1235,220.8 1235,235.2" fill="#3A4452"/>
 <text x="508" y="1143.2" font-size="20" font-weight="400" fill="#2B3440">the manager starts only with the K-ORC CRDs</text>
 <text x="508" y="1171.2" font-size="20" font-weight="400" fill="#55606E">install retries: 30</text>
 <polyline points="274,1098 274,1068.5" fill="none" stroke="#3A4452" stroke-width="3"/>

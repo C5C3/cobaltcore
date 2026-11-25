@@ -107,6 +107,9 @@ assert_json "controlplane-operator stage owns one operator release, not a Contro
   "$TEST_ROOT/public-controlplane-operator.json" 'length == 1 and
     .[0].kind == "HelmRelease" and .[0].metadata.name == "c5c3-operator" and
     .[0].metadata.namespace == "c5c3-system"'
+assert_json "controlplane-operator release waits for the three infrastructure operators and is not suspended" \
+  "$TEST_ROOT/public-controlplane-operator.json" \
+  '[.[0].spec.dependsOn[] | .namespace + "/" + .name] == ["external-secrets/external-secrets", "mariadb-system/mariadb-operator", "memcached-system/memcached-operator"] and (.[0].spec | has("suspend") | not)'
 
 jq -s 'add' "$TEST_ROOT"/public-*.json > "$TEST_ROOT/stages.json"
 assert_json "five independently reconciled stages have no overlapping resource ownership" \

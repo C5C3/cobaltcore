@@ -78,7 +78,7 @@ Each [base](bases/) owns a distinct stage. Preview one with
 | [tls](bases/tls/) | Self-signed issuer, OpenBao certificates and database/OVN trust issuers | Namespaces and ready cert-manager APIs, controller and admission webhook |
 | [shared-openbao](bases/shared-openbao/) | HelmRelease `shared-services/openbao`, retaining HA/three Raft replicas and mTLS, with no storage-class pin | Source, namespace and usable TLS; separate initialization/unseal |
 | [eso-store](bases/eso-store/) | Shared `ClusterSecretStore/openbao-cluster-store` | ESO, TLS and initialized/auth-configured shared OpenBao |
-| [controlplane-operator](bases/controlplane-operator/) | c5c3 operator HelmRelease; no ControlPlane instance | Infrastructure/service operators, K-ORC APIs and bootstrap prerequisites |
+| [controlplane-operator](bases/controlplane-operator/) | c5c3 operator HelmRelease; no ControlPlane instance | External Secrets, MariaDB and Memcached operators, K-ORC APIs and bootstrap prerequisites; service operators in any order |
 
 The files live directly inside their owning bases. `operators` includes
 [namespaces](bases/operators/namespaces.yaml), [sources](bases/operators/sources/)

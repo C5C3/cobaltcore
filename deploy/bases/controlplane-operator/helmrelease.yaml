@@ -4,7 +4,10 @@
 
 # the c5c3-operator controller runs in its own
 # dedicated c5c3-system Namespace and orchestrates the Keystone ControlPlane.
-# It depends on the infrastructure + Keystone operators it projects CRs into.
+# It waits for the three infrastructure operators whose kinds every reconcile
+# pass reads: External Secrets, MariaDB and Memcached. It names no service
+# operator: their kinds are optional watches behind a discovery probe, and the
+# leader restarts itself once a missing kind is served (crd_presence.go).
 #
 # K-ORC is NOT in dependsOn: a HelmRelease dependsOn can only reference other
 # HelmReleases, and K-ORC is a Flux Kustomization (releases/k-orc.yaml), not a
@@ -31,8 +34,6 @@ metadata:
 spec:
   interval: 30m
   dependsOn:
-    - name: keystone-operator
-      namespace: keystone-system
     - name: external-secrets
       namespace: external-secrets
     - name: mariadb-operator

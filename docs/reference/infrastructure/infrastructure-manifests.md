@@ -263,9 +263,10 @@ CobaltCore OpenStack operators (K-ORC and the RabbitMQ Cluster Operator are appl
 
 cert-manager, prometheus-operator-crds and mariadb-operator-crds declare no
 `dependsOn`. Every other release waits for cert-manager: `c5c3-operator`
-through `keystone-operator`, every other one by naming it. Most of them need a
-certificate for a webhook server, `ovn-operator` needs the certificates of the
-OVN databases, and `openbao` mounts Secrets that cert-manager issues. Some
+through `external-secrets`, `mariadb-operator` and `memcached-operator`, every
+other one by naming it. Most of them need a certificate for a webhook server,
+`ovn-operator` needs the certificates of the OVN databases, and `openbao`
+mounts Secrets that cert-manager issues. Some
 releases also wait for a CRD chart or for another operator.
 
 The figure draws the releases in four layers. A solid arrow is a `dependsOn`
@@ -273,7 +274,7 @@ entry, and the two dotted arrows are dependencies that no manifest can
 declare. The table lists every entry of every release, in the order of the
 layers.
 
-![The install order of the Flux resources of deploy/bases/operators, in four layers. Layer 1 declares no dependency: cert-manager, mariadb-operator-crds and prometheus-operator-crds. Layer 2 waits for cert-manager: mariadb-operator, which also waits for mariadb-operator-crds, memcached-operator, which also waits for prometheus-operator-crds, external-secrets, garage-operator, openbao, openbao-operator and ovn-operator. Layer 3 is keystone-operator, which waits for mariadb-operator, memcached-operator and external-secrets. Layer 4 waits for keystone-operator: horizon-operator, glance-operator, placement-operator, cinder-operator, nova-operator, barbican-operator, which also waits for openbao-operator, neutron-operator, which also waits for ovn-operator, and c5c3-operator. A solid arrow is a dependsOn entry of a HelmRelease, and the one solid arrow between Flux Kustomizations says that the Kustomization messaging-topology-operator waits for the Kustomization rabbitmq-cluster-operator. Two dotted arrows are dependencies that no manifest declares, because each crosses between a HelmRelease and a Flux Kustomization: the Kustomization rabbitmq-cluster-operator needs the CRDs of cert-manager and retries until they exist, and c5c3-operator starts only once the Kustomization k-orc has installed the K-ORC CRDs.](../../diagrams/deploy-flux-dependencies.svg)
+![The install order of the Flux resources of deploy/bases/operators, in four layers. Layer 1 declares no dependency: cert-manager, mariadb-operator-crds and prometheus-operator-crds. Layer 2 waits for cert-manager: mariadb-operator, which also waits for mariadb-operator-crds, memcached-operator, which also waits for prometheus-operator-crds, external-secrets, garage-operator, openbao, openbao-operator and ovn-operator. Layer 3 waits for mariadb-operator, memcached-operator and external-secrets: keystone-operator and c5c3-operator. Layer 4 waits for keystone-operator: horizon-operator, glance-operator, placement-operator, cinder-operator, nova-operator, barbican-operator, which also waits for openbao-operator, and neutron-operator, which also waits for ovn-operator. A solid arrow is a dependsOn entry of a HelmRelease, and the one solid arrow between Flux Kustomizations says that the Kustomization messaging-topology-operator waits for the Kustomization rabbitmq-cluster-operator. Two dotted arrows are dependencies that no manifest declares, because each crosses between a HelmRelease and a Flux Kustomization: the Kustomization rabbitmq-cluster-operator needs the CRDs of cert-manager and retries until they exist, and c5c3-operator starts only once the Kustomization k-orc has installed the K-ORC CRDs.](../../diagrams/deploy-flux-dependencies.svg)
 
 | Release | `dependsOn` |
 | --- | --- |
@@ -288,6 +289,7 @@ layers.
 | `openbao-operator` | `cert-manager` |
 | `ovn-operator` | `cert-manager` |
 | `keystone-operator` | `cert-manager`, `mariadb-operator`, `memcached-operator`, `external-secrets` |
+| `c5c3-operator` | `external-secrets`, `mariadb-operator`, `memcached-operator` |
 | `horizon-operator` | `cert-manager`, `memcached-operator`, `external-secrets`, `keystone-operator` |
 | `glance-operator` | `cert-manager`, `mariadb-operator`, `memcached-operator`, `external-secrets`, `keystone-operator` |
 | `placement-operator` | `cert-manager`, `mariadb-operator`, `memcached-operator`, `external-secrets`, `keystone-operator` |
@@ -295,7 +297,6 @@ layers.
 | `nova-operator` | `cert-manager`, `mariadb-operator`, `memcached-operator`, `external-secrets`, `keystone-operator` |
 | `barbican-operator` | `cert-manager`, `mariadb-operator`, `memcached-operator`, `external-secrets`, `keystone-operator`, `openbao-operator` |
 | `neutron-operator` | `cert-manager`, `mariadb-operator`, `memcached-operator`, `external-secrets`, `keystone-operator`, `ovn-operator` |
-| `c5c3-operator` | `keystone-operator`, `external-secrets`, `mariadb-operator`, `memcached-operator` |
 
 K-ORC is **not** in the table and has no solid arrow: it is applied by a Flux
 `Kustomization`, not a HelmRelease, and a HelmRelease `dependsOn` can only
@@ -332,9 +333,27 @@ is the one Flux Kustomization of the directory that declares a `dependsOn`:
 `rabbitmq-cluster-operator`, whose `RabbitmqCluster` CRD its controller watches.
 Its own cert-manager objects converge over `retryInterval` the same way.
 
-The `c5c3-operator` HelmRelease is in the last layer: it `dependsOn`
-four of the operators whose CRs it projects (keystone-operator,
-external-secrets, mariadb-operator, memcached-operator). It also drives K-ORC's
+The `c5c3-operator` HelmRelease is in layer 3, beside `keystone-operator`. It
+`dependsOn` `external-secrets`, `mariadb-operator` and `memcached-operator`,
+the three operators whose kinds every reconcile pass reads. It names no service
+operator, because the kinds of the service operators are optional watches. At
+start the manager asks the API server which of them it serves, and when one is
+missing it logs the missing kinds under this message:
+
+```text
+skipping watches for optional CRDs not served by the API server; a leader-gated re-check will restart the operator when one appears
+```
+
+The leader checks for the missing kinds every 30 seconds. Once one is served,
+it logs `unable to run manager` with the error below and exits. The kubelet
+restarts the container, and the new manager registers the watch:
+
+```text
+optional CRD <group/version, Kind> became available after startup; restarting to register its watch
+```
+
+The c5c3-operator can therefore be installed before a service operator,
+without one, or beside a suspended one. It also drives K-ORC's
 ApplicationCredential / Service / Endpoint CRDs, but K-ORC is applied by the separate
 Flux `Kustomization` above, so it cannot be a `dependsOn` edge — the c5c3-operator's
 manager instead requires those CRDs to be present at startup.
@@ -1011,13 +1030,14 @@ guard the YAML shape the managers anchor on.
 | Chart | `c5c3-operator` |
 | Version constraint | `>=0.7.0 <1.0.0` (floor = first chart whose values schema accepts `image.digest`) |
 | Source | `c5c3-charts` HelmRepository (shared OCI registry) |
-| Dependencies | `keystone-operator`, `external-secrets`, `mariadb-operator`, `memcached-operator` |
+| Dependencies | `external-secrets`, `mariadb-operator`, `memcached-operator` |
 
 The c5c3-operator runs the `ControlPlane` reconciler that orchestrates a Keystone
-control plane end-to-end. It depends on four of the operators whose CRs
-it projects — `keystone-operator` for the Keystone instance, `external-secrets` and
-`mariadb-operator` and `memcached-operator` for the supporting platform services. It
-also drives K-ORC's `ApplicationCredential` / `Service` / `Endpoint` CRDs to register
+control plane end-to-end. It depends on three of the operators whose CRs it
+projects: `external-secrets`, `mariadb-operator` and `memcached-operator` for the
+supporting platform services. It depends on no service operator, the
+`keystone-operator` included. It also drives K-ORC's `ApplicationCredential` /
+`Service` / `Endpoint` CRDs to register
 the catalog and rotate the admin credential, but K-ORC is the separate Flux
 `Kustomization` above, not a `dependsOn` edge (so K-ORC is a hard dependency: the
 manager does not start without its CRDs, as without those of MariaDB, Memcached,
