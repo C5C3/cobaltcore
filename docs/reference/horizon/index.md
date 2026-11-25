@@ -133,6 +133,10 @@ The v1 operator resolves the onboarding decisions as follows:
   headers, where its default is 4096 bytes (see
   [Session size limits](#session-size-limits)). The operator upgrade that
   brings the flag changes the pod template, so the dashboard rolls once.
+  uWSGI runs with `--max-fd 65536` like the API operators' uWSGI, so its
+  HTTP router starts within the pod's memory limit under any open-files
+  limit the node hands out (see the
+  [Keystone open-files limit](../keystone/keystone-crd.md#open-files-limit)).
   SIGTERM starts the same graceful shutdown as in the API operators' uWSGI:
   the requests in flight finish, then uWSGI exits (see the
   [Keystone shutdown sequence](../keystone/keystone-crd.md#shutdown-sequence)).

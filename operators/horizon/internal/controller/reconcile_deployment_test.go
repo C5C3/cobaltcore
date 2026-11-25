@@ -187,6 +187,28 @@ func TestUWSGICommand_BufferSize(t *testing.T) {
 	g.Expect(cmd).NotTo(ContainElement(HavePrefix("--buffer-size=")))
 }
 
+// uWSGI's HTTP router sizes a table by the open-files limit, and on a node that
+// hands out 1073741816 the kernel OOM-kills it at start. The dashboard carries
+// the flag of the API operators in the place deployment.BuildUWSGICommand puts
+// it: directly before --master.
+func TestUWSGICommand_MaxFD(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cmd := uwsgiCommand()
+	args := deployment.UWSGIMaxFDArgs()
+
+	count := 0
+	for _, arg := range cmd {
+		if arg == "--max-fd" {
+			count++
+		}
+	}
+	g.Expect(count).To(Equal(1), "--max-fd must occur once")
+	i := slices.Index(cmd, "--master")
+	g.Expect(i).To(BeNumerically(">=", len(args)), "the command must carry --master after --max-fd")
+	g.Expect(cmd[i-len(args) : i]).To(Equal(args))
+}
+
 func TestBuildHorizonDeployment_NoHashAnnotationWhenDigestEmpty(t *testing.T) {
 	g := NewGomegaWithT(t)
 	h := testHorizon()

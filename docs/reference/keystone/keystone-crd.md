@@ -686,9 +686,9 @@ of configuration:
 ### Open-files limit
 
 uWSGI runs with `--max-fd 65536` in the API containers of keystone, glance,
-placement, barbican, neutron, cinder and nova, and in nova's metadata
-container. At start, the uWSGI master sets 65536 as its soft and hard
-open-files limit (`RLIMIT_NOFILE`) and logs
+placement, barbican, neutron, cinder and nova, in nova's metadata container
+and in the Horizon dashboard. At start, the uWSGI master sets 65536 as its
+soft and hard open-files limit (`RLIMIT_NOFILE`) and logs
 `detected max file descriptor number: 65536`.
 
 The flag bounds a table of uWSGI's HTTP router. The router allocates 8 bytes
