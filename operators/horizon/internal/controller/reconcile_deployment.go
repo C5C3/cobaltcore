@@ -303,16 +303,22 @@ const horizonUWSGIBufferSize = 65535
 // connection that uWSGI closed right after a response. uWSGI accepts up to
 // horizonUWSGIBufferSize bytes of request line and headers (--buffer-size,
 // right after --http-keepalive), so it does not drop a logged-in request that
-// carries a large signed-cookie session.
+// carries a large signed-cookie session. uWSGI bounds its open-files limit
+// with the --max-fd of the API operators (deployment.UWSGIMaxFDArgs, directly
+// before --master), so its HTTP router starts within the pod's memory limit
+// on a node that hands out a huge limit.
 func uwsgiCommand() []string {
 	cmd := []string{
 		"uwsgi",
 		"--http", fmt.Sprintf(":%d", horizonAPIPort), "--http-keepalive",
 		"--buffer-size", strconv.Itoa(horizonUWSGIBufferSize),
 		"--module", "openstack_dashboard.wsgi",
+	}
+	cmd = append(cmd, deployment.UWSGIMaxFDArgs()...)
+	cmd = append(cmd,
 		"--master",
 		"--need-app",
-	}
+	)
 	cmd = append(cmd, deployment.UWSGIGracefulShutdownArgs()...)
 	return append(cmd,
 		"--processes", strconv.Itoa(horizonUWSGIProcesses),

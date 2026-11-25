@@ -69,6 +69,8 @@ spec:
         - "65535"
         - --module
         - openstack_dashboard.wsgi
+        - --max-fd
+        - "65536"
         - --master
         - --need-app
         - --hook-master-start
@@ -216,6 +218,8 @@ spec:
         - "65535"
         - --module
         - openstack_dashboard.wsgi
+        - --max-fd
+        - "65536"
         - --master
         - --need-app
         - --hook-master-start
