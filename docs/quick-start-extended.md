@@ -294,6 +294,7 @@ openstack   keystone-db           (database credentials from OpenBao)
 ```
 :::
 
+::: tip Enabling Chaos Mesh
 Chaos Mesh is **not installed by default** in the kind Quick Start. The default
 `make deploy-infra` flow leaves the `chaos-mesh` namespace absent so first-run
 deployments are faster and do not require the `chaos-daemon` privileged
@@ -312,6 +313,7 @@ HelmRelease to become Ready alongside the other operators. It is required
 before running the chaos E2E suites;
 [Chaos E2E Tests](./reference/testing/chaos-e2e-tests.md) has the full prerequisite
 list and `make e2e-chaos` workflow.
+:::
 
 `make deploy-infra` is idempotent: it converges without changing a stack when
 rerun with the same parameters, and it installs components added by newly

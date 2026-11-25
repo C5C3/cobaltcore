@@ -366,6 +366,6 @@ API Deployment and database sync complete. Run it with the Kyverno Chainsaw
 test runner:
 
 ```bash
-chainsaw test --config tests/e2e/chainsaw-config.yaml \
-  tests/e2e/c5c3/full-controlplane-keystone/
+chainsaw test --test-dir tests/e2e/c5c3/full-controlplane-keystone \
+  --config tests/e2e/chainsaw-config.yaml
 ```

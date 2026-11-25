@@ -26,7 +26,7 @@
 #     exits 2 with the usage line
 #   - the metrics port it reads matches the ten charts
 #   - an edit to the script runs the e2e-operator jobs of every operator
-#   - the 18 suites call it with exactly the arguments of their table row,
+#   - the 17 suites call it with exactly the arguments of their table row,
 #     each in a step with a 120s timeout, and no other suite calls it
 # Usage: bash tests/unit/ci/assert_operator_metric_families_test.sh
 
@@ -197,7 +197,7 @@ metric_calls() {
     }' "$1"
 }
 
-# The 18 suites that call the script, each with the arguments it passes after
+# The 17 suites that call the script, each with the arguments it passes after
 # the script's path. A suite reads a sample after the step that completes its
 # Job, rotation or re-mint, and before any step that deletes its CR.
 METRIC_CALLERS="$(cat <<'CALLS'
@@ -213,7 +213,6 @@ keystone/credential-rotation|keystone-system keystone-operator keystone_operator
 keystone/db-expand-failure|keystone-system keystone-operator keystone_operator 'keystone_operator_db_sync_total{keystone="keystone-db-expand-failure",namespace="openstack",result="failed"}'
 keystone/fernet-rotation|keystone-system keystone-operator keystone_operator 'keystone_operator_key_rotation_age_seconds{keystone="keystone-fernet",namespace="openstack",key_type="fernet"}'
 neutron/basic-deployment|neutron-system neutron-operator neutron_operator 'neutron_operator_db_sync_total{neutron="neutron-basic",namespace="openstack",result="succeeded"}' 'neutron_operator_db_sync_duration_seconds_count{neutron="neutron-basic",namespace="openstack"}'
-neutron/ovn-db-sync-repair|neutron-system neutron-operator neutron_operator 'neutron_operator_ovn_db_sync_total{neutron="neutron-dbsync",namespace="openstack",result="succeeded"}'
 nova/basic-deployment|nova-system nova-operator nova_operator 'nova_operator_db_sync_total{nova="nova-basic",namespace="openstack",result="succeeded"}' 'nova_operator_db_sync_duration_seconds_count{nova="nova-basic",namespace="openstack"}'
 nova/db-archive|nova-system nova-operator nova_operator 'nova_operator_db_archive_total{nova="nova-archive",namespace="openstack",result="succeeded"}'
 ovn/central-backup-restore|ovn-system ovn-operator ovn_operator 'ovn_operator_backup_total{ovncentral="ovn-restore",namespace="openstack",result="succeeded"}'
@@ -658,7 +657,7 @@ test_the_filters_name_the_shared_scripts() {
 
 # --- Test 11: the callers ---
 test_the_eighteen_suites_call_the_script() {
-  echo "Test: the 18 suites call the script with the tabled arguments in a 120s step, and no other suite calls it"
+  echo "Test: the 17 suites call the script with the tabled arguments in a 120s step, and no other suite calls it"
 
   local suite args file expected found calls
   while IFS='|' read -r suite args; do
@@ -670,7 +669,7 @@ test_the_eighteen_suites_call_the_script() {
     assert_eq "the $suite suite gives that step a 120s timeout" "120s" "${calls%%|*}"
   done <<<"$METRIC_CALLERS"
 
-  assert_eq "the table names 18 suites" "18" "$(grep -c . <<<"$METRIC_CALLERS")"
+  assert_eq "the table names 17 suites" "17" "$(grep -c . <<<"$METRIC_CALLERS")"
   expected="$(cut -d'|' -f1 <<<"$METRIC_CALLERS" | LC_ALL=C sort)"
   # Any line that is not a comment and names the script counts as a call.
   found="$(grep -rlE --include=chainsaw-test.yaml \
