@@ -70,6 +70,8 @@ spec:
           %(status))'
         - --module
         - barbican.wsgi.api:application
+        - --max-fd
+        - "65536"
         - --master
         - --lazy-apps
         - --need-app
@@ -221,6 +223,8 @@ spec:
           %(status))'
         - --module
         - barbican.wsgi.api:application
+        - --max-fd
+        - "65536"
         - --master
         - --lazy-apps
         - --need-app
@@ -382,6 +386,8 @@ spec:
           %(status))'
         - --module
         - barbican.wsgi.api:application
+        - --max-fd
+        - "65536"
         - --master
         - --lazy-apps
         - --need-app
@@ -551,6 +557,8 @@ spec:
           %(status))'
         - --module
         - barbican.wsgi.api:application
+        - --max-fd
+        - "65536"
         - --master
         - --lazy-apps
         - --need-app
@@ -706,6 +714,8 @@ spec:
           %(status))'
         - --module
         - barbican.wsgi.api:application
+        - --max-fd
+        - "65536"
         - --master
         - --lazy-apps
         - --need-app

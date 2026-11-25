@@ -72,6 +72,8 @@ spec:
           %(status))'
         - --module
         - nova.wsgi.osapi_compute:application
+        - --max-fd
+        - "65536"
         - --master
         - --lazy-apps
         - --need-app
@@ -276,6 +278,8 @@ spec:
           %(status))'
         - --module
         - nova.wsgi.osapi_compute:application
+        - --max-fd
+        - "65536"
         - --master
         - --lazy-apps
         - --need-app
@@ -476,6 +480,8 @@ spec:
           %(status))'
         - --module
         - nova.wsgi.osapi_compute:application
+        - --max-fd
+        - "65536"
         - --master
         - --lazy-apps
         - --need-app

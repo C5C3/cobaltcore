@@ -124,7 +124,8 @@ release render byte-identical config files.
 The container command is `uwsgi --http :8778`, followed by `--http-keepalive`
 (`--http-keepalive=<n>` when `httpKeepAliveTimeout` is set),
 `--log-master`, `--log-format` with the request-line format the sibling operators
-share, `--wsgi-file /var/lib/openstack/bin/placement-api`, `--master`,
+share, `--wsgi-file /var/lib/openstack/bin/placement-api`, `--max-fd 65536`
+([open-files limit](../keystone/keystone-crd.md#open-files-limit)), `--master`,
 `--lazy-apps`, `--need-app`, the graceful-shutdown flags
 `--hook-master-start "unix_signal:15 gracefully_kill_them_all"`,
 `--shutdown-sockets` and `--threaded-logger`, `--processes`, `--threads`, and

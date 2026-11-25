@@ -75,6 +75,8 @@ spec:
           %(status))'
         - --module
         - nova.wsgi.metadata:application
+        - --max-fd
+        - "65536"
         - --master
         - --lazy-apps
         - --need-app
@@ -290,6 +292,8 @@ spec:
           %(status))'
         - --module
         - nova.wsgi.metadata:application
+        - --max-fd
+        - "65536"
         - --master
         - --lazy-apps
         - --need-app

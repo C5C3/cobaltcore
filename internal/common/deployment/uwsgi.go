@@ -109,6 +109,30 @@ func UWSGIGracefulShutdownArgs() []string {
 	}
 }
 
+// UWSGIMaxFD is the value of uWSGI's --max-fd.
+const UWSGIMaxFD = 65536
+
+// UWSGIMaxFDArgs returns {"--max-fd", "65536"}, the flag that bounds uWSGI's
+// open-files limit. BuildUWSGICommand emits it directly before --master, and
+// the horizon-operator puts it in the same place in its own command.
+//
+// uWSGI sets the value as the soft and the hard RLIMIT_NOFILE of the master
+// at start, before the HTTP router allocates 8 bytes for every descriptor of
+// that limit and writes each entry. Without the flag the router sizes its
+// table by the limit the container runtime hands out: at 1073741816 it writes
+// 8 GiB and the kernel OOM-kills it at start, whatever memory limit the pod
+// has. With the flag the table costs 512 KiB.
+//
+// A limit above UWSGIMaxFD is lowered to it, and a soft limit below it is
+// raised when the hard limit allows that. Under a hard limit below UWSGIMaxFD
+// the setrlimit call fails: uWSGI logs "setrlimit(): Operation not permitted",
+// keeps the limit of the runtime and serves.
+//
+// Each call returns a new slice, so a caller may modify the result.
+func UWSGIMaxFDArgs() []string {
+	return []string{"--max-fd", strconv.Itoa(UWSGIMaxFD)}
+}
+
 // BuildUWSGICommand renders the uWSGI container command shared by every service
 // operator's API container. It owns exactly the parts the operators would
 // otherwise each repeat:
@@ -123,8 +147,9 @@ func UWSGIGracefulShutdownArgs() []string {
 //   - the request logging --log-master and --log-format UWSGILogFormat, emitted
 //     in every configuration so request lines reach stderr even with keep-alive
 //     disabled;
-//   - the fixed run --master --lazy-apps --need-app, the graceful-shutdown
-//     flags of UWSGIGracefulShutdownArgs, then --processes and --threads;
+//   - the fixed run --max-fd UWSGIMaxFD (UWSGIMaxFDArgs), --master --lazy-apps
+//     --need-app, the graceful-shutdown flags of UWSGIGracefulShutdownArgs,
+//     then --processes and --threads;
 //   - the --harakiri cap when the spec sets a positive one, last in the command.
 //
 // Everything else comes from p and is emitted verbatim: the bind, the launch
@@ -198,6 +223,7 @@ func BuildUWSGICommand(p UWSGICommandParams) []string {
 	case p.WSGIFilePath != "":
 		cmd = append(cmd, "--wsgi-file", p.WSGIFilePath)
 	}
+	cmd = append(cmd, UWSGIMaxFDArgs()...)
 	cmd = append(
 		cmd,
 		"--master",

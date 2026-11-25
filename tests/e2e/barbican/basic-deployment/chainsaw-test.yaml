@@ -137,6 +137,8 @@ spec:
                   # a --wsgi-file path.
                   - "--module"
                   - "barbican.wsgi.api:application"
+                  - "--max-fd"
+                  - "65536"
                   - "--master"
                   - "--lazy-apps"
                   - "--need-app"
