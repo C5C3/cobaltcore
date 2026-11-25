@@ -74,6 +74,7 @@ test_runtime_libraries_present() {
   assert_eq "uwsgi --version exits 0" "0" "$exit_code"
   assert_uwsgi_imports keystone
   assert_uwsgi_graceful_shutdown
+  assert_uwsgi_max_fd
 }
 
 # --- Test 5: the implied-role patch is applied ---

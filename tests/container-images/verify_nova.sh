@@ -462,6 +462,7 @@ test_runtime_wiring() {
   assert_not_empty "uwsgi version output is non-empty" "$version"
   assert_uwsgi_imports nova
   assert_uwsgi_graceful_shutdown
+  assert_uwsgi_max_fd
 
   # No qemu-utils. The control-plane roles convert no images (#1014 D14), and
   # an image that grew the conversion tooling grew a compute-side dependency

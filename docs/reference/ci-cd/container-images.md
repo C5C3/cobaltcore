@@ -153,7 +153,13 @@ scripts of keystone, glance, placement, barbican, neutron, cinder, nova and
 horizon call, streams 128 MiB across SIGTERM and fails on a short body, the
 EINTR line, a `goodbye to uWSGI.` count other than one, or a log byte outside
 printable ASCII, tab and newline. Upstream status: not reported; #1635 tracks
-both patches.
+both patches. `assert_uwsgi_max_fd` in the same file starts the image's uwsgi
+with `--max-fd 65536` and an HTTP router at 368 MiB under three open-files
+limits: the host's `fs.nr_open` and 1024:524288, where uWSGI has to detect
+65536, and 1024:4096, where it has to log `setrlimit(): Operation not
+permitted` once and keep 1024. In every case the container has to run without
+an OOM kill
+([open-files limit](../keystone/keystone-crd.md#open-files-limit)).
 
 ### keystone
 

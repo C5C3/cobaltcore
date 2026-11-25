@@ -163,6 +163,7 @@ test_uwsgi_runnable() {
   assert_not_empty "uwsgi version output is non-empty" "$version"
   assert_uwsgi_imports barbican
   assert_uwsgi_graceful_shutdown
+  assert_uwsgi_max_fd
 }
 
 # --- Test 9: a clean-up batch that lost to a concurrent write is retried ---

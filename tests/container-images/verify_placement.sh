@@ -135,6 +135,7 @@ test_uwsgi_runnable() {
   assert_not_empty "uwsgi version output is non-empty" "$version"
   assert_uwsgi_imports placement
   assert_uwsgi_graceful_shutdown
+  assert_uwsgi_max_fd
 }
 
 # --- Run all tests ---
