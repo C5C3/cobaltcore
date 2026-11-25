@@ -17,10 +17,12 @@ make -f "$repo/Makefile" helm-package OPERATOR=keystone CHART_VERSION=1.5.0-rc.1
 rc=keystone-operator-1.5.0-rc.10.tgz
 stable=assets/keystone-operator-1.5.0.tgz
 
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$repo/scripts/release" python3 - "$rc" <<'PY'
+PYTHONDONTWRITEBYTECODE=1 python3 - "$rc" "$repo/hack/ci-distribution-assets.py" <<'PY'
 import sys
 from pathlib import Path
-from publish import package_stable_chart
+from runpy import run_path
+
+package_stable_chart = run_path(sys.argv[2])["package_stable_chart"]
 
 package_stable_chart(Path(sys.argv[1]), Path("unpacked"), "v1.5.0-rc.10", "1.5.0", 1700000000)
 PY

@@ -39,21 +39,18 @@ The workflow triggers on four event types:
 | Event | Scope | Description |
 | --- | --- | --- |
 | `push` | `branches: [main]` | Runs on every push to the main branch |
-| `push` | `tags: ["v*"]` | Runs shell tests on v-prefixed tags and publishes new distribution RCs |
+| `push` | `tags: ["v*"]` | Runs shell tests on manually pushed tags |
 | `pull_request` | `branches: [main]`, `types: [opened, synchronize, reopened, labeled]` | Runs on every pull request targeting main; the `labeled` type lets a `ci:*` label schedule jobs the paths alone did not |
 | `schedule` | `cron: "0 22 * * *"` | The nightly chaos run against `main` at 22:00 UTC |
-| `workflow_dispatch` | no inputs | The same run on demand, for example `gh workflow run ci.yaml --ref main` |
+| `workflow_dispatch` | `distribution` | Defaults to `nightly`. Select `candidate` or `stable` to publish a distribution. |
 
 Most gate, test, and E2E jobs run **only on `pull_request` events** — they each carry a
 `github.event_name == 'pull_request'` guard. `test-shell` is the exception. It carries no
-guard and also runs on pushes to `main` and on tag pushes. A breakage that lands on `main`
+guard and also runs on pushes to `main` and on dispatches. A breakage that lands on `main`
 therefore turns main's own run red at the commit that caused it, instead of surfacing on
-the next PR branch. A push to `main` publishes changed artifacts. A new `vX.Y.Z-rc.N` tag publishes
-the operator images and charts, then creates a GitHub prerelease. A stable
-`vX.Y.Z` tag triggers `release.yaml` directly and promotes the published RC
-at that commit. See [GitHub release publishing](#github-release).
+the next PR branch. A push to `main` publishes changed artifacts. A candidate dispatch publishes signed images and charts. A stable dispatch promotes the validated candidate at that commit. See [GitHub release publishing](#github-release).
 
-A scheduled or dispatched run is the nightly chaos run of #1388. It runs `changes`,
+A scheduled run or a dispatch with the default input is the nightly chaos run of #1388. It runs `changes`,
 `test-shell`, `build-e2e-images`, the seven [`e2e-chaos`](#e2e-chaos) matrix entries,
 the random chaos run [`e2e-chaos-random`](#e2e-chaos-random) of #1395 and
 `cleanup-e2e-tags`, and on a schedule [`report-nightly-chaos`](#report-nightly-chaos)
@@ -116,7 +113,7 @@ Seven labels add jobs. None of them ever removes one.
 | `ci:controlplane` | `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-external-keystone`, `e2e-autoscaling`, `e2e-orders-multicluster` |
 | `ci:multicluster` | `e2e-multicluster`, `e2e-orders-multicluster` |
 | `ci:pressure` | `keystone-pressure`, one leg per release that ships a Keystone image |
-| `ci:measure-sizing` | `e2e-controlplane`, `e2e-controlplane-sso` and all thirteen Tempest legs, each with the [sizing measurement](#sizing-measurement). Neither `ci:full` nor a tag push implies it |
+| `ci:measure-sizing` | `e2e-controlplane`, `e2e-controlplane-sso` and all thirteen Tempest legs, each with the [sizing measurement](#sizing-measurement). Neither `ci:full` nor a candidate dispatch implies it |
 
 The `labeled` trigger means a label applied after the last push starts a run that
 evaluates the new label set. A label outside this set resolves to nothing: the
@@ -124,7 +121,7 @@ evaluates the new label set. A label outside this set resolves to nothing: the
 concurrency group of its own so it does not cancel the pipeline in flight. See
 [Concurrency](#concurrency).
 
-On an RC tag push every flag is forced on. On a push to `main` the operator
+On a candidate dispatch every flag is forced on. On a push to `main` the operator
 matrix keeps its publish semantics, driven by the `publish_legacy` class, so what
 a merge publishes is unchanged.
 
@@ -220,8 +217,8 @@ Jobs that need elevated access declare per-job `permissions:` blocks:
 | `merge-operator-images` | `packages: write`, `id-token: write` | Push final multi-arch operator image manifest list; sign its digest with cosign keyless signing through Sigstore OIDC |
 | `helm-push` | `packages: write`, `id-token: write` | Push Helm charts to GHCR OCI registry; sign their digests with cosign keyless signing through Sigstore OIDC |
 | `helm-push-target-cluster` | `packages: write`, `id-token: write` | Push the `target-cluster-access` chart to GHCR OCI registry; sign its digest with cosign keyless signing through Sigstore OIDC |
-| `github-release` | `contents: write` | Create GitHub Releases |
-| `candidate-state` | `contents: write` | Look up existing releases, including unpublished drafts |
+| `github-release` | `contents: write`, `packages: write`, `id-token: write` | Publish the release and sign stable OCI charts |
+| `candidate-state` | `contents: write` | Preview the version and notes with semantic-release |
 
 ## Job Dependency DAG
 
@@ -236,7 +233,7 @@ The figure groups the jobs into stages and draws the order of the stages. The
 table lists every job with its stage and its `needs:` list, and links the
 section that describes the job.
 
-![The jobs of the CI workflow, grouped into stages. The job changes works out what a run has to do, and every job of the two events needs it. test-shell needs no job and runs on every event. On a pull request the gates come first: lint, shellcheck, test, test-integration, verify-codegen, verify-invalid-cr-fixtures and chainsaw-lint. The image build, build-e2e-images, needs each of them. The E2E fan-out needs the image build: e2e-operator, e2e-operator-upgrade, e2e-prometheus, e2e-controlplane, e2e-controlplane-sso, e2e-autoscaling, e2e-external-keystone, e2e-multicluster, e2e-orders-multicluster, e2e-ovn-overlay, e2e-nova-libvirt and keystone-pressure. e2e-chaos follows e2e-operator, the random chaos run e2e-chaos-random follows the image build, and report-nightly-chaos follows both on a schedule only. The infrastructure suites e2e-infra and e2e-bgp-fabric need only changes. tempest follows e2e-chaos and e2e-infra, and cleanup-e2e-tags runs last. No other job needs the checks format-check, feature-ids, review-markers, actionlint, test-race, govulncheck, docs, docs-overlay and helm-validate. On a push to main or of an RC tag, candidate-state gates publishing. Then build-and-push and merge-operator-images publish the operator images, helm-push and helm-push-target-cluster publish the charts, and github-release follows the image and chart jobs for an RC tag.](../../diagrams/ci-stage-overview.svg)
+![The jobs of the CI workflow, grouped into stages. The job changes works out what a run has to do, and every job of the two events needs it. test-shell needs no job and runs on every event. On a pull request the gates come first: lint, shellcheck, test, test-integration, verify-codegen, verify-invalid-cr-fixtures and chainsaw-lint. The image build, build-e2e-images, needs each of them. The E2E fan-out needs the image build: e2e-operator, e2e-operator-upgrade, e2e-prometheus, e2e-controlplane, e2e-controlplane-sso, e2e-autoscaling, e2e-external-keystone, e2e-multicluster, e2e-orders-multicluster, e2e-ovn-overlay, e2e-nova-libvirt and keystone-pressure. e2e-chaos follows e2e-operator, the random chaos run e2e-chaos-random follows the image build, and report-nightly-chaos follows both on a schedule only. The infrastructure suites e2e-infra and e2e-bgp-fabric need only changes. tempest follows e2e-chaos and e2e-infra, and cleanup-e2e-tags runs last. No other job needs the checks format-check, feature-ids, review-markers, actionlint, test-race, govulncheck, docs, docs-overlay and helm-validate. On a push to main or a candidate dispatch, candidate-state gates publishing. Then build-and-push and merge-operator-images publish the operator images, helm-push and helm-push-target-cluster publish the charts, and github-release follows the image and chart jobs for a candidate dispatch.](../../diagrams/ci-stage-overview.svg)
 
 | Job | Stage | `needs` |
 | --- | --- | --- |
@@ -278,9 +275,9 @@ section that describes the job.
 | [`keystone-pressure`](#keystone-pressure) | E2E fan-out | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` |
 | [`tempest`](#tempest) | Tempest | `changes`, `build-e2e-images`, `e2e-infra`, `e2e-operator`, `e2e-chaos`, `e2e-prometheus` |
 | [`cleanup-e2e-tags`](#cleanup-e2e-tags) | Cleanup | `changes`, `build-e2e-images`, `e2e-operator`, `e2e-operator-upgrade`, `e2e-chaos`, `e2e-chaos-random`, `e2e-prometheus`, `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-autoscaling`, `e2e-external-keystone`, `e2e-multicluster`, `e2e-orders-multicluster`, `e2e-ovn-overlay`, `e2e-nova-libvirt`, `keystone-pressure`, `tempest` |
-| [`candidate-state`](#candidate-state) | Check RC publication status | None |
+| [`candidate-state`](#candidate-state) | Plan the distribution release | None |
 | [`build-and-push`](#build-and-push) | Publish images | `changes`, `candidate-state` |
-| [`merge-operator-images`](#merge-operator-images) | Publish images | `changes`, `build-and-push` |
+| [`merge-operator-images`](#merge-operator-images) | Publish images | `changes`, `candidate-state`, `build-and-push` |
 | [`helm-push`](#helm-push) | Publish charts | `changes`, `candidate-state` |
 | [`helm-push-target-cluster`](#helm-push-target-cluster) | Publish charts | `changes`, `candidate-state` |
 | [`github-release`](#github-release) | Release | `changes`, `candidate-state`, `merge-operator-images`, `helm-push`, `helm-push-target-cluster` |
@@ -300,7 +297,7 @@ from, and the matrices of the test, Tempest, publish and cleanup jobs. Every
 other job except `test-shell` and `candidate-state` lists it in `needs`.
 
 **Dependencies:** none (the job has no `needs:`)
-**Condition:** Runs on a push to `main`, creation of an RC tag, a `pull_request` event of
+**Condition:** Runs on a push to `main`, a candidate dispatch, a `pull_request` event of
 type `opened`, `synchronize`, `reopened` or `labeled`, and the `schedule` and
 `workflow_dispatch` events of the nightly chaos run.
 
@@ -319,7 +316,7 @@ The job runs on `ubuntu-latest` with `timeout-minutes: 8`.
 Step 3 has four special cases. A `labeled` event whose label is
 neither a `ci:*` label nor `run-chaos` resolves to `noop=true`: every other flag
 is `false`, the change sets are `[]`, and `test-targets`, `e2e-operators` and
-`e2e-operator-upgrade-operators` hold the placeholder `__none__`. The `ci:full` label and an RC tag push force
+`e2e-operator-upgrade-operators` hold the placeholder `__none__`. The `ci:full` label and a candidate dispatch force
 every job flag on and select every operator. `measure-sizing` is the exception:
 only the `ci:measure-sizing` label sets it. On a push to `main` the script sets
 `build-e2e-images` to `false`, and `e2e-operators` holds every operator when the
@@ -383,7 +380,7 @@ The matrices come last:
 | --- | --- |
 | `e2e-operators` | `{"operator":[...]}`. The matrix of `merge-operator-images` and `helm-push` and the `operator` dimension of `build-and-push`. `github-release` checks the downloaded charts against it |
 | `e2e-operator-legs` | Written by step 7: the operators of `e2e-operators` as `include` entries, with `nova` split into shards `1` and `2`. The matrix of `e2e-operator` |
-| `e2e-operator-upgrade-operators` | `{"operator":[...]}` in `ALL_OPERATORS` order: every operator whose Go code is affected (`go_common` included) or whose `tests_operator_upgrade_<op>` class changed, every operator when `tests_operator_upgrade` changed or under `ci:full` and an RC tag, the `__none__` placeholder when none. The matrix `e2e-operator-upgrade` passes to the reusable workflow; the `e2e-operator-upgrade` flag is `true` when it names an operator |
+| `e2e-operator-upgrade-operators` | `{"operator":[...]}` in `ALL_OPERATORS` order: every operator whose Go code is affected (`go_common` included) or whose `tests_operator_upgrade_<op>` class changed, every operator when `tests_operator_upgrade` changed or under `ci:full` and a candidate dispatch, the `__none__` placeholder when none. The matrix `e2e-operator-upgrade` passes to the reusable workflow; the `e2e-operator-upgrade` flag is `true` when it names an operator |
 | `test-targets` | `{"target":[...]}` with `common` and operator names. The matrix of `test` and `test-integration` |
 | `tempest-releases` | Written by step 4: `{"include":[...]}` with one entry per service and release, plus one `keystone-upgrade` entry for the newest release when `keystone` is selected and two or more releases exist. The matrix of `tempest` |
 | `keystone-pressure-releases` | Written by step 5: `{"release":[...]}` with the releases that ship a Keystone image. The matrix of `keystone-pressure` |
@@ -595,7 +592,7 @@ Timeout: 8 minutes.
 Runs every `*_test.sh` under `tests/unit/`, found by discovery, and fails on a `.sh`
 file there whose name would make the discovery skip it. The job carries no event
 guard, so it runs on pull requests, on the push
-runs for `main` and `v*` tags, and on the nightly chaos run: a breakage that lands
+runs for main pushes and release dispatches, and on the nightly chaos run: a breakage that lands
 on `main` fails main's own run.
 Tests read repo files only (no cluster, no untrusted input) and the job can take
 twelve minutes on slower runners. Tests that depend on `yq` or `kustomize` are written to
@@ -849,7 +846,7 @@ validated without editing the job.
 
 **Dependencies:** `needs: [changes]`
 **Condition:** `if: github.event_name == 'pull_request' && needs.changes.outputs.helm == 'true'`
-**Path filter:** `operators/*/helm/**`, `deploy/bases/target-cluster-access/**`, `hack/gen-helm-values-schema.py`, `hack/gen-helm-rbac-rules.py`, `hack/verify-helm-released-values.sh`, `hack/helm-removed-values.yaml`, `Makefile` (forced `true` on RC tag pushes)
+**Path filter:** `operators/*/helm/**`, `deploy/bases/target-cluster-access/**`, `hack/gen-helm-values-schema.py`, `hack/gen-helm-rbac-rules.py`, `hack/verify-helm-released-values.sh`, `hack/helm-removed-values.yaml`, `Makefile` (forced `true` on candidate dispatches)
 
 | Step | Action | Details |
 | --- | --- | --- |
@@ -1568,7 +1565,7 @@ runner for a fork's pull request. `_output/reports/` is uploaded as the
 
 **Path filter:** `tests/e2e-bgp-fabric/**` and `deploy/overlays/kind/frr-k8s/**`
 (the `tests_bgp_fabric` class). A change elsewhere under `deploy/` or `hack/`
-does not schedule the job, and `ci:full` forces it on. An RC tag push sets
+does not schedule the job, and `ci:full` forces it on. A candidate dispatch sets
 the flag but does not run the job, which runs on `pull_request` events only.
 
 ### e2e-nova-libvirt
@@ -1909,7 +1906,7 @@ are estimates to confirm against the first green run.
 `deploy/overlays/kind/metrics-server/**`, `deploy/overlays/kind/vpa/**`,
 `internal/common/deployment/builders.go`,
 `internal/common/deployment/hpa_flow.go` and
-`internal/common/deployment/vpa_flow.go`. `ci:full` and an RC tag force it on,
+`internal/common/deployment/vpa_flow.go`. `ci:full` and a candidate dispatch force it on,
 and a labeled no-op resolves it to `false`.
 
 ### e2e-external-keystone
@@ -2270,25 +2267,22 @@ Timeout: 15 minutes.
 
 ### candidate-state
 
-On an RC tag push, checks whether the GitHub prerelease is absent, a draft,
-or published. The image and chart jobs run when no release exists. A draft
-can resume from the artifacts produced by its original workflow run. On
-a push to main, this job leaves the state empty so the publish jobs can run.
+On a release dispatch, semantic-release previews the version and notes from
+the selected commit. The job saves the plan as a workflow artifact and passes
+the version to the image and chart jobs. A main push uses its chart versions.
 
 ### build-and-push
 
 Builds operator container images per platform on native runners and pushes each
-single-arch image by digest. Runs only on push events (main branch or
-new RC tags). The multi-arch manifest list and final tags are
+single-arch image by digest. Runs on main pushes and candidate dispatches. The multi-arch manifest list and final tags are
 assembled by the subsequent `merge-operator-images` job.
 
 Publish-only-on-merge: the merged commit's PR was already green, so the E2E suite is
-not re-run on push. The job uses the operator matrix from `changes` and skips
-RCs that already have a release. It builds from the flake independently of
+not re-run on push. The job uses the operator matrix from `changes` and requires a planned version for a candidate. It builds from the flake independently of
 `build-e2e-images`.
 
 **Dependencies:** `needs: [changes, candidate-state]`
-**Condition:** `if: github.event_name == 'push' && needs.changes.outputs.has-e2e-operators == 'true' && !needs.candidate-state.outputs.state`
+**Condition:** A main push or a planned candidate with operators in the publish matrix.
 **Permissions:** `contents: read`, `packages: write`
 
 | Step | Action | Details |
@@ -2324,8 +2318,8 @@ Downloads per-platform digests from `build-and-push`, assembles the multi-arch m
 list, pushes it with the final tags, and signs its digest with cosign
 ([Cosign Signing](#cosign-signing)).
 
-**Dependencies:** `needs: [changes, build-and-push]`
-**Condition:** `if: github.event_name == 'push' && needs.build-and-push.result == 'success'`
+**Dependencies:** `needs: [changes, candidate-state, build-and-push]`
+**Condition:** The operator image builds succeeded.
 **Permissions:** `contents: read`, `packages: write`, `id-token: write`
 
 | Step | Action | Details |
@@ -2345,7 +2339,7 @@ list, pushes it with the final tags, and signs its digest with cosign
 | Trigger | Tags Applied |
 | --- | --- |
 | Push to main | `sha-<full-sha>`, `latest`, `<chart version>` (the operator's `Chart.yaml` version, e.g. `0.14.0`, unless reserved by a distribution tag) |
-| Push RC tag | `sha-<full-sha>`, `<version>` (e.g. `0.1.0-rc.1`) |
+| Candidate dispatch | `sha-<full-sha>`, `<version>` (e.g. `0.1.0-rc.1`) |
 
 Images are published at `ghcr.io/c5c3/<operator>-operator:<tag>`. The chart-version
 tag carries the `enable={{is_default_branch}}` rule of `latest`, so on `main` the two
@@ -2366,7 +2360,7 @@ publish-only-on-merge: the chart is packaged and pushed for every changed operat
 push without re-running the E2E suite.
 
 **Dependencies:** `needs: [changes, candidate-state]`
-**Condition:** `if: github.event_name == 'push' && needs.changes.outputs.has-e2e-operators == 'true' && !needs.candidate-state.outputs.state`
+**Condition:** A main push or a planned candidate with operators in the publish matrix.
 **Permissions:** `contents: read`, `packages: write`, `id-token: write`
 
 | Step | Action | Details |
@@ -2376,14 +2370,14 @@ push without re-running the E2E suite.
 | 3 | `Setup Docker registry` | The `setup-docker-registry` composite action with `setup-buildx: 'false'`: runs the `docker login` whose configuration `helm push` and cosign read, and installs cosign. The job builds no image and starts no Buildx builder |
 | 4 | Package and push | Step id `push`. Packages chart and pushes it to `oci://ghcr.io/c5c3/charts/` with `hack/ci-helm-push.sh`, which writes the outputs `digest` and `ref` |
 | 5 | `Sign the chart` | Runs `hack/ci-cosign-sign.sh` on the `ref` of step 4 |
-| 6 | Retain the published chart | On RC tag pushes, uploads the archive used to publish the chart for the GitHub prerelease |
+| 6 | Retain the published chart | On candidate dispatches, uploads the archive used to publish the chart for the GitHub prerelease |
 
 **Chart version derivation:**
 
 | Trigger | Version |
 | --- | --- |
 | Push to main | Version from `Chart.yaml` unless reserved for a distribution release |
-| Push RC tag | The candidate version, e.g. `0.1.0-rc.1` |
+| Candidate dispatch | The candidate version, e.g. `0.1.0-rc.1` |
 
 **Matrix strategy:** Same `operator` dimension as `build-and-push` (via
 `fromJson(needs.changes.outputs.e2e-operators)`), so every changed operator's chart is
@@ -2430,7 +2424,7 @@ the same registry tag.
 **Permissions:** `contents: read`, `packages: write`, `id-token: write`
 
 `hack/ci-resolve-changes.sh` sets `target-cluster-chart` when the
-`target_cluster_chart` class changed and forces it on for an RC tag push. The
+`target_cluster_chart` class changed and forces it on for a candidate dispatch. The
 class covers `deploy/bases/target-cluster-access/**`, `hack/ci-helm-push.sh`,
 and `hack/ci-cosign-sign.sh`, so a change to either script also triggers
 publication and signing of the chart. Matching `.github/workflows/ci.yaml`
@@ -2450,7 +2444,7 @@ workflow changes.
 | Trigger | Version |
 | --- | --- |
 | Push to main | Version from `Chart.yaml` unless reserved for a distribution release |
-| Push RC tag | The tag name without its `v` prefix, passed as `CHART_VERSION="${GITHUB_REF_NAME#v}"` |
+| Candidate dispatch | The planned candidate version, passed as `CHART_VERSION` and `CHART_APP_VERSION` |
 
 The `make helm-package-target-cluster` target packages
 `deploy/bases/target-cluster-access/`. When `CHART_VERSION` is set, the
@@ -2464,41 +2458,42 @@ Runs on `ubuntu-latest`. Timeout: 15 minutes.
 
 ### github-release
 
-For a new `vX.Y.Z-rc.N` tag, `candidate-state` checks whether a release
-already exists. After the image manifests and both chart jobs succeed,
-`github-release` collects the exact archives from both chart jobs and the
-signed image index digests from `merge-operator-images`. It requires one
-chart and image digest per operator and the `target-cluster-access` chart.
-It attaches the digests as `IMAGE_DIGESTS.json` and records the source
-commit and asset checksums in `SHA256SUMS`. GitHub generates the changelog from merged PRs
-since the latest published stable version below the requested version. It uses
-`.github/release.yml` to group changes. The first series lists recent commits and
-links to its full history. Later RCs also link to the changes since the preceding
-published RC on the same history.
-
-To preview a changelog, set `GH_TOKEN` and run
-`python3 scripts/release/changelog.py <version>` from the checkout. The script
-uses the version's local tag when available and `HEAD` for an untagged version.
-
-For a new `vX.Y.Z` tag, `release.yaml` selects the highest-numbered RC of that
-version and checks that both tags resolve to the same commit. It verifies the
-published candidate archives against GitHub's digests and the candidate checksums.
-Helm repackages those archives, including their vendored dependencies, with chart
-version `X.Y.Z`. Each operator chart also gets `appVersion: X.Y.Z`. The workflow
-verifies each recorded candidate image digest's signature and source revision,
-gives that digest the stable tag, and verifies the tag resolves to it. It pushes
-and signs the stable charts in GHCR before publishing the stable archives, the
-same `IMAGE_DIGESTS.json`, new `SHA256SUMS`, and the candidate changelog.
-
-For example, after promotion to `v1.5.0`, this installs the stable chart and
-selects the `ghcr.io/c5c3/keystone-operator:1.5.0` image by default.
+Dispatch the candidate workflow on the series branch:
 
 ```bash
-helm install keystone oci://ghcr.io/c5c3/charts/keystone-operator --version 1.5.0
+gh workflow run ci.yaml --ref release/0.1 -f distribution=candidate
 ```
 
-Both paths assemble the assets in a draft before publication. A rerun can
-complete a matching draft. An already published release is left intact.
+The first release creates a Git baseline tag `v0.0.0` on the root commit.
+The first published distribution is `v0.1.0-rc.1`. The baseline has no
+GitHub Release or OCI artifacts. Later candidate runs use the landed commits
+and semantic-release's channel history. A later series branch must contain
+its preceding stable tag. Features advance minor and fixes advance patch.
+For the initial series, breaking changes count as minor. After `v0.1.0`
+the standard breaking-change rule advances major.
+
+The candidate jobs build and sign all operator images and charts and the
+`target-cluster-access` chart. The semantic-release GitHub plugin attaches
+the exact chart archives, `IMAGE_DIGESTS.json`, and `SHA256SUMS` to the release.
+Semantic-release generates the notes from Conventional Commit messages and attaches
+`RELEASE_NOTES.md`. For long histories the release body links to that file.
+
+After validating the highest RC for the version, dispatch stable on its exact SHA:
+
+```bash
+gh workflow run ci.yaml --ref release/0.1 -f distribution=stable
+```
+
+If the series branch has advanced, dispatch on a `promote/X.Y` branch at
+that candidate's SHA. CI checks the published prerelease and asset digests,
+repackages its charts with stable chart and app versions, verifies the
+image signatures and source revision, and points the stable image tags at
+the recorded RC digests. Semantic-release tags the commit and publishes the
+stable release with the new signed charts and a link to the candidate.
+
+For an interrupted upload, rerun the **failed jobs of the original run**.
+The saved plan supplies its version, commit and notes. Existing release assets
+must match the original digests before the missing uploads can resume.
 
 ## Cosign Signing
 
@@ -2506,7 +2501,7 @@ complete a matching draft. An already published release is left intact.
 push with cosign, keylessly through Sigstore OIDC. A signature names a digest: the
 index digest of each of the ten operator images, and the manifest digest of each of
 the ten operator charts and of `target-cluster-access`. The three jobs sign
-artifacts they publish on pushes to `main` and on new RC tag pushes. Stable
+artifacts they publish on pushes to `main` and on candidate dispatches. Stable
 promotion retains the RC image signatures and signs the new stable chart digests. An image or chart
 digest pushed before the publish jobs signed has no signature, among them the
 baseline versions the operator upgrade suites pin.
@@ -2536,8 +2531,8 @@ is `https://github.com/` followed by the run's `GITHUB_WORKFLOW_REF`:
 | --- | --- |
 | Issuer | `https://token.actions.githubusercontent.com` |
 | Subject, push to `main` | `https://github.com/C5C3/cobaltcore/.github/workflows/ci.yaml@refs/heads/main` |
-| Subject, RC tag push and promoted image | `https://github.com/C5C3/cobaltcore/.github/workflows/ci.yaml@refs/tags/<RC tag>` |
-| Subject, stable chart | `https://github.com/C5C3/cobaltcore/.github/workflows/release.yaml@refs/tags/<stable tag>` |
+| Subject, candidate dispatch and promoted image | `https://github.com/C5C3/cobaltcore/.github/workflows/ci.yaml@refs/heads/release/X.Y` |
+| Subject, stable chart | The dispatch ref of `ci.yaml`, either `refs/heads/release/X.Y` or `refs/heads/promote/X.Y` |
 
 The subject names the workflow file, so it changes if the publish jobs move to
 another workflow. The images of the image workflow carry the subject of
@@ -2578,7 +2573,7 @@ publish jobs move `latest` and push a chart version again under a new digest, so
 a tag can name another digest by the time it is pulled; a deployment that names
 `@${digest}` runs the artifact that was verified.
 
-For an artifact published by an RC tag push, the identity ends in `@refs/tags/<tag>`
+For an artifact published by a candidate dispatch, the identity ends in `@refs/heads/release/X.Y`
 in place of `@refs/heads/main`.
 
 A Flux `OCIRepository` verifies the chart signature with `spec.verify`. `layerSelector`

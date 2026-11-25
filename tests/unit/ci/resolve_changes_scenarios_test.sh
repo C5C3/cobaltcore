@@ -592,7 +592,7 @@ test_ci_label_event_is_not_a_noop() {
 # ---------------------------------------------------------------------------
 
 test_tag_push_forces_everything() {
-  scenario "a v* tag push" refs/tags/v1.2.3
+  scenario "a release candidate dispatch" refs/heads/release/0.1 EVENT_NAME=candidate
   # shellcheck disable=SC2086 # deliberate: expand the job list
   expect_all true $EXPENSIVE go docs helm target-cluster-chart e2e-infra \
     e2e-operator-upgrade has-e2e-operators

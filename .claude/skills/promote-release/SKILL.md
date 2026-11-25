@@ -1,32 +1,27 @@
 ---
 name: promote-release
-description: >-
-  Promote the latest validated CobaltCore release candidate to stable by tagging
-  its exact build. Use when a maintainer requests stable promotion.
+description: Promote a validated CobaltCore release candidate through semantic-release.
 ---
 
-# Promote a CobaltCore release
+# Promote a CobaltCore candidate
 
-Fetch the selected repository's distribution tags and inspect its prereleases.
-Select the highest `vX.Y.Z-rc.N` by numeric major, minor, patch, and RC number.
-For example, `v1.5.0-rc.10` follows `v1.5.0-rc.9` and promotes to `v1.5.0`.
-If no RC exists, report that and point to [[prerelease-cobaltcore]].
+Fetch the distribution tags. Identify the highest numeric RC for the target
+version, confirm its GitHub prerelease is published, and compare its commit
+with the approved validation evidence.
 
-1. Resolve the RC tag to its commit, peeling annotated tags. Check that the
-   published candidate and its validation evidence identify that build and
-   that the maintainer has approved it for stable. If the latest RC is still
-   awaiting validation, report what is pending.
-2. Strip the RC suffix to get the stable tag. Check local and remote tags.
-   If the stable tag exists at the same commit, reuse it. If it points
-   elsewhere, report both SHAs and stop. Preserve the original RC tag.
-3. Create the missing annotated stable tag directly at the RC commit and name
-   the promoted RC in the annotation. The release branch may have advanced.
-4. Report the RC, stable tag and commit. Leave the tag local unless the
-   maintainer requests publication. When publishing, recheck the remote RC
-   and stable refs, push only the stable tag to the selected repository, and
-   verify that the GitHub Release has stable chart archives, checksums, and
-   the same `IMAGE_DIGESTS.json` as the prerelease.
-   Pull an operator chart from GHCR with `--version X.Y.Z` and verify its operator image
-   defaults to the same stable version. Return the release URL.
+When the maintainer requests stable publication, dispatch CI at that exact
+commit. If `release/X.Y` still points there, use the series branch:
 
-[Release management RFC](https://github.com/C5C3/cobaltcore/pull/1645)
+```bash
+gh workflow run ci.yaml --ref release/0.1 -f distribution=stable
+```
+
+If the series branch has advanced, use a `promote/X.Y` branch at the approved
+SHA. Create and publish that branch only with authorization. Verify any
+existing promotion branch before using it. The workflow rejects a candidate
+superseded by a higher RC for the same version.
+
+Follow the run and return the stable GitHub Release link. Verify its image
+digest manifest matches the RC and its stable chart renders the stable image
+tag. Semantic-release creates the stable Git tag and publishes the chart
+archives, image manifest and checksums.

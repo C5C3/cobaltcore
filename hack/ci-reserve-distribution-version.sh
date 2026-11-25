@@ -7,7 +7,7 @@
 set -euo pipefail
 version=$(hack/ci-read-chart-version.sh "$1")
 if [[ -n "$version" ]]; then
-  tags=$(git ls-remote --refs origin "refs/tags/v${version}" "refs/tags/v${version}-rc.*")
+  tags=$(git ls-remote --refs origin "refs/heads/release/${version%.*}" "refs/tags/v${version}" "refs/tags/v${version}-rc.*")
   if [[ -n "$tags" ]]; then
     echo "Distribution v${version} owns this version in GHCR"
     echo "reserved=true" >> "$GITHUB_OUTPUT"

@@ -5,14 +5,13 @@
 
 # Publish stable charts and point each stable operator tag at its signed RC index.
 set -euo pipefail
-candidate=$1
-stable=$2
-commit=$3
-images=$4
-shift 4
+stable=$1
+commit=$2
+images=$3
+shift 3
 registry=ghcr.io/c5c3
 issuer=https://token.actions.githubusercontent.com
-identity="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/.github/workflows/ci.yaml@refs/tags/v${candidate}"
+identity="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/.github/workflows/ci.yaml@refs/heads/release/${stable%.*}"
 
 output=$(mktemp)
 trap 'rm -f "$output"' EXIT
