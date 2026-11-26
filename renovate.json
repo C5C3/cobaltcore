@@ -604,6 +604,20 @@
     },
     {
       "customType": "regex",
+      "description": "bats-core, the runner of make test-shell, pinned in the Makefile as BATS_VERSION and BATS_COMMIT: the tag and the commit it names move together, and make install-bats fetches the commit",
+      "managerFilePatterns": [
+        "/^Makefile$/"
+      ],
+      "matchStrings": [
+        "BATS_VERSION\\s*\\?=\\s*(?<currentValue>v\\d+\\.\\d+\\.\\d+)\\s*\\nBATS_COMMIT\\s*\\?=\\s*(?<currentDigest>[a-f0-9]{40})"
+      ],
+      "depNameTemplate": "bats-core/bats-core",
+      "datasourceTemplate": "github-tags",
+      "packageNameTemplate": "bats-core/bats-core",
+      "versioningTemplate": "regex:^v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$"
+    },
+    {
+      "customType": "regex",
       "description": "mod_auth_openidc of the keystone-federation-proxy image, pinned in images/keystone-federation-proxy/source.json: the tag and the commit it names move together, and make nix-lock then writes the hash of the new commit into the same file",
       "managerFilePatterns": [
         "/images/keystone-federation-proxy/source\\.json$/"
@@ -1238,6 +1252,29 @@
       "matchManagers": ["custom.regex"],
       "matchFileNames": ["images/nova/novnc.json"],
       "matchPackageNames": ["novnc/noVNC"],
+      "matchUpdateTypes": ["digest"],
+      "enabled": false
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["Makefile"],
+      "matchPackageNames": ["bats-core/bats-core"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["Makefile"],
+      "matchPackageNames": ["bats-core/bats-core"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": false,
+      "minimumReleaseAge": "3 days",
+      "groupName": "bats-core releases"
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["Makefile"],
+      "matchPackageNames": ["bats-core/bats-core"],
       "matchUpdateTypes": ["digest"],
       "enabled": false
     },
