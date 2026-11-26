@@ -10,6 +10,9 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/yaml"
 
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	"github.com/c5c3/cobaltcore/operators/c5c3/internal/testutil"
@@ -713,6 +717,209 @@ func TestIntegration_CRD_CELOnly_ControlPlaneSizing(t *testing.T) {
 			expectAdmission(t, err, tc.wantSub)
 			if tc.wantSub != "" {
 				NewGomegaWithT(t).Expect(err.Error()).To(ContainSubstring("spec.keystone.api.podDisruptionBudget"))
+			}
+		})
+	}
+}
+
+// TestIntegration_CRD_CELOnly_ControlPlaneDefaultedBlocks pins the eight
+// blocks the schema leaves optional because the defaulting webhook fills them
+// before the API server reads the schema: spec.korc, and below it
+// adminCredential, cloudCredentialsRef, passwordSecretRef,
+// applicationCredential and rotation, plus spec.infrastructure.database and
+// .cache. An API server without webhooks admits a ControlPlane that leaves
+// them out or writes part of the K-ORC block, and stores no more than the
+// schema defaults of the blocks the manifest wrote. The leaves of the shared
+// commonv1 types stay required once their block is written, and
+// spec.openStackRelease and spec.services stay required.
+//
+// Rules: controlplane_types.go:184, 226, 236, 2814, 2993, 3001, 3041, 3100
+func TestIntegration_CRD_CELOnly_ControlPlaneDefaultedBlocks(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+	ns := newNamespace(t, ctx, c, "celonly-defaulted-")
+
+	const kind = "ControlPlane"
+	base := map[string]any{"openStackRelease": "2026.1", "services": map[string]any{}}
+	nested := func(g Gomega, obj map[string]any, fields ...string) map[string]any {
+		m, found, err := unstructured.NestedMap(obj, fields...)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(found).To(BeTrue(), "%s is stored", strings.Join(fields, "."))
+		return m
+	}
+	storedSpec := func(g Gomega, name string) map[string]any {
+		stored := &unstructured.Unstructured{}
+		stored.SetGroupVersionKind(GroupVersion.WithKind(kind))
+		g.Expect(c.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, stored)).To(Succeed())
+		return nested(g, stored.Object, "spec")
+	}
+
+	t.Run("admits the bundled kind manifest", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		_, thisFile, _, ok := goruntime.Caller(0)
+		g.Expect(ok).To(BeTrue(), "runtime.Caller must resolve this test file")
+		path := filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "..",
+			"deploy", "overlays", "kind", "controlplane", "controlplane.yaml")
+		raw, err := os.ReadFile(filepath.Clean(path))
+		g.Expect(err).NotTo(HaveOccurred())
+		cp := &unstructured.Unstructured{}
+		g.Expect(yaml.Unmarshal(raw, &cp.Object)).To(Succeed())
+		cp.SetNamespace(ns)
+		expectAdmission(t, c.Create(ctx, cp), "")
+
+		spec := storedSpec(g, cp.GetName())
+		g.Expect(spec).NotTo(HaveKey("korc"))
+		g.Expect(spec).NotTo(HaveKey("infrastructure"))
+	})
+
+	ref := map[string]any{"name": "x"}
+	adminCredential := func(block map[string]any) map[string]any {
+		return map[string]any{"adminCredential": block}
+	}
+	for _, tc := range []struct {
+		name  string
+		field string // empty: the base spec alone
+		value map[string]any
+		check func(g Gomega, spec map[string]any)
+	}{
+		{
+			name: "bare",
+			check: func(g Gomega, spec map[string]any) {
+				g.Expect(spec).NotTo(HaveKey("korc"))
+				g.Expect(spec).NotTo(HaveKey("infrastructure"))
+			},
+		},
+		{
+			name:  "messaging-only",
+			field: "infrastructure",
+			value: map[string]any{"messaging": map[string]any{"clusterRef": map[string]any{"name": "openstack-rabbitmq"}}},
+			check: func(g Gomega, spec map[string]any) {
+				infra := nested(g, spec, "infrastructure")
+				g.Expect(infra).To(HaveKey("messaging"))
+				g.Expect(infra).To(HaveLen(1))
+			},
+		},
+		{
+			name:  "empty-infrastructure",
+			field: "infrastructure",
+			value: map[string]any{},
+			check: func(g Gomega, spec map[string]any) {
+				g.Expect(nested(g, spec, "infrastructure")).To(BeEmpty())
+			},
+		},
+		{
+			name:  "empty-korc",
+			field: "korc",
+			value: map[string]any{},
+			check: func(g Gomega, spec map[string]any) {
+				g.Expect(nested(g, spec, "korc")).To(BeEmpty())
+			},
+		},
+		{
+			name:  "registrations-only",
+			field: "korc",
+			value: map[string]any{"serviceRegistrations": map[string]any{"allowedNamespaces": []any{"team-a"}}},
+			check: func(g Gomega, spec map[string]any) {
+				g.Expect(nested(g, spec, "korc")).NotTo(HaveKey("adminCredential"))
+			},
+		},
+		{
+			name:  "admin-user-only",
+			field: "korc",
+			value: adminCredential(map[string]any{"userName": "ops"}),
+			check: func(g Gomega, spec map[string]any) {
+				g.Expect(nested(g, spec, "korc", "adminCredential")).To(Equal(map[string]any{
+					"userName": "ops", "projectName": "admin", "domainName": "Default",
+				}))
+			},
+		},
+		{
+			name:  "empty-clouds-ref",
+			field: "korc",
+			value: adminCredential(map[string]any{"cloudCredentialsRef": map[string]any{}}),
+			check: func(g Gomega, spec map[string]any) {
+				g.Expect(nested(g, spec, "korc", "adminCredential", "cloudCredentialsRef")).To(Equal(map[string]any{
+					"cloudName": "admin", "secretName": "k-orc-clouds-yaml",
+				}))
+			},
+		},
+		{
+			name:  "restriction-only",
+			field: "korc",
+			value: adminCredential(map[string]any{"applicationCredential": map[string]any{"restricted": false}}),
+			check: func(g Gomega, spec map[string]any) {
+				g.Expect(nested(g, spec, "korc", "adminCredential", "applicationCredential")).To(Equal(map[string]any{
+					"restricted": false,
+				}))
+			},
+		},
+		{
+			name:  "password-name-only",
+			field: "korc",
+			value: adminCredential(map[string]any{"passwordSecretRef": map[string]any{"name": "pw"}}),
+			check: func(g Gomega, spec map[string]any) {
+				g.Expect(nested(g, spec, "korc", "adminCredential", "passwordSecretRef")).To(Equal(map[string]any{
+					"name": "pw",
+				}))
+			},
+		},
+	} {
+		t.Run("admits "+tc.name, func(t *testing.T) {
+			spec := runtime.DeepCopyJSON(base)
+			if tc.field != "" {
+				spec = specWith(base, tc.field, tc.value)
+			}
+			expectAdmission(t, c.Create(ctx, orderObject(kind, tc.name, ns, spec)), "")
+			g := NewGomegaWithT(t)
+			tc.check(g, storedSpec(g, tc.name))
+		})
+	}
+
+	const (
+		databaseName      = "spec.infrastructure.database.database: Required value"
+		databaseSecretRef = "spec.infrastructure.database.secretRef: Required value"
+	)
+	for _, tc := range []struct {
+		name    string
+		spec    map[string]any
+		wantSub []string // the first goes through expectAdmission, the rest must be in the same error
+	}{
+		{
+			name:    "partial-database",
+			spec:    specWith(base, "infrastructure", map[string]any{"database": map[string]any{"clusterRef": ref}}),
+			wantSub: []string{databaseName, databaseSecretRef},
+		},
+		{
+			name:    "empty-database",
+			spec:    specWith(base, "infrastructure", map[string]any{"database": map[string]any{}}),
+			wantSub: []string{databaseName, databaseSecretRef},
+		},
+		{
+			name:    "partial-cache",
+			spec:    specWith(base, "infrastructure", map[string]any{"cache": map[string]any{"clusterRef": ref}}),
+			wantSub: []string{"spec.infrastructure.cache.backend: Required value"},
+		},
+		{
+			name:    "password-key-only",
+			spec:    specWith(base, "korc", adminCredential(map[string]any{"passwordSecretRef": map[string]any{"key": "pw"}})),
+			wantSub: []string{"spec.korc.adminCredential.passwordSecretRef.name: Required value"},
+		},
+		{
+			name:    "no-services",
+			spec:    specWithout(base, "services"),
+			wantSub: []string{"spec.services: Required value"},
+		},
+		{
+			name:    "no-release",
+			spec:    specWithout(base, "openStackRelease"),
+			wantSub: []string{"spec.openStackRelease: Required value"},
+		},
+	} {
+		t.Run("refuses "+tc.name, func(t *testing.T) {
+			err := c.Create(ctx, orderObject(kind, tc.name, ns, tc.spec))
+			expectAdmission(t, err, tc.wantSub[0])
+			for _, sub := range tc.wantSub[1:] {
+				NewGomegaWithT(t).Expect(err.Error()).To(ContainSubstring(sub))
 			}
 		})
 	}
