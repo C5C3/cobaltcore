@@ -63,6 +63,8 @@ spec:
         - uwsgi
         - --http
         - :9311
+        - --buffer-size
+        - "65535"
         - --http-keepalive
         - --log-master
         - --log-format
@@ -216,6 +218,8 @@ spec:
         - uwsgi
         - --http
         - :9311
+        - --buffer-size
+        - "65535"
         - --http-keepalive
         - --log-master
         - --log-format
@@ -379,6 +383,8 @@ spec:
         - uwsgi
         - --http
         - :9311
+        - --buffer-size
+        - "65535"
         - --http-keepalive
         - --log-master
         - --log-format
@@ -550,6 +556,8 @@ spec:
         - uwsgi
         - --http
         - :9311
+        - --buffer-size
+        - "65535"
         - --http-keepalive
         - --log-master
         - --log-format
@@ -707,6 +715,8 @@ spec:
         - uwsgi
         - --http
         - :9311
+        - --buffer-size
+        - "65535"
         - --http-keepalive
         - --log-master
         - --log-format

@@ -7,7 +7,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"strconv"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -635,23 +634,20 @@ func apiSelector(keystone *keystonev1alpha1.Keystone, narrowSelector bool) map[s
 // parameters.
 //
 // federationActive rebinds uWSGI to 127.0.0.1:5000 so only the sidecar may
-// reach it and no in-cluster client can bypass the header-stripping proxy, and
-// appends --buffer-size 65535: the spike measured claim headers plus the ~4 KiB
-// client-cookie session blowing the 4096-byte default (502s).
+// reach it and no in-cluster client can bypass the header-stripping proxy. The
+// claim headers plus the ~4 KiB client-cookie session the spike measured fit
+// the --buffer-size the builder sets in every configuration.
 func uwsgiCommand(uwsgi *keystonev1alpha1.UWSGISpec, federationActive bool) []string {
 	bind := ":5000"
-	var argsAfterHTTP []string
 	if federationActive {
 		bind = "127.0.0.1:5000"
-		argsAfterHTTP = []string{"--buffer-size", strconv.Itoa(uwsgiFederationBufferSize)}
 	}
 
 	return deployment.BuildUWSGICommand(deployment.UWSGICommandParams{
-		UWSGI:         uwsgi,
-		Bind:          bind,
-		ArgsAfterHTTP: argsAfterHTTP,
-		WSGIFilePath:  "/var/lib/openstack/bin/keystone-wsgi-public",
-		TrailingArgs:  []string{"--pyargv=--config-dir=/etc/keystone/keystone.conf.d/"},
+		UWSGI:        uwsgi,
+		Bind:         bind,
+		WSGIFilePath: "/var/lib/openstack/bin/keystone-wsgi-public",
+		TrailingArgs: []string{"--pyargv=--config-dir=/etc/keystone/keystone.conf.d/"},
 	})
 }
 

@@ -67,6 +67,8 @@ spec:
         - --http-chunked-input
         - --chunked-input-limit
         - "16777216"
+        - --buffer-size
+        - "65535"
         - --http-keepalive
         - --log-master
         - --log-format
@@ -237,6 +239,8 @@ spec:
         - --http-chunked-input
         - --chunked-input-limit
         - "16777216"
+        - --buffer-size
+        - "65535"
         - --http-keepalive
         - --log-master
         - --log-format
@@ -475,6 +479,8 @@ spec:
         - --http-chunked-input
         - --chunked-input-limit
         - "16777216"
+        - --buffer-size
+        - "65535"
         - --http-keepalive
         - --log-master
         - --log-format
@@ -666,6 +672,8 @@ spec:
         - --http-chunked-input
         - --chunked-input-limit
         - "16777216"
+        - --buffer-size
+        - "65535"
         - --http-keepalive
         - --log-master
         - --log-format
@@ -836,6 +844,8 @@ spec:
         - --http-chunked-input
         - --chunked-input-limit
         - "16777216"
+        - --buffer-size
+        - "65535"
         - --http-keepalive
         - --log-master
         - --log-format

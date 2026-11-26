@@ -195,7 +195,7 @@ for setup in fernet_setup credential_setup; do
     --keystone-user "$(id -u)" --keystone-group "$(id -g)" >> /tmp/manage.log 2>&1 ||
     { cat /tmp/manage.log; exit 1; }
 done
-uwsgi --http :5000 --http-keepalive --log-master \
+uwsgi --http :5000 --buffer-size 65535 --http-keepalive --log-master \
   --log-format '%(method) %(uri) => generated %(rsize) bytes in %(msecs) msecs (%(proto) %(status))' \
   --wsgi-file /var/lib/openstack/bin/keystone-wsgi-public --max-fd 65536 --master --lazy-apps --need-app \
   --hook-master-start "unix_signal:15 gracefully_kill_them_all" --shutdown-sockets --threaded-logger \

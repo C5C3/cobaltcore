@@ -44,12 +44,6 @@ const federationProxyPort int32 = 5050
 // route is shadowed.
 const federationRedirectURIPath = "/v3/OS-FEDERATION/redirect_uri"
 
-// uwsgiFederationBufferSize is appended as --buffer-size when federation is
-// active: the spike measured claim headers plus the ~4 KiB client-cookie
-// session blowing uWSGI's 4096-byte default (502s), and 64 KiB is uWSGI's
-// documented maximum.
-const uwsgiFederationBufferSize = 65535
-
 // maxProviderMetadataBytes bounds a fetched OIDC discovery document. Real
 // documents are a few KiB; the bound keeps a misbehaving IdP from bloating
 // the federation Secret.

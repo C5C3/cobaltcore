@@ -92,6 +92,10 @@ func TestPlacementUWSGICommand_NilAPIServerUsesDefaults(t *testing.T) {
 	g.Expect(cmd).To(ContainElement("--http-keepalive"))
 	g.Expect(cmd).NotTo(ContainElement(HavePrefix("--http-keepalive=")))
 	g.Expect(cmd).NotTo(ContainElement("--harakiri"))
+	// nova-compute's trait query passes uWSGI's 4096-byte default buffer.
+	bufferSize, ok := argAfter(cmd, "--buffer-size")
+	g.Expect(ok).To(BeTrue())
+	g.Expect(bufferSize).To(Equal("65535"))
 	// Request logging is unconditional so log lines reach stderr in every
 	// configuration.
 	g.Expect(cmd).To(ContainElement("--log-master"))
@@ -159,6 +163,10 @@ func TestPlacementUWSGICommand_KeepAliveDisabledDropsTimeout(t *testing.T) {
 	cmd := placementUWSGICommand(apiServer)
 
 	g.Expect(cmd).NotTo(ContainElement(HavePrefix("--http-keepalive")))
+	// The request buffer does not depend on keep-alive.
+	bufferSize, ok := argAfter(cmd, "--buffer-size")
+	g.Expect(ok).To(BeTrue())
+	g.Expect(bufferSize).To(Equal("65535"))
 	// The spec's worker knobs are honored verbatim (the webhook does the
 	// defaulting).
 	procs, _ := argAfter(cmd, "--processes")

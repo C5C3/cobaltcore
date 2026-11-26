@@ -670,6 +670,7 @@ of configuration:
 | --- | --- |
 | `uwsgi` | Binary name (always first) |
 | `--http :5000` | Fixed — Keystone API listen port |
+| `--buffer-size 65535` | Fixed — sizes the buffer for a request's line and headers at 65535 bytes, see [Request buffer](#request-buffer) |
 | `--http-keepalive` or `--http-keepalive=<n>` | Bare `--http-keepalive` when `httpKeepAlive` is `true` (or default) and no timeout is set; `--http-keepalive=<n>` when `httpKeepAliveTimeout` is set; omitted when `httpKeepAlive` is `false` |
 | `--wsgi-file /var/lib/openstack/bin/keystone-wsgi-public` | Fixed — Keystone WSGI entry point |
 | `--max-fd 65536` | Fixed — bounds uWSGI's open-files limit, see [Open-files limit](#open-files-limit) |
@@ -708,6 +709,49 @@ The limit the node hands out decides what the flag changes:
 The `setrlimit()` line repeats at every start of such a pod. The operator
 upgrade that brings the flag changes the pod template, so each of these
 Deployments rolls once under its update strategy.
+
+### Request buffer
+
+uWSGI runs with `--buffer-size 65535` in the API containers of keystone,
+glance, placement, barbican, neutron, cinder and nova, in nova's metadata
+container and in the Horizon dashboard (see Horizon's
+[session size limits](../horizon/index.md#session-size-limits)). The flag
+sets the size of the buffer that holds a request's line and headers inside
+uWSGI. 65535 is the largest value uWSGI takes.
+
+Under the default of 4096 bytes, uWSGI logs
+`invalid request block size: <n> (max 4096)...skip` for a larger request and
+closes the connection without a response. The client sees the connection
+close, and a gateway in front of the API answers 503 or resets the
+connection.
+
+uWSGI's HTTP router writes the query string into that buffer twice, as
+`QUERY_STRING` and inside `REQUEST_URI`, so a query of n bytes takes about
+2n + 290 bytes of it. A header counts once. The table gives the largest query
+that still got an answer, measured with uWSGI 2.0.31 from
+`ghcr.io/c5c3/placement:2026.1` and a client that sends three headers:
+
+| uWSGI command | Largest query of `GET /traits?<query>` that gets an answer |
+| --- | --- |
+| Without `--buffer-size` | 1902 bytes |
+| With `--buffer-size 65535` | 30716 bytes |
+
+`nova-compute` sends the request that needs the flag. It asks Placement for
+every trait its node reports in one `GET /traits?name=in:<trait>,<trait>,...`
+request. On a KVM host that query is larger than the default allows, so
+Placement drops it at every run of the resource tracker, the scheduler never
+sees the node's free resources, and every boot ends in
+`No valid host was found`. The query that names every standard trait is 8569
+bytes with os-traits 3.6.0 (2026.1) and 8649 bytes with os-traits 3.9.0
+(2026.2).
+
+uWSGI also drops a request that needs more than 65535 bytes of the buffer,
+and it logs nothing for it.
+
+The operator upgrade that brings the flag changes the pod template, so each
+of these Deployments rolls once under its update strategy. A Keystone with a
+federation backend and the Horizon dashboard already ran with the flag, and
+their commands do not change.
 
 ### HTTPKeepAlive Defaulting
 
@@ -1493,8 +1537,8 @@ attaching a federation-typed
 [`KeystoneIdentityBackend`](./identity-backend-crd.md) (`type: OIDC` or `SAML`)
 — **not** by this block: when at least one federation backend is projected, the
 operator injects the `federation-proxy` reverse-proxy sidecar, binds uWSGI to
-localhost (with the federation-sized `--buffer-size`), and switches the Service
-targetPort to the proxy. This spec only configures how that sidecar runs.
+localhost, and switches the Service targetPort to the proxy. This spec only
+configures how that sidecar runs.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
