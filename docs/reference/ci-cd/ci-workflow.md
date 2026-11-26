@@ -594,23 +594,47 @@ Timeout: 8 minutes.
 ### test-shell
 
 Runs every `*_test.sh` under `tests/unit/`, found by discovery, and fails on a `.sh`
-file there whose name would make the discovery skip it. The job carries no event
-guard, so it runs on pull requests, on the push
+file there whose name would make the discovery skip it. bats runs each script as one
+test, on as many workers as the runner has CPUs (`nproc`). A green script prints one
+`ok` line with its run time. A red script prints its `not ok` line followed by its
+output, and a red run ends with the list of failed scripts on stderr. The JUnit report
+`_output/test-shell/report.xml` names each script as a test case; the job keeps it as
+the artifact `test-shell-junit-report` for 14 days, after a red or timed-out run too.
+
+The job carries no event guard, so it runs on pull requests, on the push
 runs for `main` and `v*` tags, and on the nightly chaos run: a breakage that lands
 on `main` fails main's own run.
-Tests read repo files only (no cluster, no untrusted input) and the job can take
-twelve minutes on slower runners. Tests that depend on `yq` or `kustomize` are written to
+Tests read repo files only (no cluster, no untrusted input). Tests that depend on `yq` or `kustomize` are written to
 skip gracefully when those tools are missing; the job installs `kustomize` explicitly so
 the deploy/ overlay assertions run their full check set (`yq` is preinstalled on
 ubuntu-latest).
+
+`make test-shell` installs bats with `make install-bats`, at the commit the
+`BATS_VERSION` and `BATS_COMMIT` pin of the `Makefile` names. GNU parallel and `flock`,
+which bats needs for more than one worker, come from the runner image. The job sets
+`TEST_SHELL_JOBS`, so a runner image without them fails the job instead of running the
+suite serially.
 
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | Install kustomize | Downloads the pinned kustomize binary into `/usr/local/bin` |
-| 3 | `make test-shell` | Iterates every `tests/unit/**/*_test.sh` and aggregates exit status |
+| 3 | `TEST_SHELL_JOBS="$(nproc)" make test-shell` | Installs the pinned bats and runs every `tests/unit/**/*_test.sh` as one bats test, one worker per CPU |
+| 4 | `actions/upload-artifact@v7.0.2` | Uploads `report.xml` as `test-shell-junit-report` under `if: always()` (SHA-pinned, 14-day retention) |
 
-Timeout: 20 minutes, allowing for cold tool downloads and slower runners.
+A local `make test-shell` reads three variables. Without GNU parallel or `flock` the run
+is serial and says so on stderr; a `TEST_SHELL_JOBS` above 1 fails the run instead. The
+first run on a machine without an install fetches bats from GitHub, and
+`make install-bats` does that step alone.
+
+| Variable | Default | Example |
+| --- | --- | --- |
+| `TEST_SHELL_FILTER` | every script | `make test-shell TEST_SHELL_FILTER=renovate/` runs the scripts whose path matches the extended regular expression |
+| `TEST_SHELL_JOBS` | the number of online CPUs | `make test-shell TEST_SHELL_JOBS=1` runs one script at a time |
+| `TEST_SHELL_REPORT_DIR` | `_output/test-shell` | `make test-shell TEST_SHELL_REPORT_DIR=/tmp/report` writes `report.xml` to `/tmp/report` |
+
+Timeout: 10 minutes. The serial run took 9 to 13 minutes and bats takes about 4 to 6,
+which leaves room for a cold `npx` download of `renovate-config-validator`.
 
 ### test
 

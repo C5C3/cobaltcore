@@ -626,6 +626,10 @@ test_the_report_dir_resolves_against_the_root() {
   assert_eq "the target exits 0 without TEST_SHELL_REPORT_DIR" "0" "$code"
   assert_eq "the report lands in _output/test-shell under the root" "yes" \
     "$([ -f "$TREE/_output/test-shell/report.xml" ] && echo yes || echo no)"
+  # upload-artifact only warns on a missing file, so a drift between the two
+  # paths would leave the job green without its report.
+  assert_file_contains_fixed "the test-shell job uploads that path" \
+    "$PROJECT_ROOT/.github/workflows/ci.yaml" "path: _output/test-shell/report.xml"
 
   # make starts the script from the root, so a run from a subdirectory is
   # what shows the relative value is not resolved against the caller's.

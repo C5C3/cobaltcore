@@ -832,16 +832,23 @@ jobs:
         run: make check-review-markers
 
   # Run every shell unit test under tests/unit/ (every *_test.sh,
-  # found by discovery). Repo files only — adds no injection surface.
+  # found by discovery) through bats, one bats test per script, across
+  # every CPU of the runner. Repo files only — adds no injection surface.
+  # make test-shell installs bats with `make install-bats` at the
+  # BATS_VERSION / BATS_COMMIT pin of the Makefile; GNU parallel and
+  # flock, which bats needs for more than one worker, come from the
+  # runner image. TEST_SHELL_JOBS is set, so a runner image without them
+  # fails the job instead of running it serially.
   # ubuntu-latest preinstalls bash, jq, mikefarah/yq, perl, npx; kustomize
   # is installed explicitly so deploy/ overlay tests run the full assertion
   # set instead of skipping their kustomize-build checks. The renovate/
   # tests pull renovate-config-validator via npx, taking ~30s on a cold
-  # runner. The whole job can reach 12 minutes on slower runners, so allow
-  # 20 minutes for cold tool downloads and newly added suites.
+  # runner. The serial run took 9 to 13 minutes and bats takes about 4 to
+  # 6, so 10 minutes leave room for a cold npx download. The JUnit report
+  # is uploaded on every outcome.
   test-shell:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install kustomize
@@ -851,7 +858,14 @@ jobs:
             "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize/${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
           tar -xzf /tmp/kustomize.tar.gz -C /usr/local/bin
       - name: Run shell unit tests
-        run: make test-shell
+        run: TEST_SHELL_JOBS="$(nproc)" make test-shell
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-shell-junit-report
+          path: _output/test-shell/report.xml
+          retention-days: 14
 
   # Enforce the canonical-scaffold contract for the invalid-CR
   # Chainsaw fixtures (sourcery-ai review #1, FC1 from review #2). Runs
