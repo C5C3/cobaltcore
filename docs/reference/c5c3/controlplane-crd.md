@@ -2652,7 +2652,7 @@ bootstrapped and rotated and which bootstrap resources are reconciled.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `adminCredential` | [`AdminCredentialSpec`](#admincredentialspec) | Yes | — | The admin OpenStack credential K-ORC uses to reconcile resources, plus the application-credential rotation policy. |
+| `adminCredential` | [`AdminCredentialSpec`](#admincredentialspec) | No | defaulted | The admin OpenStack credential K-ORC uses to reconcile resources, plus the application-credential rotation policy. The defaulting webhook fills in the block when a manifest leaves it out. |
 | `serviceRegistrations` | [`*ServiceRegistrationsSpec`](#serviceregistrationsspec) | No | `nil` | Which namespaces this control plane consents to standalone [`KeystoneService`](./keystoneservice-crd.md) registrations from. Optional: its zero value admits only the namespaces the control plane already owns. |
 
 ---
@@ -2804,7 +2804,7 @@ lists its steps.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `cloudCredentialsRef` | [`CloudCredentialsRef`](#cloudcredentialsref) | Yes | — | References the `clouds.yaml` Secret and cloud entry K-ORC authenticates as. |
+| `cloudCredentialsRef` | [`CloudCredentialsRef`](#cloudcredentialsref) | No | defaulted | References the `clouds.yaml` Secret and cloud entry K-ORC authenticates as. The defaulting webhook fills in the block when a manifest leaves it out. |
 | `passwordSecretRef` | [`commonv1.SecretRefSpec`](../keystone/keystone-crd.md#secretrefspec) | No | name `"keystone-admin"`, key `"password"` | References the Secret holding the admin password used to (re-)mint the application credential. The defaulting webhook materializes a missing `name` to `keystone-admin` and a missing `key` to `password`, so the block may be omitted on a minimal CR. The validating webhook still enforces `passwordSecretRef.name` non-empty as defense-in-depth (see [Validation Rules](#validation-rules)), but the defaulting webhook always satisfies it before validation runs, so a user may leave it unset. The reconciler's existing `"password"` key fallback also remains. **Mode-dependent use:** the `keystone-admin` default is the **brownfield / spec-level default**. In **brownfield mode** (`database.clusterRef == nil`) this field is used verbatim — the user supplies the admin-password Secret out-of-band and the operator projects no ExternalSecret, so this reference is projected onto the Keystone CR's `bootstrap.adminPasswordSecretRef` so Keystone and K-ORC agree on the admin password source. In **managed mode** (`database.clusterRef` set) the operator instead projects a per-ControlPlane admin ExternalSecret named `{controlplane.Name}-keystone-admin-credentials` (materialising the admin password from OpenBao) and **overrides** the projected Keystone CR's `bootstrap.adminPasswordSecretRef` to point at that operator-owned per-CP Secret's `password` key — the cp-level `passwordSecretRef` is **not** used as the child's ref in managed mode. See the [managed-mode admin-password provisioning](#admincredentialspec) note below. |
 | `userName` | `string` | No | `"admin"` | OpenStack admin user name the control plane authenticates as. Defaulted to `admin` by both the `+kubebuilder:default` marker and the defaulting webhook. Valid in **both** keystone modes. Rendered as the `clouds.yaml` `username` **and** used as the K-ORC admin `User` import filter the application credential's `UserRef` resolves to — see the same-user constraint below. |
 | `projectName` | `string` | No | `"admin"` | OpenStack admin project name, rendered as the `clouds.yaml` `project_name`. Defaulted to `admin` by both the marker and the defaulting webhook. Valid in both modes. |
@@ -2826,7 +2826,7 @@ lists its steps.
 > rather than silently repointing the credential. The Kubernetes CR names of the
 > imports (`{controlplane.Name}-user-admin`, `{controlplane.Name}-domain-default`)
 > are stable handles and deliberately do **not** track the identity.
-| `applicationCredential` | [`ApplicationCredentialSpec`](#applicationcredentialspec) | Yes | — | Policy for the K-ORC admin application credential (restriction, access rules, rotation mode). |
+| `applicationCredential` | [`ApplicationCredentialSpec`](#applicationcredentialspec) | No | defaulted | Policy for the K-ORC admin application credential (restriction, access rules, rotation mode). The defaulting webhook fills in the block when a manifest leaves it out. |
 | `bootstrapResources` | [`[]BootstrapResourceSpec`](#bootstrapresourcespec) | No | `nil` | OpenStack resources K-ORC bootstraps alongside the admin credential (e.g. the projects/roles a fresh control plane needs). The element shape is intentionally minimal at L1; the reconciler interprets it. |
 
 > **`passwordSecretRef` is operator-owned in managed mode.** The
@@ -2873,7 +2873,7 @@ Declares the K-ORC admin application-credential policy.
 | --- | --- | --- | --- | --- |
 | `restricted` | `*bool` | No | `true` | Controls whether the application credential is restricted (least-privilege, unable to create further application credentials). Defaulted to `true` by **both** the `+kubebuilder:default` marker and the defaulting webhook. The pointer distinguishes "unset" (→ default `true`) from an explicit `false`, which is preserved. See the [restricted → unrestricted inversion](#restricted-unrestricted-inversion) note. |
 | `accessRules` | [`[]AccessRule`](#accessrule) | No | `nil` | Optionally narrows the application credential to a specific set of service/method/path rules. When empty, the credential is not constrained by access rules. |
-| `rotation` | [`RotationSpec`](#rotationspec) | Yes | — | How the application credential is rotated. |
+| `rotation` | [`RotationSpec`](#rotationspec) | No | defaulted | How the application credential is rotated. The defaulting webhook fills in the block when a manifest leaves it out. |
 
 ### restricted → unrestricted inversion {#restricted-unrestricted-inversion}
 
@@ -3180,12 +3180,56 @@ Keystone discipline:
 > `DatabaseSpec`/`CacheSpec`, applied to `spec.infrastructure.database` and
 > `spec.infrastructure.cache`), and the policy-rule name/value constraints (from
 > `PolicySpec`, applied to `spec.globalPolicyOverrides` and `spec.services.keystone.policyOverrides`).
-> The required `passwordSecretRef.name` remains enforced **only by the validating
-> webhook**: a cluster that disables or bypasses the webhook (e.g. envtest without
-> the webhook wired up, or a direct etcd write) will not reject a `ControlPlane`
-> on that one rule, only on the CEL rules and the pattern/enum/minimum markers
-> below. The markers and webhook together are defense-in-depth for the fields
-> that **can** be expressed at both layers.
+> The schema requires `passwordSecretRef.name` whenever a manifest writes the
+> `passwordSecretRef` block, and the validating webhook (`validate` in
+> `controlplane_webhook.go`) requires it in every case. The markers and webhook
+> together are defense-in-depth for the fields that **can** be expressed at both
+> layers.
+
+### Blocks the schema leaves optional
+
+The API server calls the mutating webhook before it validates a ControlPlane
+against the CRD schema. The defaulting webhook fills in these eight blocks at
+that point, so the schema does not list them as required:
+
+- `spec.korc`
+- `spec.korc.adminCredential`
+- `spec.korc.adminCredential.cloudCredentialsRef`
+- `spec.korc.adminCredential.passwordSecretRef`
+- `spec.korc.adminCredential.applicationCredential`
+- `spec.korc.adminCredential.applicationCredential.rotation`
+- `spec.infrastructure.database`
+- `spec.infrastructure.cache`
+
+A schema that required them would refuse offline a manifest that admission
+accepts on a cluster. A manifest without these blocks, such as the minimal
+ControlPlane of the [Quick Start (ControlPlane)](../../quick-start-controlplane.md),
+passes a validator that reads the CRD schema alone, for example
+`kubeconform -strict`.
+
+The leaves of the shared `commonv1` types stay required, because the CRDs of
+the service operators embed the same types. A manifest that writes `database`,
+`cache` or `passwordSecretRef` writes these leaves too:
+
+- `spec.infrastructure.database.database`
+- `spec.infrastructure.database.secretRef`
+- `spec.infrastructure.cache.backend`
+- `spec.korc.adminCredential.passwordSecretRef.name`
+
+A partial block, such as the `database` block with only `replicas` and
+`storageSize` in
+[Deploy Services into Dedicated Namespaces](../../guides/dedicated-service-namespaces.md),
+is admitted on a cluster, where the defaulting webhook fills in the leaves
+first, and refused by an offline validator.
+
+On a cluster that runs the c5c3-operator without its webhooks
+(`webhook.enabled=false` in the chart values), the API server now stores a
+ControlPlane without these blocks instead of refusing it, and no component
+fills in the well-known names. The reconciler meets such a ControlPlane with
+the fallbacks it keeps for a resource that bypassed the webhook: an unset
+`spec.infrastructure` outside External mode sets `InfrastructureReady=False`
+with reason `InfrastructureNotConfigured`, and an empty
+`cloudCredentialsRef.secretName` resolves to the `k-orc-clouds-yaml` Secret.
 
 ### CRD schema markers (API-server enforced)
 
