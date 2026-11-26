@@ -1417,10 +1417,11 @@ func TestUWSGICommand_KeepAliveEnabled(t *testing.T) {
 }
 
 // TestUWSGICommand_FixedFlagsAlwaysPresent verifies that regardless of uwsgi
-// config, the command always includes --http :5000, --wsgi-file, --max-fd
-// 65536, --master, --lazy-apps, --need-app, the graceful-shutdown flags
-// --hook-master-start "unix_signal:15 gracefully_kill_them_all",
-// --shutdown-sockets and --threaded-logger, and --pyargv.
+// config, the command always includes --http :5000, --buffer-size 65535,
+// --wsgi-file, --max-fd 65536, --master, --lazy-apps, --need-app, the
+// graceful-shutdown flags --hook-master-start
+// "unix_signal:15 gracefully_kill_them_all", --shutdown-sockets and
+// --threaded-logger, and --pyargv.
 func TestUWSGICommand_FixedFlagsAlwaysPresent(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -1436,6 +1437,9 @@ func TestUWSGICommand_FixedFlagsAlwaysPresent(t *testing.T) {
 		g.Expect(cmd[0]).To(Equal("uwsgi"), "first element must be 'uwsgi'")
 		g.Expect(cmd).To(ContainElement("--http"))
 		g.Expect(cmd).To(ContainElement(":5000"))
+		bufIdx := indexOf(cmd, "--buffer-size")
+		g.Expect(bufIdx).NotTo(Equal(-1))
+		g.Expect(cmd[bufIdx+1]).To(Equal("65535"))
 		g.Expect(cmd).To(ContainElement("--wsgi-file"))
 		g.Expect(cmd).To(ContainElement("/var/lib/openstack/bin/keystone-wsgi-public"))
 		g.Expect(cmd).To(ContainElement("--max-fd"))
@@ -2575,8 +2579,8 @@ func testDeployFederationProjection() *federationProjection {
 // pod shape: the mod_auth_openidc sidecar with both Secret-backed config
 // volumes (mapped via KeyToPath onto the real metadata filenames), the
 // emptyDir scratch space, exec-form keystone probes (kubelet probes cannot
-// reach a localhost-bound uWSGI), and the rebound uWSGI command with the
-// spike-mandated buffer size.
+// reach a localhost-bound uWSGI), and the rebound uWSGI command, which keeps
+// the request buffer the builder sets.
 func TestBuildKeystoneDeployment_FederationSidecar(t *testing.T) {
 	g := NewGomegaWithT(t)
 	fed := testDeployFederationProjection()
@@ -2626,7 +2630,8 @@ func TestBuildKeystoneDeployment_FederationSidecar(t *testing.T) {
 	g.Expect(keystoneC.StartupProbe.HTTPGet).To(BeNil())
 	g.Expect(strings.Join(keystoneC.StartupProbe.Exec.Command, " ")).To(ContainSubstring("127.0.0.1:5000"))
 
-	// uWSGI binds localhost and gets the spike-mandated buffer size.
+	// uWSGI binds localhost and keeps the builder's request buffer, which the
+	// claim headers need.
 	cmd := keystoneC.Command
 	httpIdx := indexOf(cmd, "--http")
 	g.Expect(httpIdx).NotTo(Equal(-1))
@@ -2753,8 +2758,8 @@ func TestBuildKeystoneDeployment_SAMLOnlyMountsMellonNotMetadata(t *testing.T) {
 }
 
 // TestBuildKeystoneDeployment_NoFederationKeepsSingleContainer pins the
-// zero-federation contract: one container, pod-IP-reachable uWSGI, kubelet
-// TCP/HTTP probes, no buffer-size flag, no federation volumes.
+// zero-federation contract: one container, pod-IP-reachable uWSGI with the
+// builder's request buffer, kubelet TCP/HTTP probes, no federation volumes.
 func TestBuildKeystoneDeployment_NoFederationKeepsSingleContainer(t *testing.T) {
 	g := NewGomegaWithT(t)
 	deploy := buildKeystoneDeployment(deployTestKeystone(), "keystone-config-abc123", "", "", nil)
@@ -2767,7 +2772,9 @@ func TestBuildKeystoneDeployment_NoFederationKeepsSingleContainer(t *testing.T) 
 	cmd := keystoneC.Command
 	httpIdx := indexOf(cmd, "--http")
 	g.Expect(cmd[httpIdx+1]).To(Equal(":5000"))
-	g.Expect(indexOf(cmd, "--buffer-size")).To(Equal(-1))
+	bufIdx := indexOf(cmd, "--buffer-size")
+	g.Expect(bufIdx).NotTo(Equal(-1))
+	g.Expect(cmd[bufIdx+1]).To(Equal("65535"))
 
 	for _, v := range deploy.Spec.Template.Spec.Volumes {
 		g.Expect(v.Name).NotTo(HavePrefix("federation-"))

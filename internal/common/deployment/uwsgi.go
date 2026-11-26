@@ -133,6 +133,35 @@ func UWSGIMaxFDArgs() []string {
 	return []string{"--max-fd", strconv.Itoa(UWSGIMaxFD)}
 }
 
+// UWSGIBufferSize is the value of uWSGI's --buffer-size: the bytes uWSGI
+// accepts for the uwsgi packet that carries a request's line and headers.
+// 65535 is the largest value uWSGI accepts, since the option is 16 bits wide.
+//
+// Under the default of 4096 bytes uWSGI logs "invalid request block size:
+// <n> (max 4096)...skip" for a larger request and closes the connection
+// without a response. The HTTP router writes the query string into the packet
+// twice, as QUERY_STRING and inside REQUEST_URI, so a query of n bytes costs
+// about 2n + 290 bytes of it, and a query of about 1900 bytes is the largest
+// the default lets through. nova-compute asks Placement for every trait its
+// node reports in one GET /traits?name=in:<trait>,... request, which passes
+// that on a KVM host; the query that names every standard trait is about 8.6
+// KB long.
+//
+// uWSGI allocates one buffer of UWSGIBufferSize + 4 bytes per worker thread,
+// 61,439 bytes more than the default, and reads up to UWSGIBufferSize bytes of
+// a request before the service authenticates it.
+const UWSGIBufferSize = 65535
+
+// UWSGIBufferSizeArgs returns {"--buffer-size", "65535"}, the flag that sets
+// UWSGIBufferSize. BuildUWSGICommand emits it directly after the ArgsAfterHTTP
+// tokens, and the horizon-operator puts it directly after --http-keepalive in
+// its own command.
+//
+// Each call returns a new slice, so a caller may modify the result.
+func UWSGIBufferSizeArgs() []string {
+	return []string{"--buffer-size", strconv.Itoa(UWSGIBufferSize)}
+}
+
 // BuildUWSGICommand renders the uWSGI container command shared by every service
 // operator's API container. It owns exactly the parts the operators would
 // otherwise each repeat:
@@ -142,6 +171,8 @@ func UWSGIMaxFDArgs() []string {
 //     supplies Processes and Threads verbatim — falling back to the same two
 //     defaults for a count left at or below zero — and keeps the keep-alive
 //     default only while its nil-preserving HTTPKeepAlive pointer is unset;
+//   - the request buffer --buffer-size UWSGIBufferSize (UWSGIBufferSizeArgs),
+//     directly after the ArgsAfterHTTP tokens, in every configuration;
 //   - the keep-alive token: the bare --http-keepalive, or --http-keepalive=<n>
 //     when the spec bounds the idle timeout with a value above 1;
 //   - the request logging --log-master and --log-format UWSGILogFormat, emitted
@@ -192,6 +223,7 @@ func BuildUWSGICommand(p UWSGICommandParams) []string {
 		"--http", p.Bind,
 	}
 	cmd = append(cmd, p.ArgsAfterHTTP...)
+	cmd = append(cmd, UWSGIBufferSizeArgs()...)
 	if httpKeepAlive {
 		// The idle timeout is the value of the keep-alive flag itself; uWSGI binds
 		// the optional value only in the attached form. A value below

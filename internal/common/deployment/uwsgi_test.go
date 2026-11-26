@@ -88,6 +88,23 @@ func expectMaxFDFlags(t *testing.T, cmd []string) {
 	g.Expect(cmd[i-len(maxFDTokens) : i]).To(gomega.Equal(maxFDTokens))
 }
 
+// bufferSizeTokens is the literal UWSGIBufferSizeArgs returns, spelled out so a
+// change to the flag or its value fails here first.
+var bufferSizeTokens = []string{"--buffer-size", "65535"}
+
+// expectBufferSizeFlags asserts that cmd carries --buffer-size once, followed
+// by its value, and returns the index of the flag.
+func expectBufferSizeFlags(t *testing.T, cmd []string) int {
+	t.Helper()
+	g := gomega.NewWithT(t)
+
+	g.Expect(countOf(cmd, "--buffer-size")).To(gomega.Equal(1))
+	i := indexOf(cmd, "--buffer-size")
+	g.Expect(len(cmd)).To(gomega.BeNumerically(">", i+len(bufferSizeTokens)))
+	g.Expect(cmd[i : i+len(bufferSizeTokens)]).To(gomega.Equal(bufferSizeTokens))
+	return i
+}
+
 // keepAliveTokens returns every token with the prefix --http-keepalive: the bare
 // flag, the --http-keepalive=<n> form, and any stray flag that shares the prefix.
 func keepAliveTokens(cmd []string) []string {
@@ -293,13 +310,13 @@ func TestBuildUWSGICommand_ArgsPlacement(t *testing.T) {
 
 	cmd := BuildUWSGICommand(UWSGICommandParams{
 		Bind:          "127.0.0.1:5000",
-		ArgsAfterHTTP: []string{"--buffer-size", "65535"},
+		ArgsAfterHTTP: []string{"--http-auto-chunked"},
 		WSGIFilePath:  "/var/lib/openstack/bin/svc-wsgi",
 		TrailingArgs:  []string{"--pyargv", "--config-dir /etc/svc/svc.conf.d/"},
 	})
 
-	g.Expect(cmd[:6]).To(gomega.Equal([]string{
-		"uwsgi", "--http", "127.0.0.1:5000", "--buffer-size", "65535", "--http-keepalive",
+	g.Expect(cmd[:7]).To(gomega.Equal([]string{
+		"uwsgi", "--http", "127.0.0.1:5000", "--http-auto-chunked", "--buffer-size", "65535", "--http-keepalive",
 	}))
 
 	threads := indexOf(cmd, "--threads")
@@ -350,7 +367,7 @@ func TestBuildUWSGICommand_GracefulShutdownFlags(t *testing.T) {
 				Harakiri:             ptr.To(int32(30)),
 			},
 			Bind:          ":9311",
-			ArgsAfterHTTP: []string{"--buffer-size", "65535"},
+			ArgsAfterHTTP: []string{"--http-auto-chunked"},
 			Module:        "barbican.wsgi.api:application",
 			TrailingArgs:  []string{"--pyargv", "--config-dir /etc/svc/svc.conf.d/"},
 		})
@@ -407,7 +424,7 @@ func TestBuildUWSGICommand_MaxFD(t *testing.T) {
 				Harakiri:             ptr.To(int32(30)),
 			},
 			Bind:          ":9311",
-			ArgsAfterHTTP: []string{"--buffer-size", "65535"},
+			ArgsAfterHTTP: []string{"--http-auto-chunked"},
 			Module:        "barbican.wsgi.api:application",
 			TrailingArgs:  []string{"--pyargv", "--config-dir /etc/svc/svc.conf.d/"},
 		}))
@@ -454,6 +471,113 @@ func TestBuildUWSGICommand_MaxFD(t *testing.T) {
 	})
 }
 
+// uWSGI drops a request whose line and headers pass its 4096-byte default, so
+// every params value renders --buffer-size 65535 once, directly after the
+// ArgsAfterHTTP tokens and ahead of the keep-alive token, and none switches it
+// off. Each call of UWSGIBufferSizeArgs hands out a slice of its own: a caller
+// that changes its copy changes no later command.
+func TestBuildUWSGICommand_BufferSize(t *testing.T) {
+	t.Run("nil spec", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+
+		cmd := BuildUWSGICommand(UWSGICommandParams{
+			Bind:         ":5000",
+			WSGIFilePath: "/var/lib/openstack/bin/svc-wsgi",
+		})
+
+		i := expectBufferSizeFlags(t, cmd)
+		g.Expect(cmd[:i]).To(gomega.Equal([]string{"uwsgi", "--http", ":5000"}))
+		g.Expect(cmd[i+2]).To(gomega.Equal("--http-keepalive"))
+	})
+
+	t.Run("full spec with an idle timeout", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+
+		cmd := BuildUWSGICommand(UWSGICommandParams{
+			UWSGI: &commonv1.UWSGISpec{
+				Processes:            4,
+				Threads:              8,
+				HTTPKeepAlive:        ptr.To(true),
+				HTTPKeepAliveTimeout: ptr.To(int32(15)),
+				Harakiri:             ptr.To(int32(30)),
+			},
+			Bind:         ":9311",
+			Module:       "barbican.wsgi.api:application",
+			TrailingArgs: []string{"--pyargv", "--config-dir /etc/svc/svc.conf.d/"},
+		})
+
+		i := expectBufferSizeFlags(t, cmd)
+		g.Expect(cmd[i+2]).To(gomega.Equal("--http-keepalive=15"))
+	})
+
+	t.Run("keep-alive disabled", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+
+		cmd := BuildUWSGICommand(UWSGICommandParams{
+			UWSGI:        &commonv1.UWSGISpec{HTTPKeepAlive: ptr.To(false)},
+			Bind:         ":5000",
+			WSGIFilePath: "/var/lib/openstack/bin/svc-wsgi",
+		})
+
+		i := expectBufferSizeFlags(t, cmd)
+		g.Expect(keepAliveTokens(cmd)).To(gomega.BeEmpty())
+		g.Expect(cmd[i+2]).To(gomega.Equal("--log-master"))
+	})
+
+	t.Run("after the ArgsAfterHTTP tokens", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+
+		cmd := BuildUWSGICommand(UWSGICommandParams{
+			Bind:          ":9292",
+			ArgsAfterHTTP: []string{"--http-auto-chunked", "--chunked-input-limit", "16777216"},
+			WSGIFilePath:  "/var/lib/openstack/bin/svc-wsgi",
+		})
+
+		i := expectBufferSizeFlags(t, cmd)
+		g.Expect(cmd[:i]).To(gomega.Equal([]string{
+			"uwsgi", "--http", ":9292", "--http-auto-chunked", "--chunked-input-limit", "16777216",
+		}))
+		g.Expect(cmd[i+2]).To(gomega.Equal("--http-keepalive"))
+	})
+
+	t.Run("nil and empty ArgsAfterHTTP", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+
+		nilArgs := BuildUWSGICommand(UWSGICommandParams{
+			Bind:          ":5000",
+			ArgsAfterHTTP: nil,
+			WSGIFilePath:  "/var/lib/openstack/bin/svc-wsgi",
+		})
+		emptyArgs := BuildUWSGICommand(UWSGICommandParams{
+			Bind:          ":5000",
+			ArgsAfterHTTP: []string{},
+			WSGIFilePath:  "/var/lib/openstack/bin/svc-wsgi",
+		})
+
+		g.Expect(emptyArgs).To(gomega.Equal(nilArgs))
+		expectBufferSizeFlags(t, nilArgs)
+	})
+
+	t.Run("no launch mode", func(t *testing.T) {
+		expectBufferSizeFlags(t, BuildUWSGICommand(UWSGICommandParams{Bind: ":5000"}))
+	})
+
+	t.Run("new slice on every call", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+
+		args := UWSGIBufferSizeArgs()
+		g.Expect(args).To(gomega.Equal(bufferSizeTokens))
+
+		args[1] = "4096"
+
+		g.Expect(UWSGIBufferSizeArgs()).To(gomega.Equal(bufferSizeTokens))
+		expectBufferSizeFlags(t, BuildUWSGICommand(UWSGICommandParams{
+			Bind:         ":5000",
+			WSGIFilePath: "/var/lib/openstack/bin/svc-wsgi",
+		}))
+	})
+}
+
 // The launch mode is a single flag with a value behind it: --module for a
 // service image that ships an importable WSGI application, --wsgi-file for one
 // that ships an entry script. Params that set both fall to --module, params that
@@ -474,6 +598,7 @@ func TestBuildUWSGICommand_LaunchMode(t *testing.T) {
 			want: []string{
 				"uwsgi",
 				"--http", ":9311",
+				"--buffer-size", "65535",
 				"--http-keepalive",
 				"--log-master",
 				"--log-format", UWSGILogFormat,
@@ -501,6 +626,7 @@ func TestBuildUWSGICommand_LaunchMode(t *testing.T) {
 			want: []string{
 				"uwsgi",
 				"--http", ":5000",
+				"--buffer-size", "65535",
 				"--http-keepalive",
 				"--log-master",
 				"--log-format", UWSGILogFormat,
@@ -525,6 +651,7 @@ func TestBuildUWSGICommand_LaunchMode(t *testing.T) {
 			want: []string{
 				"uwsgi",
 				"--http", ":5000",
+				"--buffer-size", "65535",
 				"--http-keepalive",
 				"--log-master",
 				"--log-format", UWSGILogFormat,
@@ -552,6 +679,7 @@ func TestBuildUWSGICommand_LaunchMode(t *testing.T) {
 			want: []string{
 				"uwsgi",
 				"--http", ":9311",
+				"--buffer-size", "65535",
 				"--http-keepalive",
 				"--log-master",
 				"--log-format", UWSGILogFormat,
@@ -596,6 +724,7 @@ func TestBuildUWSGICommand_RealParameterizations(t *testing.T) {
 			want: []string{
 				"uwsgi",
 				"--http", ":5000",
+				"--buffer-size", "65535",
 				"--http-keepalive",
 				"--log-master",
 				"--log-format", UWSGILogFormat,
@@ -614,14 +743,14 @@ func TestBuildUWSGICommand_RealParameterizations(t *testing.T) {
 		},
 		{
 			// With federation active keystone binds to loopback so only the
-			// header-stripping sidecar reaches uWSGI, and raises the buffer size
-			// for the larger claim headers.
+			// header-stripping sidecar reaches uWSGI. The larger claim headers
+			// fit the builder's own request buffer, so the command matches the
+			// one keystone rendered when it passed the buffer size itself.
 			name: "keystone federation",
 			params: UWSGICommandParams{
-				Bind:          "127.0.0.1:5000",
-				ArgsAfterHTTP: []string{"--buffer-size", "65535"},
-				WSGIFilePath:  "/var/lib/openstack/bin/keystone-wsgi-public",
-				TrailingArgs:  []string{"--pyargv=--config-dir=/etc/keystone/keystone.conf.d/"},
+				Bind:         "127.0.0.1:5000",
+				WSGIFilePath: "/var/lib/openstack/bin/keystone-wsgi-public",
+				TrailingArgs: []string{"--pyargv=--config-dir=/etc/keystone/keystone.conf.d/"},
 			},
 			want: []string{
 				"uwsgi",
@@ -661,6 +790,7 @@ func TestBuildUWSGICommand_RealParameterizations(t *testing.T) {
 				"--http", ":9292",
 				"--http-auto-chunked",
 				"--http-chunked-input",
+				"--buffer-size", "65535",
 				"--http-keepalive",
 				"--log-master",
 				"--log-format", UWSGILogFormat,
@@ -689,6 +819,7 @@ func TestBuildUWSGICommand_RealParameterizations(t *testing.T) {
 			want: []string{
 				"uwsgi",
 				"--http", ":8778",
+				"--buffer-size", "65535",
 				"--http-keepalive",
 				"--log-master",
 				"--log-format", UWSGILogFormat,

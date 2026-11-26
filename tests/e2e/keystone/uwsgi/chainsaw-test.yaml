@@ -55,6 +55,8 @@ spec:
                   - uwsgi
                   - "--http"
                   - ":5000"
+                  - "--buffer-size"
+                  - "65535"
                   - "--http-keepalive"
                   - "--log-master"
                   - "--log-format"
@@ -121,6 +123,8 @@ spec:
                   - uwsgi
                   - "--http"
                   - ":5000"
+                  - "--buffer-size"
+                  - "65535"
                   - "--log-master"
                   - "--log-format"
                   - "%(method) %(uri) => generated %(rsize) bytes in %(msecs) msecs (%(proto) %(status))"
@@ -195,6 +199,8 @@ spec:
                   - uwsgi
                   - "--http"
                   - ":5000"
+                  - "--buffer-size"
+                  - "65535"
                   - "--http-keepalive=5"
                   - "--log-master"
                   - "--log-format"

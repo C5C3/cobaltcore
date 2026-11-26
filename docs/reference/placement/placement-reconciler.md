@@ -121,7 +121,9 @@ There is one launch mode. Placement never shipped an eventlet server, so
 `spec.openStackRelease` selects nothing here and two CRs differing only in their
 release render byte-identical config files.
 
-The container command is `uwsgi --http :8778`, followed by `--http-keepalive`
+The container command is `uwsgi --http :8778 --buffer-size 65535`
+([request buffer](../keystone/keystone-crd.md#request-buffer), which
+`nova-compute`'s trait query needs), followed by `--http-keepalive`
 (`--http-keepalive=<n>` when `httpKeepAliveTimeout` is set),
 `--log-master`, `--log-format` with the request-line format the sibling operators
 share, `--wsgi-file /var/lib/openstack/bin/placement-api`, `--max-fd 65536`

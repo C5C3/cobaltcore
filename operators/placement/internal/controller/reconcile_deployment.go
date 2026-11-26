@@ -358,6 +358,11 @@ func placementRootProbeHandler() corev1.ProbeHandler {
 // default resolution are owned by deployment.BuildUWSGICommand; this function
 // only assembles the placement parameters.
 //
+// The builder's --buffer-size 65535 (deployment.UWSGIBufferSize) is what lets
+// nova-compute's trait query through: GET /traits?name=in:<trait>,... names
+// every trait of a node in one request, and on a KVM host that request passes
+// uWSGI's 4096-byte default, which drops it and closes the connection.
+//
 // There is deliberately no --pyargv. The hand-shipped WSGI entry
 // (placementWSGIScriptPath) calls init_application() with no arguments and
 // placement's own _get_config_files never reads sys.argv, so a --pyargv value
