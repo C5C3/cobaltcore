@@ -20,6 +20,9 @@
 #     [placement_database] and renders no [database] section
 #   - The Placement API answers the unauthenticated version document with 200,
 #     and rejects an unauthenticated /resource_providers request with exactly 401
+#   - A GET /traits request in the shape nova-compute sends, its name filter
+#     listing every standard trait, gets an answer instead of a closed
+#     connection (uWSGI accepts it only with --buffer-size 65535)
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -256,6 +259,29 @@ spec:
                   raise SystemExit('unauthenticated GET /resource_providers -> HTTP %d, want 401' % r.status)
           else:
               raise SystemExit('resource_providers never answered after retries: %r' % last)
+          "
+    # The trait query of nova-compute, as in the plain basic-deployment suite,
+    # against the 2026.2 image and its os-traits.
+    - script:
+        timeout: 90s
+        content: |
+          kubectl run traits-test-placement-basic-2026-2 -n $NAMESPACE --image=ghcr.io/c5c3/placement:2026.2 --rm -i --restart=Never \
+            --command -- python3 -c "
+          import http.client, os_traits
+          query = 'name=in:' + ','.join(os_traits.get_traits())
+          assert len(query) >= 8192, 'trait query has %d bytes, want at least 8192' % len(query)
+          conn = http.client.HTTPConnection('placement-basic-2026-2.openstack.svc.cluster.local', 8778, timeout=10)
+          try:
+              conn.request('GET', '/traits?' + query)
+              r = conn.getresponse()
+              r.read()
+          except (http.client.HTTPException, OSError) as exc:
+              raise SystemExit('trait query: GET /traits with a %d-byte query got no response: %r' % (len(query), exc)) from exc
+          finally:
+              conn.close()
+          if r.status != 401:
+              raise SystemExit('trait query: GET /traits with a %d-byte query -> HTTP %d, want 401' % (len(query), r.status))
+          print('trait query OK, %d bytes of query answered with HTTP 401' % len(query))
           "
     catch:
     - script:

@@ -18,6 +18,9 @@
 #   - The Placement API answers the unauthenticated version document with 200,
 #     and rejects an unauthenticated /resource_providers request with exactly
 #     401 — the token-validation path is wired, not disabled
+#   - A GET /traits request in the shape nova-compute sends, its name filter
+#     listing every standard trait, gets an answer instead of a closed
+#     connection (uWSGI accepts it only with --buffer-size 65535)
 #   - The placement-operator release exports its reconcile families and the
 #     db_sync counter and duration count of placement-basic
 #   - A Ready, unchanged placement-basic gains no event on the CR in a 120 s
@@ -285,6 +288,34 @@ spec:
                   raise SystemExit('unauthenticated GET /resource_providers -> HTTP %d, want 401' % r.status)
           else:
               raise SystemExit('resource_providers never answered after retries: %r' % last)
+          "
+    # nova-compute asks for every trait of its node in one GET /traits request.
+    # The query below names every standard trait the image's os-traits knows,
+    # more than 8 KB, which uWSGI accepts only with --buffer-size 65535: under
+    # its default of 4096 bytes it closes the connection without a response.
+    # The request carries no token, so a 401 proves it passed the HTTP router
+    # and the uwsgi packet. The two scripts above already waited for the
+    # endpoints, so this one does not retry.
+    - script:
+        timeout: 90s
+        content: |
+          kubectl run traits-test-placement-basic -n $NAMESPACE --image=ghcr.io/c5c3/placement:2026.1 --rm -i --restart=Never \
+            --command -- python3 -c "
+          import http.client, os_traits
+          query = 'name=in:' + ','.join(os_traits.get_traits())
+          assert len(query) >= 8192, 'trait query has %d bytes, want at least 8192' % len(query)
+          conn = http.client.HTTPConnection('placement-basic.openstack.svc.cluster.local', 8778, timeout=10)
+          try:
+              conn.request('GET', '/traits?' + query)
+              r = conn.getresponse()
+              r.read()
+          except (http.client.HTTPException, OSError) as exc:
+              raise SystemExit('trait query: GET /traits with a %d-byte query got no response: %r' % (len(query), exc)) from exc
+          finally:
+              conn.close()
+          if r.status != 401:
+              raise SystemExit('trait query: GET /traits with a %d-byte query -> HTTP %d, want 401' % (len(query), r.status))
+          print('trait query OK, %d bytes of query answered with HTTP 401' % len(query))
           "
     catch:
     - script:
