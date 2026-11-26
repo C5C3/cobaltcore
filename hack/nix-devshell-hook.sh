@@ -7,11 +7,11 @@
 # the Nix devshell (flake.nix sources this on `nix develop`).
 #
 # The flake pins the base runtimes (Go, Node, Python, Helm, shellcheck, yq, jq,
-# GNU userland) from nixpkgs. This hook installs the tools the pipeline pins
-# *exactly* — controller-gen, gofumpt, golangci-lint, setup-envtest, kustomize,
-# chainsaw, kind, kubectl, flux, the helm-unittest plugin, and the envtest
-# assets — by reading the pins *where they already live*, so no version literal
-# is ever duplicated into the flake:
+# GNU parallel, flock, GNU userland) from nixpkgs. This hook installs the tools
+# the pipeline pins *exactly* — controller-gen, gofumpt, golangci-lint,
+# setup-envtest, kustomize, chainsaw, kind, kubectl, flux, bats, the
+# helm-unittest plugin, and the envtest assets — by reading the pins *where they
+# already live*, so no version literal is ever duplicated into the flake:
 #
 #   - .github/workflows/ci.yaml  env block  → CONTROLLER_GEN_VERSION,
 #                                              GOFUMPT_VERSION,
@@ -20,6 +20,7 @@
 #                                              KUSTOMIZE_VERSION,
 #                                              helm-unittest --version
 #   - Makefile                              → ENVTEST_K8S_VERSION
+#   - Makefile (make install-bats)          → BATS_VERSION, BATS_COMMIT
 #   - hack/install-test-deps.sh (reused)    → chainsaw, kind, kubectl, flux
 #
 # Everything installs into the repo's gitignored bin/ (the Makefile's LOCALBIN)
@@ -245,6 +246,10 @@ provision_devshell() {
     _install_kustomize "${kustomize_version}" "${repo_bin}" ||
       warnings+=("kustomize ${kustomize_version}")
   fi
+
+  # bats — reuse the Makefile target, which reads its own pin and fetches the
+  # pinned commit into bin/ (no Go needed).
+  make -C "${REPO_ROOT}" -s install-bats || warnings+=("bats (make install-bats)")
 
   # chainsaw, kind, kubectl, flux — reuse the pinned, checksum-verifying script.
   INSTALL_DIR="${repo_bin}" WITH_FLUX_CLI=true bash "${REPO_ROOT}/hack/install-test-deps.sh" ||
