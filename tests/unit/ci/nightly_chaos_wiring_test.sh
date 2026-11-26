@@ -122,8 +122,8 @@ check_triggers() {
   assert_eq "the schedule is 22:00 UTC alone" '    - cron: "0 22 * * *"' \
     "$(on_block "$wf" schedule)"
   assert_file_contains "the night can be dispatched" "$wf" '^  workflow_dispatch:$'
-  assert_eq "a dispatch takes no inputs" "" "$(on_block "$wf" workflow_dispatch)"
-  assert_contains "push still runs main and the tags" "$(on_block "$wf" push)" 'branches: [main]'
+  assert_contains "a dispatch defaults to nightly chaos" "$(on_block "$wf" workflow_dispatch)" "default: nightly"
+  assert_contains "push still runs main" "$(on_block "$wf" push)" 'branches: [main]'
   assert_contains "pull_request still runs" "$(on_block "$wf" pull_request)" 'types: [opened, synchronize, reopened, labeled]'
 }
 

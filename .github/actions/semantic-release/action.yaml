@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+# SPDX-License-Identifier: Apache-2.0
+name: Set up CobaltCore semantic-release
+description: Install the locked release tools and initialize the zero-major series.
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+      with:
+        node-version: 26.13.0
+        package-manager-cache: false
+    - shell: bash
+      run: npm ci --prefix "$GITHUB_ACTION_PATH" --ignore-scripts --no-audit --no-fund
+    - name: Establish the version baseline
+      shell: bash
+      run: |
+        # semantic-release starts untagged projects at 1.0.0. Its first real
+        # publication pushes this root marker alongside v0.1.0-rc.1.
+        [[ "$GITHUB_REF_TYPE" == branch ]]
+        root=$(git rev-list --max-parents=0 HEAD)
+        if git show-ref --verify --quiet refs/tags/v0.0.0; then
+          test "$(git rev-parse 'v0.0.0^{commit}')" = "$root"
+        else
+          git tag v0.0.0 "$root"
+        fi

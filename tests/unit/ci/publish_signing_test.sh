@@ -79,10 +79,11 @@ uncommented() {
 # ---------------------------------------------------------------------------
 
 test_only_the_signing_jobs_get_an_oidc_token() {
-  echo "Test: the three publish jobs, and no other job, have id-token: write"
+  echo "Test: only artifact publishing and stable promotion have id-token: write"
+  local signing_jobs="$SIGNING_JOBS github-release"
 
   local job
-  for job in $SIGNING_JOBS; do
+  for job in $signing_jobs; do
     assert_contains "$job has id-token: write" "$(job_block "$job")" "      id-token: write"
   done
 
@@ -90,7 +91,7 @@ test_only_the_signing_jobs_get_an_oidc_token() {
   jobs="$(job_names)"
   assert_contains "job_names lists build-and-push" "$jobs" "build-and-push"
   for job in $jobs; do
-    case " $SIGNING_JOBS " in
+    case " $signing_jobs " in
       *" $job "*) continue ;;
     esac
     if grep -qE '^[[:space:]]*id-token:' <<<"$(job_block "$job")"; then

@@ -207,7 +207,7 @@ measure=false
 has_label "ci:measure-sizing" && measure=true
 
 is_tag=false
-[[ "${GITHUB_REF:-}" == refs/tags/v* ]] && is_tag=true
+[[ "${GITHUB_REF:-}" == refs/tags/v* || "$EVENT_NAME" == candidate ]] && is_tag=true
 
 # op_changed — the operator's own Go code is affected.
 op_changed=""

@@ -553,23 +553,26 @@ helm-bump-library:
 		helm dependency update --skip-refresh "$$chart" >/dev/null; \
 	done
 
+helm_package_versions = $(if $(CHART_VERSION),--version $(CHART_VERSION)) \
+                       $(if $(CHART_APP_VERSION),--app-version $(CHART_APP_VERSION))
+
 .PHONY: helm-package
 # helm-package packages the operator Helm chart.
-# Usage: make helm-package OPERATOR=keystone [CHART_VERSION=1.2.3]
+# Usage: make helm-package OPERATOR=keystone [CHART_VERSION=1.2.3] [CHART_APP_VERSION=1.2.3]
 # Vendors the operator-library subchart first so the packaged tarball is
 # self-contained (helm package fails on an unresolved dependency).
 helm-package:
 	$(if $(OPERATOR),,$(error helm-package requires OPERATOR, e.g. make helm-package OPERATOR=keystone))
 	helm dependency build --skip-refresh operators/$(OPERATOR)/helm/$(OPERATOR)-operator/
-	helm package operators/$(OPERATOR)/helm/$(OPERATOR)-operator/ $(if $(CHART_VERSION),--version $(CHART_VERSION))
+	helm package operators/$(OPERATOR)/helm/$(OPERATOR)-operator/ $(helm_package_versions)
 
 .PHONY: helm-package-target-cluster
 # helm-package-target-cluster packages the target-cluster-access chart, the RBAC
 # grant set a target cluster applies before it is registered.
-# Usage: make helm-package-target-cluster [CHART_VERSION=1.2.3]
+# Usage: make helm-package-target-cluster [CHART_VERSION=1.2.3] [CHART_APP_VERSION=1.2.3]
 # No dependency build: the chart has no subchart.
 helm-package-target-cluster:
-	helm package deploy/bases/target-cluster-access/ $(if $(CHART_VERSION),--version $(CHART_VERSION))
+	helm package deploy/bases/target-cluster-access/ $(helm_package_versions)
 
 # ============================================================================
 # Testing and Infrastructure Targets
