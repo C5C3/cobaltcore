@@ -235,6 +235,22 @@ test_flake_sources_hook() {
     "$FLAKE" "source \"\$_cobaltcore_root/hack/nix-devshell-hook.sh\""
 }
 
+test_flake_lists_parallel_and_flock() {
+  echo "Test: flake.nix gives the dev shell GNU parallel and flock, which bats needs for parallel workers"
+
+  assert_file_contains_fixed "flake.nix lists pkgs.parallel" "$FLAKE" "pkgs.parallel"
+  assert_file_contains_fixed "flake.nix lists pkgs.flock" "$FLAKE" "pkgs.flock"
+}
+
+test_hook_installs_bats_through_make() {
+  echo "Test: the hook installs bats through make install-bats, which reads the Makefile pin"
+
+  # make reads BATS_VERSION and BATS_COMMIT itself, so the hook needs no
+  # resolver for them and --print-pins keeps its seven keys.
+  assert_file_contains_fixed "the hook calls make install-bats" \
+    "$HOOK" 'make -C "${REPO_ROOT}" -s install-bats'
+}
+
 test_print_pins_exit_zero
 test_print_pins_emits_exactly_seven_keys
 test_pins_non_empty_and_well_formed
@@ -244,6 +260,8 @@ test_detect_platform
 test_tool_has_anchors_version_token
 test_helm_plugin_pinned_anchors_version_token
 test_flake_sources_hook
+test_flake_lists_parallel_and_flock
+test_hook_installs_bats_through_make
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

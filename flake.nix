@@ -3,12 +3,15 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # A development environment that mirrors the CI toolchain. `nix develop` yields
-# the same tools a CI run gets: the base runtimes come from the pinned nixpkgs
+# the same tools a CI run gets: the base runtimes, GNU parallel and flock (the
+# two tools bats needs for parallel workers) come from the pinned nixpkgs
 # below; the tools the pipeline pins *exactly* (controller-gen, gofumpt,
-# golangci-lint, setup-envtest, kustomize, chainsaw, kind, kubectl, flux, the
-# helm-unittest plugin, and the envtest assets) are installed by
+# golangci-lint, setup-envtest, kustomize, chainsaw, kind, kubectl, flux, bats,
+# the helm-unittest plugin, and the envtest assets) are installed by
 # hack/nix-devshell-hook.sh, which reads the pins where they already live
 # (ci.yaml, Makefile, hack/install-test-deps.sh) so no version is declared twice.
+# bats is pinned in the Makefile (BATS_VERSION, BATS_COMMIT) and installed by
+# `make install-bats`.
 #
 # Deliberately NOT provided: Docker (a daemon cannot be nix-provisioned; kind
 # needs a running Docker — see docs/contributing/nix-dev-environment.md).
@@ -321,6 +324,10 @@
               pkgs.gnused
               pkgs.gawk
               pkgs.findutils
+              # bats runs make test-shell on more than one worker only with
+              # GNU parallel and flock.
+              pkgs.parallel
+              pkgs.flock
             ];
 
             # Source the hook from the working tree (not a ${./…} store path) so

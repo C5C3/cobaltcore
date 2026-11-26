@@ -22,16 +22,18 @@ nix develop
 ```
 
 The one command drops you into a shell where `controller-gen`, `gofumpt`,
-`golangci-lint`, `chainsaw`, `kind`, `kubectl`, `flux`, `kustomize`, the
+`golangci-lint`, `chainsaw`, `kind`, `kubectl`, `flux`, `kustomize`, `bats`, the
 `helm-unittest` plugin, and the envtest assets are all on `PATH` (via a
 gitignored `bin/`) at the versions CI uses.
 
 ## What you get
 
-- **Base runtimes:** Go, Node, Python 3, Helm, `shellcheck`, `yq`, `jq`, and GNU
-  userland all come from the `nixpkgs` revision pinned in `flake.lock`. The
-  GNU userland is deliberate: it makes macOS behave like the Linux-only CI
-  runner (for example, `make chainsaw-lint` relies on GNU `xargs`).
+- **Base runtimes:** Go, Node, Python 3, Helm, `shellcheck`, `yq`, `jq`, GNU
+  parallel, `flock`, and GNU userland all come from the `nixpkgs` revision
+  pinned in `flake.lock`. The GNU userland is deliberate: it makes macOS behave
+  like the Linux-only CI runner (for example, `make chainsaw-lint` relies on GNU
+  `xargs`). bats needs GNU parallel and `flock` to run `make test-shell` on more
+  than one worker.
 - **Exact CI-pinned tools** are installed by `hack/nix-devshell-hook.sh`, which
   the flake sources on entry. The hook reads each version from its canonical
   file instead of duplicating pins in the flake, so a Renovate bump to a
@@ -57,6 +59,7 @@ its authoritative location:
 | envtest assets | `Makefile` `ENVTEST_K8S_VERSION` (the pinned Kubernetes minor) |
 | `kustomize` | `.github/workflows/ci.yaml` (`KUSTOMIZE_VERSION=`) |
 | `helm-unittest` | `.github/workflows/ci.yaml` (`helm plugin install … --version`) |
+| `bats` | `Makefile` `BATS_VERSION` and `BATS_COMMIT` (installed by `make install-bats`) |
 | `chainsaw`, `kind`, `kubectl`, `flux` | `hack/install-test-deps.sh` (reused as-is, with its SHA256 verification) |
 
 These come from `nixpkgs` and track it, because the pipeline itself does **not**
@@ -68,7 +71,7 @@ pin them to an exact patch:
 | Node | `nodejs_24` from nixpkgs (CI pins the major only, `node-version: 24`) |
 | Python 3 | the runtime the Helm-schema generator and the docs site need |
 | Helm | `ci.yaml` pins `HELM_VERSION` only for its `azure/setup-helm` jobs; the E2E jobs use the runner image's Helm |
-| `shellcheck`, `jq`, GNU userland | runner-preinstalled and unpinned in `ci.yaml` |
+| `shellcheck`, `jq`, GNU parallel, `flock`, GNU userland | runner-preinstalled and unpinned in `ci.yaml` |
 | `yq` | pinned (`v4.53.6`) in `verify-container-images.yaml` and `build-images.yaml`; `ci.yaml` uses the runner's floating `yq`, so the flake tracks the nixpkgs `yq-go` |
 
 ## Prerequisites
