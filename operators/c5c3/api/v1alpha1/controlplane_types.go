@@ -178,7 +178,10 @@ type ControlPlaneSpec struct {
 
 	// KORC configures the K-ORC (OpenStack Resource Controller) integration used
 	// to bootstrap and rotate the admin application credential and any declared
-	// bootstrap resources.
+	// bootstrap resources. Optional in the schema: the defaulting webhook
+	// materializes the block with its well-known names, so a manifest may leave
+	// it out.
+	// +optional
 	KORC KORCSpec `json:"korc"`
 
 	// NamespaceAssignments assigns namespaces on the management cluster or on a
@@ -218,6 +221,9 @@ type InfrastructureSpec struct {
 	// one must be set. That invariant is carried by the embedded commonv1.DatabaseSpec
 	// type-level CEL rule (and the validating webhook), mirroring keystone — no
 	// field-level marker is needed here, and duplicating it would emit the rule twice.
+	// Optional in the schema: the defaulting webhook materializes a managed-mode
+	// block with its well-known names, so a manifest may leave it out.
+	// +optional
 	Database commonv1.DatabaseSpec `json:"database"`
 
 	// Cache defines the Memcached configuration shared by the control plane.
@@ -225,6 +231,9 @@ type InfrastructureSpec struct {
 	// must be set. That invariant is carried by the embedded commonv1.CacheSpec
 	// type-level CEL rule (and the validating webhook), mirroring keystone — no
 	// field-level marker is needed here, and duplicating it would emit the rule twice.
+	// Optional in the schema: the defaulting webhook materializes a managed-mode
+	// block with its well-known names, so a manifest may leave it out.
+	// +optional
 	Cache commonv1.CacheSpec `json:"cache"`
 
 	// Messaging declares the shared RabbitMQ message bus. It is opt-in: the
@@ -2800,6 +2809,9 @@ type NovaDedicatedBackingServicesSpec struct {
 type KORCSpec struct {
 	// AdminCredential declares the admin OpenStack credential K-ORC uses to
 	// reconcile resources, plus the application-credential rotation policy.
+	// Optional in the schema: the defaulting webhook materializes the block with
+	// its well-known names, so a manifest may leave it out.
+	// +optional
 	AdminCredential AdminCredentialSpec `json:"adminCredential"`
 
 	// ServiceRegistrations declares which namespaces this control plane consents
@@ -2975,11 +2987,18 @@ type ServiceAccountRotationSpec struct {
 // application-credential rotation policy for the control plane.
 type AdminCredentialSpec struct {
 	// CloudCredentialsRef references the clouds.yaml Secret K-ORC reads the
-	// admin cloud entry from.
+	// admin cloud entry from. Optional in the schema: the defaulting webhook
+	// materializes the reference with its well-known names, so a manifest may
+	// leave it out.
+	// +optional
 	CloudCredentialsRef CloudCredentialsRef `json:"cloudCredentialsRef"`
 
 	// PasswordSecretRef references the Secret holding the admin password used to
 	// (re-)mint the application credential. Reuses the canonical commonv1 shape.
+	// Optional in the schema: the defaulting webhook materializes the reference
+	// with its well-known names, so a manifest may leave it out; a manifest that
+	// writes the reference writes its name too, which the commonv1 shape requires.
+	// +optional
 	PasswordSecretRef commonv1.SecretRefSpec `json:"passwordSecretRef"`
 
 	// UserName is the OpenStack admin user name the control plane authenticates
@@ -3016,7 +3035,10 @@ type AdminCredentialSpec struct {
 	DomainName string `json:"domainName,omitempty"`
 
 	// ApplicationCredential declares the policy for the K-ORC admin application
-	// credential (restriction, access rules, rotation mode).
+	// credential (restriction, access rules, rotation mode). Optional in the
+	// schema: the defaulting webhook materializes the block with its defaults,
+	// so a manifest may leave it out.
+	// +optional
 	ApplicationCredential ApplicationCredentialSpec `json:"applicationCredential"`
 
 	// BootstrapResources declares the OpenStack resources K-ORC bootstraps
@@ -3072,7 +3094,10 @@ type ApplicationCredentialSpec struct {
 	// +optional
 	AccessRules []AccessRule `json:"accessRules,omitempty"`
 
-	// Rotation declares how the application credential is rotated.
+	// Rotation declares how the application credential is rotated. Optional in
+	// the schema: the defaulting webhook materializes the block with mode
+	// PasswordDriven, so a manifest may leave it out.
+	// +optional
 	Rotation RotationSpec `json:"rotation"`
 }
 

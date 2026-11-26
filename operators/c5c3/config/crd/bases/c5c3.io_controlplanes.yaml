@@ -153,6 +153,8 @@ spec:
                       must be set. That invariant is carried by the embedded commonv1.CacheSpec
                       type-level CEL rule (and the validating webhook), mirroring keystone — no
                       field-level marker is needed here, and duplicating it would emit the rule twice.
+                      Optional in the schema: the defaulting webhook materializes a managed-mode
+                      block with its well-known names, so a manifest may leave it out.
                     properties:
                       backend:
                         description: Backend is the cache backend (e.g. dogpile.cache.pymemcache).
@@ -206,6 +208,8 @@ spec:
                       one must be set. That invariant is carried by the embedded commonv1.DatabaseSpec
                       type-level CEL rule (and the validating webhook), mirroring keystone — no
                       field-level marker is needed here, and duplicating it would emit the rule twice.
+                      Optional in the schema: the defaulting webhook materializes a managed-mode
+                      block with its well-known names, so a manifest may leave it out.
                     properties:
                       clusterRef:
                         description: ClusterRef references a MariaDB CR in the cluster
@@ -510,25 +514,28 @@ spec:
                     maxLength: 262
                     pattern: ^([a-zA-Z0-9._-]+|\[[0-9a-fA-F:.]+\]):[0-9]{1,5}$
                     type: string
-                required:
-                - cache
-                - database
                 type: object
               korc:
                 description: |-
                   KORC configures the K-ORC (OpenStack Resource Controller) integration used
                   to bootstrap and rotate the admin application credential and any declared
-                  bootstrap resources.
+                  bootstrap resources. Optional in the schema: the defaulting webhook
+                  materializes the block with its well-known names, so a manifest may leave
+                  it out.
                 properties:
                   adminCredential:
                     description: |-
                       AdminCredential declares the admin OpenStack credential K-ORC uses to
                       reconcile resources, plus the application-credential rotation policy.
+                      Optional in the schema: the defaulting webhook materializes the block with
+                      its well-known names, so a manifest may leave it out.
                     properties:
                       applicationCredential:
                         description: |-
                           ApplicationCredential declares the policy for the K-ORC admin application
-                          credential (restriction, access rules, rotation mode).
+                          credential (restriction, access rules, rotation mode). Optional in the
+                          schema: the defaulting webhook materializes the block with its defaults,
+                          so a manifest may leave it out.
                         properties:
                           accessRules:
                             description: |-
@@ -583,8 +590,10 @@ spec:
                               and the defaulting webhook.
                             type: boolean
                           rotation:
-                            description: Rotation declares how the application credential
-                              is rotated.
+                            description: |-
+                              Rotation declares how the application credential is rotated. Optional in
+                              the schema: the defaulting webhook materializes the block with mode
+                              PasswordDriven, so a manifest may leave it out.
                             properties:
                               mode:
                                 default: PasswordDriven
@@ -597,8 +606,6 @@ spec:
                                 - Manual
                                 type: string
                             type: object
-                        required:
-                        - rotation
                         type: object
                       bootstrapResources:
                         description: |-
@@ -637,7 +644,9 @@ spec:
                       cloudCredentialsRef:
                         description: |-
                           CloudCredentialsRef references the clouds.yaml Secret K-ORC reads the
-                          admin cloud entry from.
+                          admin cloud entry from. Optional in the schema: the defaulting webhook
+                          materializes the reference with its well-known names, so a manifest may
+                          leave it out.
                         properties:
                           cloudName:
                             default: admin
@@ -674,6 +683,9 @@ spec:
                         description: |-
                           PasswordSecretRef references the Secret holding the admin password used to
                           (re-)mint the application credential. Reuses the canonical commonv1 shape.
+                          Optional in the schema: the defaulting webhook materializes the reference
+                          with its well-known names, so a manifest may leave it out; a manifest that
+                          writes the reference writes its name too, which the commonv1 shape requires.
                         properties:
                           key:
                             type: string
@@ -712,10 +724,6 @@ spec:
                           resolve once — the stale resolved id surfaces as
                           KORCReady=False/CredentialDrift rather than silently repointing.
                         type: string
-                    required:
-                    - applicationCredential
-                    - cloudCredentialsRef
-                    - passwordSecretRef
                     type: object
                   serviceRegistrations:
                     description: |-
@@ -751,8 +759,6 @@ spec:
                         type: array
                         x-kubernetes-list-type: set
                     type: object
-                required:
-                - adminCredential
                 type: object
               namespaceAssignments:
                 description: |-
@@ -13061,7 +13067,6 @@ spec:
                   resources; the children keep reconciling and are not suspended themselves.
                 type: boolean
             required:
-            - korc
             - openStackRelease
             - services
             type: object
