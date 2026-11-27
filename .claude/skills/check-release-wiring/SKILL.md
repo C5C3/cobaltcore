@@ -56,7 +56,7 @@ suite; every table row below applies per service.
 
 The authoritative gates are `tests/container-images/verify_release_config.sh`,
 the shell unit tests under `tests/unit/` (`make test-shell`, including
-`tests/unit/ci/{neutron,cinder,nova}_e2e_matrix_test.sh`, which hold the
+`tests/unit/ci/{neutron,cinder,nova}_e2e_matrix.bats`, which hold the
 generator's CR names against the Tempest fixtures), and the CI matrix
 generators themselves. This skill defers to those for file-format
 correctness and adds the cross-cutting check they cannot express: "is

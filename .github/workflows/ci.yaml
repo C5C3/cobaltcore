@@ -5600,7 +5600,7 @@ jobs:
       # Neutron timeout. Its name arrives as the ovn-cr-name matrix key, like
       # every other CR this job waits on, so no copy of it lives here; the
       # generator and the fixture that carry it are held in agreement by
-      # tests/unit/ci/neutron_e2e_matrix_test.sh.
+      # tests/unit/ci/neutron_e2e_matrix.bats.
       - name: Deploy OVNCentral for Tempest
         if: matrix.service == 'neutron'
         run: |
