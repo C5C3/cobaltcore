@@ -367,6 +367,7 @@ const sidebar: DefaultTheme.Sidebar = [
       { text: 'Architecture Diagrams', link: '/contributing/architecture-diagrams' },
       { text: 'Dependency Management', link: '/contributing/dependency-management' },
       { text: 'Nix Development Environment', link: '/contributing/nix-dev-environment' },
+      { text: 'Shell Unit Tests', link: '/contributing/shell-unit-tests' },
       { text: 'Claude Code Skills', link: '/contributing/claude-skills' },
     ],
   },

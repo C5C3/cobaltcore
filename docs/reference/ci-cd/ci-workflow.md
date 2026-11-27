@@ -593,13 +593,17 @@ Timeout: 8 minutes.
 
 ### test-shell
 
-Runs every `*_test.sh` under `tests/unit/`, found by discovery, and fails on a `.sh`
-file there whose name would make the discovery skip it. bats runs each script as one
-test, on as many workers as the runner has CPUs (`nproc`). A green script prints one
-`ok` line with its run time. A red script prints its `not ok` line followed by its
-output, and a red run ends with the list of failed scripts on stderr. The JUnit report
-`_output/test-shell/report.xml` names each script as a test case; the job keeps it as
-the artifact `test-shell-junit-report` for 14 days, after a red or timed-out run too.
+Runs every shell unit test under `tests/unit/`, found by discovery, and fails on a `.sh`
+file there whose name would make the discovery skip it. A test is either a native bats
+file, any `*.bats`, whose every `@test` is one bats test, or an old `*_test.sh` script,
+which runs as one bats test. [Shell Unit Tests](../../contributing/shell-unit-tests.md)
+describes the native form; the directories not yet ported keep the old one. bats runs
+the tests on as many workers as the runner has CPUs (`nproc`). A green test prints one
+`ok` line with its run time. A red test prints its `not ok` line followed by its
+output, and a red run ends with the list of failed tests on stderr. The JUnit report
+`_output/test-shell/report.xml` holds one `testsuite` per file and one test case per
+test; the job keeps it as the artifact `test-shell-junit-report` for 14 days, after a
+red or timed-out run too.
 
 The job carries no event guard, so it runs on pull requests, on the push
 runs for `main` and `v*` tags, and on the nightly chaos run: a breakage that lands
@@ -610,7 +614,9 @@ the deploy/ overlay assertions run their full check set (`yq` is preinstalled on
 ubuntu-latest).
 
 `make test-shell` installs bats with `make install-bats`, at the commit the
-`BATS_VERSION` and `BATS_COMMIT` pin of the `Makefile` names. GNU parallel and `flock`,
+`BATS_VERSION` and `BATS_COMMIT` pin of the `Makefile` names, and beside it the three
+libraries every native file loads: bats-support, bats-assert and bats-file, each at the
+commit of its `BATS_SUPPORT_*`, `BATS_ASSERT_*` or `BATS_FILE_*` pin. GNU parallel and `flock`,
 which bats needs for more than one worker, come from the runner image. The job sets
 `TEST_SHELL_JOBS`, so a runner image without them fails the job instead of running the
 suite serially.
@@ -619,18 +625,19 @@ suite serially.
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | Install kustomize | Downloads the pinned kustomize binary into `/usr/local/bin` |
-| 3 | `TEST_SHELL_JOBS="$(nproc)" make test-shell` | Installs the pinned bats and runs every `tests/unit/**/*_test.sh` as one bats test, one worker per CPU |
+| 3 | `TEST_SHELL_JOBS="$(nproc)" make test-shell` | Installs the pinned bats and its three libraries, and runs every test of each `tests/unit/**/*.bats` and every `tests/unit/**/*_test.sh` as one bats test, one worker per CPU |
 | 4 | `actions/upload-artifact@v7.0.2` | Uploads `report.xml` as `test-shell-junit-report` under `if: always()` (SHA-pinned, 14-day retention) |
 
-A local `make test-shell` reads three variables. Without GNU parallel or `flock` the run
+A local `make test-shell` reads four variables. Without GNU parallel or `flock` the run
 is serial and says so on stderr; a `TEST_SHELL_JOBS` above 1 fails the run instead. The
-first run on a machine without an install fetches bats from GitHub, and
-`make install-bats` does that step alone.
+first run on a machine without an install fetches bats and its libraries from GitHub,
+and `make install-bats` does that step alone.
 
 | Variable | Default | Example |
 | --- | --- | --- |
-| `TEST_SHELL_FILTER` | every script | `make test-shell TEST_SHELL_FILTER=renovate/` runs the scripts whose path matches the extended regular expression |
-| `TEST_SHELL_JOBS` | the number of online CPUs | `make test-shell TEST_SHELL_JOBS=1` runs one script at a time |
+| `TEST_SHELL_FILTER` | every file | `make test-shell TEST_SHELL_FILTER=renovate/` runs the native files and scripts whose path matches the extended regular expression |
+| `TEST_SHELL_NAME` | every test | `make test-shell TEST_SHELL_NAME='on.push still covers'` runs the native tests whose name matches, and no script |
+| `TEST_SHELL_JOBS` | the number of online CPUs | `make test-shell TEST_SHELL_JOBS=1` runs one test at a time |
 | `TEST_SHELL_REPORT_DIR` | `_output/test-shell` | `make test-shell TEST_SHELL_REPORT_DIR=/tmp/report` writes `report.xml` to `/tmp/report` |
 
 Timeout: 10 minutes. The serial run took 9 to 13 minutes and bats takes about 4 to 6,
