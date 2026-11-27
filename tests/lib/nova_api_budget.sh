@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Shared check that a tempest Nova CR gives its uWSGI workers room, for the
-# tests that pin a compute-stack leg (tests/unit/ci/nova_e2e_matrix_test.sh,
+# tests that pin a compute-stack leg (tests/unit/ci/nova_e2e_matrix.bats,
 # tests/unit/ci/cinder_e2e_matrix_test.sh).
 #
 # What a nova-api pod needs to hold its workers is one piece of knowledge, and

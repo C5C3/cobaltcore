@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -48,20 +48,13 @@
 # #1013 when compute clusters arrive. Nothing here asserts on that suite, and
 # #1019 does not reopen the question.
 #
-# Usage: bash tests/unit/ci/nova_e2e_matrix_test.sh
+# Usage: bin/bats tests/unit/ci/nova_e2e_matrix.bats
 
-set -uo pipefail
+load '../../lib/bats/common'
+load '../../lib/bats/stubs'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/ci_resolve.sh
 source "$PROJECT_ROOT/tests/lib/ci_resolve.sh"
 # shellcheck source=tests/lib/ci_yaml.sh
@@ -101,75 +94,53 @@ release_count() {
     grep -c . || true
 }
 
-# make_discover_stubs <dir>
-# Writes the two stubs tests/e2e/nova/discover-hosts.sh resolves off PATH.
+# make_discover_stubs
+# Declares the two fakes tests/e2e/nova/discover-hosts.sh resolves off PATH.
 #
-# The kubectl stub answers the two nova-manage calls the helper makes and reads
-# its behaviour from the environment: cell_v2 discover_hosts counts the round in
-# $STUB_ROUNDS and exits $STUB_RC from round $STUB_RC_ROUND on (0 before it),
-# cell_v2 list_hosts prints a one-row prettytable naming $STUB_HOST. A run that
-# is meant to miss therefore ends on a failed discovery after one lookup,
-# instead of polling to the helper's 150-second deadline.
+# The kubectl fake answers every call with exit 0 until run_discover_hosts
+# declares the rules for the two nova-manage calls the helper makes: cell_v2
+# discover_hosts exits <rc> from round <rc_round> on (0 before it), cell_v2
+# list_hosts prints a one-row prettytable naming <host>. A run that is meant to
+# miss therefore ends on a failed discovery after one lookup, instead of
+# polling to the helper's 150-second deadline.
 #
-# The sleep stub returns at once, so the 5-second interval between the rounds
+# The sleep fake returns at once, so the 5-second interval between the rounds
 # costs nothing here.
 make_discover_stubs() {
-  local dir="$1"
-
-  cat >"$dir/kubectl" <<'STUB'
-#!/bin/bash
-case "$*" in
-  *discover_hosts*)
-    round=$(($(cat "$STUB_ROUNDS") + 1))
-    printf '%s' "$round" >"$STUB_ROUNDS"
-    if [ "$round" -ge "$STUB_RC_ROUND" ]; then
-      exit "$STUB_RC"
-    fi
-    ;;
-  *list_hosts*)
-    cat <<TABLE
-+-----------+--------------------------------------+----------+
-| Cell Name |              Cell UUID               | Hostname |
-+-----------+--------------------------------------+----------+
-|   cell1   | 11111111-2222-3333-4444-555555555555 | $STUB_HOST |
-+-----------+--------------------------------------+----------+
-TABLE
-    ;;
-esac
-exit 0
-STUB
-  chmod +x "$dir/kubectl"
-
-  cat >"$dir/sleep" <<'STUB'
-#!/bin/bash
-exit 0
-STUB
-  chmod +x "$dir/sleep"
+  stub_on kubectl '*'
+  stub_on sleep '*'
 }
 
 # run_discover_hosts <dir> <host> <rc> <rc_round> [args...]
-# Runs tests/e2e/nova/discover-hosts.sh with the stubs in <dir> first on PATH.
-# <host> is the hostname the stubbed list_hosts prints, <rc> the exit code the
-# stubbed discovery reports from round <rc_round> on. Echoes the helper's
+# Runs tests/e2e/nova/discover-hosts.sh with the fakes first on PATH.
+# <host> is the hostname the faked list_hosts prints, <rc> the exit code the
+# faked discovery reports from round <rc_round> on. Echoes the helper's
 # stdout, writes its stderr to <dir>/stderr and returns its exit code.
+#
+# The rules of a call are newer than those of the calls before it, so each
+# call starts from round 1: the lasting discovery rule answers <rc>, and the
+# --times rule declared after it answers 0 for the rounds before <rc_round>.
 run_discover_hosts() {
   local dir="$1" host="$2" rc="$3" rc_round="$4"
   shift 4
-  printf '0' >"$dir/rounds"
-  (
-    PATH="$dir:$PATH"
-    STUB_HOST="$host"
-    STUB_RC="$rc"
-    STUB_RC_ROUND="$rc_round"
-    STUB_ROUNDS="$dir/rounds"
-    export PATH STUB_HOST STUB_RC STUB_RC_ROUND STUB_ROUNDS
-    bash "$PROJECT_ROOT/tests/e2e/nova/discover-hosts.sh" "$@"
-  ) 2>"$dir/stderr"
+  local table
+  table="+-----------+--------------------------------------+----------+
+| Cell Name |              Cell UUID               | Hostname |
++-----------+--------------------------------------+----------+
+|   cell1   | 11111111-2222-3333-4444-555555555555 | $host |
++-----------+--------------------------------------+----------+"
+  stub_on kubectl '*list_hosts*' --out "$table"
+  stub_on kubectl '*discover_hosts*' --rc "$rc"
+  if [ "$rc_round" -gt 1 ]; then
+    stub_on kubectl '*discover_hosts*' --rc 0 --times "$((rc_round - 1))"
+  fi
+  with_stubs bash "$PROJECT_ROOT/tests/e2e/nova/discover-hosts.sh" "$@" \
+    2>"$dir/stderr"
 }
 
-# make_tempest_stubs <dir>
-# Writes the four stubs hack/ci-run-tempest.sh resolves off PATH, so the runner
-# can be exercised without a cluster, a network or a container runtime.
+# make_tempest_stubs
+# Declares the four fakes hack/ci-run-tempest.sh resolves off PATH, so the
+# runner can be exercised without a cluster, a network or a container runtime.
 #
 # kubectl answers the admin-secret lookup with a base64 password and records
 # every port-forward argv in $STUB_PF_LOG. A real forward outlives the suite it
@@ -185,32 +156,24 @@ run_discover_hosts() {
 # ready. docker records the argv of the container run in $STUB_DOCKER_LOG and
 # starts nothing. sleep returns at once, so the ten one-second readiness polls
 # of a target that stays dead cost nothing.
+#
+# The port-forward answer depends on the arguments of the call, so it is an
+# --exec body. The curl and docker fakes keep their bodies, and with them the
+# logs each run of run_ci_tempest empties first.
 make_tempest_stubs() {
-  local dir="$1"
-
-  cat >"$dir/kubectl" <<'STUB'
-#!/bin/bash
-case "$1" in
-  port-forward)
-    printf '%s\n' "$*" >>"$STUB_PF_LOG"
-    mapping="${*: -1}"
-    port="${mapping%%:*}"
-    case " ${STUB_PF_DEAD_PORTS} " in
-      *" ${port} "*) exit 0 ;;
-    esac
-    # Absolute path: the stub `sleep` next to this file returns at once.
-    exec /bin/sleep 600
-    ;;
-  get)
-    printf 'c2VjcmV0'
-    ;;
+  stub_on kubectl '*'
+  stub_on kubectl 'port-forward *' --exec '
+printf "%s\n" "$*" >>"$STUB_PF_LOG"
+mapping="${*: -1}"
+port="${mapping%%:*}"
+case " ${STUB_PF_DEAD_PORTS} " in
+  *" ${port} "*) exit 0 ;;
 esac
-exit 0
-STUB
-  chmod +x "$dir/kubectl"
+# Absolute path: the stub `sleep` next to this file returns at once.
+exec /bin/sleep 600'
+  stub_on kubectl 'get *' --out-raw 'c2VjcmV0'
 
-  cat >"$dir/curl" <<'STUB'
-#!/bin/bash
+  stub_script curl <<'STUB'
 printf '%s\n' "$*" >>"$STUB_CURL_LOG"
 url="${*: -1}"
 port="${url#*localhost:}"
@@ -221,24 +184,17 @@ esac
 grep -qF " ${port}:${port}" "$STUB_PF_LOG" || exit 7
 exit 0
 STUB
-  chmod +x "$dir/curl"
 
-  cat >"$dir/docker" <<'STUB'
-#!/bin/bash
+  stub_script docker <<'STUB'
 printf '%s\n' "$*" >>"$STUB_DOCKER_LOG"
 exit 0
 STUB
-  chmod +x "$dir/docker"
 
-  cat >"$dir/sleep" <<'STUB'
-#!/bin/bash
-exit 0
-STUB
-  chmod +x "$dir/sleep"
+  stub_on sleep '*'
 }
 
 # run_ci_tempest <dir> <nova-name> <console-name> <dead-ports> [placement-name] [dropped-ports]
-# Runs hack/ci-run-tempest.sh with the stubs in <dir> first on PATH, as the leg
+# Runs hack/ci-run-tempest.sh with the fakes first on PATH, as the leg
 # named by <nova-name>, <console-name> and <placement-name> (any may be empty,
 # which is a leg that names no Nova and no Placement). <dead-ports> is the
 # space-separated list of ports the stubbed curl reports an HTTP error for,
@@ -252,7 +208,7 @@ run_ci_tempest() {
   : >"$dir/curl.log"
   : >"$dir/docker.log"
   (
-    PATH="$dir:$BASE_PATH"
+    PATH="$STUB_DIR/bin:$BASE_PATH"
     OUTPUT_DIR="$dir/output"
     GITHUB_WORKSPACE="$dir"
     NOVA_K8S_NAME="$nova"
@@ -271,8 +227,9 @@ run_ci_tempest() {
   ) 2>&1
 }
 
-# make_seed_stubs <dir>
-# Writes the two stubs the seed Jobs of tests/tempest/nova-*/ resolve off PATH.
+# make_seed_stubs
+# Declares the two fakes the seed Jobs of tests/tempest/nova-*/ resolve off
+# PATH.
 #
 # openstack records every argv in $STUB_OS_LOG and answers a `show` with
 # $STUB_SHOW_RC, which is the branch both guards take: rc 0 is the object
@@ -281,28 +238,20 @@ run_ci_tempest() {
 # the file says. dd writes nothing, so a run leaves no /tmp/seed.img behind on
 # the machine running the test.
 make_seed_stubs() {
-  local dir="$1"
-
-  cat >"$dir/openstack" <<'STUB'
-#!/bin/bash
+  stub_script openstack <<'STUB'
 printf '%s\n' "$*" >>"$STUB_OS_LOG"
 case "$2" in
   show) exit "$STUB_SHOW_RC" ;;
 esac
 exit 0
 STUB
-  chmod +x "$dir/openstack"
 
-  cat >"$dir/dd" <<'STUB'
-#!/bin/bash
-exit 0
-STUB
-  chmod +x "$dir/dd"
+  stub_on dd '*'
 }
 
 # run_seed_script <dir> <job-fixture> <show-rc>
-# Extracts the shell script the named seed Job runs and runs it with the stubs
-# in <dir> first on PATH, with every `openstack ... show` answered <show-rc>.
+# Extracts the shell script the named seed Job runs and runs it with the fakes
+# first on PATH, with every `openstack ... show` answered <show-rc>.
 # Each call starts from an empty log at <dir>/openstack.log. Returns the
 # script's exit code and prints nothing.
 run_seed_script() {
@@ -310,7 +259,7 @@ run_seed_script() {
   : >"$dir/openstack.log"
   yq -r '.spec.template.spec.containers[0].args[0]' "$fixture" >"$dir/seed.sh"
   (
-    PATH="$dir:$BASE_PATH"
+    PATH="$STUB_DIR/bin:$BASE_PATH"
     STUB_OS_LOG="$dir/openstack.log"
     STUB_SHOW_RC="$show_rc"
     export PATH STUB_OS_LOG STUB_SHOW_RC
@@ -344,18 +293,14 @@ conf_value() {
 # Tests
 # ---------------------------------------------------------------------------
 
-test_all_operators_lists_nova() {
-  echo "Test: ci.yaml ALL_OPERATORS includes nova"
-
+@test "ci.yaml ALL_OPERATORS includes nova" {
   local line
   line=$(grep "ALL_OPERATORS:" "$CI_YAML" | head -1)
   assert_contains "ALL_OPERATORS lists nova" "$line" "nova"
   assert_contains "ALL_OPERATORS still lists keystone" "$line" "keystone"
 }
 
-test_service_operators_lists_nova() {
-  echo "Test: ci.yaml SERVICE_OPERATORS includes nova"
-
+@test "ci.yaml SERVICE_OPERATORS includes nova" {
   # nova ships an OpenStack service image for every release that carries a nova
   # key in source-refs.yaml. Missing from this list, the resolver treats it like
   # the orchestration operators: the image is never rebuilt for a pull request
@@ -367,11 +312,9 @@ test_service_operators_lists_nova() {
     "$(OPERATOR=nova "$PROJECT_ROOT/hack/ci-service-image-releases.sh")"
 }
 
-test_nova_filter_is_wired() {
-  echo "Test: the nova paths filter reaches the resolve step"
-
-  assert_file_contains "the paths filter exists" "$CI_YAML" "^ *nova:$"
-  assert_file_contains "the filter is passed to the resolve step" "$CI_YAML" \
+@test "the nova paths filter reaches the resolve step" {
+  assert_file_matches "the paths filter exists" "$CI_YAML" "^ *nova:$"
+  assert_file_matches "the filter is passed to the resolve step" "$CI_YAML" \
     "FILTER_nova: \${{ steps.filter.outputs.nova }}"
 
   local block
@@ -379,9 +322,7 @@ test_nova_filter_is_wired() {
   assert_contains "the operator source path is covered" "$block" "operators/nova/**"
 }
 
-test_nova_change_produces_an_e2e_leg() {
-  echo "Test: an operators/nova change puts nova in the e2e-operators matrix"
-
+@test "an operators/nova change puts nova in the e2e-operators matrix" {
   local matrix
   matrix=$(resolve_output e2e-operators refs/heads/main "$ALL_OPS" FILTER_nova=true)
 
@@ -391,9 +332,7 @@ test_nova_change_produces_an_e2e_leg() {
     "$matrix" "__none__"
 }
 
-test_helm_filter_covers_the_nova_chart() {
-  echo "Test: a nova chart change re-runs helm-validate"
-
+@test "a nova chart change re-runs helm-validate" {
   # The helm filter is the operators/*/helm/** glob; the chart directory under
   # it is what makes the glob cover this operator.
   assert_contains "the helm filter covers every operators/<op>/helm/ tree" \
@@ -402,14 +341,8 @@ test_helm_filter_covers_the_nova_chart() {
     "$([ -d "$CHART" ] && echo yes || echo no)"
 }
 
-test_helm_validate_renders_the_nova_chart() {
-  echo "Test: the nova chart renders under every helm-validate scenario"
-
-  if ! command -v helm >/dev/null 2>&1; then
-    echo "  SKIP: helm not installed"
-    SKIP=$((SKIP + 1))
-    return
-  fi
+@test "the nova chart renders under every helm-validate scenario" {
+  require_tool helm
 
   # helm-validate vendors the operator-library subchart with `make helm-deps`
   # before it renders anything. charts/ is gitignored, so do the same here
@@ -445,9 +378,7 @@ test_helm_validate_renders_the_nova_chart() {
   assert_contains "namespace-scoped RBAC produces a Role" "$out" "kind: Role"
 }
 
-test_go_matrices_list_nova() {
-  echo "Test: the unit and integration test matrices include nova"
-
+@test "the unit and integration test matrices include nova" {
   # Both matrices are resolved per pull request rather than hand-written, so an
   # operator reaches them in two steps: the jobs read the resolver's list, and
   # the resolver puts the operator in it when its own code changes. An operator
@@ -465,9 +396,7 @@ test_go_matrices_list_nova() {
     '"nova"'
 }
 
-test_cleanup_matrices_cover_the_nova_images() {
-  echo "Test: the derived cleanup package lists cover the nova images"
-
+@test "the derived cleanup package lists cover the nova images" {
   # cleanup-images.yaml and ci.yaml's cleanup-e2e-tags both build their package
   # matrix from this generator, so coverage is a property of its output rather
   # than of a list someone has to remember to extend. An uncovered package
@@ -487,9 +416,7 @@ test_cleanup_matrices_cover_the_nova_images() {
     "$e2e_packages" '"nova"'
 }
 
-test_a_keystone_only_change_produces_no_nova_leg() {
-  echo "Test: a keystone-only change keeps nova out of the e2e-operators matrix"
-
+@test "a keystone-only change keeps nova out of the e2e-operators matrix" {
   # The positive case above proves the filter reaches the matrix; this one
   # proves it still gates. A filter wired to a constant would satisfy the
   # positive assertion and put every operator on every pull request.
@@ -501,9 +428,7 @@ test_a_keystone_only_change_produces_no_nova_leg() {
   assert_not_contains "and no nova leg" "$matrix" '"nova"'
 }
 
-test_nova_image_filter_is_wired() {
-  echo "Test: an images/nova change reaches changed-services"
-
+@test "an images/nova change reaches changed-services" {
   # changed-services is the list build-e2e-images rebuilds from source. An
   # image edit missing from it leaves the nova leg loading whatever main last
   # published, so the suites pass against the old image and the change under
@@ -539,9 +464,7 @@ test_nova_image_filter_is_wired() {
     "$(resolve_output changed-services refs/heads/main "$ALL_OPS")"
 }
 
-test_nova_e2e_filter_is_wired() {
-  echo "Test: an edit to the nova suites alone runs the nova leg"
-
+@test "an edit to the nova suites alone runs the nova leg" {
   # The suites sit in two directories and the e2e-operator run step probes for
   # the -operator one. tests/e2e/nova-operator/ arrives with #1039's
   # scrape-target suite; the filter names it ahead of that, so the first suite
@@ -570,9 +493,7 @@ test_nova_e2e_filter_is_wired() {
       FILTER_tests_e2e_glance=true)"
 }
 
-test_nova_leg_opts_into_the_broker() {
-  echo "Test: the nova e2e leg asks for the broker and nothing else"
-
+@test "the nova e2e leg asks for the broker and nothing else" {
   # Every Nova process dials the bus, and the scheduler and the conductor
   # report ready off their broker connection. deploy-infra.sh installs the
   # broker only when it is asked to, and setup-e2e-infra reads the flag from
@@ -600,9 +521,7 @@ test_nova_leg_opts_into_the_broker() {
     "matrix.operator == 'nova'"
 }
 
-test_nova_leg_deploys_the_sibling_operators() {
-  echo "Test: the nova e2e leg deploys and loads its five sibling operators"
-
+@test "the nova e2e leg deploys and loads its five sibling operators" {
   # A Nova has no identity-free posture: spec.keystoneEndpoint and
   # spec.serviceUser are required on the CRD, so the leg needs a Keystone. The
   # functional suites boot a server, which takes a Placement allocation, a
@@ -612,18 +531,18 @@ test_nova_leg_deploys_the_sibling_operators() {
   local deploy op
   for op in keystone placement glance neutron; do
     deploy=$(job_step e2e-operator "Deploy ${op}-operator")
-    assert_not_empty "the ${op}-operator deploy step exists" "$deploy"
+    soft assert_not_empty "the ${op}-operator deploy step exists" "$deploy"
     # The whole condition, not a substring of it: an extra `|| always()` would
     # install this operator on all ten legs.
-    assert_eq "the ${op} deploy runs on the nova leg alone" \
+    soft assert_eq "the ${op} deploy runs on the nova leg alone" \
       "if: matrix.operator == 'nova'" \
       "$(grep -E '^ *if:' <<<"$deploy" | sed 's/^ *//')"
-    assert_contains "it goes through the shared deploy script" "$deploy" \
+    soft assert_contains "it goes through the shared deploy script" "$deploy" \
       "run: hack/ci-deploy-operator.sh"
-    assert_contains "it deploys the ${op} operator" "$deploy" "OPERATOR: ${op}"
-    assert_contains "it uses the run-tagged ${op}-operator image" "$deploy" \
+    soft assert_contains "it deploys the ${op} operator" "$deploy" "OPERATOR: ${op}"
+    soft assert_contains "it uses the run-tagged ${op}-operator image" "$deploy" \
       "IMAGE_PREFIX }}/${op}-operator"
-    assert_contains "it lands in the ${op} Namespace" "$deploy" \
+    soft assert_contains "it lands in the ${op} Namespace" "$deploy" \
       "NAMESPACE: ${op}-system"
   done
 
@@ -704,15 +623,11 @@ test_nova_leg_deploys_the_sibling_operators() {
   # Reading the branch proves the shape, not the count. Run the step's own
   # script to see which refs the leg actually pulls and loads: a ref the
   # resolver drops is an ImagePullBackOff halfway through the suites.
-  if ! command -v yq >/dev/null 2>&1; then
-    echo "  SKIP: yq not installed"
-    SKIP=$((SKIP + 1))
-    return
-  fi
+  require_tool yq
 
   local script output refs
-  script=$(mktemp)
-  output=$(mktemp)
+  script=$(mktemp "$BATS_TEST_TMPDIR/script.XXXXXX")
+  output=$(mktemp "$BATS_TEST_TMPDIR/output.XXXXXX")
   yq -r '.jobs.e2e-operator.steps[]
     | select(.name == "Resolve E2E images") | .run' "$CI_YAML" >"$script"
 
@@ -738,7 +653,7 @@ test_nova_leg_deploys_the_sibling_operators() {
   assert_contains "its own operator image" "$refs" \
     "ghcr.io/c5c3/nova-operator:dev"
   for op in keystone placement glance ovn neutron; do
-    assert_contains "the ${op}-operator image" "$refs" \
+    soft assert_contains "the ${op}-operator image" "$refs" \
       "ghcr.io/c5c3/${op}-operator:dev"
   done
   assert_contains "the 2026.1 keystone service image" "$refs" \
@@ -772,9 +687,7 @@ test_nova_leg_deploys_the_sibling_operators() {
   rm -f "$script" "$output"
 }
 
-test_nova_leg_narrows_parallelism_and_budget() {
-  echo "Test: the nova e2e leg runs two suites at a time inside a 150-minute wall"
-
+@test "the nova e2e leg runs two suites at a time inside a 150-minute wall" {
   # A Nova suite of #1039 stands a Keystone, an OVNCentral, a Neutron, a
   # Placement, a Glance and the five Nova workloads on one kind node, so at the
   # shared config's parallel: 4 the Pods stay Pending on "Insufficient cpu" and
@@ -820,9 +733,7 @@ test_nova_leg_narrows_parallelism_and_budget() {
     "runs-on: self-hosted"
 }
 
-test_nova_leg_runs_as_two_shards() {
-  echo "Test: the nova e2e leg runs its suites as two shards"
-
+@test "the nova e2e leg runs its suites as two shards" {
   # compute-node-pool runs 27 minutes with no other suite beside it, and with
   # it the leg overran its 150-minute wall on 2026-09-24. The leg runs as two
   # shards since, each on a kind cluster of its own, and every way the split
@@ -830,15 +741,11 @@ test_nova_leg_runs_as_two_shards() {
   # both costs a shard its wall, a publish job reading the sharded matrix
   # pushes the nova image and chart twice, and a second upload under the
   # first shard's artifact name fails.
-  if ! command -v yq >/dev/null 2>&1; then
-    echo "  SKIP: yq not installed"
-    SKIP=$((SKIP + 1))
-    return
-  fi
+  require_tool yq
 
   local script output
-  script=$(mktemp)
-  output=$(mktemp)
+  script=$(mktemp "$BATS_TEST_TMPDIR/script.XXXXXX")
+  output=$(mktemp "$BATS_TEST_TMPDIR/output.XXXXXX")
   yq -r '.jobs.changes.steps[]
     | select(.id == "e2e-operator-legs") | .run' "$CI_YAML" >"$script"
 
@@ -862,7 +769,7 @@ test_nova_leg_runs_as_two_shards() {
     'matrix: ${{ fromJson(needs.changes.outputs.e2e-operator-legs) }}'
   local publish
   for publish in build-and-push merge-operator-images helm-push; do
-    assert_not_contains "$publish keeps the unsharded matrix" \
+    soft assert_not_contains "$publish keeps the unsharded matrix" \
       "$(job_block "$publish")" "e2e-operator-legs"
   done
   assert_contains "each shard uploads its report under a name of its own" \
@@ -873,11 +780,12 @@ test_nova_leg_runs_as_two_shards() {
   # shard passes. It runs in a scratch directory whose tests/ links to the
   # repository's, so its mkdir -p _output/reports stays out of the checkout.
   local stubs work one two all keystone shard_two name rc
-  stubs=$(mktemp -d)
-  work=$(mktemp -d)
+  stub_script chainsaw <<'STUB'
+printf "%s\n" "$@"
+STUB
+  stubs="$STUB_DIR/bin"
+  work=$(mktemp -d "$BATS_TEST_TMPDIR/work.XXXXXX")
   ln -s "$PROJECT_ROOT/tests" "$work/tests"
-  printf '#!/bin/bash\nprintf "%%s\\n" "$@"\n' >"$stubs/chainsaw"
-  chmod +x "$stubs/chainsaw"
   yq -r '.jobs.e2e-operator.steps[]
     | select(.name == "Run E2E tests") | .run' "$CI_YAML" >"$script"
 
@@ -901,13 +809,13 @@ test_nova_leg_runs_as_two_shards() {
     sed -n 's/^ *shard_two="\(.*\)"$/\1/p')
   assert_not_empty "shard 2 names its suites" "$shard_two"
   for name in $shard_two; do
-    assert_contains "shard 2 runs $name" "$two" "tests/e2e/nova/$name/"
+    soft assert_contains "shard 2 runs $name" "$two" "tests/e2e/nova/$name/"
   done
 
   # A nova leg without a shard stops instead of running no suite.
+  rc=0
   (cd "$work" && PATH="$stubs:$BASE_PATH" OPERATOR=nova SHARD='' \
-    bash -e -o pipefail "$script" >/dev/null 2>&1)
-  rc=$?
+    bash -e -o pipefail "$script" >/dev/null 2>&1) || rc=$?
   assert_nonzero_exit "a nova leg without a shard fails" "$rc"
 
   # And the other legs pass their directories as before.
@@ -916,13 +824,9 @@ test_nova_leg_runs_as_two_shards() {
   assert_eq "a leg without a shard runs both of its directories" \
     "$(printf '%s\n' tests/e2e/keystone/ tests/e2e/keystone-operator/)" \
     "$keystone"
-
-  rm -rf "$script" "$output" "$stubs" "$work"
 }
 
-test_nova_leg_dumps_the_siblings() {
-  echo "Test: the nova e2e leg dumps its five sibling Namespaces"
-
+@test "the nova e2e leg dumps its five sibling Namespaces" {
   # The first dump derives its Namespace from the matrix operator and never
   # looks at the siblings', so a failed nova suite would carry no keystone-,
   # placement-, glance-, ovn- or neutron-operator log at all. The dump runs
@@ -959,9 +863,7 @@ test_nova_leg_dumps_the_siblings() {
     "OPERATOR: \${{ matrix.operator }}"
 }
 
-test_nova_leg_loads_the_tempest_image() {
-  echo "Test: the nova e2e leg loads the tempest image its suites' Jobs run"
-
+@test "the nova e2e leg loads the tempest image its suites' Jobs run" {
   # Every functional Nova suite drives its fixture through the `openstack`
   # client, and the client comes out of the tempest image: the catalog setup
   # Jobs, the image seed Jobs and the verify Jobs all name
@@ -988,15 +890,11 @@ test_nova_leg_loads_the_tempest_image() {
   # Where the line sits is not the same claim as what the step publishes: the
   # list is built by concatenation and read back out of GITHUB_OUTPUT, so run
   # the script and look at the refs it actually emits.
-  if ! command -v yq >/dev/null 2>&1; then
-    echo "  SKIP: yq not installed"
-    SKIP=$((SKIP + 1))
-    return
-  fi
+  require_tool yq
 
   local script output refs
-  script=$(mktemp)
-  output=$(mktemp)
+  script=$(mktemp "$BATS_TEST_TMPDIR/script.XXXXXX")
+  output=$(mktemp "$BATS_TEST_TMPDIR/output.XXXXXX")
   yq -r '.jobs.e2e-operator.steps[]
     | select(.name == "Resolve E2E images") | .run' "$CI_YAML" >"$script"
 
@@ -1033,9 +931,7 @@ test_nova_leg_loads_the_tempest_image() {
   rm -f "$script" "$output"
 }
 
-test_chaos_nova_leg_runs_the_nova_suites() {
-  echo "Test: the e2e-chaos nova leg runs all seven nova-stack suites"
-
+@test "the e2e-chaos nova leg runs all seven nova-stack suites" {
   # e2e-chaos enumerates test_dirs per leg (chainsaw's include/exclude-regex
   # flags are no-ops in v0.2.14), so a suite missing from the list is
   # lint-checked and never applied to a cluster. The images, the two opt-ins
@@ -1088,15 +984,16 @@ test_chaos_nova_leg_runs_the_nova_suites() {
   assert_gte "and does it before the first outage suite" \
     "$first_outage_at" "$health_at"
 
-  # Gating is job-wide; e2e_chaos_job_test.sh pins it (#1388).
+  # Gating is job-wide; e2e_chaos_job.bats pins it (#1388).
 
   # Seven refs on top of the keystone stack every non-ovn leg loads and the OVN
   # pair the `!= 'pod'` entries already cover here, the last of them the
   # nova-compute image of novacompute-drain-compute-kill's pool. The tempest image the
   # catalog, seed and verify Jobs run arrives with the keystone stack, which
   # also carries it for the workload pod of tests/e2e-chaos/lib/workload.sh;
-  # test_ci_loads_the_tempest_image_on_the_keystone_stack_legs in
-  # tests/unit/ci/chaos_workload_test.sh checks that wiring.
+  # tests/unit/ci/chaos_workload.bats checks that wiring in the test "every
+  # non-ovn e2e-chaos leg loads the Tempest image, and make shellcheck lints
+  # the harness".
   local load kind_load ref
   load=$(job_step e2e-chaos "Load E2E images")
   kind_load=$(job_step e2e-chaos "Load nova leg images into kind")
@@ -1106,12 +1003,12 @@ test_chaos_nova_leg_runs_the_nova_suites() {
   for ref in placement-operator:dev placement:2026.1 neutron-operator:dev \
     neutron:2026.1 nova-operator:dev nova:2026.1 nova-compute:2026.1; do
     # Pulled from GHCR ...
-    assert_contains "the leg pulls ${ref}" "$load" \
+    soft assert_contains "the leg pulls ${ref}" "$load" \
       "(matrix.suite == 'nova' || matrix.suite == 'multinode') && format('{0}/${ref}', env.IMAGE_PREFIX)"
     # ... and handed to the kind node, which the per-leg steps above do not do
     # for this leg: the placement pair is gated on pod and network, the
     # neutron pair on network.
-    assert_contains "and ${ref} reaches the kind node" "$kind_load" \
+    soft assert_contains "and ${ref} reaches the kind node" "$kind_load" \
       "kind load docker-image \${{ env.IMAGE_PREFIX }}/${ref}"
   done
 
@@ -1145,19 +1042,19 @@ test_chaos_nova_leg_runs_the_nova_suites() {
     "Deploy nova operator|nova|nova-system"; do
     IFS='|' read -r name op ns <<<"$spec"
     deploy=$(job_step e2e-chaos "$name")
-    assert_not_empty "the ${op}-operator is deployed" "$deploy"
+    soft assert_not_empty "the ${op}-operator is deployed" "$deploy"
     # The whole condition, not a substring of it: an extra `|| always()` would
     # install this operator on every leg. The multinode leg runs the same
     # stack (#1392).
-    assert_eq "the ${op} deploy runs on the nova and multinode legs alone" \
+    soft assert_eq "the ${op} deploy runs on the nova and multinode legs alone" \
       "if: matrix.suite == 'nova' || matrix.suite == 'multinode'" \
       "$(grep -E '^ *if:' <<<"$deploy" | sed 's/^ *//')"
-    assert_contains "it goes through the shared deploy script" "$deploy" \
+    soft assert_contains "it goes through the shared deploy script" "$deploy" \
       "run: hack/ci-deploy-operator.sh"
-    assert_contains "it deploys the ${op} operator" "$deploy" "OPERATOR: ${op}"
-    assert_contains "it uses the run-tagged ${op}-operator image" "$deploy" \
+    soft assert_contains "it deploys the ${op} operator" "$deploy" "OPERATOR: ${op}"
+    soft assert_contains "it uses the run-tagged ${op}-operator image" "$deploy" \
       "IMAGE_PREFIX }}/${op}-operator"
-    assert_contains "it lands in its own Namespace" "$deploy" "NAMESPACE: ${ns}"
+    soft assert_contains "it lands in its own Namespace" "$deploy" "NAMESPACE: ${ns}"
   done
 
   # Order is the load-bearing part: every suite's Nova resolves a Keystone
@@ -1240,16 +1137,14 @@ test_chaos_nova_leg_runs_the_nova_suites() {
     "$(e2e_chaos_matrix_entry network)" "tests/e2e-chaos/nova-"
 }
 
-test_nova_tempest_filter_is_wired() {
-  echo "Test: an edit to the nova tempest configs runs the nova legs alone"
-
+@test "an edit to the nova tempest configs runs the nova legs alone" {
   # tempest_src switches the tempest job on and the per-service filter narrows
   # the matrix; an edit under tests/tempest/nova-*/ matches both. Without the
   # narrowing the two nova legs would only ever run as part of the full
   # six-service matrix, and an edit to their config would spend a runner on
   # keystone, glance, barbican, neutron and cinder as well.
-  assert_file_contains "the paths filter exists" "$CI_YAML" "^ *tempest_nova:$"
-  assert_file_contains "the filter is passed to the resolve step" "$CI_YAML" \
+  assert_file_matches "the paths filter exists" "$CI_YAML" "^ *tempest_nova:$"
+  assert_file_matches "the filter is passed to the resolve step" "$CI_YAML" \
     "FILTER_tempest_nova: \${{ steps.filter.outputs.tempest_nova }}"
 
   local block
@@ -1285,9 +1180,7 @@ test_nova_tempest_filter_is_wired() {
     '"cinder"'
 }
 
-test_tempest_nova_leg_is_wired() {
-  echo "Test: the tempest nova leg brings up the compute stack its suites need"
-
+@test "the tempest nova leg brings up the compute stack its suites need" {
   # Thirteen images, five operator deploys and eleven bring-up steps stand
   # between the checkout and the first tempest request, and every one of them
   # fails silently. kind pulls nothing the run did not load, a CR whose operator
@@ -1308,11 +1201,11 @@ test_tempest_nova_leg_is_wired() {
   load=$(job_step tempest "Load E2E images")
   for ref in ovn-operator:dev neutron-operator:dev placement-operator:dev \
     nova-operator:dev; do
-    assert_contains "both compute-stack legs pull ${ref}" "$load" \
+    soft assert_contains "both compute-stack legs pull ${ref}" "$load" \
       "(matrix.service == 'nova' || matrix.service == 'cinder') && format('{0}/${ref}', env.IMAGE_PREFIX)"
   done
   for ref in neutron placement nova; do
-    assert_contains "both compute-stack legs pull the ${ref} service image" \
+    soft assert_contains "both compute-stack legs pull the ${ref} service image" \
       "$load" \
       "(matrix.service == 'nova' || matrix.service == 'cinder') && format('{0}/${ref}:{1}', env.IMAGE_PREFIX, matrix.release)"
   done
@@ -1327,7 +1220,7 @@ test_tempest_nova_leg_is_wired() {
     "if: matrix.service == 'glance' || matrix.service == 'cinder' || matrix.service == 'nova'" \
     "$(grep -E '^ *if:' <<<"$glance_load" | sed 's/^ *//')"
   for ref in glance-operator:dev "glance:\${{ matrix.release }}"; do
-    assert_contains "it pulls ${ref}" "$glance_load" \
+    soft assert_contains "it pulls ${ref}" "$glance_load" \
       "\${{ env.IMAGE_PREFIX }}/${ref}"
   done
 
@@ -1341,7 +1234,7 @@ test_tempest_nova_leg_is_wired() {
     nova-operator:dev "neutron:\${{ matrix.release }}" \
     "placement:\${{ matrix.release }}" "nova:\${{ matrix.release }}" \
     "ovn:\${{ env.OVN_VERSION }}"; do
-    assert_contains "the node gets ${image}" "$kind_load" \
+    soft assert_contains "the node gets ${image}" "$kind_load" \
       "\${{ env.IMAGE_PREFIX }}/${image}"
   done
   # In one call. Each `kind load` is a `docker save` piped into the node's
@@ -1363,7 +1256,7 @@ test_tempest_nova_leg_is_wired() {
     "$(grep -E '^ *if:' <<<"$glance_kind_load" | sed 's/^ *//')"
   for image in glance-operator:dev "glance:\${{ matrix.release }}" \
     "tempest:\${{ matrix.release }}"; do
-    assert_contains "the node gets ${image} from that step" \
+    soft assert_contains "the node gets ${image} from that step" \
       "$glance_kind_load" \
       "kind load docker-image \${{ env.IMAGE_PREFIX }}/${image}"
   done
@@ -1395,15 +1288,15 @@ test_tempest_nova_leg_is_wired() {
     "Deploy nova operator;nova;nova-system;matrix.service == 'nova' || matrix.service == 'cinder'"; do
     IFS=';' read -r name op ns cond <<<"$spec"
     deploy=$(job_step tempest "$name")
-    assert_not_empty "the step '${name}' exists" "$deploy"
-    assert_eq "'${name}' runs on the legs its condition names" \
+    soft assert_not_empty "the step '${name}' exists" "$deploy"
+    soft assert_eq "'${name}' runs on the legs its condition names" \
       "if: ${cond}" "$(grep -E '^ *if:' <<<"$deploy" | sed 's/^ *//')"
-    assert_contains "it goes through the shared deploy script" "$deploy" \
+    soft assert_contains "it goes through the shared deploy script" "$deploy" \
       "run: hack/ci-deploy-operator.sh"
-    assert_contains "it deploys the ${op} operator" "$deploy" "OPERATOR: ${op}"
-    assert_contains "it uses the run-tagged ${op}-operator image" "$deploy" \
+    soft assert_contains "it deploys the ${op} operator" "$deploy" "OPERATOR: ${op}"
+    soft assert_contains "it uses the run-tagged ${op}-operator image" "$deploy" \
       "IMAGE_REPO: \${{ env.IMAGE_PREFIX }}/${op}-operator"
-    assert_contains "it lands in the ${op} Namespace" "$deploy" \
+    soft assert_contains "it lands in the ${op} Namespace" "$deploy" \
       "NAMESPACE: ${ns}"
   done
 
@@ -1432,17 +1325,17 @@ test_tempest_nova_leg_is_wired() {
   for spec in "${steps[@]}"; do
     IFS=';' read -r name cond files wait_for timeout <<<"$spec"
     step=$(job_step tempest "$name")
-    assert_not_empty "the step '${name}' exists" "$step"
-    assert_eq "'${name}' runs on the legs its condition names" \
+    soft assert_not_empty "the step '${name}' exists" "$step"
+    soft assert_eq "'${name}' runs on the legs its condition names" \
       "if: ${cond}" "$(grep -E '^ *if:' <<<"$step" | sed 's/^ *//')"
     IFS=',' read -ra file_list <<<"$files"
     for file in "${file_list[@]}"; do
-      assert_contains "'${name}' applies ${file}" "$step" \
+      soft assert_contains "'${name}' applies ${file}" "$step" \
         "kubectl apply -f \${{ matrix.config-dir }}/${file}"
     done
-    assert_contains "'${name}' waits on ${wait_for}" "$step" "$wait_for"
+    soft assert_contains "'${name}' waits on ${wait_for}" "$step" "$wait_for"
     if [ -n "$timeout" ]; then
-      assert_contains "'${name}' gives that wait ${timeout}" "$step" \
+      soft assert_contains "'${name}' gives that wait ${timeout}" "$step" \
         "--timeout=${timeout}"
     fi
   done
@@ -1462,7 +1355,7 @@ test_tempest_nova_leg_is_wired() {
     "$(grep -E '^ *if:' <<<"$pre_apply" | sed 's/^ *//')"
   for file in "*-messaging-secret.yaml" "*-ovncentral-cr.yaml" \
     "*-placement-cr.yaml"; do
-    assert_contains "it applies ${file}" "$pre_apply" \
+    soft assert_contains "it applies ${file}" "$pre_apply" \
       "kubectl apply -f \${{ matrix.config-dir }}/${file}"
   done
   assert_not_contains "and waits on nothing" "$pre_apply" "kubectl wait"
@@ -1514,8 +1407,8 @@ test_tempest_nova_leg_is_wired() {
     "Seed the flavors" \
     "Run Tempest API tests"; do
     at=$(step_line "$name")
-    assert_not_empty "the job carries '${name}'" "$at"
-    assert_gte "'${name}' comes after '${previous_name}'" "$at" "$previous_at"
+    soft assert_not_empty "the job carries '${name}'" "$at"
+    soft assert_gte "'${name}' comes after '${previous_name}'" "$at" "$previous_at"
     previous_name="$name"
     previous_at="$at"
   done
@@ -1530,8 +1423,8 @@ test_tempest_nova_leg_is_wired() {
     "Deploy neutron operator" "Deploy placement operator" \
     "Deploy nova operator"; do
     at=$(step_line "$name")
-    assert_gte "'${name}' sits in the deploy block" "$at" "$keystone_deploy_at"
-    assert_gte "and before the first CR is applied" "$keystone_cr_at" "$at"
+    soft assert_gte "'${name}' sits in the deploy block" "$at" "$keystone_deploy_at"
+    soft assert_gte "and before the first CR is applied" "$keystone_cr_at" "$at"
   done
 
   # Both port-forwards the runner opens for a compute stack. Without
@@ -1589,22 +1482,12 @@ test_tempest_nova_leg_is_wired() {
 # the same way, and so does a fixture pair that stops referring to each other:
 # a Neutron pointed at another OVNCentral never renders ml2_conf.ini, and an
 # agent signing with another Secret gets a 403 on every metadata request.
-test_matrix_cr_names_match_the_nova_tempest_fixtures() {
-  echo "Test: the matrix names the CRs the nova tempest fixtures create"
-
-  if ! command -v jq >/dev/null 2>&1; then
-    echo "  SKIP: jq not installed"
-    SKIP=$((SKIP + 1))
-    return
-  fi
-  if ! command -v yq >/dev/null 2>&1; then
-    echo "  SKIP: yq not installed"
-    SKIP=$((SKIP + 1))
-    return
-  fi
+@test "the matrix names the CRs the nova tempest fixtures create" {
+  require_tool jq
+  require_tool yq
 
   local out matrix legs
-  out=$(mktemp)
+  out=$(mktemp "$BATS_TEST_TMPDIR/out.XXXXXX")
   # The generator writes the matrix to GITHUB_OUTPUT and prints nothing else,
   # so its ::error:: line for a missing config directory reaches this output.
   TEMPEST_SERVICES=nova GITHUB_OUTPUT="$out" \
@@ -1628,73 +1511,73 @@ test_matrix_cr_names_match_the_nova_tempest_fixtures() {
     slug="${release//./-}"
     fixtures="$PROJECT_ROOT/$dir"
 
-    assert_eq "$dir runs against its own identity CR" \
+    soft assert_eq "$dir runs against its own identity CR" \
       "keystone-nova-tempest-${slug}" "$cr"
-    assert_eq "$dir port-forwards that same Keystone Service" \
+    soft assert_eq "$dir port-forwards that same Keystone Service" \
       "keystone-nova-tempest-${slug}" "$svc_k8s"
-    assert_eq "$dir names its Nova after the release slug" \
+    soft assert_eq "$dir names its Nova after the release slug" \
       "nova-tempest-${slug}" "$nova"
     # The key the run step reads. Nothing else holds this value, and its absence
     # is silent: the leg would run at ci-run-tempest.sh's default of four
     # workers and fail on node starvation rather than on the change under test.
-    assert_eq "$dir runs at two stestr workers" "2" "$workers"
+    soft assert_eq "$dir runs at two stestr workers" "2" "$workers"
 
-    assert_eq "$dir waits on the Keystone its fixture creates" \
+    soft assert_eq "$dir waits on the Keystone its fixture creates" \
       "$(yq -r 'select(.kind == "Keystone") | .metadata.name' \
         "$fixtures/00-keystone-cr.yaml")" "$cr"
-    assert_eq "$dir waits on the OVNCentral its fixture creates" \
+    soft assert_eq "$dir waits on the OVNCentral its fixture creates" \
       "$(yq -r '.metadata.name' "$fixtures/03-ovncentral-cr.yaml")" "$ovn"
-    assert_eq "$dir waits on the Neutron its fixture creates" \
+    soft assert_eq "$dir waits on the Neutron its fixture creates" \
       "$(yq -r '.metadata.name' "$fixtures/04-neutron-cr.yaml")" "$neutron"
-    assert_eq "$dir waits on the Placement its fixture creates" \
+    soft assert_eq "$dir waits on the Placement its fixture creates" \
       "$(yq -r '.metadata.name' "$fixtures/05-placement-cr.yaml")" "$placement"
-    assert_eq "$dir waits on the Glance its fixture creates" \
+    soft assert_eq "$dir waits on the Glance its fixture creates" \
       "$(yq -r '.metadata.name' "$fixtures/06-glance-cr.yaml")" "$glance"
-    assert_eq "$dir waits on the Nova its fixture creates" \
+    soft assert_eq "$dir waits on the Nova its fixture creates" \
       "$(yq -r '.metadata.name' "$fixtures/10-nova-cr.yaml")" "$nova"
 
-    assert_eq "$dir points its Neutron at that OVNCentral" "$ovn" \
+    soft assert_eq "$dir points its Neutron at that OVNCentral" "$ovn" \
       "$(yq -r '.spec.ovn.centralRef.name' "$fixtures/04-neutron-cr.yaml")"
-    assert_eq "$dir points its chassis at the same OVNCentral" "$ovn" \
+    soft assert_eq "$dir points its chassis at the same OVNCentral" "$ovn" \
       "$(yq -r '.spec.centralRef.name' "$fixtures/12-ovnchassis-cr.yaml")"
 
     chassis=$(yq -r '.metadata.name' "$fixtures/12-ovnchassis-cr.yaml")
-    assert_eq "$dir names the chassis the way the workflow derives it" \
+    soft assert_eq "$dir names the chassis the way the workflow derives it" \
       "ovn-${nova}-chassis" "$chassis"
-    assert_eq "$dir points its metadata agent at that chassis" "$chassis" \
+    soft assert_eq "$dir points its metadata agent at that chassis" "$chassis" \
       "$(yq -r '.spec.chassisRef.name' \
         "$fixtures/13-neutronmetadataagent-cr.yaml")"
-    assert_eq "$dir names the agent the way the workflow derives it" \
+    soft assert_eq "$dir names the agent the way the workflow derives it" \
       "neutron-${nova}-agent" \
       "$(yq -r '.metadata.name' "$fixtures/13-neutronmetadataagent-cr.yaml")"
-    assert_eq "$dir forwards metadata requests to the Nova metadata Service" \
+    soft assert_eq "$dir forwards metadata requests to the Nova metadata Service" \
       "${nova}-metadata.openstack.svc.cluster.local" \
       "$(yq -r '.spec.novaMetadata.host' \
         "$fixtures/13-neutronmetadataagent-cr.yaml")"
 
     secret=$(yq -r '.metadata.name' "$fixtures/09-metadata-secret.yaml")
-    assert_eq "$dir signs those requests with the fixture Secret" "$secret" \
+    soft assert_eq "$dir signs those requests with the fixture Secret" "$secret" \
       "$(yq -r '.spec.novaMetadata.sharedSecretRef.name' \
         "$fixtures/13-neutronmetadataagent-cr.yaml")"
-    assert_eq "$dir verifies them in the Nova with the same Secret" "$secret" \
+    soft assert_eq "$dir verifies them in the Nova with the same Secret" "$secret" \
       "$(yq -r '.spec.metadata.sharedSecretRef.name' \
         "$fixtures/10-nova-cr.yaml")"
 
-    assert_eq "$dir names the Deployment the workflow rolls out" \
+    soft assert_eq "$dir names the Deployment the workflow rolls out" \
       "${nova}-fake-compute" \
       "$(yq -r 'select(.kind == "Deployment") | .metadata.name' \
         "$fixtures/11-fake-compute.yaml")"
     # The compute registers under the node's name, which is the name the OVN
     # chassis registers under too. A compute under any other name leaves every
     # port unbound.
-    assert_eq "$dir registers its compute under the node's name" \
+    soft assert_eq "$dir registers its compute under the node's name" \
       "spec.nodeName" \
       "$(yq -r 'select(.kind == "Deployment")
         | .spec.template.spec.containers[].env[]
         | select(.name == "OS_DEFAULT__HOST") | .valueFrom.fieldRef.fieldPath' \
         "$fixtures/11-fake-compute.yaml")"
 
-    assert_eq "$dir names the catalog Job the workflow waits on" \
+    soft assert_eq "$dir names the catalog Job the workflow waits on" \
       "nova-tempest-catalog-setup" \
       "$(yq -r '.metadata.name' "$fixtures/01-catalog-setup-job.yaml")"
     # From 2026.2 on, keystonemiddleware (13.0.0) answers 401 to a service
@@ -1707,26 +1590,24 @@ test_matrix_cr_names_match_the_nova_tempest_fixtures() {
     case "$release" in
       2026.1) ;;
       *)
-        assert_file_contains "$dir grants the service role to the service user" \
+        soft assert_file_matches "$dir grants the service role to the service user" \
           "$fixtures/01-catalog-setup-job.yaml" \
           "openstack role add --user admin --user-domain Default"
-        assert_file_contains "$dir grants it on the admin project" \
+        soft assert_file_matches "$dir grants it on the admin project" \
           "$fixtures/01-catalog-setup-job.yaml" \
           "project admin --project-domain Default service"
         ;;
     esac
-    assert_eq "$dir names the image-seed Job the workflow waits on" \
+    soft assert_eq "$dir names the image-seed Job the workflow waits on" \
       "nova-tempest-image-seed" \
       "$(yq -r '.metadata.name' "$fixtures/08-image-seed-job.yaml")"
-    assert_eq "$dir names the flavor-seed Job the workflow waits on" \
+    soft assert_eq "$dir names the flavor-seed Job the workflow waits on" \
       "nova-tempest-flavor-seed" \
       "$(yq -r '.metadata.name' "$fixtures/14-flavor-seed-job.yaml")"
   done <<<"$legs"
 }
 
-test_compute_stack_globs_match_one_file() {
-  echo "Test: every compute-stack suffix glob matches one fixture per directory"
-
+@test "every compute-stack suffix glob matches one fixture per directory" {
   # The bring-up steps name eight of their fixtures by suffix glob, because the
   # numeric prefixes differ between tests/tempest/nova-<slug>/ and
   # tests/tempest/cinder-<slug>/. The shell expands the pattern and hands
@@ -1744,7 +1625,7 @@ test_compute_stack_globs_match_one_file() {
     dirs_seen=$((dirs_seen + 1))
     for glob in "${globs[@]}"; do
       count=$(compgen -G "${dir}${glob}" | grep -c .) || true
-      assert_eq "$(basename "$dir")/${glob} matches one fixture" "1" "$count"
+      soft assert_eq "$(basename "$dir")/${glob} matches one fixture" "1" "$count"
     done
   done
 
@@ -1765,9 +1646,7 @@ test_compute_stack_globs_match_one_file() {
     "$(printf '%s\n' "${globs[@]}" | LC_ALL=C sort -u | tr '\n' ' ')" "$used"
 }
 
-test_nova_tempest_fixtures_agree_on_the_seed_ids() {
-  echo "Test: each nova tempest fixture seeds the ids its tempest.conf pins"
-
+@test "each nova tempest fixture seeds the ids its tempest.conf pins" {
   # Four ids live twice: the two seed Jobs create them and tempest.conf points
   # [compute] image_ref, image_ref_alt, flavor_ref and flavor_ref_alt at them.
   # Nothing holds the two copies together, and both Jobs end on a listing rather
@@ -1777,17 +1656,12 @@ test_nova_tempest_fixtures_agree_on_the_seed_ids() {
   # The guards are what make a pod the backoffLimit retries converge instead of
   # erroring on a duplicate id, so they are proven by running the scripts
   # against a stubbed client rather than by grepping for the word `show`.
-  if ! command -v yq >/dev/null 2>&1; then
-    echo "  SKIP: yq not installed"
-    SKIP=$((SKIP + 1))
-    return
-  fi
+  require_tool yq
 
-  local tmp dir name conf log code
+  local tmp dir name conf log
   local seed_id seed_alt_id flavor_id flavor_alt_id
-  tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' RETURN
-  make_seed_stubs "$tmp"
+  tmp="$BATS_TEST_TMPDIR"
+  make_seed_stubs
 
   for dir in "$PROJECT_ROOT"/tests/tempest/nova-*/; do
     name=$(basename "$dir")
@@ -1802,70 +1676,64 @@ test_nova_tempest_fixtures_agree_on_the_seed_ids() {
     flavor_alt_id=$(sed -n 's/^ *FLAVOR_ALT_ID="\(.*\)"/\1/p' \
       "${dir}14-flavor-seed-job.yaml" | head -1)
 
-    assert_eq "$name seeds the image its tempest.conf boots from" \
+    soft assert_eq "$name seeds the image its tempest.conf boots from" \
       "$seed_id" "$(conf_value "$conf" compute image_ref)"
-    assert_eq "$name seeds the second image the rebuild tests swap onto" \
+    soft assert_eq "$name seeds the second image the rebuild tests swap onto" \
       "$seed_alt_id" "$(conf_value "$conf" compute image_ref_alt)"
-    assert_eq "$name seeds the flavor its tempest.conf boots on" \
+    soft assert_eq "$name seeds the flavor its tempest.conf boots on" \
       "$flavor_id" "$(conf_value "$conf" compute flavor_ref)"
-    assert_eq "$name seeds the larger flavor the resize tests move onto" \
+    soft assert_eq "$name seeds the larger flavor the resize tests move onto" \
       "$flavor_alt_id" "$(conf_value "$conf" compute flavor_ref_alt)"
 
     # The ids are fixed so tempest.conf needs no per-run substitution, and they
     # are this leg's alone: every Glance on the kind cluster writes into the one
     # glance-images bucket keyed by image id.
-    assert_eq "$name pins the image id the leg owns" \
+    soft assert_eq "$name pins the image id the leg owns" \
       "4e0a7e57-0000-4000-8000-000000000001" "$seed_id"
-    assert_eq "$name pins the second one beside it" \
+    soft assert_eq "$name pins the second one beside it" \
       "4e0a7e57-0000-4000-8000-000000000002" "$seed_alt_id"
-    assert_eq "$name pins the flavor id the leg owns" \
+    soft assert_eq "$name pins the flavor id the leg owns" \
       "4e0a7e57-0000-4000-8000-0000000000f1" "$flavor_id"
-    assert_eq "$name pins the second one beside it" \
+    soft assert_eq "$name pins the second one beside it" \
       "4e0a7e57-0000-4000-8000-0000000000f2" "$flavor_alt_id"
 
     # A retried pod: every object is already there, so the script creates
     # nothing and still exits 0.
-    run_seed_script "$tmp" "${dir}08-image-seed-job.yaml" 0
-    code=$?
-    assert_eq "$name: a re-run of the image seed exits 0" "0" "$code"
-    assert_not_contains "$name: and registers no image a second time" \
+    run run_seed_script "$tmp" "${dir}08-image-seed-job.yaml" 0
+    soft assert_eq "$name: a re-run of the image seed exits 0" "0" "$status"
+    soft assert_not_contains "$name: and registers no image a second time" \
       "$(cat "$tmp/openstack.log")" "image create"
 
-    run_seed_script "$tmp" "${dir}14-flavor-seed-job.yaml" 0
-    code=$?
-    assert_eq "$name: a re-run of the flavor seed exits 0" "0" "$code"
-    assert_not_contains "$name: and registers no flavor a second time" \
+    run run_seed_script "$tmp" "${dir}14-flavor-seed-job.yaml" 0
+    soft assert_eq "$name: a re-run of the flavor seed exits 0" "0" "$status"
+    soft assert_not_contains "$name: and registers no flavor a second time" \
       "$(cat "$tmp/openstack.log")" "flavor create"
 
     # A first run: nothing is there, so each object is created once, under the
     # id tempest.conf reads.
-    run_seed_script "$tmp" "${dir}08-image-seed-job.yaml" 1
-    code=$?
+    run run_seed_script "$tmp" "${dir}08-image-seed-job.yaml" 1
     log=$(cat "$tmp/openstack.log")
-    assert_eq "$name: a first run of the image seed exits 0" "0" "$code"
-    assert_eq "$name: it registers two images" "2" \
+    soft assert_eq "$name: a first run of the image seed exits 0" "0" "$status"
+    soft assert_eq "$name: it registers two images" "2" \
       "$(grep -c 'image create' <<<"$log")"
-    assert_eq "$name: one of them under image_ref" "1" \
+    soft assert_eq "$name: one of them under image_ref" "1" \
       "$(grep -cF "image create --id ${seed_id} " <<<"$log")"
-    assert_eq "$name: the other under image_ref_alt" "1" \
+    soft assert_eq "$name: the other under image_ref_alt" "1" \
       "$(grep -cF "image create --id ${seed_alt_id} " <<<"$log")"
 
-    run_seed_script "$tmp" "${dir}14-flavor-seed-job.yaml" 1
-    code=$?
+    run run_seed_script "$tmp" "${dir}14-flavor-seed-job.yaml" 1
     log=$(cat "$tmp/openstack.log")
-    assert_eq "$name: a first run of the flavor seed exits 0" "0" "$code"
-    assert_eq "$name: it registers two flavors" "2" \
+    soft assert_eq "$name: a first run of the flavor seed exits 0" "0" "$status"
+    soft assert_eq "$name: it registers two flavors" "2" \
       "$(grep -c 'flavor create' <<<"$log")"
-    assert_eq "$name: one of them under flavor_ref" "1" \
+    soft assert_eq "$name: one of them under flavor_ref" "1" \
       "$(grep -cF "flavor create --id ${flavor_id} " <<<"$log")"
-    assert_eq "$name: the other under flavor_ref_alt" "1" \
+    soft assert_eq "$name: the other under flavor_ref_alt" "1" \
       "$(grep -cF "flavor create --id ${flavor_alt_id} " <<<"$log")"
   done
 }
 
-test_nova_tempest_conf_pins_the_flag_table() {
-  echo "Test: each nova tempest.conf carries the flag table the lab measured"
-
+@test "each nova tempest.conf carries the flag table the lab measured" {
   # The table came out of the Phase-0 lab of #1015 and lives nowhere else: with
   # every flag on, the same suite took 91 minutes in place of 42 and failed 18
   # tests. A flipped flag therefore costs the leg its 150-minute wall, and a key
@@ -1891,36 +1759,36 @@ test_nova_tempest_conf_pins_the_flag_table() {
     conf="${dir}tempest.conf"
     flags=$(conf_section "$conf" compute-feature-enabled)
 
-    assert_eq "$name leaves the 29 flags the lab left on" "$expected_true" \
+    soft assert_eq "$name leaves the 29 flags the lab left on" "$expected_true" \
       "$(awk -F' *= *' '$2 == "true" { print $1 }' <<<"$flags" |
         LC_ALL=C sort | tr '\n' ' ')"
-    assert_eq "$name switches off the three the lab could not serve" \
+    soft assert_eq "$name switches off the three the lab could not serve" \
       "$expected_false" \
       "$(awk -F' *= *' '$2 == "false" { print $1 }' <<<"$flags" |
         LC_ALL=C sort | tr '\n' ' ')"
-    assert_eq "$name sets every flag of the group to true or false" "" \
+    soft assert_eq "$name sets every flag of the group to true or false" "" \
       "$(awk -F' *= *' '$2 != "true" && $2 != "false"' <<<"$flags")"
 
     # One fake compute, so the multi-node classes skip on this value rather
     # than failing to find a second host.
-    assert_eq "$name runs one compute" "1" \
+    soft assert_eq "$name runs one compute" "1" \
       "$(conf_value "$conf" compute min_compute_nodes)"
     # Every server boots onto a port, so each dynamic-credential project needs
     # a network of its own. This is where the nova legs part from the cinder
     # ones, whose servers carry no NIC.
-    assert_eq "$name gives each project a network of its own" "true" \
+    soft assert_eq "$name gives each project a network of its own" "true" \
       "$(conf_value "$conf" auth create_isolated_networks)"
     # A fake-driver server has no guest to ssh into.
-    assert_eq "$name does not validate a server over ssh" "false" \
+    soft assert_eq "$name does not validate a server over ssh" "false" \
       "$(conf_value "$conf" validation run_validation)"
 
     for key in nova neutron glance placement; do
-      assert_eq "$name runs against a ${key}" "true" \
+      soft assert_eq "$name runs against a ${key}" "true" \
         "$(conf_value "$conf" service_available "$key")"
     done
     # No Cinder on this leg, so the volume-tagged compute tests skip. The
     # cross-service path runs on the cinder legs.
-    assert_eq "$name runs against no cinder" "false" \
+    soft assert_eq "$name runs against no cinder" "false" \
       "$(conf_value "$conf" service_available cinder)"
 
     # The catalog Job registers a public and an internal endpoint for every
@@ -1928,31 +1796,23 @@ test_nova_tempest_conf_pins_the_flag_table() {
     # An endpoint_type or v3_endpoint_type line here would send its clients to
     # the internal rows nova's own clients use, silently changing what the
     # suite exercises.
-    assert_file_not_contains "$name pins no catalog interface" "$conf" \
+    soft assert_file_not_matches "$name pins no catalog interface" "$conf" \
       "endpoint_type"
   done
 }
 
-test_nova_tempest_crs_fit_their_uwsgi_workers() {
-  echo "Test: each nova leg's Nova CR fits the uWSGI workers it asks for"
-
-  if ! command -v yq >/dev/null 2>&1; then
-    echo "  SKIP: yq not installed"
-    SKIP=$((SKIP + 1))
-    return
-  fi
+@test "each nova leg's Nova CR fits the uWSGI workers it asks for" {
+  require_tool yq
 
   local dir cr
   for dir in "$PROJECT_ROOT"/tests/tempest/nova-*/; do
     for cr in "$dir"*-nova-cr.yaml; do
-      assert_nova_api_fits_its_workers "$cr"
+      soft assert_nova_api_fits_its_workers "$cr"
     done
   done
 }
 
-test_nova_tempest_lists_hold_the_lab_patterns() {
-  echo "Test: each nova test list holds the patterns the lab recorded"
-
+@test "each nova test list holds the patterns the lab recorded" {
   # The four exclusions and their two retirement conditions lived only in a
   # comment on a closed issue. Each one hides a real failure, so a fifth pattern
   # added without a group header, or one of these four dropped, is a test the
@@ -1968,23 +1828,23 @@ tempest\.api\.compute\.servers\.test_novnc\.NoVNCConsoleTestJSON\.test_novnc\['
     name=$(basename "$dir")
     excl="${dir}exclude-tests.txt"
 
-    assert_eq "$name excludes these four tests and no others" "$expected" \
+    soft assert_eq "$name excludes these four tests and no others" "$expected" \
       "$(grep -vE '^[[:space:]]*(#|$)' "$excl")"
 
     # One group, one owner, two conditions that retire it. The greps are
     # anchored on a single space because the file's format legend carries the
     # same two words indented, and an unanchored count would read the legend as
     # a group header.
-    assert_eq "$name carries one group header" "1" \
+    soft assert_eq "$name carries one group header" "1" \
       "$(grep -c '^# tracked-by:' "$excl")"
-    assert_file_contains "$name names the issue that owns the group" "$excl" \
+    soft assert_file_matches "$name names the issue that owns the group" "$excl" \
       "^# tracked-by: https://github.com/C5C3/cobaltcore/issues/1014$"
-    assert_eq "$name carries two retirement conditions" "2" \
+    soft assert_eq "$name carries two retirement conditions" "2" \
       "$(grep -c '^# re-evaluate-on:' "$excl")"
-    assert_file_contains "$name retires three of them on a real driver" \
+    soft assert_file_matches "$name retires three of them on a real driver" \
       "$excl" \
       "^# re-evaluate-on: a compute driver other than nova's fake driver on this leg$"
-    assert_file_contains "$name retires the fourth on an external network" \
+    soft assert_file_matches "$name retires the fourth on an external network" \
       "$excl" \
       "^# re-evaluate-on: the leg creates a default external network and subnet pool$"
 
@@ -1994,12 +1854,12 @@ tempest\.api\.compute\.servers\.test_novnc\.NoVNCConsoleTestJSON\.test_novnc\['
     # the only case that covers a rejected console token, with no failure to
     # show for it.
     novnc=$(grep test_novnc "$excl" | grep -v '^#')
-    assert_eq "$name carries one noVNC pattern" "1" "$(grep -c . <<<"$novnc")"
-    assert_eq "$name excludes test_novnc itself" "yes" \
+    soft assert_eq "$name carries one noVNC pattern" "1" "$(grep -c . <<<"$novnc")"
+    soft assert_eq "$name excludes test_novnc itself" "yes" \
       "$(grep -qE "$novnc" \
         <<<'tempest.api.compute.servers.test_novnc.NoVNCConsoleTestJSON.test_novnc[id-c640fdff-8ab4-45a4-a5d8-7e6146cbd0dc]' &&
         echo yes || echo no)"
-    assert_eq "$name keeps test_novnc_bad_token in the run" "yes" \
+    soft assert_eq "$name keeps test_novnc_bad_token in the run" "yes" \
       "$(grep -qE "$novnc" \
         <<<'tempest.api.compute.servers.test_novnc.NoVNCConsoleTestJSON.test_novnc_bad_token[id-f9c79937-addc-4aaa-9e0e-841eef02aeb7,negative]' &&
         echo no || echo yes)"
@@ -2010,60 +1870,52 @@ tempest\.api\.compute\.servers\.test_novnc\.NoVNCConsoleTestJSON\.test_novnc\['
     # plugin phase stays empty and the runner skips it.
     incl="${dir}include-tests.txt"
     patterns=$(grep -vE '^[[:space:]]*(#|$)' "$incl")
-    assert_eq "$name takes the whole compute tree and nothing else" \
+    soft assert_eq "$name takes the whole compute tree and nothing else" \
       "tempest.api.compute" "$patterns"
-    assert_eq "$name's pattern lands in the runner's core phase" "1" \
+    soft assert_eq "$name's pattern lands in the runner's core phase" "1" \
       "$(grep -cE '^tempest\.' <<<"$patterns")"
   done
 }
 
-test_discover_hosts_takes_an_optional_host() {
-  echo "Test: discover-hosts.sh takes the compute host as a third argument"
-
+@test "discover-hosts.sh takes the compute host as a third argument" {
   # The tempest legs run their fake compute under the kind node's name, because
   # the OVN chassis registers under that name
   # (operators/ovn/internal/controller/reconcile_nodes.go) and neutron binds a
   # port only to a host that has a live chassis. The suites that call the helper
   # with two arguments still wait for fake-1, and a node name carries dots, so
   # the lookup has to match the host as a fixed string.
-  local tmp out code
-  tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' RETURN
-  make_discover_stubs "$tmp"
+  local tmp
+  tmp="$BATS_TEST_TMPDIR"
+  make_discover_stubs
 
-  out=$(run_discover_hosts "$tmp" fake-1 0 1 nova-basic openstack)
-  code=$?
-  assert_eq "two arguments are still a complete call" "0" "$code"
-  assert_contains "the host defaults to fake-1" "$out" \
+  run run_discover_hosts "$tmp" fake-1 0 1 nova-basic openstack
+  assert_eq "two arguments are still a complete call" "0" "$status"
+  assert_contains "the host defaults to fake-1" "$output" \
     "OK: host fake-1 mapped into cell1"
 
-  out=$(run_discover_hosts "$tmp" cobaltcore-control-plane 0 1 \
-    nova-tempest-2026-1 openstack cobaltcore-control-plane)
-  code=$?
-  assert_eq "a third argument is accepted" "0" "$code"
-  assert_contains "the helper waits for the host it was handed" "$out" \
+  run run_discover_hosts "$tmp" cobaltcore-control-plane 0 1 \
+    nova-tempest-2026-1 openstack cobaltcore-control-plane
+  assert_eq "a third argument is accepted" "0" "$status"
+  assert_contains "the helper waits for the host it was handed" "$output" \
     "OK: host cobaltcore-control-plane mapped into cell1"
 
   # nodeXa is what an unanchored regex match of node.a would accept. The stubbed
   # discovery fails on the second round, so the run ends after one lookup
   # instead of polling to the helper's 150-second deadline.
-  out=$(run_discover_hosts "$tmp" nodeXa 1 2 \
-    nova-tempest-2026-1 openstack node.a)
-  code=$?
-  assert_nonzero_exit "a dot in the host matches no other character" "$code"
-  assert_not_contains "nodeXa does not answer for node.a" "$out" \
+  run run_discover_hosts "$tmp" nodeXa 1 2 \
+    nova-tempest-2026-1 openstack node.a
+  assert_nonzero_exit "a dot in the host matches no other character" "$status"
+  assert_not_contains "nodeXa does not answer for node.a" "$output" \
     "OK: host node.a"
 
-  out=$(run_discover_hosts "$tmp" fake-1 0 1 nova-basic)
-  code=$?
-  assert_eq "one argument is rejected" "2" "$code"
+  run run_discover_hosts "$tmp" fake-1 0 1 nova-basic
+  assert_eq "one argument is rejected" "2" "$status"
   assert_contains "it prints the usage line" "$(cat "$tmp/stderr")" \
     "usage: discover-hosts.sh <nova-name> <namespace> [host]"
 
-  out=$(run_discover_hosts "$tmp" fake-1 0 1 \
-    nova-basic openstack a-host one-too-many)
-  code=$?
-  assert_eq "four arguments are rejected" "2" "$code"
+  run run_discover_hosts "$tmp" fake-1 0 1 \
+    nova-basic openstack a-host one-too-many
+  assert_eq "four arguments are rejected" "2" "$status"
   assert_contains "it prints the usage line there too" \
     "$(cat "$tmp/stderr")" \
     "usage: discover-hosts.sh <nova-name> <namespace> [host]"
@@ -2071,17 +1923,14 @@ test_discover_hosts_takes_an_optional_host() {
   # A discovery that never reached the databases is reported as itself and stops
   # the run, so the 150 seconds are not spent waiting for a mapping nothing is
   # writing.
-  out=$(run_discover_hosts "$tmp" fake-1 7 1 nova-basic openstack)
-  code=$?
-  assert_eq "a failed discovery exits 1" "1" "$code"
+  run run_discover_hosts "$tmp" fake-1 7 1 nova-basic openstack
+  assert_eq "a failed discovery exits 1" "1" "$status"
   assert_contains "it names the exit code of nova-manage" \
     "$(cat "$tmp/stderr")" "ERROR: discover_hosts exited 7"
-  assert_not_contains "and reports no mapping" "$out" "OK:"
+  assert_not_contains "and reports no mapping" "$output" "OK:"
 }
 
-test_runner_forwards_the_nova_apis() {
-  echo "Test: ci-run-tempest.sh forwards the nova API and the console proxy"
-
+@test "ci-run-tempest.sh forwards the nova API and the console proxy" {
   # tempest.api.compute talks to the compute API, and test_novnc_bad_token
   # dials the novncproxy_base_url the API hands it, which the operator renders
   # as http://<nova>-novncproxy.<ns>.svc.cluster.local:6080/vnc_lite.html while
@@ -2090,26 +1939,23 @@ test_runner_forwards_the_nova_apis() {
   # forward and an add-host. Each is gated on its own env var: the cinder legs
   # set the compute one alone, and a leg that sets neither runs the forwards it
   # ran before nova existed.
-  local tmp out code pf
+  local tmp pf
 
-  tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' RETURN
-  make_tempest_stubs "$tmp"
+  tmp="$BATS_TEST_TMPDIR"
+  make_tempest_stubs
 
-  out=$(run_ci_tempest "$tmp" "" "" "")
-  code=$?
+  run run_ci_tempest "$tmp" "" "" ""
   pf="$(cat "$tmp/pf.log")"
-  assert_eq "a leg that names no Nova reaches the container" "0" "$code"
+  assert_eq "a leg that names no Nova reaches the container" "0" "$status"
   assert_contains "keystone is forwarded on 5000" "$pf" "5000:5000"
   assert_not_contains "and nothing is forwarded on 8774" "$pf" "8774:8774"
   assert_not_contains "and nothing on 6080" "$pf" "6080:6080"
   assert_not_contains "the container resolves no nova name" \
     "$(cat "$tmp/docker.log")" "--add-host nova"
 
-  out=$(run_ci_tempest "$tmp" nova-tempest-2026-1 nova-tempest-2026-1-novncproxy "")
-  code=$?
+  run run_ci_tempest "$tmp" nova-tempest-2026-1 nova-tempest-2026-1-novncproxy ""
   pf="$(cat "$tmp/pf.log")"
-  assert_eq "the nova leg reaches the container" "0" "$code"
+  assert_eq "the nova leg reaches the container" "0" "$status"
   assert_contains "the compute API is forwarded on 8774" "$pf" \
     "svc/nova-tempest-2026-1 -n openstack 8774:8774"
   assert_contains "the console proxy on 6080" "$pf" \
@@ -2137,55 +1983,47 @@ test_runner_forwards_the_nova_apis() {
 
   # A compute API that never answers stops the run before the container starts,
   # instead of handing tempest a catalog whose compute endpoint refuses.
-  out=$(run_ci_tempest "$tmp" nova-tempest-2026-1 nova-tempest-2026-1-novncproxy 8774)
-  code=$?
-  assert_eq "an unreachable compute API fails the leg" "1" "$code"
-  assert_contains "the error names the API and its port" "$out" \
+  run run_ci_tempest "$tmp" nova-tempest-2026-1 nova-tempest-2026-1-novncproxy 8774
+  assert_eq "an unreachable compute API fails the leg" "1" "$status"
+  assert_contains "the error names the API and its port" "$output" \
     "::error::Nova API at http://localhost:8774 did not become reachable after 10 attempts"
   assert_eq "and no container is started" "" "$(cat "$tmp/docker.log")"
 
-  out=$(run_ci_tempest "$tmp" nova-tempest-2026-1 nova-tempest-2026-1-novncproxy 6080)
-  code=$?
-  assert_eq "an unreachable console proxy fails it too" "1" "$code"
-  assert_contains "under its own name" "$out" \
+  run run_ci_tempest "$tmp" nova-tempest-2026-1 nova-tempest-2026-1-novncproxy 6080
+  assert_eq "an unreachable console proxy fails it too" "1" "$status"
+  assert_contains "under its own name" "$output" \
     "::error::NovaConsole API at http://localhost:6080 did not become reachable after 10 attempts"
 
   # The cinder legs attach volumes to a server and never open a console.
-  out=$(run_ci_tempest "$tmp" nova-tempest-2026-1 "" "")
-  code=$?
+  run run_ci_tempest "$tmp" nova-tempest-2026-1 "" ""
   pf="$(cat "$tmp/pf.log")"
-  assert_eq "a cinder leg reaches the container" "0" "$code"
+  assert_eq "a cinder leg reaches the container" "0" "$status"
   assert_contains "it forwards the compute API" "$pf" "8774:8774"
   assert_not_contains "and no console proxy" "$pf" "6080:6080"
 }
 
-test_runner_forwards_placement() {
-  echo "Test: ci-run-tempest.sh forwards the placement API"
-
+@test "ci-run-tempest.sh forwards the placement API" {
   # Both compute-stack legs register a placement endpoint in the catalog on a
   # cluster-internal name (tests/tempest/nova-2026-1/01-catalog-setup-job.yaml)
   # and set `placement = true` under [service_available]. Tempest builds its
   # clients lazily, so without the forward the break lands on the first call: a
   # name-resolution error reported as a test error, not as a skip, and the
   # serial retry pass repeats it through the same missing forward.
-  local tmp out code pf
+  local tmp pf
 
-  tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' RETURN
-  make_tempest_stubs "$tmp"
+  tmp="$BATS_TEST_TMPDIR"
+  make_tempest_stubs
 
-  out=$(run_ci_tempest "$tmp" "" "" "" "")
-  code=$?
+  run run_ci_tempest "$tmp" "" "" "" ""
   pf="$(cat "$tmp/pf.log")"
-  assert_eq "a leg that names no Placement reaches the container" "0" "$code"
+  assert_eq "a leg that names no Placement reaches the container" "0" "$status"
   assert_not_contains "and nothing is forwarded on 8778" "$pf" "8778:8778"
   assert_not_contains "the container resolves no placement name" \
     "$(cat "$tmp/docker.log")" "--add-host placement"
 
-  out=$(run_ci_tempest "$tmp" nova-tempest-2026-1 "" "" placement-nova-tempest-2026-1)
-  code=$?
+  run run_ci_tempest "$tmp" nova-tempest-2026-1 "" "" placement-nova-tempest-2026-1
   pf="$(cat "$tmp/pf.log")"
-  assert_eq "the compute-stack leg reaches the container" "0" "$code"
+  assert_eq "the compute-stack leg reaches the container" "0" "$status"
   assert_contains "the placement API is forwarded on 8778" "$pf" \
     "svc/placement-nova-tempest-2026-1 -n openstack 8778:8778"
 
@@ -2205,64 +2043,55 @@ test_runner_forwards_placement() {
 
   # A placement API that never answers stops the run before the container
   # starts, the way every other optional target does.
-  out=$(run_ci_tempest "$tmp" nova-tempest-2026-1 "" 8778 placement-nova-tempest-2026-1)
-  code=$?
-  assert_eq "an unreachable placement API fails the leg" "1" "$code"
-  assert_contains "the error names the API and its port" "$out" \
+  run run_ci_tempest "$tmp" nova-tempest-2026-1 "" 8778 placement-nova-tempest-2026-1
+  assert_eq "an unreachable placement API fails the leg" "1" "$status"
+  assert_contains "the error names the API and its port" "$output" \
     "::error::Placement API at http://localhost:8778 did not become reachable after 10 attempts"
 }
 
-test_runner_reports_a_forward_that_dropped() {
-  echo "Test: ci-run-tempest.sh names a port-forward that died during the run"
-
+@test "ci-run-tempest.sh names a port-forward that died during the run" {
   # kubectl pins a forward to one pod and exits for good when that pod goes
   # away. On a leg whose wall is 150 minutes that is a live risk, and with the
   # forward's output discarded the job log showed hundreds of connection errors
   # and no cause. Every forward now writes its own log into the results artifact,
   # and a forward that is gone when the container returns is named — Keystone on
   # 5000 included, which is the one every leg opens.
-  local tmp out code
+  local tmp
 
-  tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' RETURN
-  make_tempest_stubs "$tmp"
+  tmp="$BATS_TEST_TMPDIR"
+  make_tempest_stubs
 
-  out=$(run_ci_tempest "$tmp" nova-tempest-2026-1 "" "" "")
-  code=$?
-  assert_eq "a leg whose forwards held returns the container's code" "0" "$code"
-  assert_not_contains "and nothing is reported as dropped" "$out" \
+  run run_ci_tempest "$tmp" nova-tempest-2026-1 "" "" ""
+  assert_eq "a leg whose forwards held returns the container's code" "0" "$status"
+  assert_not_contains "and nothing is reported as dropped" "$output" \
     "port-forward on 8774 died"
   assert_eq "the compute forward keeps a log of its own" "yes" \
     "$(test -f "$tmp/output/port-forward-Nova.log" && echo yes || echo no)"
   assert_eq "the keystone forward keeps one too" "yes" \
     "$(test -f "$tmp/output/port-forward-Keystone.log" && echo yes || echo no)"
-  assert_not_contains "and keystone is not reported as dropped either" "$out" \
+  assert_not_contains "and keystone is not reported as dropped either" "$output" \
     "port-forward on 5000 died"
 
   # 8774 is forwarded, answers its readiness poll out of $STUB_PF_LOG, and is
   # gone by the time the container returns.
-  out=$(run_ci_tempest "$tmp" nova-tempest-2026-1 "" "" "" 8774)
-  code=$?
-  assert_eq "a dropped forward does not change the leg's exit code" "0" "$code"
-  assert_contains "the log names the API that went away" "$out" \
+  run run_ci_tempest "$tmp" nova-tempest-2026-1 "" "" "" 8774
+  assert_eq "a dropped forward does not change the leg's exit code" "0" "$status"
+  assert_contains "the log names the API that went away" "$output" \
     "::error::The Nova port-forward on 8774 died during the run"
-  assert_contains "and says the failures below are not service failures" "$out" \
+  assert_contains "and says the failures below are not service failures" "$output" \
     "are not service failures"
 
   # Every test issues a token through the 5000 forward first, so a keystone
   # forward that dropped fails the rest of the suite in both stestr phases and
   # the serial retry pass. This leg names no optional API at all, which is the
   # keystone shape: there the 5000 forward is the only one there is to report.
-  out=$(run_ci_tempest "$tmp" "" "" "" "" 5000)
-  code=$?
-  assert_eq "a dropped keystone forward does not change the exit code" "0" "$code"
-  assert_contains "the log names keystone when the 5000 forward went away" "$out" \
+  run run_ci_tempest "$tmp" "" "" "" "" 5000
+  assert_eq "a dropped keystone forward does not change the exit code" "0" "$status"
+  assert_contains "the log names keystone when the 5000 forward went away" "$output" \
     "::error::The Keystone port-forward on 5000 died during the run"
 }
 
-test_controlplane_leg_deploys_nova() {
-  echo "Test: the e2e-controlplane leg carries the compute service"
-
+@test "the e2e-controlplane leg carries the compute service" {
   # The full-ControlPlane suite drives the compute service through the chain,
   # and every piece of that is wired in this one job. kind pulls nothing the run
   # did not load, the projected Nova child needs a nova-operator to drive it to
@@ -2323,45 +2152,3 @@ test_controlplane_leg_deploys_nova() {
   assert_contains "the failed run dumps the nova-operator" "$dump" \
     "OPERATOR: nova"
 }
-
-# ---------------------------------------------------------------------------
-# Run
-# ---------------------------------------------------------------------------
-test_all_operators_lists_nova
-test_service_operators_lists_nova
-test_nova_filter_is_wired
-test_nova_change_produces_an_e2e_leg
-test_helm_filter_covers_the_nova_chart
-test_helm_validate_renders_the_nova_chart
-test_go_matrices_list_nova
-test_cleanup_matrices_cover_the_nova_images
-test_a_keystone_only_change_produces_no_nova_leg
-test_nova_image_filter_is_wired
-test_nova_e2e_filter_is_wired
-test_nova_leg_opts_into_the_broker
-test_nova_leg_deploys_the_sibling_operators
-test_nova_leg_narrows_parallelism_and_budget
-test_nova_leg_runs_as_two_shards
-test_nova_leg_dumps_the_siblings
-test_nova_leg_loads_the_tempest_image
-test_chaos_nova_leg_runs_the_nova_suites
-test_nova_tempest_filter_is_wired
-test_tempest_nova_leg_is_wired
-test_matrix_cr_names_match_the_nova_tempest_fixtures
-test_compute_stack_globs_match_one_file
-test_nova_tempest_fixtures_agree_on_the_seed_ids
-test_nova_tempest_conf_pins_the_flag_table
-test_nova_tempest_crs_fit_their_uwsgi_workers
-test_nova_tempest_lists_hold_the_lab_patterns
-test_discover_hosts_takes_an_optional_host
-test_runner_forwards_the_nova_apis
-test_runner_forwards_placement
-test_runner_reports_a_forward_that_dropped
-test_controlplane_leg_deploys_nova
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0

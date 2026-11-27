@@ -217,7 +217,7 @@ those names collides with the running sibling, because the suites of one
 `<svc>_basic_<slug>`, and check with
 `grep -rnE 'basic[-_]<year>([^-_0-9]|$)' tests/e2e/*/basic-deployment-<slug>/`.
 Add the nova variant to `shard_two` in `.github/workflows/ci.yaml`
-(`tests/unit/ci/nova_e2e_matrix_test.sh` asserts every suite runs in one
+(`tests/unit/ci/nova_e2e_matrix.bats` asserts every suite runs in one
 shard), and add the suite's row, section and tree entry to the reference
 pages that list suites
 ([Keystone E2E Tests](../reference/testing/keystone-e2e-tests.md),
@@ -331,7 +331,7 @@ each gains the new release by hand:
   enumerate releases.
 - **Shell suites that pin counts.**
   `tests/unit/hack/ci_resolve_e2e_images_test.sh` pins the image-map size
-  and the per-service release lists, and `tests/unit/ci/nova_e2e_matrix_test.sh`
+  and the per-service release lists, and `tests/unit/ci/nova_e2e_matrix.bats`
   the number of images the nova e2e job loads and the number of nova Tempest
   jobs.
 - **Prose.** Run

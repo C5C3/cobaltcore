@@ -1200,7 +1200,7 @@ suites of shard 2 (`compute-node-pool`, `invalid-novacompute-cr`,
 `tests/e2e/nova-operator/`, so a new suite runs in shard 1 until it is moved.
 Each shard takes three of the six suites that run 24 to 30 minutes, which puts
 both at about 80 to 95 minutes.
-`tests/unit/ci/nova_e2e_matrix_test.sh` fails when a suite runs in neither
+`tests/unit/ci/nova_e2e_matrix.bats` fails when a suite runs in neither
 shard or in both.
 
 A third step, `Dump diagnostic info (nova siblings)`,

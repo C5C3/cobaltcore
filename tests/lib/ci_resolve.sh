@@ -12,7 +12,9 @@
 # once per output test, where missing one leaves a test passing for the wrong
 # reason.
 #
-# Source this after tests/lib/assertions.sh, with PROJECT_ROOT and CI_YAML set.
+# Source this after the assertions, tests/lib/bats/common.bash in a native bats
+# file or tests/lib/assertions.sh in an old script, with PROJECT_ROOT and CI_YAML
+# set.
 #
 # SERVICE_OPERATORS and CANARY_OPERATOR are supplied as defaults so a caller that
 # only cares about ALL_OPERATORS keeps working; both are overridden by anything
@@ -103,12 +105,18 @@ resolve_outputs() {
 # on the changes job. The consuming side stays with the caller — a signal may
 # have one consumer or several, and each test pins its own.
 assert_filter_is_wired() {
-  local filter="$1" output="$2"
+  local filter="$1" output="$2" check=assert_file_contains
 
-  assert_file_contains "the paths filter exists" "$CI_YAML" \
+  # A native bats file names the check assert_file_matches, because bats-file
+  # defines assert_file_contains with the file first; an old script keeps the
+  # name of tests/lib/assertions.sh.
+  if declare -F assert_file_matches >/dev/null; then
+    check=assert_file_matches
+  fi
+  "$check" "the paths filter exists" "$CI_YAML" \
     "^ *${filter}:$"
-  assert_file_contains "the filter is passed to the resolve step" "$CI_YAML" \
+  "$check" "the filter is passed to the resolve step" "$CI_YAML" \
     "FILTER_${filter}: \${{ steps.filter.outputs.${filter} }}"
-  assert_file_contains "the changes job exports the output" "$CI_YAML" \
+  "$check" "the changes job exports the output" "$CI_YAML" \
     "${output}: \${{ steps.result.outputs.${output} }}"
 }

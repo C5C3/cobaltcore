@@ -221,7 +221,7 @@ for d in ${dirs[@]+"${dirs[@]}"}; do
       # 04-neutron-cr.yaml, 05-placement-cr.yaml, 06-glance-cr.yaml and
       # 10-nova-cr.yaml hold the other copy of each name, and a rename there
       # would leave CI waiting out its timeout on a resource that does not
-      # exist, so tests/unit/ci/nova_e2e_matrix_test.sh asserts the two agree.
+      # exist, so tests/unit/ci/nova_e2e_matrix.bats asserts the two agree.
       extra_keys+=",\"ovn-cr-name\":\"ovn-nova-tempest-${slug}\""
       extra_keys+=",\"neutron-cr-name\":\"neutron-nova-tempest-${slug}\""
       extra_keys+=",\"placement-cr-name\":\"placement-nova-tempest-${slug}\""
