@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -14,15 +14,13 @@
 #
 # hack/ci-resolve-changes.sh is executed for real in all of its branches; the
 # ci.yaml sides are asserted against the workflow file. Modelled on the sibling
-# tests/unit/ci/target_cluster_chart_output_test.sh, with the shared
+# tests/unit/ci/target_cluster_chart_output.bats, with the shared
 # resolve-script scaffolding in tests/lib/ci_resolve.sh.
 #
-# Usage: bash tests/unit/ci/e2e_multicluster_output_test.sh
+# Usage: bin/bats tests/unit/ci/e2e_multicluster_output.bats
 
-set -uo pipefail
+load '../../lib/bats/common'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 
 # The operators the two-cluster suite places services on. The resolve script
@@ -30,12 +28,6 @@ CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 # make the FILTER_keystone scenario below assert nothing.
 ALL_OPERATORS_FIXTURE="keystone barbican ovn neutron"
 
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/ci_resolve.sh
 source "$PROJECT_ROOT/tests/lib/ci_resolve.sh"
 
@@ -59,18 +51,14 @@ run_resolve() {
 # Tests
 # ---------------------------------------------------------------------------
 
-test_own_filter_is_honoured() {
-  echo "Test: on a branch the job follows its own filter"
-
+@test "on a branch the job follows its own filter" {
   assert_eq "a changed suite is signalled" \
     "e2e-multicluster=true" "$(run_resolve refs/heads/main true)"
   assert_eq "an untouched suite is not signalled" \
     "e2e-multicluster=false" "$(run_resolve refs/heads/main false)"
 }
 
-test_only_its_own_inputs_force_the_job() {
-  echo "Test: only the suite, the chart and the label schedule the two-cluster job"
-
+@test "only the suite, the chart and the label schedule the two-cluster job" {
   # The job brings up two kind clusters and takes about 17 minutes. It used to
   # run on any Go change and on any edit under tests/e2e/**, so a keystone
   # one-liner paid for it. Its inputs are the suite, the chart whose grant set
@@ -89,32 +77,24 @@ test_only_its_own_inputs_force_the_job() {
     "$(run_resolve refs/heads/main false PR_LABELS='["ci:full"]')"
 }
 
-test_unset_filter_defaults_to_false() {
-  echo "Test: an unwired filter defaults to false rather than tripping set -u"
-
+@test "an unwired filter defaults to false rather than tripping set -u" {
   assert_eq "the output is emitted even with no FILTER_ env var" \
     "e2e-multicluster=false" \
     "$(resolve_output e2e-multicluster refs/heads/main "$ALL_OPERATORS_FIXTURE")"
 }
 
-test_tag_push_forces_the_job() {
-  echo "Test: a v* tag runs the job whatever the filter says"
-
+@test "a v* tag runs the job whatever the filter says" {
   assert_eq "the release pipeline forces the job on" \
     "e2e-multicluster=true" "$(run_resolve refs/tags/v1.2.3 false)"
 }
 
-test_ci_yaml_wires_all_four_sides() {
-  echo "Test: ci.yaml declares the filter, passes it in, exports it and gates on it"
-
+@test "ci.yaml declares the filter, passes it in, exports it and gates on it" {
   assert_filter_is_wired tests_multicluster e2e-multicluster
-  assert_file_contains "the job gates on it" "$CI_YAML" \
+  assert_file_matches "the job gates on it" "$CI_YAML" \
     "needs.changes.outputs.e2e-multicluster == 'true'"
 }
 
-test_filter_covers_the_suite_and_the_chart() {
-  echo "Test: the filter lists the suite and the chart the job runs on"
-
+@test "the filter lists the suite and the chart the job runs on" {
   # The filter block ends at the next filter key at the same indent.
   local block
   block=$(awk '
@@ -136,24 +116,20 @@ test_filter_covers_the_suite_and_the_chart() {
     "$block" "hack/**"
 }
 
-test_job_runs_the_makefile_target() {
-  echo "Test: the job runs the Makefile target rather than an inline chainsaw call"
-
+@test "the job runs the Makefile target rather than an inline chainsaw call" {
   # CI-to-Makefile parity: a developer reproduces the job by running the same
   # target, so the job must not drift into its own chainsaw invocation.
-  assert_file_contains "the job invokes make e2e-multicluster" "$CI_YAML" \
+  assert_file_matches "the job invokes make e2e-multicluster" "$CI_YAML" \
     "make e2e-multicluster"
 
   local makefile="$PROJECT_ROOT/Makefile"
-  assert_file_contains "the Makefile declares the target" "$makefile" \
+  assert_file_matches "the Makefile declares the target" "$makefile" \
     "^e2e-multicluster:"
-  assert_file_contains "the target runs the suite through its own config" "$makefile" \
+  assert_file_matches "the target runs the suite through its own config" "$makefile" \
     "chainsaw test --config tests/e2e-multicluster/chainsaw-config.yaml tests/e2e-multicluster/"
 }
 
-test_job_deploys_the_network_operators() {
-  echo "Test: the job deploys ovn-operator and neutron-operator and loads their images"
-
+@test "the job deploys ovn-operator and neutron-operator and loads their images" {
   # The suite places an OVNCentral and a Neutron, and neither CR moves without
   # its operator on the management cluster. The assertions are scoped to this
   # job's text: every other e2e job also carries an `OPERATOR: ovn` block, so a
@@ -177,9 +153,7 @@ test_job_deploys_the_network_operators() {
     "$job" 'ovn:${{ env.OVN_VERSION }}'
 }
 
-test_job_prepares_the_management_cluster_datapath() {
-  echo "Test: the job loads the datapath modules and the chassis and agent images"
-
+@test "the job loads the datapath modules and the chassis and agent images" {
   # The suite's OVNChassis and NeutronMetadataAgent keep their DaemonSets on
   # the management cluster. ovn-controller needs the openvswitch and geneve
   # modules in the host kernel both kind clusters share, and neither image is
@@ -201,9 +175,7 @@ test_job_prepares_the_management_cluster_datapath() {
     "$job" 'neutron:2026.1 --name "$MGMT_CLUSTER"'
 }
 
-test_job_never_registers_an_admin_kubeconfig() {
-  echo "Test: the registration step mints the chart's token instead of taking the admin kubeconfig"
-
+@test "the registration step mints the chart's token instead of taking the admin kubeconfig" {
   # The registration Secret must carry the ServiceAccount token. `kind get
   # kubeconfig` produces a client certificate for kubernetes-admin, and piping
   # that into the Secret would let the job pass with any grant set at all —
@@ -228,34 +200,10 @@ test_job_never_registers_an_admin_kubeconfig() {
     "$block" "kubeconfig=\$workdir/internal.kubeconfig"
 }
 
-test_setup_action_threads_the_target_flags() {
-  echo "Test: the composite action threads INFRA_ONLY and CLUSTER_NAME"
-
+@test "the composite action threads INFRA_ONLY and CLUSTER_NAME" {
   local action="$PROJECT_ROOT/.github/actions/setup-e2e-infra/action.yaml"
-  assert_file_contains "INFRA_ONLY reaches deploy-infra.sh" "$action" \
+  assert_file_matches "INFRA_ONLY reaches deploy-infra.sh" "$action" \
     'INFRA_ONLY: ${{ env.INFRA_ONLY }}'
-  assert_file_contains "CLUSTER_NAME reaches deploy-infra.sh" "$action" \
+  assert_file_matches "CLUSTER_NAME reaches deploy-infra.sh" "$action" \
     'CLUSTER_NAME: ${{ env.CLUSTER_NAME }}'
 }
-
-# ---------------------------------------------------------------------------
-# Run
-# ---------------------------------------------------------------------------
-test_own_filter_is_honoured
-test_only_its_own_inputs_force_the_job
-test_unset_filter_defaults_to_false
-test_tag_push_forces_the_job
-test_ci_yaml_wires_all_four_sides
-test_filter_covers_the_suite_and_the_chart
-test_job_runs_the_makefile_target
-test_job_deploys_the_network_operators
-test_job_prepares_the_management_cluster_datapath
-test_job_never_registers_an_admin_kubeconfig
-test_setup_action_threads_the_target_flags
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0

@@ -596,7 +596,7 @@ jobs:
           # releases/*/source-refs.yaml that name an operator in ALL_OPERATORS
           # above. A service image can land a phase before its operator, so a
           # key without an operator waits here. Pinned by
-          # tests/unit/ci/change_classes_wiring_test.sh.
+          # tests/unit/ci/change_classes_wiring.bats.
           SERVICE_OPERATORS: keystone horizon glance placement barbican neutron cinder nova
           # The operator whose e2e leg stands in for the pipeline when the shared
           # substrate or the workflow plumbing changes.

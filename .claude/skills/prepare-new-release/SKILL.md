@@ -204,7 +204,7 @@ Copy `releases/<newest>/` as the template and adjust:
   `05-neutronmetadataagent-cr.yaml` and `06-fake-compute.yaml`, the target in
   `08-patch-upgrade.yaml`, the `ghcr.io/c5c3/keystone:<v>` client pins of its
   `chainsaw-test.yaml`, and the sixteen service image refs of the
-  `e2e-controlplane` job, which `tests/unit/ci/e2e_controlplane_output_test.sh`
+  `e2e-controlplane` job, which `tests/unit/ci/e2e_controlplane_output.bats`
   checks against the fixtures. `tests/unit/deploy/fake_compute_overlay_test.sh`
   compares `06-fake-compute.yaml` with the kind fake compute, which pins the
   default release, so a `<prev>` off the default reddens it until both agree.

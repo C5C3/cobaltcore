@@ -275,7 +275,7 @@ moves to `<prev> -> <version>` as well:
   which follow the start release;
 - the sixteen service image refs of the `e2e-controlplane` job in
   `.github/workflows/ci.yaml`, the eight services at both releases in both of
-  its load steps, which `tests/unit/ci/e2e_controlplane_output_test.sh` checks
+  its load steps, which `tests/unit/ci/e2e_controlplane_output.bats` checks
   against the fixtures.
 
 `tests/unit/deploy/fake_compute_overlay_test.sh` compares `06-fake-compute.yaml`
@@ -406,7 +406,7 @@ are the record of the last retirement.
    [CI Workflow](../reference/ci-cd/ci-workflow.md). Update the shell tests
    that read `ci.yaml` or `deploy/`:
    `tests/unit/ci/{nova,cinder,neutron}_e2e_matrix.bats`,
-   `tests/unit/ci/e2e_multicluster_output_test.sh`,
+   `tests/unit/ci/e2e_multicluster_output.bats`,
    `tests/unit/hack/ci_resolve_changes_nova_libvirt_test.sh`,
    `tests/unit/deploy/metal_stack_hypervisor_test.sh` and
   `tests/unit/hack/ci_resolve_e2e_images_test.sh`. Gate: every e2e matrix entry is

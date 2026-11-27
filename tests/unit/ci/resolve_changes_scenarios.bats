@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -16,24 +16,16 @@
 # The script is executed for real through tests/lib/ci_resolve.sh; nothing here
 # reimplements its logic.
 #
-# Usage: bash tests/unit/ci/resolve_changes_scenarios_test.sh
+# Usage: bin/bats tests/unit/ci/resolve_changes_scenarios.bats
 
-set -uo pipefail
+load '../../lib/bats/common'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 
 # The real lists from the ci.yaml resolve step. A shorter ALL_OPERATORS would
 # make the per-operator scenarios assert nothing.
 ALL_OPS="keystone c5c3 horizon glance placement barbican ovn neutron cinder nova"
 
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/ci_resolve.sh
 source "$PROJECT_ROOT/tests/lib/ci_resolve.sh"
 # shellcheck source=tests/lib/ci_yaml.sh
@@ -67,7 +59,7 @@ expect_all() {
   local want="$1"
   shift
   local key
-  for key in "$@"; do expect "$key" "$want"; done
+  for key in "$@"; do soft expect "$key" "$want"; done
 }
 
 # The jobs a cheap change must never schedule.
@@ -81,7 +73,7 @@ ALL_OPERATOR_MATRIX='{"operator":["keystone","c5c3","horizon","glance","placemen
 # Per-operator and shared Go
 # ---------------------------------------------------------------------------
 
-test_operator_change() {
+@test "operator change" {
   scenario "a glance operator change" refs/heads/main FILTER_glance=true
   expect go true
   expect test-targets '{"target":["glance"]}'
@@ -97,7 +89,7 @@ test_operator_change() {
   expect_all false $EXPENSIVE e2e-infra actionlint noop
 }
 
-test_c5c3_change_runs_the_controlplane_jobs() {
+@test "c5c3 change runs the controlplane jobs" {
   # The c5c3 e2e leg installs only the sibling CRDs, so the ControlPlane jobs
   # and the two-cluster orders job are where that operator is actually
   # exercised.
@@ -108,7 +100,7 @@ test_c5c3_change_runs_the_controlplane_jobs() {
   expect_all false e2e-chaos tempest e2e-multicluster e2e-prometheus
 }
 
-test_keystone_change_runs_the_upgrade_suite() {
+@test "keystone change runs the upgrade suite" {
   scenario "a keystone operator change" refs/heads/main FILTER_keystone=true
   expect e2e-operators '{"operator":["keystone"]}'
   expect e2e-operator-upgrade true
@@ -116,7 +108,7 @@ test_keystone_change_runs_the_upgrade_suite() {
   expect_all false e2e-controlplane tempest e2e-chaos
 }
 
-test_shared_go_change() {
+@test "shared go change" {
   # Every operator's code is affected, so every unit, envtest and e2e leg runs
   # and every upgrade suite with them. The ControlPlane trio, chaos, multicluster,
   # prometheus and tempest stay off: they are the most expensive jobs in the
@@ -133,7 +125,7 @@ test_shared_go_change() {
   expect_all false $EXPENSIVE
 }
 
-test_nova_chart_egress_change_runs_the_tests_that_read_it() {
+@test "nova chart egress change runs the tests that read it" {
   # The keystone and placement unit tests check the nova chart's Keystone and
   # Placement egress rules against their own Service ports and pod labels, so
   # an edit to that hook runs their test legs. Their e2e legs, image builds and
@@ -152,7 +144,7 @@ test_nova_chart_egress_change_runs_the_tests_that_read_it() {
 # Suite and image classes
 # ---------------------------------------------------------------------------
 
-test_suite_edit_runs_one_leg() {
+@test "suite edit runs one leg" {
   scenario "an edit to one operator's e2e suite" refs/heads/main FILTER_tests_e2e_glance=true
   expect go false
   expect test-targets "$SENTINEL_TARGETS"
@@ -160,7 +152,7 @@ test_suite_edit_runs_one_leg() {
   expect changed-operators '[]'
 }
 
-test_service_image_change() {
+@test "service image change" {
   scenario "a glance service image change" refs/heads/main FILTER_image_glance=true
   expect changed-services '["glance"]'
   expect changed-operators '[]'
@@ -168,7 +160,7 @@ test_service_image_change() {
   expect go false
 }
 
-test_base_image_change_covers_every_service() {
+@test "base image change covers every service" {
   scenario "a base image change" refs/heads/main FILTER_images_base=true
   expect changed-services '["keystone","horizon","glance","placement","barbican","neutron","cinder","nova"]'
   expect changed-tempest true
@@ -179,7 +171,7 @@ test_base_image_change_covers_every_service() {
   expect keystone-pressure false
 }
 
-test_keystone_image_change_runs_the_pressure_job() {
+@test "keystone image change runs the pressure job" {
   # A downstream patch under patches/keystone/ is an image_keystone change.
   scenario "a keystone service image change" refs/heads/main FILTER_image_keystone=true
   expect keystone-pressure true
@@ -198,13 +190,13 @@ test_keystone_image_change_runs_the_pressure_job() {
   expect keystone-pressure false
 }
 
-test_federation_proxy_change() {
+@test "federation proxy change" {
   scenario "a federation proxy image change" refs/heads/main FILTER_image_proxy=true
   expect changed-proxy true
   expect e2e-operators '{"operator":["keystone"]}'
 }
 
-test_ovn_image_change() {
+@test "ovn image change" {
   scenario "an ovn image change" refs/heads/main FILTER_image_ovn=true
   expect changed-ovn true
   expect e2e-ovn-overlay true
@@ -212,7 +204,7 @@ test_ovn_image_change() {
   expect changed-proxy false
 }
 
-test_libvirt_image_change() {
+@test "libvirt image change" {
   scenario "a libvirt image change" refs/heads/main FILTER_image_libvirt=true
   expect changed-libvirt true
   expect e2e-nova-libvirt true
@@ -221,7 +213,7 @@ test_libvirt_image_change() {
   expect e2e-ovn-overlay false
 }
 
-test_special_suites_run_only_their_own_job() {
+@test "special suites run only their own job" {
   scenario "a chaos suite edit" refs/heads/main FILTER_tests_chaos=true
   expect e2e-chaos true
   expect_all false e2e-controlplane e2e-multicluster e2e-prometheus tempest
@@ -265,7 +257,7 @@ test_special_suites_run_only_their_own_job() {
   expect_all false e2e-controlplane e2e-controlplane-sso e2e-external-keystone e2e-chaos tempest
 }
 
-test_bgp_fabric_suite_change() {
+@test "bgp fabric suite change" {
   # The BGP fabric job loads no run-scoped image, so its suite or overlay alone
   # schedules nothing else, the image build included.
   scenario "a BGP fabric suite or frr-k8s overlay edit" refs/heads/main FILTER_tests_bgp_fabric=true
@@ -279,7 +271,7 @@ test_bgp_fabric_suite_change() {
 # The canary
 # ---------------------------------------------------------------------------
 
-test_shared_substrate_runs_the_canary() {
+@test "shared substrate runs the canary" {
   scenario "a change to the shared e2e substrate" refs/heads/main FILTER_e2e_shared=true
   expect go false
   expect e2e-infra true
@@ -290,13 +282,13 @@ test_shared_substrate_runs_the_canary() {
   expect_all false $EXPENSIVE
 }
 
-test_openbao_change_adds_barbican() {
+@test "openbao change adds barbican" {
   scenario "an OpenBao deploy change" refs/heads/main FILTER_e2e_shared=true FILTER_e2e_openbao=true
   expect e2e-infra true
   expect e2e-operators '{"operator":["keystone","barbican"]}'
 }
 
-test_korc_pin_change_adds_c5c3() {
+@test "korc pin change adds c5c3" {
   scenario "a K-ORC pin change" refs/heads/main FILTER_e2e_shared=true FILTER_e2e_korc=true
   expect e2e-infra true
   expect e2e-operators '{"operator":["keystone","c5c3"]}'
@@ -305,14 +297,14 @@ test_korc_pin_change_adds_c5c3() {
   expect_all false $EXPENSIVE
 }
 
-test_workflow_plumbing_runs_the_canary_and_actionlint() {
+@test "workflow plumbing runs the canary and actionlint" {
   scenario "a workflow plumbing change" refs/heads/main FILTER_ci_plumbing=true FILTER_actionlint=true
   expect e2e-infra true
   expect e2e-operators '{"operator":["keystone"]}'
   expect actionlint true
 }
 
-test_makefile_change() {
+@test "makefile change" {
   scenario "a Makefile change" refs/heads/main FILTER_makefile=true FILTER_helm=true
   expect go true
   expect test-targets '{"target":["common","keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron","cinder","nova"]}'
@@ -324,7 +316,7 @@ test_makefile_change() {
   expect e2e-operator-upgrade-operators "$SENTINEL_OPERATORS"
 }
 
-test_docs_only_change() {
+@test "docs only change" {
   scenario "a docs-only change" refs/heads/main FILTER_docs=true
   expect docs true
   expect go false
@@ -341,7 +333,7 @@ test_docs_only_change() {
 # Tempest
 # ---------------------------------------------------------------------------
 
-test_tempest_config_narrows_to_its_service() {
+@test "tempest config narrows to its service" {
   scenario "a glance tempest config edit" refs/heads/main \
     FILTER_tempest_src=true FILTER_tempest_glance=true
   expect go false
@@ -351,7 +343,7 @@ test_tempest_config_narrows_to_its_service() {
   expect build-e2e-images true
 }
 
-test_tempest_legs_follow_the_operators_they_deploy() {
+@test "tempest legs follow the operators they deploy" {
   # ovn and placement are deployed by the neutron and the two compute-stack legs
   # and have no Tempest leg of their own, so without this mapping they select
   # nothing: the pull request that breaks a leg merges green and the next pull
@@ -383,7 +375,7 @@ test_tempest_legs_follow_the_operators_they_deploy() {
   expect tempest-services '["barbican"]'
 }
 
-test_shared_tempest_change_covers_every_service() {
+@test "shared tempest change covers every service" {
   scenario "a tempest runner change" refs/heads/main FILTER_tempest_src=true
   expect tempest true
   expect tempest-services '["keystone","glance","barbican","neutron","cinder","nova"]'
@@ -393,7 +385,7 @@ test_shared_tempest_change_covers_every_service() {
 # Labels
 # ---------------------------------------------------------------------------
 
-test_ci_full_runs_everything() {
+@test "ci full runs everything" {
   scenario "ci:full on a glance pull request" refs/heads/main \
     FILTER_glance=true PR_LABELS='["ci:full"]'
   # shellcheck disable=SC2086 # deliberate: expand the job list
@@ -409,7 +401,7 @@ test_ci_full_runs_everything() {
   expect tempest-services '["keystone","glance","barbican","neutron","cinder","nova"]'
 }
 
-test_ci_tempest_follows_the_touched_service() {
+@test "ci tempest follows the touched service" {
   scenario "ci:tempest on a glance pull request" refs/heads/main \
     FILTER_glance=true PR_LABELS='["ci:tempest"]'
   expect tempest true
@@ -423,7 +415,7 @@ test_ci_tempest_follows_the_touched_service() {
   expect build-e2e-images true
 }
 
-test_random_chaos_runs_on_its_own_files() {
+@test "random chaos runs on its own files" {
   # The tests_chaos_random filter is the random run's own files; a change to
   # one schedules the run and the image build it loads, and nothing else.
   local block
@@ -459,7 +451,7 @@ test_random_chaos_runs_on_its_own_files() {
   expect e2e-chaos-random false
 }
 
-test_ci_chaos_and_its_alias() {
+@test "ci chaos and its alias" {
   scenario "ci:chaos on a glance pull request" refs/heads/main \
     FILTER_glance=true PR_LABELS='["ci:chaos"]'
   expect e2e-chaos true
@@ -471,7 +463,7 @@ test_ci_chaos_and_its_alias() {
   expect e2e-chaos true
 }
 
-test_ci_controlplane_and_multicluster() {
+@test "ci controlplane and multicluster" {
   scenario "ci:controlplane on a glance pull request" refs/heads/main \
     FILTER_glance=true PR_LABELS='["ci:controlplane"]'
   expect_all true e2e-controlplane e2e-controlplane-sso e2e-external-keystone e2e-autoscaling \
@@ -482,7 +474,7 @@ test_ci_controlplane_and_multicluster() {
   expect has-e2e-operators false
 }
 
-test_ci_pressure_runs_the_pressure_job() {
+@test "ci pressure runs the pressure job" {
   # The label alone has to switch the image build on too: the job gates on
   # build-e2e-images, and nothing else here would schedule it.
   scenario "ci:pressure on a docs-only pull request" refs/heads/main \
@@ -498,7 +490,7 @@ test_ci_pressure_runs_the_pressure_job() {
   expect keystone-pressure true
 }
 
-test_ci_measure_sizing_runs_the_measurement_jobs() {
+@test "ci measure sizing runs the measurement jobs" {
   # The measurement runs in the ControlPlane pair and in every Tempest leg,
   # whatever the pull request touches, and adds nothing else.
   scenario "ci:measure-sizing on a docs-only pull request" refs/heads/main \
@@ -516,7 +508,7 @@ test_ci_measure_sizing_runs_the_measurement_jobs() {
   expect measure-sizing true
 }
 
-test_measure_sizing_is_never_implied() {
+@test "measure sizing is never implied" {
   # The measurement costs fourteen self-hosted jobs, so only its own label
   # asks for it: not ci:full, not a tag push, not a plain pull request.
   scenario "ci:full without ci:measure-sizing" refs/heads/main \
@@ -541,7 +533,7 @@ test_measure_sizing_is_never_implied() {
 # The labeled no-op
 # ---------------------------------------------------------------------------
 
-test_non_ci_label_resolves_to_nothing() {
+@test "non ci label resolves to nothing" {
   # Adding `bug` to a pull request must not cancel and restart its pipeline.
   # The workflow gives such an event a concurrency group of its own; this
   # resolves it to nothing so every gated job skips.
@@ -560,7 +552,7 @@ test_non_ci_label_resolves_to_nothing() {
   expect tempest false
 }
 
-test_ci_label_event_is_not_a_noop() {
+@test "ci label event is not a noop" {
   scenario "a ci: label event" refs/heads/main \
     FILTER_glance=true EVENT_ACTION=labeled EVENT_LABEL=ci:tempest \
     PR_LABELS='["ci:tempest"]'
@@ -591,7 +583,7 @@ test_ci_label_event_is_not_a_noop() {
 # Tag and push events
 # ---------------------------------------------------------------------------
 
-test_tag_push_forces_everything() {
+@test "tag push forces everything" {
   scenario "a v* tag push" refs/tags/v1.2.3
   # shellcheck disable=SC2086 # deliberate: expand the job list
   expect_all true $EXPENSIVE go docs helm target-cluster-chart e2e-infra \
@@ -604,7 +596,7 @@ test_tag_push_forces_everything() {
   expect tempest-services '["keystone","glance","barbican","neutron","cinder","nova"]'
 }
 
-test_push_keeps_the_publish_matrix() {
+@test "push keeps the publish matrix" {
   # The publish jobs read e2e-operators on push. What they publish must not
   # change, so these four cases pin today's behaviour.
   scenario "a push touching one operator" refs/heads/main \
@@ -650,7 +642,7 @@ expect_night() {
   expect_all "$SENTINEL_OPERATORS" e2e-operators e2e-operator-upgrade-operators
 }
 
-test_schedule_runs_only_the_chaos_legs() {
+@test "schedule runs only the chaos legs" {
   scenario "a scheduled run with no filter and no labels" refs/heads/main \
     EVENT_NAME=schedule
   expect_night
@@ -659,7 +651,7 @@ test_schedule_runs_only_the_chaos_legs() {
   expect_night
 }
 
-test_the_night_ignores_paths_and_labels() {
+@test "the night ignores paths and labels" {
   # On a night the paths-filter step is skipped, and nothing a filter or a
   # label says may widen the run.
   scenario "a scheduled run with filters and ci:full" refs/heads/main \
@@ -680,7 +672,7 @@ test_the_night_ignores_paths_and_labels() {
 # Shadow paths
 # ---------------------------------------------------------------------------
 
-test_no_filters_at_all() {
+@test "no filters at all" {
   scenario "no filter matched" refs/heads/main
   # shellcheck disable=SC2086 # deliberate: expand the job list
   expect_all false $EXPENSIVE go docs helm target-cluster-chart e2e-infra \
@@ -694,34 +686,33 @@ test_no_filters_at_all() {
   expect tempest-services '[]'
 }
 
-test_malformed_labels_mean_no_labels() {
+@test "malformed labels mean no labels" {
   # PR_LABELS is rendered by toJSON(), which yields null on a push event. None
   # of these forms may switch a job on.
   local form
   for form in '' 'null' '"x"' '{"a":1}' 'not json'; do
     scenario "PR_LABELS=${form:-<empty>}" refs/heads/main PR_LABELS="$form"
-    expect tempest false
-    expect e2e-chaos false
-    expect e2e-multicluster false
+    soft expect tempest false
+    soft expect e2e-chaos false
+    soft expect e2e-multicluster false
   done
 }
 
-test_missing_required_inputs_fail_loudly() {
+@test "missing required inputs fail loudly" {
   echo "Scenario: the resolve script refuses to guess its operator lists"
 
-  local rc out
+  local out
   for var in ALL_OPERATORS SERVICE_OPERATORS; do
-    out=$(mktemp)
-    env ALL_OPERATORS="$ALL_OPS" SERVICE_OPERATORS="keystone" "$var=" \
+    out=$(mktemp "$BATS_TEST_TMPDIR/out.XXXXXX")
+    run env ALL_OPERATORS="$ALL_OPS" SERVICE_OPERATORS="keystone" "$var=" \
       GITHUB_OUTPUT="$out" GITHUB_REF=refs/heads/main \
-      bash "$PROJECT_ROOT/hack/ci-resolve-changes.sh" >/dev/null 2>&1
-    rc=$?
-    assert_nonzero_exit "an empty $var fails loudly" "$rc"
+      bash "$PROJECT_ROOT/hack/ci-resolve-changes.sh"
+    soft assert_nonzero_exit "an empty $var fails loudly" "$status"
     rm -f "$out"
   done
 }
 
-test_outputs_are_complete() {
+@test "outputs are complete" {
   # Every output ci.yaml reads must be emitted on every path, or the consuming
   # job silently resolves it to the empty string and skips forever.
   scenario "the emitted output set" refs/heads/main FILTER_glance=true
@@ -736,7 +727,7 @@ test_outputs_are_complete() {
     changed-services tempest-services test-targets e2e-operators
     e2e-operator-upgrade-operators"
   for key in $expected; do
-    assert_not_empty "the resolver emits $key" \
+    soft assert_not_empty "the resolver emits $key" \
       "$(printf '%s\n' "$CURRENT" | grep "^${key}=")"
   done
 
@@ -745,7 +736,7 @@ test_outputs_are_complete() {
   scenario "the emitted output set on a no-op run" refs/heads/main \
     EVENT_ACTION=labeled EVENT_LABEL=bug
   for key in $expected; do
-    assert_not_empty "the no-op path emits $key" \
+    soft assert_not_empty "the no-op path emits $key" \
       "$(printf '%s\n' "$CURRENT" | grep "^${key}=")"
   done
 
@@ -753,59 +744,7 @@ test_outputs_are_complete() {
   scenario "the emitted output set on a scheduled run" refs/heads/main \
     EVENT_NAME=schedule
   for key in $expected; do
-    assert_not_empty "the scheduled path emits $key" \
+    soft assert_not_empty "the scheduled path emits $key" \
       "$(printf '%s\n' "$CURRENT" | grep "^${key}=")"
   done
 }
-
-# ---------------------------------------------------------------------------
-# Run
-# ---------------------------------------------------------------------------
-test_operator_change
-test_c5c3_change_runs_the_controlplane_jobs
-test_keystone_change_runs_the_upgrade_suite
-test_shared_go_change
-test_nova_chart_egress_change_runs_the_tests_that_read_it
-test_suite_edit_runs_one_leg
-test_service_image_change
-test_base_image_change_covers_every_service
-test_keystone_image_change_runs_the_pressure_job
-test_federation_proxy_change
-test_ovn_image_change
-test_libvirt_image_change
-test_special_suites_run_only_their_own_job
-test_bgp_fabric_suite_change
-test_shared_substrate_runs_the_canary
-test_openbao_change_adds_barbican
-test_korc_pin_change_adds_c5c3
-test_workflow_plumbing_runs_the_canary_and_actionlint
-test_makefile_change
-test_docs_only_change
-test_tempest_config_narrows_to_its_service
-test_tempest_legs_follow_the_operators_they_deploy
-test_shared_tempest_change_covers_every_service
-test_ci_full_runs_everything
-test_ci_tempest_follows_the_touched_service
-test_random_chaos_runs_on_its_own_files
-test_ci_chaos_and_its_alias
-test_ci_controlplane_and_multicluster
-test_ci_pressure_runs_the_pressure_job
-test_ci_measure_sizing_runs_the_measurement_jobs
-test_measure_sizing_is_never_implied
-test_non_ci_label_resolves_to_nothing
-test_ci_label_event_is_not_a_noop
-test_tag_push_forces_everything
-test_push_keeps_the_publish_matrix
-test_schedule_runs_only_the_chaos_legs
-test_the_night_ignores_paths_and_labels
-test_no_filters_at_all
-test_malformed_labels_mean_no_labels
-test_missing_required_inputs_fail_loudly
-test_outputs_are_complete
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0

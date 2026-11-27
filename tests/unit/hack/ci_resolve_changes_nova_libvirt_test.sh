@@ -111,7 +111,7 @@ test_other_changes_do_not_schedule_the_job() {
     "e2e-nova-libvirt=false" "$(run_resolve refs/heads/main false FILTER_cinder=true)"
   assert_eq "a neutron-operator change does not schedule the job" \
     "e2e-nova-libvirt=false" "$(run_resolve refs/heads/main false FILTER_neutron=true)"
-  # The cheap changes resolve_changes_scenarios_test.sh keeps every expensive
+  # The cheap changes resolve_changes_scenarios.bats keeps every expensive
   # job off for: the canary's two inputs, and another nova suite's edit.
   assert_eq "a substrate change does not schedule the job" \
     "e2e-nova-libvirt=false" "$(run_resolve refs/heads/main false FILTER_e2e_shared=true)"

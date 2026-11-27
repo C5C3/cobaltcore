@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -15,15 +15,13 @@
 #
 # hack/ci-resolve-changes.sh is executed for real in all of its branches; the
 # ci.yaml sides are asserted against the workflow file. Modelled on the sibling
-# tests/unit/ci/e2e_multicluster_output_test.sh, with the shared resolve-script
+# tests/unit/ci/e2e_multicluster_output.bats, with the shared resolve-script
 # scaffolding in tests/lib/ci_resolve.sh.
 #
-# Usage: bash tests/unit/ci/e2e_orders_multicluster_output_test.sh
+# Usage: bin/bats tests/unit/ci/e2e_orders_multicluster_output.bats
 
-set -uo pipefail
+load '../../lib/bats/common'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 
 # The resolve script reads FILTER_${op} only for operators named here, so a
@@ -31,12 +29,6 @@ CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 # nothing, and one without c5c3 the FILTER_c5c3 one.
 ALL_OPERATORS_FIXTURE="keystone c5c3 barbican ovn neutron"
 
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/ci_resolve.sh
 source "$PROJECT_ROOT/tests/lib/ci_resolve.sh"
 
@@ -78,18 +70,14 @@ job_step() { # <step name>
 # Tests
 # ---------------------------------------------------------------------------
 
-test_own_filter_is_honoured() {
-  echo "Test: on a branch the job follows its own filter"
-
+@test "on a branch the job follows its own filter" {
   assert_eq "a changed suite or chart is signalled" \
     "e2e-orders-multicluster=true" "$(run_resolve refs/heads/main true)"
   assert_eq "an untouched suite is not signalled" \
     "e2e-orders-multicluster=false" "$(run_resolve refs/heads/main false)"
 }
 
-test_c5c3_and_the_labels_schedule_the_job() {
-  echo "Test: a c5c3 change and the controlplane, multicluster and full labels schedule the job"
-
+@test "a c5c3 change and the controlplane, multicluster and full labels schedule the job" {
   # The suite is where an order's delivery to a target cluster is exercised,
   # so the c5c3-operator's own changes pay for it, as they pay for the
   # ControlPlane jobs.
@@ -106,9 +94,7 @@ test_c5c3_and_the_labels_schedule_the_job() {
     "$(run_resolve refs/heads/main false PR_LABELS='["ci:full"]')"
 }
 
-test_other_inputs_do_not_schedule_the_job() {
-  echo "Test: a keystone change, a shared Go change and another suite leave the job off"
-
+@test "a keystone change, a shared Go change and another suite leave the job off" {
   # Two kind clusters on a self-hosted runner: a keystone one-liner or a
   # shared Go edit must not pay for them.
   assert_eq "a keystone change does not schedule the job" \
@@ -121,32 +107,24 @@ test_other_inputs_do_not_schedule_the_job() {
     "e2e-orders-multicluster=false" "$(run_resolve refs/heads/main false FILTER_tests_multicluster=true)"
 }
 
-test_unset_filter_defaults_to_false() {
-  echo "Test: an unwired filter defaults to false rather than tripping set -u"
-
+@test "an unwired filter defaults to false rather than tripping set -u" {
   assert_eq "the output is emitted even with no FILTER_ env var" \
     "e2e-orders-multicluster=false" \
     "$(resolve_output e2e-orders-multicluster refs/heads/main "$ALL_OPERATORS_FIXTURE")"
 }
 
-test_tag_push_forces_the_job() {
-  echo "Test: a v* tag runs the job whatever the filter says"
-
+@test "a v* tag runs the job whatever the filter says" {
   assert_eq "the release pipeline forces the job on" \
     "e2e-orders-multicluster=true" "$(run_resolve refs/tags/v1.2.3 false)"
 }
 
-test_ci_yaml_wires_all_four_sides() {
-  echo "Test: ci.yaml declares the filter, passes it in, exports it and gates on it"
-
+@test "ci.yaml declares the filter, passes it in, exports it and gates on it" {
   assert_filter_is_wired tests_orders_multicluster e2e-orders-multicluster
-  assert_file_contains "the job gates on it" "$CI_YAML" \
+  assert_file_matches "the job gates on it" "$CI_YAML" \
     "needs.changes.outputs.e2e-orders-multicluster == 'true'"
 }
 
-test_filter_covers_the_suite_and_the_chart() {
-  echo "Test: the filter lists the suite and the chart the job runs on"
-
+@test "the filter lists the suite and the chart the job runs on" {
   # The filter block ends at the next filter key at the same indent.
   local block
   block=$(awk '
@@ -165,24 +143,20 @@ test_filter_covers_the_suite_and_the_chart() {
     "$block" "hack/**"
 }
 
-test_job_runs_the_makefile_target() {
-  echo "Test: the job runs the Makefile target rather than an inline chainsaw call"
-
+@test "the job runs the Makefile target rather than an inline chainsaw call" {
   # CI-to-Makefile parity: a developer reproduces the job by running the same
   # target.
   assert_contains "the job invokes make e2e-orders-multicluster" \
     "$(job_text)" "make e2e-orders-multicluster"
 
   local makefile="$PROJECT_ROOT/Makefile"
-  assert_file_contains "the Makefile declares the target" "$makefile" \
+  assert_file_matches "the Makefile declares the target" "$makefile" \
     "^e2e-orders-multicluster:"
-  assert_file_contains "the target runs the suite through its own config" "$makefile" \
+  assert_file_matches "the target runs the suite through its own config" "$makefile" \
     "chainsaw test --config tests/e2e-orders-multicluster/chainsaw-config.yaml tests/e2e-orders-multicluster/"
 }
 
-test_job_deploys_the_lean_stack() {
-  echo "Test: the job deploys the keystone- and c5c3-operator, K-ORC and nothing else"
-
+@test "the job deploys the keystone- and c5c3-operator, K-ORC and nothing else" {
   local job
   job="$(job_text)"
   assert_not_empty "the job exists" "$job"
@@ -193,7 +167,7 @@ test_job_deploys_the_lean_stack() {
     "$job" "CONTROLPLANE_OPERATORS: external"
   local op
   for op in horizon glance placement barbican ovn neutron cinder nova; do
-    assert_not_contains "the job deploys no ${op}-operator" "$job" "OPERATOR: ${op}"
+    soft assert_not_contains "the job deploys no ${op}-operator" "$job" "OPERATOR: ${op}"
   done
   # The suite's plane brings its own bus, and nothing in it mounts a share or
   # opens a Geneve tunnel. The keys are matched as env keys, so the comment
@@ -205,9 +179,7 @@ test_job_deploys_the_lean_stack() {
     "$job" 'E2E_REQUIRE_CONTROLPLANE_STACK: "true"'
 }
 
-test_job_registers_two_keys_from_the_chart_token() {
-  echo "Test: the registration mints the chart's token and carries both scope keys"
-
+@test "the registration mints the chart's token and carries both scope keys" {
   local block
   block="$(job_step "Register the target cluster")"
   assert_not_empty "the registration step exists" "$block"
@@ -233,9 +205,7 @@ test_job_registers_two_keys_from_the_chart_token() {
   assert_contains "the chart places openstack" "$chart" "namespaces={openstack}"
 }
 
-test_job_waits_for_both_operators_to_engage() {
-  echo "Test: the job waits until the keystone- and the c5c3-operator engaged the target"
-
+@test "the job waits until the keystone- and the c5c3-operator engaged the target" {
   local block
   block="$(job_step "Wait for both operators to engage the target")"
   assert_not_empty "the wait step exists" "$block"
@@ -244,9 +214,7 @@ test_job_waits_for_both_operators_to_engage() {
   assert_contains "the wait reads the c5c3-operator" "$block" "c5c3-system c5c3-operator"
 }
 
-test_job_checks_the_keystone_operator_stays_off_the_assigned_namespaces() {
-  echo "Test: after the suite, a forbidden LIST of the keystone-operator in an assigned namespace fails the job"
-
+@test "after the suite, a forbidden LIST of the keystone-operator in an assigned namespace fails the job" {
   local block
   block="$(job_step "Check the keystone-operator never lists an assigned namespace")"
   assert_not_empty "the check step exists" "$block"
@@ -264,9 +232,7 @@ test_job_checks_the_keystone_operator_stays_off_the_assigned_namespaces() {
   assert_gte "the check runs after the suite" "${check_at:-0}" "$((${suite_at:-0} + 1))"
 }
 
-test_job_creates_two_clusters_through_the_action() {
-  echo "Test: the job creates both clusters through the composite action, the target without a config"
-
+@test "the job creates both clusters through the composite action, the target without a config" {
   local job creates
   job="$(job_text)"
   creates="$(grep -c "^          cluster-name: " <<<"$job" | tr -d ' ')"
@@ -280,35 +246,8 @@ test_job_creates_two_clusters_through_the_action() {
   assert_not_contains "the bare target takes no kind config" "$target_step" "config:"
 }
 
-test_cleanup_waits_for_the_job() {
-  echo "Test: cleanup-e2e-tags waits for the job before it prunes the images"
-
+@test "cleanup-e2e-tags waits for the job before it prunes the images" {
   local needs
   needs="$(awk '/^  cleanup-e2e-tags:$/ { getline; print; exit }' "$CI_YAML")"
   assert_contains "cleanup-e2e-tags needs the job" "$needs" "e2e-orders-multicluster"
 }
-
-# ---------------------------------------------------------------------------
-# Run
-# ---------------------------------------------------------------------------
-test_own_filter_is_honoured
-test_c5c3_and_the_labels_schedule_the_job
-test_other_inputs_do_not_schedule_the_job
-test_unset_filter_defaults_to_false
-test_tag_push_forces_the_job
-test_ci_yaml_wires_all_four_sides
-test_filter_covers_the_suite_and_the_chart
-test_job_runs_the_makefile_target
-test_job_deploys_the_lean_stack
-test_job_registers_two_keys_from_the_chart_token
-test_job_waits_for_both_operators_to_engage
-test_job_checks_the_keystone_operator_stays_off_the_assigned_namespaces
-test_job_creates_two_clusters_through_the_action
-test_cleanup_waits_for_the_job
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0
