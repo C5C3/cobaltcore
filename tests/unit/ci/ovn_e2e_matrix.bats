@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -27,20 +27,13 @@
 # OVNCentral, and the ovn leg of e2e-chaos, whose test_dirs are enumerated by
 # hand because chainsaw's regex filters are no-ops.
 #
-# Usage: bash tests/unit/ci/ovn_e2e_matrix_test.sh
+# Usage: bin/bats tests/unit/ci/ovn_e2e_matrix.bats
 
-set -uo pipefail
+load '../../lib/bats/common'
+load '../../lib/bats/stubs'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/ci_resolve.sh
 source "$PROJECT_ROOT/tests/lib/ci_resolve.sh"
 # shellcheck source=tests/lib/ci_yaml.sh
@@ -50,20 +43,16 @@ source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 # Tests
 # ---------------------------------------------------------------------------
 
-test_all_operators_lists_ovn() {
-  echo "Test: ci.yaml ALL_OPERATORS includes ovn"
-
+@test "ci.yaml ALL_OPERATORS includes ovn" {
   local line
   line=$(grep "ALL_OPERATORS:" "$CI_YAML" | head -1)
   assert_contains "ALL_OPERATORS lists ovn" "$line" "ovn"
   assert_contains "ALL_OPERATORS still lists keystone" "$line" "keystone"
 }
 
-test_ovn_filter_is_wired() {
-  echo "Test: the ovn paths filter reaches the resolve step"
-
-  assert_file_contains "the paths filter exists" "$CI_YAML" "^ *ovn:$"
-  assert_file_contains "the filter is passed to the resolve step" "$CI_YAML" \
+@test "the ovn paths filter reaches the resolve step" {
+  assert_file_matches "the paths filter exists" "$CI_YAML" "^ *ovn:$"
+  assert_file_matches "the filter is passed to the resolve step" "$CI_YAML" \
     "FILTER_ovn: \${{ steps.filter.outputs.ovn }}"
 
   local block
@@ -73,8 +62,8 @@ test_ovn_filter_is_wired() {
   # The images live in a filter of their own: rebuilding the OVS/OVN daemons or
   # the backup shifter runs the ovn e2e leg without pulling the operator's Go
   # gates in with them.
-  assert_file_contains "the image filter exists" "$CI_YAML" "^ *image_ovn:$"
-  assert_file_contains "the image filter is passed to the resolve step" "$CI_YAML" \
+  assert_file_matches "the image filter exists" "$CI_YAML" "^ *image_ovn:$"
+  assert_file_matches "the image filter is passed to the resolve step" "$CI_YAML" \
     "FILTER_image_ovn: \${{ steps.filter.outputs.image_ovn }}"
   block=$(filter_block image_ovn)
   assert_contains "the OVN image is covered" "$block" "images/ovn/**"
@@ -86,9 +75,7 @@ test_ovn_filter_is_wired() {
   assert_contains "the Nix library is covered" "$block" "nix/lib/**"
 }
 
-test_ovn_change_produces_an_e2e_leg() {
-  echo "Test: an operators/ovn change puts ovn in the e2e-operators matrix"
-
+@test "an operators/ovn change puts ovn in the e2e-operators matrix" {
   local all_operators="keystone c5c3 horizon glance placement barbican ovn"
   local matrix
   matrix=$(resolve_output e2e-operators refs/heads/main "$all_operators" FILTER_ovn=true)
@@ -99,9 +86,7 @@ test_ovn_change_produces_an_e2e_leg() {
     "$matrix" "__none__"
 }
 
-test_helm_filter_covers_the_ovn_chart() {
-  echo "Test: an ovn chart change re-runs helm-validate"
-
+@test "an ovn chart change re-runs helm-validate" {
   # The helm filter is the operators/*/helm/** glob; the chart directory
   # under it is what makes the glob cover this operator.
   assert_contains "the helm filter covers every operators/<op>/helm/ tree" \
@@ -110,9 +95,7 @@ test_helm_filter_covers_the_ovn_chart() {
     "$([ -d "$PROJECT_ROOT/operators/ovn/helm/ovn-operator" ] && echo yes || echo no)"
 }
 
-test_helm_validate_renders_the_ovn_chart() {
-  echo "Test: helm-validate lints, templates and unit-tests the ovn chart"
-
+@test "helm-validate lints, templates and unit-tests the ovn chart" {
   # The three `for chart in ...` loops of helm-validate — lint, template and
   # unittest — iterate the operators/*/helm/*-operator glob, so the chart is
   # covered by living in that layout (asserted above).
@@ -121,9 +104,7 @@ test_helm_validate_renders_the_ovn_chart() {
   assert_eq "the lint, template and unittest loops iterate the chart glob" "3" "$loops"
 }
 
-test_go_matrices_list_ovn() {
-  echo "Test: the unit and integration test matrices include ovn"
-
+@test "the unit and integration test matrices include ovn" {
   # Both matrices are resolved per pull request rather than hand-written, so an
   # operator reaches them in two steps: the jobs read the resolver's list, and
   # the resolver puts the operator in it when its own code changes. An operator
@@ -142,9 +123,7 @@ test_go_matrices_list_ovn() {
     '"ovn"'
 }
 
-test_cleanup_matrices_cover_the_ovn_images() {
-  echo "Test: the derived cleanup package lists cover the ovn images"
-
+@test "the derived cleanup package lists cover the ovn images" {
   # cleanup-images.yaml and ci.yaml's cleanup-e2e-tags both build their package
   # matrix from this generator, so coverage is a property of its output rather
   # than of a list someone has to remember to extend. An uncovered package
@@ -164,9 +143,7 @@ test_cleanup_matrices_cover_the_ovn_images() {
     "$e2e_packages" '"ovn"'
 }
 
-test_a_keystone_only_change_produces_no_ovn_leg() {
-  echo "Test: a keystone-only change keeps ovn out of the e2e-operators matrix"
-
+@test "a keystone-only change keeps ovn out of the e2e-operators matrix" {
   # The positive case above proves the filter reaches the matrix; this one
   # proves it still gates. A filter wired to a constant would satisfy the
   # positive assertion and put every operator on every pull request.
@@ -179,9 +156,7 @@ test_a_keystone_only_change_produces_no_ovn_leg() {
   assert_not_contains "and no ovn leg" "$matrix" '"ovn"'
 }
 
-test_build_e2e_images_builds_the_ovn_images() {
-  echo "Test: build-e2e-images reaches both ovn images on every run"
-
+@test "build-e2e-images reaches both ovn images on every run" {
   # The ovn-operator image and the OVN daemon image are consumed by jobs whose
   # triggers have nothing to do with an operators/ovn change, so neither may
   # sit behind a copy of another job's `if:`.
@@ -233,9 +208,7 @@ test_build_e2e_images_builds_the_ovn_images() {
     "$(grep -cF "$pin" "$CI_YAML")"
 }
 
-test_e2e_leg_loads_the_ovn_image() {
-  echo "Test: the ovn e2e leg pulls and loads the OVN daemon image"
-
+@test "the ovn e2e leg pulls and loads the OVN daemon image" {
   # ovn ships no per-release service image, so the generic per-release loop
   # leaves this leg with the operator image alone. Every OVNCentral and
   # OVNChassis Pod runs ghcr.io/c5c3/ovn:<pin>, the default effectiveImage()
@@ -264,22 +237,15 @@ test_e2e_leg_loads_the_ovn_image() {
     'kind load docker-image "${IMAGE_PREFIX}/ovn:${OVN_VERSION}"'
 }
 
-test_e2e_leg_loads_the_probe_image() {
-  echo "Test: the ovn e2e leg pulls and loads the keystone image of its probe pods"
-
+@test "the ovn e2e leg pulls and loads the keystone image of its probe pods" {
   # The probe pods of tests/e2e/ovn-operator/network-policy-egress run
   # python3, which the OVN image leaves out (images/ovn/ovn.nix), so they run
   # ghcr.io/c5c3/keystone:2026.1. A leg that never loads it leaves the pods
   # waiting on a registry pull. Run both steps' own scripts to see the refs.
-  if ! command -v yq >/dev/null 2>&1 || ! yq --version 2>&1 | grep -q mikefarah; then
-    echo "  SKIP: mikefarah yq not installed"
-    SKIP=$((SKIP + 1))
-    return
-  fi
+  require_mikefarah_yq
 
   local dir pin refs
-  dir=$(mktemp -d)
-  mkdir "$dir/bin"
+  dir=$(mktemp -d "$BATS_TEST_TMPDIR/probe.XXXXXX")
   yq -r '.jobs.e2e-operator.steps[] | select(.name == "Resolve E2E images") | .run' \
     "$CI_YAML" >"$dir/resolve.sh"
   yq -r '.jobs.e2e-operator.steps[] | select(.name == "Load images into kind") | .run' \
@@ -298,24 +264,18 @@ test_e2e_leg_loads_the_probe_image() {
     "$refs"
 
   # A kind stub logs each call, so the load step runs without a cluster.
-  cat >"$dir/bin/kind" <<STUB
-#!/bin/bash
-printf '%s\n' "\$*" >>"$dir/kind.log"
-STUB
-  chmod +x "$dir/bin/kind"
-  (PATH="$dir/bin:$PATH" OPERATOR=ovn IMAGE_PREFIX=ghcr.io/c5c3 SERVICE_RELEASES="" \
-    OVN_VERSION="$pin" REFS="$refs" KIND_CLUSTER=e2e bash -eo pipefail "$dir/load.sh")
+  stub_on kind '*'
+  (OPERATOR=ovn IMAGE_PREFIX=ghcr.io/c5c3 SERVICE_RELEASES="" \
+    OVN_VERSION="$pin" REFS="$refs" KIND_CLUSTER=e2e with_stubs bash -eo pipefail "$dir/load.sh")
   assert_eq "the ovn leg loads the operator, the OVN image and the keystone image" \
     "$(printf '%s\n' "load docker-image ghcr.io/c5c3/ovn-operator:dev --name e2e" \
       "load docker-image ghcr.io/c5c3/ovn:$pin --name e2e" \
       "load docker-image ghcr.io/c5c3/keystone:2026.1 --name e2e")" \
-    "$(cat "$dir/kind.log" 2>/dev/null)"
+    "$(stub_calls kind)"
   rm -rf "$dir"
 }
 
-test_e2e_leg_opts_into_kernel_modules() {
-  echo "Test: the ovn, neutron and nova e2e legs ask for the OVN kernel modules"
-
+@test "the ovn, neutron and nova e2e legs ask for the OVN kernel modules" {
   # The chassis DaemonSet opens a Geneve tunnel from the kind node, which needs
   # openvswitch and geneve on the host; the nova leg runs a chassis under its
   # compute node pool. deploy-infra.sh defaults the flag to false and
@@ -330,9 +290,7 @@ test_e2e_leg_opts_into_kernel_modules() {
     "WITH_OVN_KERNEL_MODULES: \${{ (matrix.operator == 'ovn' || matrix.operator == 'neutron' || matrix.operator == 'nova') && 'true' || '' }}"
 }
 
-test_overlay_job_is_wired() {
-  echo "Test: the e2e-ovn-overlay job runs the multi-node suite non-blocking"
-
+@test "the e2e-ovn-overlay job runs the multi-node suite non-blocking" {
   # The job is the only consumer of the e2e-ovn-overlay change signal, and one
   # of the two of hack/kind-config-multinode.yaml beside the multinode entry
   # of e2e-chaos. Every assertion below is a silent failure
@@ -367,13 +325,11 @@ test_overlay_job_is_wired() {
     "$(job_block cleanup-e2e-tags)" "e2e-ovn-overlay"
 }
 
-test_tempest_neutron_leg_loads_the_ovn_image() {
-  echo "Test: the tempest neutron leg pulls the OVN daemon image at the pin"
-
+@test "the tempest neutron leg pulls the OVN daemon image at the pin" {
   # The leg's Neutron only reconciles behind an OVNCentral, whose Pods run
   # ghcr.io/c5c3/ovn:<pin>. images/ovn/source.json holds that pin, so the job
   # resolves it into the env instead of repeating the tag (asserted globally in
-  # test_build_e2e_images_builds_the_ovn_images).
+  # the test "build-e2e-images reaches both ovn images on every run").
   local job load
   job=$(job_block tempest)
   load=$(job_step tempest "Load E2E images")
@@ -384,9 +340,7 @@ test_tempest_neutron_leg_loads_the_ovn_image() {
     "matrix.service == 'neutron' && format('{0}/ovn:{1}', env.IMAGE_PREFIX, env.OVN_VERSION)"
 }
 
-test_chaos_ovn_leg_is_wired() {
-  echo "Test: the e2e-chaos ovn leg runs the southbound-outage suite alone"
-
+@test "the e2e-chaos ovn leg runs the southbound-outage suite alone" {
   # e2e-chaos enumerates test_dirs per leg (chainsaw's include/exclude-regex
   # flags are no-ops in v0.2.14), so a suite absent from a leg is lint-checked
   # and never applied to a cluster. Every other assertion here is a silent
@@ -406,7 +360,7 @@ test_chaos_ovn_leg_is_wired() {
     "tests/e2e-chaos/ovn-southbound-outage"
   assert_contains "it health-checks the chaos-mesh install first" "$entry" \
     "tests/e2e/infrastructure/chaos-mesh-health"
-  # Gating is job-wide; e2e_chaos_job_test.sh pins it (#1388).
+  # Gating is job-wide; e2e_chaos_job.bats pins it (#1388).
 
   # images/ovn/source.json holds the pin, so the leg resolves it at runtime
   # rather than repeating the tag here (asserted globally further up).
@@ -457,29 +411,3 @@ test_chaos_ovn_leg_is_wired() {
   assert_contains "and it is still the keystone one" "$keystone_deploy" \
     "OPERATOR: keystone"
 }
-
-# ---------------------------------------------------------------------------
-# Run
-# ---------------------------------------------------------------------------
-test_all_operators_lists_ovn
-test_ovn_filter_is_wired
-test_ovn_change_produces_an_e2e_leg
-test_helm_filter_covers_the_ovn_chart
-test_helm_validate_renders_the_ovn_chart
-test_go_matrices_list_ovn
-test_cleanup_matrices_cover_the_ovn_images
-test_a_keystone_only_change_produces_no_ovn_leg
-test_build_e2e_images_builds_the_ovn_images
-test_e2e_leg_loads_the_ovn_image
-test_e2e_leg_loads_the_probe_image
-test_e2e_leg_opts_into_kernel_modules
-test_overlay_job_is_wired
-test_tempest_neutron_leg_loads_the_ovn_image
-test_chaos_ovn_leg_is_wired
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0

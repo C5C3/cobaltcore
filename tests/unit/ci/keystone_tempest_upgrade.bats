@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -22,26 +22,19 @@
 # has to name the newest transition under releases/ with a CR name the fixture
 # defines, or the leg waits out its timeouts on a resource that never exists.
 #
-# Usage: bash tests/unit/ci/keystone_tempest_upgrade_test.sh
+# Usage: bin/bats tests/unit/ci/keystone_tempest_upgrade.bats
 
-set -uo pipefail
+load '../../lib/bats/common'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 # shellcheck disable=SC2034 # read by tests/lib/ci_yaml.sh
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/ci_yaml.sh
 source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+setup() {
+  TMP_DIR="$BATS_TEST_TMPDIR"
+}
 
 GATE="if: matrix.service == 'keystone-upgrade'"
 
@@ -79,9 +72,7 @@ metadata_name() {
 # Tests
 # ---------------------------------------------------------------------------
 
-test_the_leg_pulls_and_loads_the_previous_keystone_image() {
-  echo "Test: the leg pulls the previous release's Keystone image and loads it into kind"
-
+@test "the leg pulls the previous release's Keystone image and loads it into kind" {
   local step load_at kind_at
   assert_contains "Load E2E images pulls keystone:<upgrade-from> on the leg" \
     "$(job_step tempest "Load E2E images")" \
@@ -98,17 +89,13 @@ test_the_leg_pulls_and_loads_the_previous_keystone_image() {
   assert_gte "it comes after Load images into kind" "${kind_at:-0}" "${load_at:-0}"
 }
 
-test_the_fresh_deploy_skips_the_upgrade_leg() {
-  echo "Test: the fresh Keystone deploy skips the keystone-upgrade leg"
-
+@test "the fresh Keystone deploy skips the keystone-upgrade leg" {
   assert_contains "Deploy Keystone CR for Tempest is gated off the leg" \
     "$(job_step tempest "Deploy Keystone CR for Tempest")" \
     "if: matrix.service != 'keystone-upgrade'"
 }
 
-test_the_previous_release_bring_up() {
-  echo "Test: the leg brings its Keystone up at the previous release and proves it"
-
+@test "the leg brings its Keystone up at the previous release and proves it" {
   local step
   step=$(job_step tempest "Deploy Keystone CR at the previous release")
   assert_contains "the bring-up runs on the keystone-upgrade leg only" "$step" "$GATE"
@@ -124,9 +111,7 @@ test_the_previous_release_bring_up() {
     "', not \$UPGRADE_FROM: the leg would run Tempest on a fresh database\""
 }
 
-test_the_upgrade_step() {
-  echo "Test: the leg upgrades its Keystone in place to the leg's release"
-
+@test "the leg upgrades its Keystone in place to the leg's release" {
   local step check_at ready_at
   step=$(job_step tempest "Upgrade Keystone to the leg's release")
   assert_contains "the hop runs on the keystone-upgrade leg only" "$step" "$GATE"
@@ -167,9 +152,7 @@ test_the_upgrade_step() {
 # run that drifted above the hop tests the previous release. A kind load that
 # drifted below the bring-up fails nothing: kubelet pulls the published
 # keystone:<upgrade-from> first, and the leg upgrades main's image.
-test_the_steps_run_in_dependency_order() {
-  echo "Test: the image load, the bring-up, the hop and the Tempest run come in dependency order"
-
+@test "the image load, the bring-up, the hop and the Tempest run come in dependency order" {
   local previous_name previous_at at name
   previous_name="Load the previous release's Keystone image into kind"
   previous_at=$(step_line "$previous_name")
@@ -181,8 +164,8 @@ test_the_steps_run_in_dependency_order() {
     "Upgrade Keystone to the leg's release" \
     "Run Tempest API tests"; do
     at=$(step_line "$name")
-    assert_not_empty "the job carries '${name}'" "$at"
-    assert_gte "'${name}' comes after '${previous_name}'" "${at:-0}" "${previous_at:-0}"
+    soft assert_not_empty "the job carries '${name}'" "$at"
+    soft assert_gte "'${name}' comes after '${previous_name}'" "${at:-0}" "${previous_at:-0}"
     previous_name="$name"
     previous_at="$at"
   done
@@ -191,22 +174,14 @@ test_the_steps_run_in_dependency_order() {
 # The real generator on the real tree: the leg's pair is the last two releases/
 # directories, and the CR the two deploy steps wait on is the one the newest
 # keystone fixture defines.
-test_the_generator_names_the_newest_transition() {
-  echo "Test: the generator names the newest transition under releases/"
-
-  if ! command -v jq >/dev/null 2>&1; then
-    echo "  SKIP: jq not installed (6 checks skipped)"
-    SKIP=$((SKIP + 6))
-    return
-  fi
+@test "the generator names the newest transition under releases/" {
+  require_tool jq
 
   local releases count newest prev out rc entry config_dir cr
   releases="$(releases_in_order)"
-  count=$(printf '%s\n' "$releases" | grep -c .)
+  count=$(printf '%s\n' "$releases" | grep -c .) || true
   if [ "$count" -lt 2 ]; then
-    echo "  SKIP: fewer than two releases under releases/ (6 checks skipped)"
-    SKIP=$((SKIP + 6))
-    return
+    skip "fewer than two releases under releases/ (6 checks skipped)"
   fi
   newest=$(printf '%s\n' "$releases" | tail -1)
   prev=$(printf '%s\n' "$releases" | tail -2 | head -1)
@@ -236,22 +211,14 @@ test_the_generator_names_the_newest_transition() {
 # float, and spec.image.tag is a string field. Nothing else of the fixture may
 # change, or the leg would no longer match the fresh keystone leg of the same
 # release.
-test_the_fixture_render_moves_only_the_tag() {
-  echo "Test: the bring-up render moves only spec.image.tag, as a string"
-
-  if [[ "$(yq --version 2>/dev/null)" != *mikefarah* ]]; then
-    echo "  SKIP: mikefarah yq not installed (3 checks skipped)"
-    SKIP=$((SKIP + 3))
-    return
-  fi
+@test "the bring-up render moves only spec.image.tag, as a string" {
+  require_mikefarah_yq
 
   local releases count newest prev fixture rendered
   releases="$(releases_in_order)"
-  count=$(printf '%s\n' "$releases" | grep -c .)
+  count=$(printf '%s\n' "$releases" | grep -c .) || true
   if [ "$count" -lt 2 ]; then
-    echo "  SKIP: fewer than two releases under releases/ (3 checks skipped)"
-    SKIP=$((SKIP + 3))
-    return
+    skip "fewer than two releases under releases/ (3 checks skipped)"
   fi
   newest=$(printf '%s\n' "$releases" | tail -1)
   prev=$(printf '%s\n' "$releases" | tail -2 | head -1)
@@ -266,21 +233,3 @@ test_the_fixture_render_moves_only_the_tag() {
     "$(yq -o=json -I=0 'del(.spec.image.tag)' "$fixture")" \
     "$(yq -o=json -I=0 'del(.spec.image.tag)' "$rendered")"
 }
-
-# ---------------------------------------------------------------------------
-# Run
-# ---------------------------------------------------------------------------
-test_the_leg_pulls_and_loads_the_previous_keystone_image
-test_the_fresh_deploy_skips_the_upgrade_leg
-test_the_previous_release_bring_up
-test_the_upgrade_step
-test_the_steps_run_in_dependency_order
-test_the_generator_names_the_newest_transition
-test_the_fixture_render_moves_only_the_tag
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0

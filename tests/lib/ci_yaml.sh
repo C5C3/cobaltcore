@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Shared block extractors for the tests that assert .github/workflows/ci.yaml
-# wiring (tests/unit/ci/*_e2e_matrix_test.sh).
+# wiring (tests/unit/ci/*_e2e_matrix.bats).
 #
 # ci.yaml is asserted against by grepping scoped slices of it, and the slicing
 # rules are one piece of knowledge: a job body ends at the next 2-space line, a
@@ -14,7 +14,8 @@
 # service test, where missing a copy leaves an assertion silently matching an
 # empty string.
 #
-# Source this after tests/lib/assertions.sh, with CI_YAML set.
+# Source this after the assertions, tests/lib/bats/common.bash in a native bats
+# file or tests/lib/assertions.sh in an old script, with CI_YAML set.
 
 # filter_block <filter-key>
 #

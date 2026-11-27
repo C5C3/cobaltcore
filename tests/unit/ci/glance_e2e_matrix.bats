@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -37,32 +37,27 @@
 # rest: any one of them missing leaves the leg burning its wait on a resource
 # that never comes up, or two legs overwriting each other's results.
 #
-# Usage: bash tests/unit/ci/glance_e2e_matrix_test.sh
+# Usage: bin/bats tests/unit/ci/glance_e2e_matrix.bats
 
-set -uo pipefail
+load '../../lib/bats/common'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/ci_resolve.sh
 source "$PROJECT_ROOT/tests/lib/ci_resolve.sh"
 # shellcheck source=tests/lib/ci_yaml.sh
 source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
-# The real list from the ci.yaml resolve step env block. A shorter one would
-# make the matrix scenarios below assert nothing.
-ALL_OPS=$(ci_all_operators)
+setup_file() {
+  # The real list from the ci.yaml resolve step env block. A shorter one would
+  # make the matrix scenarios below assert nothing.
+  ALL_OPS=$(ci_all_operators)
 
-# One resolver run for an operators/glance/ change. The e2e-operators
-# and the test-targets checks below both read their line from it.
-GLANCE_CHANGE=$(resolve_outputs refs/heads/main "$ALL_OPS" FILTER_glance=true)
+  # One resolver run for an operators/glance/ change. The e2e-operators
+  # and the test-targets checks below both read their line from it.
+  GLANCE_CHANGE=$(resolve_outputs refs/heads/main "$ALL_OPS" FILTER_glance=true)
+  export ALL_OPS GLANCE_CHANGE
+}
 
 # The release the e2e-chaos and ControlPlane legs load the glance image at.
 DEFAULT_RELEASE="2026.1"
@@ -74,18 +69,14 @@ CHART="$PROJECT_ROOT/operators/glance/helm/glance-operator"
 # ---------------------------------------------------------------------------
 
 
-test_all_operators_lists_glance() {
-  echo "Test: ci.yaml ALL_OPERATORS includes glance"
-
+@test "ci.yaml ALL_OPERATORS includes glance" {
   local line
   line=$(grep "ALL_OPERATORS:" "$CI_YAML" | head -1)
   assert_contains "ALL_OPERATORS lists glance" "$line" "glance"
   assert_contains "ALL_OPERATORS still lists keystone" "$line" "keystone"
 }
 
-test_service_operators_lists_glance() {
-  echo "Test: ci.yaml SERVICE_OPERATORS includes glance"
-
+@test "ci.yaml SERVICE_OPERATORS includes glance" {
   # glance ships an OpenStack service image for every release that carries a
   # glance key in source-refs.yaml. Missing from this list, the resolver
   # treats it like the orchestration operators: the image is never rebuilt for
@@ -95,20 +86,14 @@ test_service_operators_lists_glance() {
   line=$(grep "SERVICE_OPERATORS:" "$CI_YAML" | head -1)
   assert_contains "SERVICE_OPERATORS lists glance" "$line" "glance"
 
-  if ! command -v yq >/dev/null 2>&1; then
-    echo "  SKIP: yq not installed"
-    SKIP=$((SKIP + 1))
-    return
-  fi
+  require_tool yq
   assert_not_empty "glance ships a service image per release" \
     "$(OPERATOR=glance "$PROJECT_ROOT/hack/ci-service-image-releases.sh")"
 }
 
-test_glance_filter_is_wired() {
-  echo "Test: the glance paths filter reaches the resolve step"
-
-  assert_file_contains "the paths filter exists" "$CI_YAML" "^ *glance:$"
-  assert_file_contains "the filter is passed to the resolve step" "$CI_YAML" \
+@test "the glance paths filter reaches the resolve step" {
+  assert_file_matches "the paths filter exists" "$CI_YAML" "^ *glance:$"
+  assert_file_matches "the filter is passed to the resolve step" "$CI_YAML" \
     "FILTER_glance: \${{ steps.filter.outputs.glance }}"
 
   local block
@@ -116,9 +101,7 @@ test_glance_filter_is_wired() {
   assert_contains "the operator source path is covered" "$block" "operators/glance/**"
 }
 
-test_glance_image_filter_is_wired() {
-  echo "Test: an images/glance change reaches changed-services"
-
+@test "an images/glance change reaches changed-services" {
   # changed-services is the list build-e2e-images rebuilds from source. The
   # lock under nix/locks/ and the patches under patches/glance/ change the
   # image as much as its build context does, so all three belong here.
@@ -136,9 +119,7 @@ test_glance_image_filter_is_wired() {
       FILTER_image_glance=true)"
 }
 
-test_glance_change_produces_an_e2e_leg() {
-  echo "Test: an operators/glance change puts glance in the e2e-operators matrix"
-
+@test "an operators/glance change puts glance in the e2e-operators matrix" {
   local matrix
   matrix=$(grep "^e2e-operators=" <<<"$GLANCE_CHANGE")
 
@@ -148,9 +129,7 @@ test_glance_change_produces_an_e2e_leg() {
     "$matrix" "__none__"
 }
 
-test_glance_e2e_filter_is_wired() {
-  echo "Test: an edit to the glance suites alone runs the glance leg"
-
+@test "an edit to the glance suites alone runs the glance leg" {
   # The suites sit in two directories and the e2e-operator job runs both, on
   # top of the shared helpers under tests/e2e/lib/. A filter naming fewer lets
   # an edit under the others schedule no leg at all.
@@ -169,9 +148,7 @@ test_glance_e2e_filter_is_wired() {
       FILTER_tests_e2e_glance=true)"
 }
 
-test_helm_filter_covers_the_glance_chart() {
-  echo "Test: a glance chart change re-runs helm-validate"
-
+@test "a glance chart change re-runs helm-validate" {
   # The helm filter is the operators/*/helm/** glob; the chart directory under
   # it is what makes the glob cover this operator.
   assert_contains "the helm filter covers every operators/<op>/helm/ tree" \
@@ -180,9 +157,7 @@ test_helm_filter_covers_the_glance_chart() {
     "$([ -d "$CHART" ] && echo yes || echo no)"
 }
 
-test_go_matrices_list_glance() {
-  echo "Test: the unit and integration test matrices include glance"
-
+@test "the unit and integration test matrices include glance" {
   # Both matrices read the resolver's list, and the resolver puts the operator
   # in it when its own code changes. An operator missing from either half
   # compiles and ships with its `go test` leg never run.
@@ -198,9 +173,7 @@ test_go_matrices_list_glance() {
     '"glance"'
 }
 
-test_cleanup_matrices_cover_the_glance_images() {
-  echo "Test: the derived cleanup package lists cover the glance images"
-
+@test "the derived cleanup package lists cover the glance images" {
   local matrix all_packages e2e_packages
   matrix=$(cd "$PROJECT_ROOT" && bash hack/ci-generate-cleanup-matrix.sh)
   all_packages=$(sed -n 's/^cleanup-packages=//p' <<<"$matrix")
@@ -216,9 +189,7 @@ test_cleanup_matrices_cover_the_glance_images() {
     "$e2e_packages" '"glance"'
 }
 
-test_a_keystone_only_change_produces_no_glance_leg() {
-  echo "Test: a keystone-only change keeps glance out of the e2e-operators matrix"
-
+@test "a keystone-only change keeps glance out of the e2e-operators matrix" {
   # The positive case above proves the filter reaches the matrix; this one
   # proves it still gates. A filter wired to a constant would satisfy the
   # positive assertion and put every operator on every pull request.
@@ -230,9 +201,7 @@ test_a_keystone_only_change_produces_no_glance_leg() {
   assert_not_contains "and no glance leg" "$matrix" '"glance"'
 }
 
-test_chaos_legs_run_the_glance_suites() {
-  echo "Test: the e2e-chaos pod and network legs run the glance suites"
-
+@test "the e2e-chaos pod and network legs run the glance suites" {
   local pod network
   pod=$(e2e_chaos_matrix_entry pod)
   network=$(e2e_chaos_matrix_entry network)
@@ -268,9 +237,7 @@ test_chaos_legs_run_the_glance_suites() {
     "NAMESPACE: glance-system"
 }
 
-test_controlplane_leg_deploys_glance() {
-  echo "Test: the e2e-controlplane leg loads and deploys glance"
-
+@test "the e2e-controlplane leg loads and deploys glance" {
   local pull kind_load deploy
   pull=$(job_step e2e-controlplane "Load E2E images")
   assert_contains "the leg pulls the glance-operator image" "$pull" \
@@ -291,9 +258,7 @@ test_controlplane_leg_deploys_glance() {
     "NAMESPACE: glance-system"
 }
 
-test_tempest_glance_leg_is_wired() {
-  echo "Test: the tempest glance leg is brought up"
-
+@test "the tempest glance leg is brought up" {
   # The cinder and nova legs create volumes and servers from a Glance image, so
   # they pull the glance images and deploy the operator too. The cinder leg
   # loads the images into kind in a step of its own.
@@ -338,27 +303,3 @@ test_tempest_glance_leg_is_wired() {
     "$(job_step tempest "Upload Tempest results")" \
     "name: tempest-\${{ matrix.service }}-\${{ matrix.release }}-results"
 }
-
-# ---------------------------------------------------------------------------
-# Run
-# ---------------------------------------------------------------------------
-test_all_operators_lists_glance
-test_service_operators_lists_glance
-test_glance_filter_is_wired
-test_glance_image_filter_is_wired
-test_glance_change_produces_an_e2e_leg
-test_glance_e2e_filter_is_wired
-test_helm_filter_covers_the_glance_chart
-test_go_matrices_list_glance
-test_cleanup_matrices_cover_the_glance_images
-test_a_keystone_only_change_produces_no_glance_leg
-test_chaos_legs_run_the_glance_suites
-test_controlplane_leg_deploys_glance
-test_tempest_glance_leg_is_wired
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0
