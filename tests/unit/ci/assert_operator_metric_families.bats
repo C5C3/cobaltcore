@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -28,20 +28,13 @@
 #   - an edit to the script runs the e2e-operator jobs of every operator
 #   - the 17 suites call it with exactly the arguments of their table row,
 #     each in a step with a 120s timeout, and no other suite calls it
-# Usage: bash tests/unit/ci/assert_operator_metric_families_test.sh
+# Usage: bin/bats tests/unit/ci/assert_operator_metric_families.bats
 
-set -uo pipefail
+load '../../lib/bats/common'
+load '../../lib/bats/stubs'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/ci_yaml.sh
 source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
@@ -49,75 +42,57 @@ SCRIPT="$PROJECT_ROOT/tests/e2e/lib/assert-operator-metric-families.sh"
 # The ten operators whose charts the script reads metrics from.
 OPERATORS="barbican c5c3 cinder glance horizon keystone neutron nova ovn placement"
 
-STUBS="$(mktemp -d)"
-trap 'rm -rf "$STUBS"' EXIT
+# kubectl_raw_body
+# Prints the --exec body of the kubectl rule for get --raw, which
+# make_kubectl_stub describes. It keeps its read counters and finds its
+# bodies under $STUB_DIR/state, which the tests know as STUBS.
+kubectl_raw_body() {
+  cat <<'STUB'
+dir="$STUB_DIR/state"
+pod="$(sed -n 's|^/api/v1/namespaces/keystone-system/pods/\([^:/]*\):8080/proxy/metrics$|\1|p' <<<"$3")"
+if [ -z "$pod" ]; then
+  echo "Error from server (NotFound): the server could not find the requested resource" >&2
+  exit 1
+fi
+reads=0
+if [ -e "$dir/raw/$pod.reads" ]; then reads="$(cat "$dir/raw/$pod.reads")"; fi
+reads=$((reads + 1))
+echo "$reads" >"$dir/raw/$pod.reads"
+src="$dir/raw"
+if [ -e "$dir/raw-$reads/$pod" ] || [ -e "$dir/raw-$reads/$pod.rc" ]; then
+  src="$dir/raw-$reads"
+elif [ "$reads" -gt 1 ] && [ -e "$dir/raw-later/$pod" ]; then
+  src="$dir/raw-later"
+fi
+if [ -e "$src/$pod.rc" ]; then
+  echo "Error from server (ServiceUnavailable): the server is currently unable to handle the request" >&2
+  exit "$(cat "$src/$pod.rc")"
+fi
+if [ -e "$src/$pod" ]; then cat "$src/$pod"; fi
+exit 0
+STUB
+}
 
-# make_kubectl_stub <dir>
-# Writes a kubectl stub that answers the two calls the script makes:
-#   get pods   prints STUB_PODS, one "<name> <restart count>..." line per pod,
-#              or fails with STUB_PODS_RC; from the second call since the
-#              last reset_stub, STUB_PODS_LATER when set, or fails with
-#              STUB_PODS_LATER_RC
+# make_kubectl_stub
+# Declares the kubectl rules for the two calls the script makes; every other
+# call exits 0:
+#   get pods   reset_stub declares the answer, one "<name> <restart count>..."
+#              line per pod. A test declares a list that kubectl cannot read
+#              with --rc 1 and kubectl's Forbidden error, and a first list
+#              that differs from the later ones as a --times 1 rule after
+#              the lasting one.
 #   get --raw  serves the metrics of the pod in the path, which must be
 #              /api/v1/namespaces/keystone-system/pods/<pod>:8080/proxy/metrics:
 #              on the pod's n-th read since the last reset_stub,
-#              <dir>/raw-<n>/<pod> when that body or its .rc file exists,
-#              else <dir>/raw-later/<pod> from the second read on when that
-#              file exists, else <dir>/raw/<pod>. A <pod>.rc file beside the
+#              $STUBS/raw-<n>/<pod> when that body or its .rc file exists,
+#              else $STUBS/raw-later/<pod> from the second read on when that
+#              file exists, else $STUBS/raw/<pod>. A <pod>.rc file beside the
 #              body makes the read fail with its content as the exit code.
 # A sleep stub beside it returns at once, so the re-reads cost no time.
 make_kubectl_stub() {
-  local dir="$1"
-
-  cat >"$dir/kubectl" <<'STUB'
-#!/bin/bash
-dir="$(dirname "$0")"
-case "$1 $2" in
-  "get pods")
-    lists=0
-    if [ -e "$dir/pods.reads" ]; then lists="$(cat "$dir/pods.reads")"; fi
-    lists=$((lists + 1))
-    echo "$lists" >"$dir/pods.reads"
-    list="$STUB_PODS"
-    rc="${STUB_PODS_RC:-0}"
-    if [ "$lists" -gt 1 ]; then
-      list="${STUB_PODS_LATER:-$STUB_PODS}"
-      rc="${STUB_PODS_LATER_RC:-0}"
-    fi
-    if [ "$rc" -ne 0 ]; then
-      echo "Error from server (Forbidden): pods is forbidden" >&2
-      exit "$rc"
-    fi
-    if [ -n "$list" ]; then printf '%s\n' "$list"; fi
-    ;;
-  "get --raw")
-    pod="$(sed -n 's|^/api/v1/namespaces/keystone-system/pods/\([^:/]*\):8080/proxy/metrics$|\1|p' <<<"$3")"
-    if [ -z "$pod" ]; then
-      echo "Error from server (NotFound): the server could not find the requested resource" >&2
-      exit 1
-    fi
-    reads=0
-    if [ -e "$dir/raw/$pod.reads" ]; then reads="$(cat "$dir/raw/$pod.reads")"; fi
-    reads=$((reads + 1))
-    echo "$reads" >"$dir/raw/$pod.reads"
-    src="$dir/raw"
-    if [ -e "$dir/raw-$reads/$pod" ] || [ -e "$dir/raw-$reads/$pod.rc" ]; then
-      src="$dir/raw-$reads"
-    elif [ "$reads" -gt 1 ] && [ -e "$dir/raw-later/$pod" ]; then
-      src="$dir/raw-later"
-    fi
-    if [ -e "$src/$pod.rc" ]; then
-      echo "Error from server (ServiceUnavailable): the server is currently unable to handle the request" >&2
-      exit "$(cat "$src/$pod.rc")"
-    fi
-    if [ -e "$src/$pod" ]; then cat "$src/$pod"; fi
-    ;;
-esac
-exit 0
-STUB
-  chmod +x "$dir/kubectl"
-  printf '#!/bin/bash\nexit 0\n' >"$dir/sleep"
-  chmod +x "$dir/sleep"
+  stub_on kubectl '*'
+  stub_on kubectl 'get --raw *' --exec "$(kubectl_raw_body)"
+  stub_on sleep '*'
 }
 
 DURATION_LINE='keystone_operator_reconcile_duration_seconds_count{sub_reconciler="Database"} 7'
@@ -139,35 +114,28 @@ set_later_metrics() {
 # A healthy keystone-operator release of two pods: op-0 is the standby and
 # serves only the Go runtime families, op-1 leads and serves the reconcile
 # duration and error families and the db_sync counter. The checks read once
-# and do not wait (METRICS_WAIT=0).
+# and do not wait (METRICS_WAIT=0). setup calls it, and a test calls it
+# again to start over from this release; its rules are then the newest.
 reset_stub() {
-  rm -rf "$STUBS"/raw* "$STUBS/pods.reads"
+  rm -rf "$STUBS"/raw*
   mkdir -p "$STUBS/raw" "$STUBS/raw-later"
-  STUB_PODS="op-0 0"$'\n'"op-1 0"
-  STUB_PODS_RC=0
-  STUB_PODS_LATER=""
-  STUB_PODS_LATER_RC=0
+  stub_on kubectl 'get pods *' --out "op-0 0"$'\n'"op-1 0"
   METRICS_WAIT=0
   set_metrics op-0 "# TYPE go_goroutines gauge"$'\n''go_goroutines 42'
   set_metrics op-1 "# TYPE keystone_operator_reconcile_duration_seconds histogram"$'\n'"$DURATION_LINE"$'\n'"$ERRORS_LINE"$'\n'"$DB_SYNC_LINE"
 }
 
 # run_check [args...]
-# Runs the script with the kubectl stub first on PATH. Leaves its stdout in
-# RUN_OUT and its exit code in RUN_RC, and writes its stderr to $STUBS/stderr.
-# Without arguments it runs the release check with the db_sync sample.
+# Runs the script through run with the stubs first on PATH: its stdout in
+# $output, its stderr in $stderr and its exit code in $status. Without
+# arguments it runs the release check with the db_sync sample.
 run_check() {
   if [ "$#" -eq 0 ]; then
     set -- keystone-system keystone-operator keystone_operator "$DB_SYNC_SAMPLE"
   fi
-  RUN_OUT="$(
-    PATH="$STUBS:$PATH" \
-      STUB_PODS="$STUB_PODS" STUB_PODS_RC="$STUB_PODS_RC" \
-      STUB_PODS_LATER="$STUB_PODS_LATER" STUB_PODS_LATER_RC="$STUB_PODS_LATER_RC" \
+  run --separate-stderr with_stubs env \
       METRICS_WAIT_SECONDS="$METRICS_WAIT" \
-      bash "$SCRIPT" "$@" 2>"$STUBS/stderr"
-  )"
-  RUN_RC=$?
+      bash "$SCRIPT" "$@"
 }
 
 # run_sample <sample> <line>
@@ -221,452 +189,363 @@ placement/basic-deployment|placement-system placement-operator placement_operato
 CALLS
 )"
 
-make_kubectl_stub "$STUBS"
-
-# --- Test 1: the happy path ---
-test_a_two_pod_release_passes_on_the_union() {
-  echo "Test: a two-pod release whose samples sit on one pod passes every check"
-
+setup() {
+  make_kubectl_stub
+  STUBS="$STUB_DIR/state"
   reset_stub
-  run_check keystone-system keystone-operator keystone_operator "$DB_SYNC_SAMPLE" \
-    'keystone_operator_reconcile_errors_total{sub_reconciler="Database",condition_type="DatabaseReady"}'
-  assert_eq "the script exits 0" "0" "$RUN_RC"
-  assert_eq "it prints six OK: lines, four checks and two samples" "6" \
-    "$(grep -c '^OK:' <<<"$RUN_OUT" || true)"
-  assert_contains "it names both pods" "$RUN_OUT" "OK: release keystone-operator runs 2 pods: op-0 op-1"
-  assert_contains "it names the sample" "$RUN_OUT" "OK: sample $DB_SYNC_SAMPLE"
-  assert_not_contains "it prints no FAIL: line" "$RUN_OUT" "FAIL:"
 }
 
-test_a_release_without_samples_passes() {
-  echo "Test: a release check without samples passes on checks 1 to 4"
+# --- Test 1: the happy path ---
+@test "a two-pod release whose samples sit on one pod passes every check" {
+  run_check keystone-system keystone-operator keystone_operator "$DB_SYNC_SAMPLE" \
+    'keystone_operator_reconcile_errors_total{sub_reconciler="Database",condition_type="DatabaseReady"}'
+  assert_eq "the script exits 0" "0" "$status"
+  assert_eq "it prints six OK: lines, four checks and two samples" "6" \
+    "$(grep -c '^OK:' <<<"$output" || true)"
+  assert_contains "it names both pods" "$output" "OK: release keystone-operator runs 2 pods: op-0 op-1"
+  assert_contains "it names the sample" "$output" "OK: sample $DB_SYNC_SAMPLE"
+  assert_not_contains "it prints no FAIL: line" "$output" "FAIL:"
+}
 
-  reset_stub
+@test "a release check without samples passes on checks 1 to 4" {
   run_check keystone-system keystone-operator keystone_operator
-  assert_eq "the script exits 0" "0" "$RUN_RC"
-  assert_eq "it prints four OK: lines" "4" "$(grep -c '^OK:' <<<"$RUN_OUT" || true)"
+  assert_eq "the script exits 0" "0" "$status"
+  assert_eq "it prints four OK: lines" "4" "$(grep -c '^OK:' <<<"$output" || true)"
 }
 
 # --- Test 2: check 1, the pod list ---
-test_a_release_without_a_pod_fails() {
-  echo "Test: a release without a pod fails check 1"
-
-  reset_stub
-  STUB_PODS=""
+@test "a release without a pod fails check 1" {
+  stub_on kubectl 'get pods *' --out ''
   run_check
-  assert_eq "the script exits 1" "1" "$RUN_RC"
-  assert_contains "it names the missing pod" "$RUN_OUT" \
+  assert_eq "the script exits 1" "1" "$status"
+  assert_contains "it names the missing pod" "$output" \
     "FAIL: no pod of release keystone-operator in keystone-system"
 }
 
-test_an_unlistable_release_fails() {
-  echo "Test: a pod list kubectl cannot read fails check 1 with kubectl's error"
-
-  reset_stub
-  STUB_PODS_RC=1
+@test "a pod list kubectl cannot read fails check 1 with kubectl's error" {
+  # The first pod list fails; a later one would answer again.
+  stub_on kubectl 'get pods *' --rc 1 --err "Error from server (Forbidden): pods is forbidden" --times 1
   run_check
-  assert_eq "the script exits 1" "1" "$RUN_RC"
-  assert_contains "it says the pods cannot be listed" "$RUN_OUT" \
+  assert_eq "the script exits 1" "1" "$status"
+  assert_contains "it says the pods cannot be listed" "$output" \
     "FAIL: cannot list the pods of release keystone-operator"
-  assert_contains "kubectl's own error reaches stderr" "$(cat "$STUBS/stderr")" "Forbidden"
+  assert_contains "kubectl's own error reaches stderr" "$stderr" "Forbidden"
 }
 
 # --- Test 3: check 2, the metrics endpoints ---
-test_an_unreachable_pod_fails() {
-  echo "Test: a pod whose metrics read fails fails check 2 and is named"
-
-  reset_stub
+@test "a pod whose metrics read fails fails check 2 and is named" {
   echo 1 >"$STUBS/raw/op-1.rc"
   run_check
-  assert_eq "the script exits 1" "1" "$RUN_RC"
-  assert_contains "it names the pod" "$RUN_OUT" "FAIL: metrics endpoint of pod op-1 unreachable"
-  assert_contains "kubectl's own error reaches stderr" "$(cat "$STUBS/stderr")" "ServiceUnavailable"
+  assert_eq "the script exits 1" "1" "$status"
+  assert_contains "it names the pod" "$output" "FAIL: metrics endpoint of pod op-1 unreachable"
+  assert_contains "kubectl's own error reaches stderr" "$stderr" "ServiceUnavailable"
 }
 
-test_an_empty_body_fails() {
-  echo "Test: a pod that answers an empty body fails check 2 and is named"
-
-  reset_stub
+@test "a pod that answers an empty body fails check 2 and is named" {
   : >"$STUBS/raw/op-0"
   run_check
-  assert_eq "the script exits 1" "1" "$RUN_RC"
-  assert_contains "it names the pod" "$RUN_OUT" "FAIL: metrics endpoint of pod op-0 returned nothing"
+  assert_eq "the script exits 1" "1" "$status"
+  assert_contains "it names the pod" "$output" "FAIL: metrics endpoint of pod op-0 returned nothing"
 }
 
-test_a_read_failing_at_the_deadline_fails() {
-  echo "Test: a re-read still failing at the deadline fails check 2"
-
+@test "a re-read still failing at the deadline fails check 2" {
   # The first read lacks the sample, every later read of op-1 fails.
-  reset_stub
   set_metrics op-1 "$DURATION_LINE"
   echo 1 >"$STUBS/raw-later/op-1.rc"
   : >"$STUBS/raw-later/op-1"
   METRICS_WAIT=1
   run_check
-  assert_eq "the script exits 1" "1" "$RUN_RC"
-  assert_contains "it names the pod" "$RUN_OUT" "FAIL: metrics endpoint of pod op-1 unreachable"
+  assert_eq "the script exits 1" "1" "$status"
+  assert_contains "it names the pod" "$output" "FAIL: metrics endpoint of pod op-1 unreachable"
 }
 
-test_a_deadline_passed_in_the_first_check_still_rereads() {
-  echo "Test: a deadline that passes during the first check still gets one re-read"
-
+@test "a deadline that passes during the first check still gets one re-read" {
   # SECONDS counts whole seconds, so a 1s deadline can pass while the first
   # check runs. An awk that sleeps 1.1s on the first check's first call
   # forces that: the failing re-read must still be made and judged.
-  reset_stub
   set_metrics op-1 "$DURATION_LINE"
   echo 1 >"$STUBS/raw-later/op-1.rc"
   : >"$STUBS/raw-later/op-1"
-  cat >"$STUBS/awk" <<STUB
-#!/bin/bash
+  stub_script awk <<STUB
 if [ "\$1" = "-v" ] && [ ! -e "$STUBS/awk.slept" ]; then
   : >"$STUBS/awk.slept"
   /bin/sleep 1.1
 fi
 exec "$(command -v awk)" "\$@"
 STUB
-  chmod +x "$STUBS/awk"
   METRICS_WAIT=1
   run_check
-  rm -f "$STUBS/awk" "$STUBS/awk.slept"
-  assert_eq "the script exits 1" "1" "$RUN_RC"
-  assert_contains "it names the pod" "$RUN_OUT" "FAIL: metrics endpoint of pod op-1 unreachable"
+  assert_eq "the script exits 1" "1" "$status"
+  assert_contains "it names the pod" "$output" "FAIL: metrics endpoint of pod op-1 unreachable"
   assert_eq "op-1 is read twice" "2" "$(cat "$STUBS/raw/op-1.reads")"
 }
 
-test_a_transient_read_failure_recovers() {
-  echo "Test: a re-read that fails once and then recovers passes"
-
+@test "a re-read that fails once and then recovers passes" {
   # The first read lacks the sample, the second read of op-1 fails, and the
   # third carries the sample, as across an operator restart.
-  reset_stub
   set_metrics op-1 "$DURATION_LINE"
   mkdir -p "$STUBS/raw-2"
   echo 1 >"$STUBS/raw-2/op-1.rc"
   set_later_metrics op-1 "$DURATION_LINE"$'\n'"$DB_SYNC_LINE"
   METRICS_WAIT=10
   run_check
-  assert_eq "the script exits 0" "0" "$RUN_RC"
-  assert_contains "the second read did fail" "$(cat "$STUBS/stderr")" "ServiceUnavailable"
-  assert_contains "the sample passes" "$RUN_OUT" "OK: sample $DB_SYNC_SAMPLE"
-  assert_not_contains "it prints no FAIL: line" "$RUN_OUT" "FAIL:"
+  assert_eq "the script exits 0" "0" "$status"
+  assert_contains "the second read did fail" "$stderr" "ServiceUnavailable"
+  assert_contains "the sample passes" "$output" "OK: sample $DB_SYNC_SAMPLE"
+  assert_not_contains "it prints no FAIL: line" "$output" "FAIL:"
 }
 
 # --- Test 4: check 3, the reconcile duration count ---
-test_an_absent_duration_count_fails() {
-  echo "Test: an absent reconcile duration count fails check 3"
-
-  reset_stub
+@test "an absent reconcile duration count fails check 3" {
   set_metrics op-1 "$ERRORS_LINE"$'\n'"$DB_SYNC_LINE"
   run_check
-  assert_eq "the script exits 1" "1" "$RUN_RC"
-  assert_contains "it names the family" "$RUN_OUT" \
+  assert_eq "the script exits 1" "1" "$status"
+  assert_contains "it names the family" "$output" \
     "FAIL: no keystone_operator_reconcile_duration_seconds_count line of release keystone-operator counts a reconcile after 0s"
 }
 
-test_a_zero_duration_count_fails() {
-  echo "Test: a reconcile duration count whose only value is 0 fails check 3"
-
-  reset_stub
+@test "a reconcile duration count whose only value is 0 fails check 3" {
   set_metrics op-1 'keystone_operator_reconcile_duration_seconds_count{sub_reconciler="Database"} 0'$'\n'"$DB_SYNC_LINE"
   run_check
-  assert_eq "the script exits 1" "1" "$RUN_RC"
-  assert_contains "it fails check 3" "$RUN_OUT" \
+  assert_eq "the script exits 1" "1" "$status"
+  assert_contains "it fails check 3" "$output" \
     "FAIL: no keystone_operator_reconcile_duration_seconds_count line"
-  assert_contains "it prints the zero line" "$RUN_OUT" \
+  assert_contains "it prints the zero line" "$output" \
     'keystone_operator_reconcile_duration_seconds_count{sub_reconciler="Database"} 0'
 }
 
-test_a_later_duration_count_passes() {
-  echo "Test: a reconcile duration count that appears on a later read passes"
-
-  reset_stub
+@test "a reconcile duration count that appears on a later read passes" {
   set_metrics op-1 "$DB_SYNC_LINE"
   set_later_metrics op-1 "$DURATION_LINE"$'\n'"$DB_SYNC_LINE"
   METRICS_WAIT=10
   run_check
-  assert_eq "the script exits 0" "0" "$RUN_RC"
-  assert_contains "check 3 passes" "$RUN_OUT" \
+  assert_eq "the script exits 0" "0" "$status"
+  assert_contains "check 3 passes" "$output" \
     "OK: keystone_operator_reconcile_duration_seconds_count counts a reconcile"
 }
 
-test_an_unlabelled_duration_count_passes() {
-  echo "Test: a reconcile duration count without labels passes check 3"
-
-  reset_stub
+@test "a reconcile duration count without labels passes check 3" {
   set_metrics op-1 'keystone_operator_reconcile_duration_seconds_count 3'
   run_check keystone-system keystone-operator keystone_operator
-  assert_eq "the script exits 0" "0" "$RUN_RC"
-  assert_contains "check 3 passes" "$RUN_OUT" \
+  assert_eq "the script exits 0" "0" "$status"
+  assert_contains "check 3 passes" "$output" \
     "OK: keystone_operator_reconcile_duration_seconds_count counts a reconcile"
 }
 
 # --- Test 5: check 4, the UNKNOWN condition type ---
-test_an_unknown_condition_type_fails() {
-  echo "Test: an errors line labelled condition_type=\"UNKNOWN\" fails check 4 and is printed"
-
+@test "an errors line labelled condition_type=\"UNKNOWN\" fails check 4 and is printed" {
   local line='keystone_operator_reconcile_errors_total{condition_type="UNKNOWN",sub_reconciler="Rotation"} 1'
-  reset_stub
   set_metrics op-1 "$DURATION_LINE"$'\n'"$ERRORS_LINE"$'\n'"$line"$'\n'"$DB_SYNC_LINE"
   run_check
-  assert_eq "the script exits 1" "1" "$RUN_RC"
-  assert_contains "it fails check 4" "$RUN_OUT" \
+  assert_eq "the script exits 1" "1" "$status"
+  assert_contains "it fails check 4" "$output" \
     "FAIL: keystone_operator_reconcile_errors_total carries condition_type=\"UNKNOWN\""
-  assert_contains "it prints the line" "$RUN_OUT" "$line"
-  assert_not_contains "it leaves the mapped line out" "$RUN_OUT" "$ERRORS_LINE"
+  assert_contains "it prints the line" "$output" "$line"
+  assert_not_contains "it leaves the mapped line out" "$output" "$ERRORS_LINE"
 }
 
-test_a_longer_condition_type_passes() {
-  echo "Test: condition_type=\"UNKNOWNX\" passes check 4"
-
-  reset_stub
+@test "condition_type=\"UNKNOWNX\" passes check 4" {
   set_metrics op-1 "$DURATION_LINE"$'\n''keystone_operator_reconcile_errors_total{condition_type="UNKNOWNX",sub_reconciler="Rotation"} 1'$'\n'"$DB_SYNC_LINE"
   run_check
-  assert_eq "the script exits 0" "0" "$RUN_RC"
-  assert_contains "check 4 passes" "$RUN_OUT" \
+  assert_eq "the script exits 0" "0" "$status"
+  assert_contains "check 4 passes" "$output" \
     "OK: no keystone_operator_reconcile_errors_total line carries condition_type=\"UNKNOWN\""
 }
 
 # --- Test 6: check 5, samples that pass ---
-test_a_sample_in_another_label_order_passes() {
-  echo "Test: a sample passes with its labels in another order"
-
+@test "a sample passes with its labels in another order" {
   # client_golang prints labels in name order: key_type before keystone.
-  reset_stub
   run_sample "$AGE_SAMPLE" \
     'keystone_operator_key_rotation_age_seconds{key_type="fernet",keystone="keystone-fernet",namespace="openstack"} 12.5'
-  assert_eq "the script exits 0" "0" "$RUN_RC"
-  assert_contains "the sample passes" "$RUN_OUT" "OK: sample $AGE_SAMPLE"
+  assert_eq "the script exits 0" "0" "$status"
+  assert_contains "the sample passes" "$output" "OK: sample $AGE_SAMPLE"
 }
 
-test_an_exponent_value_passes() {
-  echo "Test: a counter sample in exponent form passes"
-
-  reset_stub
+@test "a counter sample in exponent form passes" {
   run_sample "$DB_SYNC_SAMPLE" \
     'keystone_operator_db_sync_total{keystone="keystone-basic",namespace="openstack",result="succeeded"} 1.2e+06'
-  assert_eq "the script exits 0" "0" "$RUN_RC"
-  assert_contains "the sample passes" "$RUN_OUT" "OK: sample $DB_SYNC_SAMPLE"
+  assert_eq "the script exits 0" "0" "$status"
+  assert_contains "the sample passes" "$output" "OK: sample $DB_SYNC_SAMPLE"
 }
 
-test_a_gauge_at_zero_passes() {
-  echo "Test: a gauge sample at 0 passes"
-
+@test "a gauge sample at 0 passes" {
   # A rotation that just ran leaves an age of 0.
-  reset_stub
   run_sample "$AGE_SAMPLE" \
     'keystone_operator_key_rotation_age_seconds{key_type="fernet",keystone="keystone-fernet",namespace="openstack"} 0'
-  assert_eq "the script exits 0" "0" "$RUN_RC"
-  assert_contains "the sample passes" "$RUN_OUT" "OK: sample $AGE_SAMPLE"
+  assert_eq "the script exits 0" "0" "$status"
+  assert_contains "the sample passes" "$output" "OK: sample $AGE_SAMPLE"
 }
 
-test_a_later_sample_passes() {
-  echo "Test: a sample that appears on a later read passes"
-
+@test "a sample that appears on a later read passes" {
   # The operator records a finished Job on its next pass.
-  reset_stub
   set_metrics op-1 "$DURATION_LINE"
   set_later_metrics op-1 "$DURATION_LINE"$'\n'"$DB_SYNC_LINE"
   METRICS_WAIT=10
   run_check
-  assert_eq "the script exits 0" "0" "$RUN_RC"
-  assert_contains "the sample passes" "$RUN_OUT" "OK: sample $DB_SYNC_SAMPLE"
+  assert_eq "the script exits 0" "0" "$status"
+  assert_contains "the sample passes" "$output" "OK: sample $DB_SYNC_SAMPLE"
 }
 
-test_a_label_value_with_a_comma_matches_whole() {
-  echo "Test: a label value holding a comma matches only as a whole"
-
+@test "a label value holding a comma matches only as a whole" {
   local sample='keystone_operator_db_sync_total{keystone="a,b",result="succeeded"}'
-  reset_stub
   run_sample "$sample" 'keystone_operator_db_sync_total{keystone="a,b",result="succeeded"} 1'
-  assert_eq "the value a,b passes" "0" "$RUN_RC"
-  assert_contains "the sample passes" "$RUN_OUT" "OK: sample $sample"
+  assert_eq "the value a,b passes" "0" "$status"
+  assert_contains "the sample passes" "$output" "OK: sample $sample"
 
   # Split at its comma, the pair would find keystone="a and b" in two values.
   run_sample "$sample" 'keystone_operator_db_sync_total{keystone="a,x",result="succeeded",y="z,b"} 1'
-  assert_eq "the values a,x and z,b fail" "1" "$RUN_RC"
-  assert_contains "it names the sample" "$RUN_OUT" "FAIL: sample $sample"
+  assert_eq "the values a,x and z,b fail" "1" "$status"
+  assert_contains "it names the sample" "$output" "FAIL: sample $sample"
 }
 
-test_a_label_value_with_a_brace_passes() {
-  echo "Test: a label value holding a closing brace passes"
-
+@test "a label value holding a closing brace passes" {
   local sample='keystone_operator_db_sync_total{keystone="a}b",result="succeeded"}'
-  reset_stub
   run_sample "$sample" 'keystone_operator_db_sync_total{keystone="a}b",result="succeeded"} 1'
-  assert_eq "the script exits 0" "0" "$RUN_RC"
-  assert_contains "the sample passes" "$RUN_OUT" "OK: sample $sample"
+  assert_eq "the script exits 0" "0" "$status"
+  assert_contains "the sample passes" "$output" "OK: sample $sample"
 }
 
 # --- Test 7: check 5, samples that fail ---
-test_a_counter_at_zero_fails() {
-  echo "Test: a _total sample at 0 fails"
-
-  reset_stub
+@test "a _total sample at 0 fails" {
   run_sample "$DB_SYNC_SAMPLE" \
     'keystone_operator_db_sync_total{keystone="keystone-basic",namespace="openstack",result="succeeded"} 0'
-  assert_eq "the script exits 1" "1" "$RUN_RC"
-  assert_contains "it names the sample" "$RUN_OUT" \
+  assert_eq "the script exits 1" "1" "$status"
+  assert_contains "it names the sample" "$output" \
     "FAIL: sample $DB_SYNC_SAMPLE has no line with a value of 1 or more after 0s"
-  assert_contains "it prints the family's line" "$RUN_OUT" "result=\"succeeded\"} 0"
+  assert_contains "it prints the family's line" "$output" "result=\"succeeded\"} 0"
 }
 
-test_a_missing_sample_fails() {
-  echo "Test: a sample without a line fails and the other samples still report"
-
-  reset_stub
+@test "a sample without a line fails and the other samples still report" {
   run_check keystone-system keystone-operator keystone_operator "$AGE_SAMPLE" "$DB_SYNC_SAMPLE"
-  assert_eq "the script exits 1" "1" "$RUN_RC"
-  assert_contains "it names the sample" "$RUN_OUT" \
+  assert_eq "the script exits 1" "1" "$status"
+  assert_contains "it names the sample" "$output" \
     "FAIL: sample $AGE_SAMPLE has no line with a numeric value after 0s"
-  assert_contains "it says the family is absent" "$RUN_OUT" \
+  assert_contains "it says the family is absent" "$output" \
     "no line of family keystone_operator_key_rotation_age_seconds"
-  assert_contains "the present sample still passes" "$RUN_OUT" "OK: sample $DB_SYNC_SAMPLE"
+  assert_contains "the present sample still passes" "$output" "OK: sample $DB_SYNC_SAMPLE"
 }
 
-test_a_longer_label_value_fails() {
-  echo "Test: keystone=\"keystone-basic-2026-2\" does not satisfy keystone=\"keystone-basic\""
-
-  reset_stub
+@test "keystone=\"keystone-basic-2026-2\" does not satisfy keystone=\"keystone-basic\"" {
   run_sample "$DB_SYNC_SAMPLE" \
     'keystone_operator_db_sync_total{keystone="keystone-basic-2026-2",namespace="openstack",result="succeeded"} 1'
-  assert_eq "the script exits 1" "1" "$RUN_RC"
-  assert_contains "it names the sample" "$RUN_OUT" "FAIL: sample $DB_SYNC_SAMPLE"
+  assert_eq "the script exits 1" "1" "$status"
+  assert_contains "it names the sample" "$output" "FAIL: sample $DB_SYNC_SAMPLE"
 }
 
-test_a_longer_label_name_fails() {
-  echo "Test: subnamespace=\"openstack\" does not satisfy namespace=\"openstack\""
-
-  reset_stub
+@test "subnamespace=\"openstack\" does not satisfy namespace=\"openstack\"" {
   run_sample "$DB_SYNC_SAMPLE" \
     'keystone_operator_db_sync_total{keystone="keystone-basic",result="succeeded",subnamespace="openstack"} 1'
-  assert_eq "the script exits 1" "1" "$RUN_RC"
-  assert_contains "it names the sample" "$RUN_OUT" "FAIL: sample $DB_SYNC_SAMPLE"
+  assert_eq "the script exits 1" "1" "$status"
+  assert_contains "it names the sample" "$output" "FAIL: sample $DB_SYNC_SAMPLE"
 }
 
-test_a_longer_family_name_fails() {
-  echo "Test: a line of a longer family name does not satisfy the sample"
-
-  reset_stub
+@test "a line of a longer family name does not satisfy the sample" {
   run_sample 'keystone_operator_db_sync{keystone="keystone-basic"}' "$DB_SYNC_LINE"
-  assert_eq "the script exits 1" "1" "$RUN_RC"
-  assert_contains "it says the family is absent" "$RUN_OUT" \
+  assert_eq "the script exits 1" "1" "$status"
+  assert_contains "it says the family is absent" "$output" \
     "no line of family keystone_operator_db_sync"
 }
 
-test_a_restarted_pod_is_named_when_a_sample_is_missing() {
-  echo "Test: a missing sample names the pods that restarted, and only those"
-
+@test "a missing sample names the pods that restarted, and only those" {
   # op-1 runs two containers that restarted once and twice.
-  reset_stub
-  STUB_PODS="op-0 0"$'\n'"op-1 1 2"
+  stub_on kubectl 'get pods *' --out "op-0 0"$'\n'"op-1 1 2"
   run_check keystone-system keystone-operator keystone_operator "$AGE_SAMPLE"
-  assert_eq "the script exits 1" "1" "$RUN_RC"
-  assert_contains "it names the restarted pod with its restarts summed" "$RUN_OUT" \
+  assert_eq "the script exits 1" "1" "$status"
+  assert_contains "it names the restarted pod with its restarts summed" "$output" \
     "FAIL: pod op-1 restarted 3 times; in-memory counters recorded before the restart are gone"
-  assert_not_contains "it leaves the other pod out" "$RUN_OUT" "pod op-0 restarted"
+  assert_not_contains "it leaves the other pod out" "$output" "pod op-0 restarted"
 
   # op-1 restarted after the first pod list, during the wait.
   reset_stub
-  STUB_PODS_LATER="op-0 0"$'\n'"op-1 1"
+  stub_on kubectl 'get pods *' --out "op-0 0"$'\n'"op-1 1"
+  stub_on kubectl 'get pods *' --out "op-0 0"$'\n'"op-1 0" --times 1
   run_check keystone-system keystone-operator keystone_operator "$AGE_SAMPLE"
-  assert_eq "a restart during the wait exits 1" "1" "$RUN_RC"
-  assert_contains "it names the pod that restarted during the wait" "$RUN_OUT" \
+  assert_eq "a restart during the wait exits 1" "1" "$status"
+  assert_contains "it names the pod that restarted during the wait" "$output" \
     "FAIL: pod op-1 restarted 1 times; in-memory counters recorded before the restart are gone"
 
   # The second pod list fails, so the restarts of the first one stand.
   reset_stub
-  STUB_PODS="op-0 0"$'\n'"op-1 2"
-  STUB_PODS_LATER_RC=1
+  stub_on kubectl 'get pods *' --rc 1 --err "Error from server (Forbidden): pods is forbidden"
+  stub_on kubectl 'get pods *' --out "op-0 0"$'\n'"op-1 2" --times 1
   run_check keystone-system keystone-operator keystone_operator "$AGE_SAMPLE"
-  assert_eq "a failed second pod list exits 1" "1" "$RUN_RC"
-  assert_contains "it names the restart of the first pod list" "$RUN_OUT" \
+  assert_eq "a failed second pod list exits 1" "1" "$status"
+  assert_contains "it names the restart of the first pod list" "$output" \
     "FAIL: pod op-1 restarted 2 times; in-memory counters recorded before the restart are gone"
-  assert_contains "kubectl's own error reaches stderr" "$(cat "$STUBS/stderr")" "Forbidden"
+  assert_contains "kubectl's own error reaches stderr" "$stderr" "Forbidden"
 
   reset_stub
-  STUB_PODS="op-0 0"$'\n'"op-1 2"
+  stub_on kubectl 'get pods *' --out "op-0 0"$'\n'"op-1 2"
   run_check
-  assert_eq "a present sample exits 0 despite the restart" "0" "$RUN_RC"
-  assert_not_contains "it names no restart" "$RUN_OUT" "restarted"
+  assert_eq "a present sample exits 0 despite the restart" "0" "$status"
+  assert_not_contains "it names no restart" "$output" "restarted"
 }
 
 # --- Test 8: the arguments ---
-test_wrong_arguments_exit_2() {
-  echo "Test: fewer than three arguments, an empty one or a malformed sample exits 2"
-
+@test "fewer than three arguments, an empty one or a malformed sample exits 2" {
   local usage="usage: assert-operator-metric-families.sh <operator-namespace> <release> <prefix> [<sample>...]"
-  reset_stub
   run_check keystone-system keystone-operator
-  assert_eq "two arguments exit 2" "2" "$RUN_RC"
-  assert_contains "the usage line goes to stderr" "$(cat "$STUBS/stderr")" "$usage"
-  assert_eq "nothing goes to stdout" "" "$RUN_OUT"
+  assert_eq "two arguments exit 2" "2" "$status"
+  assert_contains "the usage line goes to stderr" "$stderr" "$usage"
+  assert_eq "nothing goes to stdout" "" "$output"
 
   run_check keystone-system "" keystone_operator
-  assert_eq "an empty argument exits 2" "2" "$RUN_RC"
-  assert_contains "the usage line goes to stderr" "$(cat "$STUBS/stderr")" "$usage"
+  assert_eq "an empty argument exits 2" "2" "$status"
+  assert_contains "the usage line goes to stderr" "$stderr" "$usage"
 
   run_check keystone-system keystone-operator keystone_operator "$DB_SYNC_SAMPLE" ""
-  assert_eq "an empty sample exits 2" "2" "$RUN_RC"
+  assert_eq "an empty sample exits 2" "2" "$status"
 
   run_check keystone-system keystone-operator keystone_operator 'db_sync_total{keystone}'
-  assert_eq "a pair without a value exits 2" "2" "$RUN_RC"
-  assert_contains "the usage line goes to stderr" "$(cat "$STUBS/stderr")" "$usage"
-  assert_eq "nothing goes to stdout" "" "$RUN_OUT"
+  assert_eq "a pair without a value exits 2" "2" "$status"
+  assert_contains "the usage line goes to stderr" "$stderr" "$usage"
+  assert_eq "nothing goes to stdout" "" "$output"
 
   run_check keystone-system keystone-operator keystone_operator 'db_sync_total'
-  assert_eq "a sample without labels exits 2" "2" "$RUN_RC"
+  assert_eq "a sample without labels exits 2" "2" "$status"
 }
 
-test_the_script_parses() {
-  echo "Test: the script parses"
-
-  bash -n "$SCRIPT"
-  assert_eq "bash -n passes" "0" "$?"
+@test "the script parses" {
+  run bash -n "$SCRIPT"
+  assert_eq "bash -n passes" "0" "$status"
 }
 
 # --- Test 9: the metrics port ---
-test_the_port_matches_the_charts() {
-  echo "Test: the metrics port the script reads matches the ten charts"
-
+@test "the metrics port the script reads matches the ten charts" {
   local op port
   port="$(sed -n 's/^metrics_port=//p' "$SCRIPT")"
   assert_not_empty "the script names its metrics port" "$port"
   for op in $OPERATORS; do
-    assert_eq "the $op chart serves metrics on the script's port" "$port" \
+    soft assert_eq "the $op chart serves metrics on the script's port" "$port" \
       "$(yq '.metrics.port' "$PROJECT_ROOT/operators/$op/helm/$op-operator/values.yaml")"
   done
 }
 
 # --- Test 10: the path filters ---
-test_the_filters_name_the_shared_scripts() {
-  echo "Test: an edit to the script runs every leg"
-
+@test "an edit to the script runs every leg" {
   local op block script=assert-operator-metric-families.sh
   # These seven list the whole directory.
   for op in barbican cinder glance horizon keystone nova placement; do
     block="$(filter_block "tests_e2e_$op")"
-    assert_contains "tests_e2e_$op lists the shared directory" "$block" "'tests/e2e/lib/**'"
+    soft assert_contains "tests_e2e_$op lists the shared directory" "$block" "'tests/e2e/lib/**'"
   done
   # ovn, neutron and c5c3 name the script.
   for op in ovn neutron c5c3; do
     block="$(filter_block "tests_e2e_$op")"
-    assert_contains "tests_e2e_$op names $script" "$block" "'tests/e2e/lib/$script'"
+    soft assert_contains "tests_e2e_$op names $script" "$block" "'tests/e2e/lib/$script'"
   done
 }
 
 # --- Test 11: the callers ---
-test_the_eighteen_suites_call_the_script() {
-  echo "Test: the 17 suites call the script with the tabled arguments in a 120s step, and no other suite calls it"
-
+@test "the 17 suites call the script with the tabled arguments in a 120s step, and no other suite calls it" {
   local suite args file expected found calls
   while IFS='|' read -r suite args; do
     file="$PROJECT_ROOT/tests/e2e/$suite/chainsaw-test.yaml"
     calls="$(metric_calls "$file")"
-    assert_eq "the $suite suite calls the script once, with its tabled arguments" \
+    soft assert_eq "the $suite suite calls the script once, with its tabled arguments" \
       "../../lib/assert-operator-metric-families.sh $args" "${calls#*|}"
     # The script re-reads for up to 60 s; chainsaw's exec default is 30s.
-    assert_eq "the $suite suite gives that step a 120s timeout" "120s" "${calls%%|*}"
+    soft assert_eq "the $suite suite gives that step a 120s timeout" "120s" "${calls%%|*}"
   done <<<"$METRIC_CALLERS"
 
   assert_eq "the table names 17 suites" "17" "$(grep -c . <<<"$METRIC_CALLERS")"
@@ -677,45 +556,3 @@ test_the_eighteen_suites_call_the_script() {
     sed -e "s|^$PROJECT_ROOT/tests/e2e/||" -e 's|/chainsaw-test.yaml$||' | LC_ALL=C sort)"
   assert_eq "the suites that call the script are the tabled ones" "$expected" "$found"
 }
-
-# --- Run ---
-test_a_two_pod_release_passes_on_the_union
-test_a_release_without_samples_passes
-test_a_release_without_a_pod_fails
-test_an_unlistable_release_fails
-test_an_unreachable_pod_fails
-test_an_empty_body_fails
-test_a_read_failing_at_the_deadline_fails
-test_a_deadline_passed_in_the_first_check_still_rereads
-test_a_transient_read_failure_recovers
-test_an_absent_duration_count_fails
-test_a_zero_duration_count_fails
-test_a_later_duration_count_passes
-test_an_unlabelled_duration_count_passes
-test_an_unknown_condition_type_fails
-test_a_longer_condition_type_passes
-test_a_sample_in_another_label_order_passes
-test_an_exponent_value_passes
-test_a_gauge_at_zero_passes
-test_a_later_sample_passes
-test_a_label_value_with_a_comma_matches_whole
-test_a_label_value_with_a_brace_passes
-test_a_counter_at_zero_fails
-test_a_missing_sample_fails
-test_a_longer_label_value_fails
-test_a_longer_label_name_fails
-test_a_longer_family_name_fails
-test_a_restarted_pod_is_named_when_a_sample_is_missing
-test_wrong_arguments_exit_2
-test_the_script_parses
-test_the_port_matches_the_charts
-
-test_the_filters_name_the_shared_scripts
-test_the_eighteen_suites_call_the_script
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0
