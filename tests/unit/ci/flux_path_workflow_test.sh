@@ -6,7 +6,8 @@
 # Verify the shape of .github/workflows/flux-path.yaml, the nightly that brings
 # up the quick start ControlPlane on deploy-infra's default operator path:
 #   - the triggers (a 02:45 UTC schedule, workflow_dispatch, and pull_request
-#     on the workflow and its two scripts), top-level permissions of contents:
+#     on the workflow, its two scripts and hack/install-test-deps.sh, which
+#     pins the kind of its cluster), top-level permissions of contents:
 #     read alone, a concurrency group per event and ref that cancels only pull
 #     request runs, KIND_CLUSTER and no kind pin of its own, no operator path
 #     or GHCR login of its own;
@@ -105,10 +106,11 @@ check_triggers() {
   assert_file_contains "the workflow is named Flux path" "$wf" '^name: Flux path$'
   assert_file_contains_fixed "it runs nightly at 02:45 UTC" "$wf" 'cron: "45 2 * * *"'
   assert_file_contains "it can be dispatched" "$wf" '^  workflow_dispatch:'
-  assert_eq "pull_request runs on the workflow and its two scripts" \
+  assert_eq "pull_request runs on the workflow, its two scripts and the kind pin" \
     "      - '.github/workflows/flux-path.yaml'
       - 'hack/ci-quick-start-controlplane.sh'
-      - 'hack/ci-report-red-run.sh'" "$(pull_request_paths "$wf")"
+      - 'hack/ci-report-red-run.sh'
+      - 'hack/install-test-deps.sh'" "$(pull_request_paths "$wf")"
 }
 
 check_top_level_permissions() {

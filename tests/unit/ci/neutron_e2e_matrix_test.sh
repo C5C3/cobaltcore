@@ -148,8 +148,8 @@ test_e2e_leg_deploys_the_ovn_operator() {
   assert_contains "it lands in its own Namespace" "$deploy" \
     "NAMESPACE: ovn-system"
 
-  assert_file_not_contains "the CRD-only step it replaced is gone" "$CI_YAML" \
-    "name: Install CRDs watched by the neutron-operator"
+  assert_eq "the CRD-only step it replaced is gone" "0" \
+    "$(ci_workflows | xargs cat | grep -cF 'name: Install CRDs watched by the neutron-operator')"
 
   # The OVNCentral has to be reconcilable before the neutron-operator's own
   # suites start, so the ovn deploy comes first.

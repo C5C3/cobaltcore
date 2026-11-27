@@ -7,8 +7,8 @@ description: >-
   patches, the per-service Tempest config directories the CI matrix generator
   hard-requires, every service's per-release basic-deployment e2e variant and
   the release pins across the e2e fixture trees, the placed-services pins and
-  their ci.yaml preloads, the default-release references in deploy/overlays/kind/, hack/,
-  and ci.yaml, the Renovate regression tests and per-release rules, the
+  their e2e-multicluster preloads, the default-release references in deploy/overlays/kind/, hack/,
+  and the CI workflows, the Renovate regression tests and per-release rules, the
   upgrade-path suites of every service, and the version-pattern lockstep across
   every OpenStackRelease CRD marker, webhook, and release.ParseRelease. Use when
   asked to check release wiring, after adding or removing a releases/<version>/
@@ -47,8 +47,8 @@ suite; every table row below applies per service.
 | Tempest config | `tests/tempest/<svc>-<slug>/` for every service in `ALL_TEMPEST_SERVICES` (keystone, glance, barbican, neutron, cinder, nova), slug = version with `.` → `-`: `exclude-tests.txt`, `include-tests.txt`, `tempest.conf`, plus 1–16 numbered CR fixtures | `hack/ci-generate-tempest-matrix.sh` — **hard-fails the pipeline** when any directory is missing, and emits the CR names the CI job waits on |
 | Per-release e2e variant | `tests/e2e/<svc>/basic-deployment` (pins the default release) plus `basic-deployment-<slug>/` for every other release, for each of the eight services | hand-maintained fixtures with hard-coded names and image refs; [[check-service-parity]] P6 checks the latest-release variant exists |
 | E2E fixture release pins | every `tag:`, `openStackRelease:`, `installedRelease:`, and `ghcr.io/c5c3/<img>:<YYYY.N>` in `tests/e2e*/` (~1,000 today, the tempest client image included) | the `releases/` directory set |
-| Placed-services release pins | `tests/e2e-multicluster/placed-services/*.yaml` (`repository:` + `tag:`) and the ci.yaml `e2e-multicluster` job's image preloads | hand-maintained; the suite runs one release, not a matrix |
-| Default-release references | `deploy/overlays/kind/controlplane/controlplane.yaml` `openStackRelease`, `hack/deploy-infra.sh` `cp_release`, every `${VAR:-YYYY.N}` fallback in `hack/*.sh` (three `RELEASE:-`, `IMAGE_TAG:-` in `perf-reconcile-benchmark.sh`), the `CONFIG_DIR`/`SERVICE_K8S_NAME` slug fallbacks in `hack/ci-run-tempest.sh`, the two `ghcr.io/c5c3/nova:<v>` refs of `deploy/overlays/kind/fake-compute/fake-compute.yaml`, the `openStackRelease` of `deploy/overlays/metal-stack/controlplane/controlplane-lab.yaml` and `deploy/overlays/metal-stack/hypervisor/compute.yaml`, image tags in `.github/workflows/ci.yaml` | the `releases/` directory set |
+| Placed-services release pins | `tests/e2e-multicluster/placed-services/*.yaml` (`repository:` + `tag:`) and the image preloads of the `e2e-multicluster` job (`ci-e2e-multicluster.yaml`) | hand-maintained; the suite runs one release, not a matrix |
+| Default-release references | `deploy/overlays/kind/controlplane/controlplane.yaml` `openStackRelease`, `hack/deploy-infra.sh` `cp_release`, every `${VAR:-YYYY.N}` fallback in `hack/*.sh` (three `RELEASE:-`, `IMAGE_TAG:-` in `perf-reconcile-benchmark.sh`), the `CONFIG_DIR`/`SERVICE_K8S_NAME` slug fallbacks in `hack/ci-run-tempest.sh`, the two `ghcr.io/c5c3/nova:<v>` refs of `deploy/overlays/kind/fake-compute/fake-compute.yaml`, the `openStackRelease` of `deploy/overlays/metal-stack/controlplane/controlplane-lab.yaml` and `deploy/overlays/metal-stack/hypervisor/compute.yaml`, image tags in `.github/workflows/ci.yaml` and the `ci-<job>.yaml` workflows it calls | the `releases/` directory set |
 | Release floor | `release.MinimumSupported` in `internal/common/release/release.go` and the `*-openstackrelease-below-floor.yaml` / `*-image-tag-below-floor.yaml` rejection fixtures of the `invalid-*` corpora | the oldest `releases/<version>/` directory |
 | Renovate | `tests/unit/renovate/*_test.sh` probes and the per-release `packageRules` in `renovate.json` (the `neutron-tempest-plugin` holds) | the `releases/` directory set |
 | Upgrade-path e2e | `tests/e2e/<svc>/release-upgrade/` (barbican, cinder, glance, horizon, keystone, neutron, nova, placement), `tests/e2e/keystone/upgrade-flow/`, `upgrade-flow/02-patch-skip-level.yaml`, `tests/e2e/keystone/upgrade-abort/`, and the ControlPlane hop of `tests/e2e/c5c3/full-controlplane-keystone/` (`00-controlplane-cr.yaml` -> `08-patch-upgrade.yaml`, read by `openStackRelease`) | `release.IsSequentialUpgrade` and the sorted release list |
@@ -121,9 +121,9 @@ inventory. Interpret:
   `*-openstackrelease-below-floor.yaml` and `*-image-tag-below-floor.yaml`
   rejection fixtures of the `tests/e2e/*/invalid-*/` corpora, L8 checks
   them). Last, each placed-services
-  `repository:` + `tag:` pair must appear as `/<img>:<tag>` in the ci.yaml
-  `e2e-multicluster` job, and each release-tagged preload there must
-  match the fixture pin.
+  `repository:` + `tag:` pair must appear as `/<img>:<tag>` in the
+  `e2e-multicluster` job (`ci-e2e-multicluster.yaml`), and each
+  release-tagged preload there must match the fixture pin.
 - **L4** — every default-release reference resolves to an existing
   release: the kind quick-start ControlPlane, the deploy-infra image
   preload, every `${VAR:-YYYY.N}` fallback in `hack/*.sh`, the
@@ -131,7 +131,7 @@ inventory. Interpret:
   `hack/ci-run-tempest.sh`, the two nova image refs of
   `deploy/overlays/kind/fake-compute/fake-compute.yaml`, the `openStackRelease` of
   the two metal-stack lab manifests, and every `:<YYYY.N>` image tag
-  hard-coded in `ci.yaml`. The fake compute's nova tags must also equal
+  hard-coded in `ci.yaml` or a `ci-<job>.yaml` workflow it calls. The fake compute's nova tags must also equal
   the kind ControlPlane default; the lab manifests need only name a
   wired release, because the lab may lag the kind default (decision D4
   of #1321).
@@ -192,8 +192,8 @@ confirm by hand:
    upstream `stable/<series>` branch, and that every
    `overrides/<version>/constraints.txt` entry and every
    `patches/<svc>/<version>/` patch is still needed.
-3. That `ci.yaml`'s hard-coded `<svc>:<version>` tags (the image-upgrade
-   re-tag in e2e-operator, the kind preloads of e2e-chaos,
+3. That the hard-coded `<svc>:<version>` tags of the `ci-<job>.yaml`
+   workflows (the image-upgrade re-tag in e2e-operator, the kind preloads of e2e-chaos,
    e2e-controlplane, e2e-controlplane-sso, e2e-external-keystone,
    e2e-prometheus, e2e-multicluster) still name the release the
    fixtures actually use — the script verifies existence, not intent

@@ -44,7 +44,7 @@ concurrency:
 
 env:
   IMAGE_PREFIX: ghcr.io/c5c3
-  # Kind cluster name, as in ci.yaml.
+  # Kind cluster name, as in the e2e workflows ci.yaml calls.
   KIND_CLUSTER: cobaltcore
 
 jobs:

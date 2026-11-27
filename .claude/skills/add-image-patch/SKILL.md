@@ -35,8 +35,8 @@ glance 0001, horizon 0001–0004, keystone 0001–0006 and nova 0001–0005 per 
 | `nix/lib/python-env.nix` | every Nix build of the service | `pkgs.applyPatches` applies the listed files in that order to the fetched source, a derivation input of the image, the unit-test run and the e2e image alike |
 | `build-service-images` | `build-images.yaml`, `nix build .#<svc>-<rel_>-image` | builds the image from the patched source; on a PR it runs `tests/container-images/verify_<svc>.sh` against it (the `verify-script` input is PR-only) |
 | `test-service-images` | `nix build .#<svc>-<rel_>-test-run` | runs the **upstream** stestr suite (minus `releases/<release>/test-excludes/<svc>.txt`) against the patched tree |
-| `build-e2e-images` | `ci.yaml` via `hack/ci-nix-build-e2e-images.sh` | the same flake attribute, so e2e images match the published ones |
-| `keystone-pressure` | `ci.yaml` (`image_keystone`), `make keystone-pressure-ab` | keystone only: runs dizzy's token-path load against `main`'s image and the patched one and puts the comparison per profile into the job summary |
+| `build-e2e-images` | `ci-build-e2e-images.yaml`, called by `ci.yaml`, via `hack/ci-nix-build-e2e-images.sh` | the same flake attribute, so e2e images match the published ones |
+| `keystone-pressure` | `ci-keystone-pressure.yaml` (`image_keystone`), `make keystone-pressure-ab` | keystone only: runs dizzy's token-path load against `main`'s image and the patched one and puts the comparison per profile into the job summary |
 | `verify-service-images` | `build-images.yaml`, push to main only | `verify_<svc>.sh` against the published image |
 | `derive-service-tags` | `.github/actions/derive-service-tags` | counts `*.patch` into the composite tag `<version>-p<N>-<branch>-<sha>` |
 
@@ -45,7 +45,7 @@ not apply, failing the source derivation and with it every build on top.
 Adding, renumbering or retiring a patch changes the lock: run `make nix-lock`
 and commit `sources.json`, or `nix-lock-check` fails. Paths filters
 `patches/<svc>/**` exist in `build-images.yaml` (`changes` job) and
-`ci.yaml` (`image_<svc>`, which runs that service's `e2e-operator` leg with
+`.github/ci-filters.yaml` (`image_<svc>`, which runs that service's `e2e-operator` leg with
 a fresh image) for every service.
 
 ## Procedure
@@ -224,7 +224,8 @@ the automerge stalls.
   without `make nix-lock` fails `nix-lock-check`, and a patch the lock does
   not list never reaches the image.
 - **A new service needs its filter lines.** `patches/<svc>/**` must be in the
-  `changes` filter of `build-images.yaml` and in `image_<svc>` of `ci.yaml`;
+  `changes` filter of `build-images.yaml` and in `image_<svc>` of
+  `.github/ci-filters.yaml`;
   `docs/contributing/adding-a-new-operator.md` and
   `docs/reference/ci-cd/build-images-workflow.md` list them, and P2 fails
   without them.

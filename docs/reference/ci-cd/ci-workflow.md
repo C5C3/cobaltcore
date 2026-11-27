@@ -163,7 +163,7 @@ scripts it calls. Nothing runs because Go code changed somewhere else.
 | `tests_controlplane`, `tests_controlplane_sso`, `tests_external_keystone` | the three ControlPlane suites; `tests_controlplane` also covers `deploy/overlays/kind/hypervisor-operator-fixtures/**`, whose `fixtures.yaml` the full-chain suite applies | the job that runs that suite |
 | `tests_chaos`, `tests_multicluster`, `tests_orders_multicluster`, `tests_prometheus` | each suite's own tree; the two multicluster classes also cover `deploy/bases/target-cluster-access/**` | the job that runs it |
 | `tests_chaos_random` | `tests/chaos-random/**`, `hack/chaos-random.sh`, `hack/dizzy-soak.sh`, `hack/dizzy-soak-runner.sh`, `deploy/overlays/metal-stack/dizzy-soak/**`, `tests/e2e-chaos/lib/consistency.sh` | `e2e-chaos-random` |
-| `tests_operator_upgrade` | the inputs every operator upgrade suite shares: `tests/e2e-operator-upgrade/chainsaw-config.yaml`, `hack/ci-fetch-released-operator.sh`, `hack/ci-read-chart-version.sh`, `hack/ci-operator-upgrade-leg.sh`, `hack/ci-deploy-operator.sh`, `.github/workflows/e2e-operator-upgrade.yaml` | every `e2e-operator-upgrade` job |
+| `tests_operator_upgrade` | the inputs every operator upgrade suite shares: `tests/e2e-operator-upgrade/chainsaw-config.yaml`, `hack/ci-fetch-released-operator.sh`, `hack/ci-read-chart-version.sh`, `hack/ci-operator-upgrade-leg.sh`, `hack/ci-deploy-operator.sh`, `.github/workflows/e2e-operator-upgrade.yaml`, `hack/install-test-deps.sh` (the `KIND_VERSION` every job creates its cluster with) | every `e2e-operator-upgrade` job |
 | `tests_operator_upgrade_<op>` (one per operator) | `tests/e2e-operator-upgrade/<op>-helm-upgrade/**`; cinder and nova also `tests/e2e/cinder/broker-vhost.sh`; keystone also `hack/ci-operator-upgrade-crd-window.sh`, which its suite calls, and `tests/e2e-operator-upgrade/keystone-helm-upgrade-pod-kill/**` with the `tests/e2e-chaos/lib/workload.sh` and `workload.py` that suite calls | that operator's `e2e-operator-upgrade` job |
 | `tests_bgp_fabric` | `tests/e2e-bgp-fabric/**`, `deploy/overlays/kind/frr-k8s/**` | `e2e-bgp-fabric` |
 | `e2e_infra` | `tests/e2e/infrastructure/**` | `e2e-infra` |
@@ -1167,10 +1167,14 @@ Chainsaw E2E test suites.
 
 **Matrix strategy:**
 
+The `e2e-operator` job of `ci.yaml` passes the legs as the `matrix` input
+(`matrix: ${{ needs.changes.outputs.e2e-operator-legs }}`), which
+`ci-e2e-operator.yaml` reads:
+
 ```yaml
 strategy:
   fail-fast: false
-  matrix: ${{ fromJson(needs.changes.outputs.e2e-operator-legs) }}
+  matrix: ${{ fromJson(inputs.matrix) }}
 ```
 
 The operator matrix is dynamically constructed by the `changes` job, including only operators
@@ -2205,7 +2209,8 @@ lists the commands of a job in order.
 `hack/ci-generate-tempest-matrix.sh` runs in the `changes` job and crosses
 `ALL_TEMPEST_SERVICES=(keystone glance barbican neutron cinder nova)` with every
 `releases/<version>/` directory, writing the result to the `tempest-releases`
-output the job consumes as `matrix: ${{ fromJson(needs.changes.outputs.tempest-releases) }}`.
+output the `tempest` job of `ci.yaml` passes to `ci-tempest.yaml` as its
+`matrix` input, read as `matrix: ${{ fromJson(inputs.matrix) }}`.
 Two releases and six services make twelve legs, and one `keystone-upgrade`
 entry for the newest transition makes thirteen. A service without a
 `tests/tempest/<service>-<slug>` configuration directory fails the generator.
@@ -3109,13 +3114,14 @@ as the `:dev` ref, so the job's `kind load` and deploy lines stay as they are.
 | `username` | `${{ github.actor }}` | Login user |
 | `password` | `${{ github.token }}` | Login token |
 
-Usage in a workflow job:
+Usage in a job of a workflow `ci.yaml` calls, which receives the map as its
+`image-map` input:
 
 ```yaml
 - name: Load E2E images
   uses: ./.github/actions/load-e2e-images
   with:
-    image-map: ${{ needs.build-e2e-images.outputs.image-map }}
+    image-map: ${{ inputs.image-map }}
     images: |
       ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
       ${{ env.IMAGE_PREFIX }}/keystone:2026.1

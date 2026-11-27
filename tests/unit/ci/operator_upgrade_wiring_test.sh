@@ -200,7 +200,8 @@ test_every_operator_has_an_upgrade_filter() {
     hack/ci-read-chart-version.sh \
     hack/ci-operator-upgrade-leg.sh \
     hack/ci-deploy-operator.sh \
-    .github/workflows/e2e-operator-upgrade.yaml; do
+    .github/workflows/e2e-operator-upgrade.yaml \
+    hack/install-test-deps.sh; do
     assert_contains "tests_operator_upgrade lists $path" "$shared" "- '$path'"
   done
   assert_not_contains "tests_operator_upgrade does not list every suite at once" \

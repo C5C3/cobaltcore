@@ -1804,8 +1804,9 @@ needed.
 
 If multi-release Tempest testing is needed, create a release-specific Tempest configuration
 directory under `tests/tempest/` (e.g., `tests/tempest/keystone-<release>/`) containing
-`tempest.conf`, `include-tests.txt`, `exclude-tests.txt`, and `00-keystone-cr.yaml`. Then
-add a corresponding matrix entry to the `tempest` job, whose steps live in `ci-tempest.yaml` (see
+`tempest.conf`, `include-tests.txt`, `exclude-tests.txt`, and `00-keystone-cr.yaml`. The
+`tempest` job needs no matrix entry for it: `hack/ci-generate-tempest-matrix.sh` builds the
+legs from the `releases/` directories and these configuration directories (see
 [CI Workflow — tempest](ci-workflow.md#tempest)).
 
 ## Verify Container Images Workflow

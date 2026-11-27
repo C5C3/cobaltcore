@@ -66,7 +66,7 @@ joins the two-cluster placed-services suite
 (`tests/e2e-multicluster/placed-services/`, keystone + barbican +
 OVNCentral + neutron today) is a Phase-3
 decision — membership also means extending the hard-coded image list
-in the ci.yaml `e2e-multicluster` job. Nova stayed out (#1038, author):
+in the `e2e-multicluster` job (`ci-e2e-multicluster.yaml`). Nova stayed out (#1038, author):
 every chart grant it would exercise is already exercised by the four
 members, and its scheduler/conductor readiness needs a live broker the
 placed Neutron's `.invalid` transport URL does not provide — record the

@@ -227,12 +227,12 @@ test_build_e2e_images_builds_the_ovn_images() {
   assert_contains "the daemon image is pushed under the run tag only when built" "$job" \
     "$(printf '%s\n%s' 'if [ "$BUILD_OVN" = "true" ]; then' '            push_image "${IMAGE_PREFIX}/ovn:${OVN_VERSION}"')"
 
-  # images/ovn/source.json holds the pin. A copy in the workflow would keep
-  # pointing at the old tag the next time the pin is bumped.
+  # images/ovn/source.json holds the pin. A copy in ci.yaml or a workflow it
+  # calls would keep pointing at the old tag the next time the pin is bumped.
   local pin
   pin=$("$PROJECT_ROOT/hack/ci-resolve-ovn-version.sh")
-  assert_eq "the workflow never spells the pinned version" "0" \
-    "$(grep -cF "$pin" "$CI_YAML")"
+  assert_eq "no CI workflow spells the pinned version" "0" \
+    "$(ci_workflows | xargs cat | grep -cF "$pin")"
 }
 
 test_e2e_leg_loads_the_ovn_image() {

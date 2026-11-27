@@ -431,8 +431,8 @@ test_label_handling_lives_in_the_resolver() {
   # run-chaos used to be read inline in the e2e-chaos `if:`. With five labels
   # that pattern would put label logic in five places and leave the resolver's
   # own view of them incomplete.
-  assert_file_not_contains "no job reads github.event.pull_request.labels" \
-    "$CI_YAML" "contains(github.event.pull_request.labels"
+  assert_eq "no job reads github.event.pull_request.labels" "0" \
+    "$(ci_workflows | xargs cat | grep -cF 'contains(github.event.pull_request.labels')"
   assert_file_contains "the resolver is handed the label set" "$CI_YAML" \
     "PR_LABELS: \${{ toJSON(github.event.pull_request.labels.\*.name) }}"
 }

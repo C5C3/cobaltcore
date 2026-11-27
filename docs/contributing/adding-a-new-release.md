@@ -274,7 +274,7 @@ moves to `<prev> -> <version>` as well:
 - the `ghcr.io/c5c3/keystone:<v>` client pins of its `chainsaw-test.yaml`,
   which follow the start release;
 - the sixteen service image refs of the `e2e-controlplane` job in
-  `.github/workflows/ci.yaml`, the eight services at both releases in both of
+  `.github/workflows/ci-e2e-controlplane.yaml`, the eight services at both releases in both of
   its load steps, which `tests/unit/ci/e2e_controlplane_output_test.sh` checks
   against the fixtures.
 
@@ -388,8 +388,8 @@ are the record of the last retirement.
 
 1. **Move the default**, when the retiring release is the default. Change
    every default-release reference listed under
-   [Decision points](#decision-points); the `ci.yaml` image lists of every e2e
-   job and the image-upgrade retag (`:<default>-upgraded`) with the keystone
+   [Decision points](#decision-points); the image lists of every e2e job in
+   its `ci-<job>.yaml` workflow and the image-upgrade retag (`:<default>-upgraded`) with the keystone
    `image-upgrade` and `rolling-update-zero-downtime` fixtures that patch to
    it; the tempest client image of every e2e fixture Job; every pin under
    `tests/e2e*/` (the `invalid-*` corpora through their `_generate.py` and
@@ -422,8 +422,8 @@ are the record of the last retirement.
    `make test-shell` breaks) and the per-release `renovate.json` rules whose
    `matchFileNames` name it; any upgrade-path suite that still starts at the
    old release, `upgrade-abort` included; the placed-services pins in
-   `tests/e2e-multicluster/placed-services/` and their ci.yaml
-   `e2e-multicluster` preloads, if they name the old release; and every
+   `tests/e2e-multicluster/placed-services/` and their
+   `e2e-multicluster` preloads in `ci-e2e-multicluster.yaml`, if they name the old release; and every
    default-release reference that still names it. Lower the `HaveLen(N)` and
    drop the `HaveKey("<old>")` of every `option_catalog_test.go`, with the
    deprecation tests keyed on the old catalog; fix every Go test fixture that

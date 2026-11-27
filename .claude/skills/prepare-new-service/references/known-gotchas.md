@@ -57,7 +57,7 @@ run that paid for the lesson; the lesson itself is the part to carry.
   for an image not built on `nix/lib/service-image.nix`),
   `hack/ci-generate-tempest-matrix.sh` (`ALL_TEMPEST_SERVICES`, mirrored by
   `TEMPEST_ALL_SERVICES` in `hack/ci-resolve-changes.sh`), and the
-  chaos CI job's image-load lists in `ci.yaml` are all generalized now but
+  chaos CI job's image-load lists in `ci-e2e-chaos.yaml` are all generalized now but
   still enumerate services by hand — extend each one, or the new
   service's coverage silently never runs. The rest of the literal copies
   (the Makefile `gen-option-catalogs` / `verify-option-catalogs` loops,

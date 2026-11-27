@@ -333,10 +333,11 @@ keystone_pressure:
   - 'tests/load/keystone-pressure/**'
   - '.github/workflows/ci-keystone-pressure.yaml'
 # The inputs every operator upgrade job shares: a change here runs
-# all ten. Each operator's own suite (and the scripts only some
-# suites call: the vhost script of cinder and nova, the CRD window
-# check and the chaos workload harness of keystone) runs that
-# operator's job alone.
+# all ten. hack/install-test-deps.sh is one: every job creates its
+# cluster with its KIND_VERSION. Each operator's own suite (and the
+# scripts only some suites call: the vhost script of cinder and nova,
+# the CRD window check and the chaos workload harness of keystone)
+# runs that operator's job alone.
 tests_operator_upgrade:
   - 'tests/e2e-operator-upgrade/chainsaw-config.yaml'
   - 'hack/ci-fetch-released-operator.sh'
@@ -344,6 +345,7 @@ tests_operator_upgrade:
   - 'hack/ci-operator-upgrade-leg.sh'
   - 'hack/ci-deploy-operator.sh'
   - '.github/workflows/e2e-operator-upgrade.yaml'
+  - 'hack/install-test-deps.sh'
 tests_operator_upgrade_keystone:
   - 'tests/e2e-operator-upgrade/keystone-helm-upgrade/**'
   - 'hack/ci-operator-upgrade-crd-window.sh'

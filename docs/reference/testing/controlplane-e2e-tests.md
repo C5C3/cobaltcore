@@ -1597,7 +1597,7 @@ reject.
 | --- | --- |
 | `schedule` | Every night at 02:45 UTC, after the 01:30 start and 75-minute wall of the [performance nightly](./reconcile-performance-benchmark.md) |
 | `workflow_dispatch` | By hand, from the Actions tab or with `gh workflow run flux-path.yaml` |
-| `pull_request` | A pull request from a branch of this repository that changes the workflow, `hack/ci-quick-start-controlplane.sh` or `hack/ci-report-red-run.sh`. GitHub dispatches `workflow_dispatch` only for a workflow on the default branch, so this trigger lets such a change prove itself before it merges. A fork's pull request skips the job |
+| `pull_request` | A pull request from a branch of this repository that changes the workflow, `hack/ci-quick-start-controlplane.sh`, `hack/ci-report-red-run.sh` or `hack/install-test-deps.sh`, whose `KIND_VERSION` the job creates its cluster with. GitHub dispatches `workflow_dispatch` only for a workflow on the default branch, so this trigger lets such a change prove itself before it merges. A fork's pull request skips the job |
 
 The concurrency group is `flux-path-<event>-<ref>`, so a night never shares a
 group with a dispatch. GitHub replaces a pending run with the next one queued in

@@ -782,8 +782,9 @@ jobs:
   # published (ci-build-e2e-images.yaml). Every job below that loads an image
   # pulls through its image-map. It runs on a pull request and on the night.
   # A fork's pull request skips it, and with it every E2E job but e2e-infra
-  # and e2e-bgp-fabric: the push to GHCR needs a writable token, and a
-  # maintainer runs the E2E jobs by pushing the change to a branch here.
+  # (e2e-bgp-fabric skips a fork by a guard of its own): the push to GHCR
+  # needs a writable token, and a maintainer runs the E2E jobs by pushing the
+  # change to a branch here.
   build-e2e-images:
     needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, verify-invalid-cr-fixtures, chainsaw-lint]
     # A night has no pull request, so the fork guard reads true there. An

@@ -9,8 +9,8 @@
 # chainsaw-test.yaml. docs/reference/testing/chaos-e2e-tests.md lists every
 # suite in the `| Suite |` table under `## Test Suite Inventory`, which
 # hack/gen-chaos-matrix.sh generates from the suite headers, and describes it
-# in a `### <suite>` section. The matrix of the e2e-chaos job in
-# .github/workflows/ci.yaml runs every suite in exactly one entry: a line
+# in a `### <suite>` section. The matrix of the e2e-chaos job, in
+# ci-e2e-chaos.yaml, runs every suite in exactly one entry: a line
 # `- suite: <leg>` starts an entry, and the `tests/e2e-chaos/<suite>` tokens
 # on the lines below it are its suites. check_chaos_suites prints one problem
 # per line and nothing for a consistent tree. The fixture tests prove each

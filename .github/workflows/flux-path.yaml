@@ -31,7 +31,9 @@ name: Flux path
 #
 # The pull_request trigger proves a change to this file or its two scripts on
 # the pull request itself: GitHub dispatches workflow_dispatch only for a
-# workflow on the default branch. A fork's pull request does not run the job.
+# workflow on the default branch. It also runs for hack/install-test-deps.sh,
+# whose KIND_VERSION the job creates its cluster with, so a kind bump takes
+# this path before it merges. A fork's pull request does not run the job.
 # The night does not log in to GHCR, because a user pulls the public images
 # anonymously.
 #
@@ -50,6 +52,7 @@ name: Flux path
       - '.github/workflows/flux-path.yaml'
       - 'hack/ci-quick-start-controlplane.sh'
       - 'hack/ci-report-red-run.sh'
+      - 'hack/install-test-deps.sh'
 
 permissions:
   contents: read
@@ -62,7 +65,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  # Kind cluster name, as in ci.yaml.
+  # Kind cluster name, as in the e2e workflows ci.yaml calls.
   KIND_CLUSTER: cobaltcore
 
 jobs:

@@ -30,8 +30,9 @@ as in `tests/e2e/README.md`. Chaos-specific rules:
   execution prevents cross-test interference), `assert: 300s` (recovery
   spans several reconcile cycles plus pod restarts), `cleanup: 120s`
   (Chaos Mesh CRs take time to release injected faults).
-- **CI is NOT auto-discovered.** The `e2e-chaos` job in
-  `.github/workflows/ci.yaml` enumerates `test_dirs` explicitly per
+- **CI is NOT auto-discovered.** The `e2e-chaos` job of
+  `.github/workflows/ci.yaml` runs `.github/workflows/ci-e2e-chaos.yaml`,
+  whose matrix enumerates `test_dirs` explicitly per
   matrix leg (chainsaw's include/exclude-regex flags match the test name
   `chainsaw/<metadata.name>`, not a directory, so they are not used). A new
   suite **must** be added to the `pod`, `network`, `ovn`, `nova`,

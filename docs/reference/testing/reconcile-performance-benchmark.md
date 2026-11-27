@@ -275,11 +275,11 @@ the `performance-results` artifact as the body. A night that failed before the
 comparison has no summary, and the issue points at the run log. The `report`
 job runs on `ubuntu-latest` and is the only job of the workflow that holds
 `issues: write`. A dispatched run never reports, and a human closes the issue
-once the cause is fixed. The workflow pins
-`KIND_VERSION` like `ci.yaml`, `e2e-operator-upgrade.yaml`, `flux-path.yaml`
-and `hack/install-test-deps.sh`, and Renovate's `kind` group moves the five
-pins in one pull request
-(`tests/unit/renovate/workflow_pins_custommanager_test.sh` asserts they agree).
+once the cause is fixed. The workflow pins no kind of its own: the
+`create-kind-cluster` action installs the `KIND_VERSION` of
+`hack/install-test-deps.sh`, the one kind pin, which Renovate's `kind` group
+moves (`tests/unit/ci/performance_workflow_test.sh` asserts the workflow pins
+none).
 
 ## Re-baselining
 
