@@ -2264,7 +2264,7 @@ the images has finished. The `always() && needs.build-e2e-images.result ==
 skipped consumer outcomes — but only when `build-e2e-images` actually pushed
 something. A job that uses the `load-e2e-images` action and is missing from
 `needs` races the deletion, and on a run that skips every listed consumer its
-pull fails with `manifest unknown`. `tests/unit/ci/cleanup_e2e_tags_needs_test.sh`
+pull fails with `manifest unknown`. `tests/unit/ci/cleanup_e2e_tags_needs.bats`
 fails for every such job.
 
 The package list is the `cleanup-e2e-packages` output of the `changes` job,
@@ -2623,7 +2623,7 @@ signature.
 | `tests/unit/hack/ci_cosign_sign_test.sh` | `hack/ci-cosign-sign.sh` under a stubbed `cosign`: the sign and verify arguments for a branch and a tag, the retries and their limit, the verify that never runs after a failed sign, and the usage and environment errors |
 | `tests/unit/hack/ci_helm_push_test.sh` | The `digest` and `ref` outputs of `hack/ci-helm-push.sh`, and the exit 1 when helm prints no `Pushed` or `Digest` line |
 | `tests/unit/ci/operator_image_jobs.bats` | The `--metadata-file` of the manifest step and the `digest` it writes, and the failure without one |
-| `tests/unit/ci/publish_signing_test.sh` | `id-token: write` on the three jobs alone and not in the workflow-level permissions, their `Setup Docker registry` and sign steps in order, `setup-buildx: 'false'` in the two chart jobs, no `cosign` command in `ci.yaml`, the push-only condition, and the `target_cluster_chart` paths |
+| `tests/unit/ci/publish_signing.bats` | `id-token: write` on the three jobs alone and not in the workflow-level permissions, their `Setup Docker registry` and sign steps in order, `setup-buildx: 'false'` in the two chart jobs, no `cosign` command in `ci.yaml`, the push-only condition, and the `target_cluster_chart` paths |
 
 ## Reusable CI Scripts
 

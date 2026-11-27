@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -15,20 +15,11 @@
 # flaked test-shell on a 33 KB docs section whose heading sits in the
 # first 4 KB. `grep -q … <<<"$var"` has no writer process to lose the race.
 #
-# Usage: bash tests/unit/ci/grep_q_here_string_guard_test.sh
+# Usage: bin/bats tests/unit/ci/grep_q_here_string_guard.bats
 
-set -uo pipefail
+load '../../lib/bats/common'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SELF="tests/unit/ci/$(basename "${BASH_SOURCE[0]}")"
-
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
+SELF="tests/unit/ci/$(basename "$BATS_TEST_FILENAME")"
 
 # A printf/echo of a quoted expansion piped into a grep whose flags include
 # q. Comment lines are dropped separately, so prose may still quote the shape.
@@ -47,11 +38,9 @@ offending_lines() {
 
 # The detector has to catch the flaky spellings and let the here-string
 # through, or the repo-wide scan below passes vacuously.
-test_detector_matches_the_racy_shapes() {
-  echo "Test: the detector flags variable pipes into grep -q and spares here-strings"
-
+@test "the detector flags variable pipes into grep -q and spares here-strings" {
   local tmp
-  tmp="$(mktemp)"
+  tmp="$(mktemp "$BATS_TEST_TMPDIR/shapes.XXXXXX")"
   # shellcheck disable=SC2016 # literal shell source, not expanded here
   printf '%s\n' \
     'if printf '\''%s\n'\'' "$section" | grep -qE '\''^### x'\''; then' \
@@ -69,40 +58,21 @@ test_detector_matches_the_racy_shapes() {
   assert_eq "flags exactly the three racy lines" "1 2 3 " "$hits"
 }
 
-test_no_tracked_script_pipes_a_variable_into_grep_q() {
-  echo "Test: no tracked shell script pipes a variable into grep -q"
-
+@test "no tracked shell script pipes a variable into grep -q" {
   if ! git -C "$PROJECT_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    echo "  SKIP: not a git checkout (1 check skipped)"
-    SKIP=$((SKIP + 1))
-    return
+    skip "not a git checkout (1 check skipped)"
   fi
 
   local found
   found="$(cd "$PROJECT_ROOT" \
-    && git ls-files -z -- '*.sh' ':!'"$SELF" | offending_lines)"
+    && git ls-files -z -- '*.sh' '*.bats' ':!'"$SELF" | offending_lines)"
 
   if [[ -z "$found" ]]; then
-    echo "  PASS: no printf/echo \"\$var\" | grep -q pipelines"
-    PASS=$((PASS + 1))
+    check_passed "no printf/echo \"\$var\" | grep -q pipelines"
   else
-    echo "  FAIL: variable piped into grep -q (use: grep -q PATTERN <<<\"\$var\")"
     while IFS= read -r line; do
       echo "    $line"
     done <<<"$found"
-    FAIL=$((FAIL + 1))
+    fail "variable piped into grep -q (use: grep -q PATTERN <<<\"\$var\")"
   fi
 }
-
-# ---------------------------------------------------------------------------
-# Run
-# ---------------------------------------------------------------------------
-test_detector_matches_the_racy_shapes
-test_no_tracked_script_pipes_a_variable_into_grep_q
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0

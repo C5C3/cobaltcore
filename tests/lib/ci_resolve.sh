@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Shared helpers for the tests that pin a hack/ci-resolve-changes.sh output to
-# the ci.yaml jobs consuming it (tests/unit/ci/*_output_test.sh).
+# the ci.yaml jobs consuming it (tests/unit/ci/*_output.bats).
 #
 # The resolve-script invocation contract is one piece of knowledge, and three
 # output tests exercise it. Kept here so a change to that contract — a new

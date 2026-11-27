@@ -62,7 +62,7 @@ generators themselves. This skill defers to those for file-format
 correctness and adds the cross-cutting check they cannot express: "is
 every release fully wired, and does every release-shaped reference
 resolve?" L6 is gated itself:
-`tests/unit/ci/check_release_wiring_audit_test.sh` runs this script against
+`tests/unit/ci/check_release_wiring_audit.bats` runs this script against
 the checkout under `make test-shell` and fails on any L6 `[FAIL]`, so a pull
 request that leaves an upgrade suite on a stale pair is red in `test-shell`
 before review.

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -18,20 +18,12 @@
 # gh is a stub that answers the calls the collector makes for one failed job;
 # GH_STUB_MODE picks how the job-log endpoint behaves.
 #
-# Usage: bash tests/unit/ci/collect_e2e_failure_job_logs_test.sh
+# Usage: bin/bats tests/unit/ci/collect_e2e_failure_job_logs.bats
 
-set -uo pipefail
+load '../../lib/bats/common'
+load '../../lib/bats/stubs'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 COLLECTOR="$PROJECT_ROOT/.claude/skills/debug-e2e-failure/scripts/collect-e2e-failure.sh"
-
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 ESC="$(printf '\033')"
 REFUSAL="the response contains terminal escape sequences; pass --allow-escape-sequences to output it anyway"
@@ -40,7 +32,7 @@ REFUSAL="the response contains terminal escape sequences; pass --allow-escape-se
 # Helpers
 # ---------------------------------------------------------------------------
 
-# write_gh_stub <path> — Writes a gh stand-in for run 1 of o/r with one
+# write_gh_stub — Writes a gh stand-in for run 1 of o/r with one
 # failed job, 101 "e2e-chaos (keystone)". GH_STUB_MODE sets the job-log
 # endpoint's behaviour:
 #   new      gh >= 2.97: --help lists the flag; the log is refused without it
@@ -48,8 +40,7 @@ REFUSAL="the response contains terminal escape sequences; pass --allow-escape-se
 #   missing  the endpoint answers 404 (a runner that never uploaded a log)
 #   refused  gh >= 2.97 whose --help does not list the flag: always refused
 write_gh_stub() {
-  cat >"$1" <<'STUB'
-#!/bin/bash
+  stub_script gh <<'STUB'
 mode="${GH_STUB_MODE:?GH_STUB_MODE is not set}"
 refusal="the response contains terminal escape sequences; pass --allow-escape-sequences to output it anyway"
 allow=0
@@ -99,7 +90,6 @@ case "$*" in
     exit 99 ;;
 esac
 STUB
-  chmod +x "$1"
 }
 
 # run_collect <tmp> <mode> — Runs the collector against the stub with the
@@ -107,7 +97,7 @@ STUB
 run_collect() {
   local tmp="$1" mode="$2"
   (
-    export PATH="$tmp/bin:/usr/bin:/bin"
+    export PATH="$STUB_DIR/bin:/usr/bin:/bin"
     GH_STUB_MODE="$mode" bash "$COLLECTOR" --run 1 --repo o/r --out "$tmp/out"
   ) 2>&1
 }
@@ -115,15 +105,13 @@ run_collect() {
 # assert_log_downloaded <mode> — The job's log reaches failed-jobs.log with its
 # colour codes stripped, and the collector reports its size.
 assert_log_downloaded() {
-  local mode="$1" tmp output exit_code
-  tmp="$(mktemp -d)"
-  mkdir -p "$tmp/bin"
-  write_gh_stub "$tmp/bin/gh"
+  local mode="$1" tmp
+  tmp="$(mktemp -d "$BATS_TEST_TMPDIR/collect.XXXXXX")"
+  write_gh_stub
 
-  output="$(run_collect "$tmp" "$mode")"
-  exit_code=$?
+  run run_collect "$tmp" "$mode"
 
-  assert_eq "exits 0" "0" "$exit_code"
+  assert_eq "exits 0" "0" "$status"
   assert_contains "reports the downloaded log" "$output" "e2e-chaos (keystone): 2 lines"
   assert_not_contains "does not report the log as missing" "$output" "no log"
   assert_file_contains_fixed "the chainsaw failure marker reaches failed-jobs.log" \
@@ -137,34 +125,28 @@ assert_log_downloaded() {
 # ---------------------------------------------------------------------------
 # Test A: gh 2.97.0 and later
 # ---------------------------------------------------------------------------
-test_new_gh_downloads_the_log() {
-  echo "Test: a gh that refuses escape sequences still hands over the log"
+@test "a gh that refuses escape sequences still hands over the log" {
   assert_log_downloaded new
 }
 
 # ---------------------------------------------------------------------------
 # Test B: gh older than 2.97.0
 # ---------------------------------------------------------------------------
-test_old_gh_downloads_the_log() {
-  echo "Test: a gh without --allow-escape-sequences is not passed the flag"
+@test "a gh without --allow-escape-sequences is not passed the flag" {
   assert_log_downloaded old
 }
 
 # ---------------------------------------------------------------------------
 # Test C: the runner uploaded no log
 # ---------------------------------------------------------------------------
-test_missing_log_reports_gh_error() {
-  echo "Test: a missing log is reported with gh's HTTP 404"
+@test "a missing log is reported with gh's HTTP 404" {
+  local tmp
+  tmp="$(mktemp -d "$BATS_TEST_TMPDIR/collect.XXXXXX")"
+  write_gh_stub
 
-  local tmp output exit_code
-  tmp="$(mktemp -d)"
-  mkdir -p "$tmp/bin"
-  write_gh_stub "$tmp/bin/gh"
+  run run_collect "$tmp" missing
 
-  output="$(run_collect "$tmp" missing)"
-  exit_code=$?
-
-  assert_eq "exits 0" "0" "$exit_code"
+  assert_eq "exits 0" "0" "$status"
   assert_contains "prints gh's error for the job" \
     "$output" "e2e-chaos (keystone): no log (gh: Not Found (HTTP 404))"
   assert_contains "lists the job as log-less" \
@@ -175,35 +157,16 @@ test_missing_log_reports_gh_error() {
 # ---------------------------------------------------------------------------
 # Test D: gh refused the log
 # ---------------------------------------------------------------------------
-test_refused_log_reports_gh_error() {
-  echo "Test: a refused log is reported with gh's reason, not as a 404"
+@test "a refused log is reported with gh's reason, not as a 404" {
+  local tmp
+  tmp="$(mktemp -d "$BATS_TEST_TMPDIR/collect.XXXXXX")"
+  write_gh_stub
 
-  local tmp output exit_code
-  tmp="$(mktemp -d)"
-  mkdir -p "$tmp/bin"
-  write_gh_stub "$tmp/bin/gh"
+  run run_collect "$tmp" refused
 
-  output="$(run_collect "$tmp" refused)"
-  exit_code=$?
-
-  assert_eq "exits 0" "0" "$exit_code"
+  assert_eq "exits 0" "0" "$status"
   assert_contains "prints gh's refusal for the job" \
     "$output" "e2e-chaos (keystone): no log ($REFUSAL)"
   assert_not_contains "does not claim a 404" "$output" "HTTP 404"
   rm -rf "$tmp"
 }
-
-# ---------------------------------------------------------------------------
-# Run
-# ---------------------------------------------------------------------------
-test_new_gh_downloads_the_log
-test_old_gh_downloads_the_log
-test_missing_log_reports_gh_error
-test_refused_log_reports_gh_error
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0

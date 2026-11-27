@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -28,24 +28,15 @@
 # the checkout, and asserts on the L6 block only; Test I stages copies of the
 # repository's references like every other case.
 #
-# Usage: bash tests/unit/ci/check_release_wiring_audit_test.sh
+# Usage: bin/bats tests/unit/ci/check_release_wiring_audit.bats
 
-set -uo pipefail
+load '../../lib/bats/common'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 AUDIT=".claude/skills/check-release-wiring/scripts/audit-release-wiring.sh"
 
 # The step-2 gate of a retirement exports ALLOW_FLOOR_LAG=1 beside
 # make test-shell; a case that needs the variable sets it as a prefix.
 unset ALLOW_FLOOR_LAG
-
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 NOVA_FIXTURE="tests/e2e/nova/invalid-cr/42-openstackrelease-below-floor.yaml"
 KEYSTONE_FIXTURE="tests/e2e/c5c3/invalid-cr/143-keystone-image-tag-below-floor.yaml"
@@ -129,8 +120,11 @@ write_image_fixture() {
 }
 
 # run_audit <dir> — Runs the audit under <dir>; echoes its combined output.
+# The audit exits 1 on any [FAIL] of any layer, which every staged tree
+# reports for the layers its case does not target; the cases read the output
+# only, so the status must not end the test.
 run_audit() {
-  bash "$1/$AUDIT" 2>&1
+  bash "$1/$AUDIT" 2>&1 || true
 }
 
 # l8_section <output> — The L8 block of the audit output.
@@ -146,11 +140,10 @@ l6_section() {
 # ---------------------------------------------------------------------------
 # Test A: a floor at the oldest wired release, fixtures well-formed
 # ---------------------------------------------------------------------------
-test_well_formed_floor_passes() {
-  echo "Test: a floor at the oldest release and isolating fixtures pass L8, L3 and L4"
+@test "a floor at the oldest release and isolating fixtures pass L8, L3 and L4" {
 
   local tmp output
-  tmp="$(mktemp -d)"
+  tmp="$(mktemp -d "$BATS_TEST_TMPDIR/tree.XXXXXX")"
   stage_tree "$tmp" 2026.1 2026.1 2026.2
   write_fixture "$tmp" "$NOVA_FIXTURE" 2025.2 2026.1
   write_fixture "$tmp" "$KEYSTONE_FIXTURE" 2026.1 2025.2
@@ -182,11 +175,10 @@ test_well_formed_floor_passes() {
 # ---------------------------------------------------------------------------
 # Test B: the release was removed, the floor never moved
 # ---------------------------------------------------------------------------
-test_lagging_floor_fails() {
-  echo "Test: a floor below the oldest wired release fails"
+@test "a floor below the oldest wired release fails" {
 
   local tmp output
-  tmp="$(mktemp -d)"
+  tmp="$(mktemp -d "$BATS_TEST_TMPDIR/tree.XXXXXX")"
   stage_tree "$tmp" 2026.1 2026.2 2027.1
   write_fixture "$tmp" "$NOVA_FIXTURE" 2025.2 2026.2
 
@@ -200,11 +192,10 @@ test_lagging_floor_fails() {
 # ---------------------------------------------------------------------------
 # Test B2: the step-2 pull request of a retirement allows the one-release lag
 # ---------------------------------------------------------------------------
-test_allowed_floor_lag_is_info() {
-  echo "Test: ALLOW_FLOOR_LAG=1 turns a floor one release below the oldest into an [INFO]"
+@test "ALLOW_FLOOR_LAG=1 turns a floor one release below the oldest into an [INFO]" {
 
   local tmp output
-  tmp="$(mktemp -d)"
+  tmp="$(mktemp -d "$BATS_TEST_TMPDIR/tree.XXXXXX")"
   stage_tree "$tmp" 2026.1 2026.2 2027.1
   write_fixture "$tmp" "$NOVA_FIXTURE" 2025.2 2026.2
 
@@ -219,11 +210,10 @@ test_allowed_floor_lag_is_info() {
 # ---------------------------------------------------------------------------
 # Test B3: no single retirement leaves the floor two releases behind
 # ---------------------------------------------------------------------------
-test_floor_two_releases_behind_fails() {
-  echo "Test: a floor two releases below the oldest fails under ALLOW_FLOOR_LAG=1"
+@test "a floor two releases below the oldest fails under ALLOW_FLOOR_LAG=1" {
 
   local tmp output
-  tmp="$(mktemp -d)"
+  tmp="$(mktemp -d "$BATS_TEST_TMPDIR/tree.XXXXXX")"
   stage_tree "$tmp" 2025.2 2026.2 2027.1
 
   output="$(ALLOW_FLOOR_LAG=1 run_audit "$tmp")"
@@ -238,11 +228,10 @@ test_floor_two_releases_behind_fails() {
 # ---------------------------------------------------------------------------
 # Test C: the floor moved before the release was removed
 # ---------------------------------------------------------------------------
-test_floor_above_oldest_release_fails() {
-  echo "Test: a floor above the oldest wired release fails"
+@test "a floor above the oldest wired release fails" {
 
   local tmp output
-  tmp="$(mktemp -d)"
+  tmp="$(mktemp -d "$BATS_TEST_TMPDIR/tree.XXXXXX")"
   stage_tree "$tmp" 2026.2 2026.1 2026.2
 
   output="$(run_audit "$tmp")"
@@ -255,11 +244,10 @@ test_floor_above_oldest_release_fails() {
 # ---------------------------------------------------------------------------
 # Test D: the fixture's own field reached the floor, another pin fell below it
 # ---------------------------------------------------------------------------
-test_own_field_decides() {
-  echo "Test: an openStackRelease fixture at the floor fails although its tag is below it"
+@test "an openStackRelease fixture at the floor fails although its tag is below it" {
 
   local tmp output
-  tmp="$(mktemp -d)"
+  tmp="$(mktemp -d "$BATS_TEST_TMPDIR/tree.XXXXXX")"
   stage_tree "$tmp" 2026.1 2026.1 2026.2
   write_fixture "$tmp" "$NOVA_FIXTURE" 2026.1 2025.2
 
@@ -275,11 +263,10 @@ test_own_field_decides() {
 # ---------------------------------------------------------------------------
 # Test E: step 3 moved the floor, the fixture's image tag stayed behind
 # ---------------------------------------------------------------------------
-test_stale_companion_pin_fails() {
-  echo "Test: a companion pin on a retired release fails"
+@test "a companion pin on a retired release fails" {
 
   local tmp output
-  tmp="$(mktemp -d)"
+  tmp="$(mktemp -d "$BATS_TEST_TMPDIR/tree.XXXXXX")"
   stage_tree "$tmp" 2026.2 2026.2 2027.1
   write_fixture "$tmp" "$NOVA_FIXTURE" 2026.1 2026.1
 
@@ -295,11 +282,10 @@ test_stale_companion_pin_fails() {
 # ---------------------------------------------------------------------------
 # Test F: a floor fixture name outside an invalid-* corpus
 # ---------------------------------------------------------------------------
-test_floor_name_outside_invalid_corpus_is_swept() {
-  echo "Test: L3 sweeps a *-below-floor.yaml file outside tests/e2e/*/invalid-*/"
+@test "L3 sweeps a *-below-floor.yaml file outside tests/e2e/*/invalid-*/" {
 
   local tmp output
-  tmp="$(mktemp -d)"
+  tmp="$(mktemp -d "$BATS_TEST_TMPDIR/tree.XXXXXX")"
   stage_tree "$tmp" 2026.1 2026.1 2026.2
   write_fixture "$tmp" tests/e2e-chaos/nova/01-openstackrelease-below-floor.yaml 2025.2 ""
 
@@ -314,11 +300,10 @@ test_floor_name_outside_invalid_corpus_is_swept() {
 # ---------------------------------------------------------------------------
 # Test G: the fake compute runs another release than the kind default
 # ---------------------------------------------------------------------------
-test_fake_compute_off_default_fails() {
-  echo "Test: fake compute nova tags other than the kind default fail"
+@test "fake compute nova tags other than the kind default fail" {
 
   local tmp output
-  tmp="$(mktemp -d)"
+  tmp="$(mktemp -d "$BATS_TEST_TMPDIR/tree.XXXXXX")"
   stage_tree "$tmp" 2026.1 2026.1 2026.2
   write_fake_compute "$tmp" 2026.2
 
@@ -332,11 +317,10 @@ test_fake_compute_off_default_fails() {
 # ---------------------------------------------------------------------------
 # Test H: the Tempest slug fallbacks name a removed release
 # ---------------------------------------------------------------------------
-test_tempest_fallbacks_on_removed_release_fail() {
-  echo "Test: ci-run-tempest.sh slug fallbacks on a removed release fail"
+@test "ci-run-tempest.sh slug fallbacks on a removed release fail" {
 
   local tmp output
-  tmp="$(mktemp -d)"
+  tmp="$(mktemp -d "$BATS_TEST_TMPDIR/tree.XXXXXX")"
   stage_tree "$tmp" 2026.1 2026.1 2026.2
   write_tempest_fallbacks "$tmp" 2025-2
 
@@ -352,11 +336,10 @@ test_tempest_fallbacks_on_removed_release_fail() {
 # ---------------------------------------------------------------------------
 # Test I: the audit parses the repository's own references
 # ---------------------------------------------------------------------------
-test_repository_references_parse() {
-  echo "Test: the audit parses the repository's floor, fake compute and Tempest fallbacks"
+@test "the audit parses the repository's floor, fake compute and Tempest fallbacks" {
 
   local tmp output f d releases=""
-  tmp="$(mktemp -d)"
+  tmp="$(mktemp -d "$BATS_TEST_TMPDIR/tree.XXXXXX")"
   for d in "$PROJECT_ROOT"/releases/*/; do
     d="${d%/}"
     releases="$releases ${d##*/}"
@@ -382,11 +365,10 @@ test_repository_references_parse() {
 # ---------------------------------------------------------------------------
 # Test J: a ControlPlane hop on the newest transition
 # ---------------------------------------------------------------------------
-test_controlplane_hop_on_newest_transition_passes() {
-  echo "Test: a tests/e2e/c5c3/ suite with a patch is a ControlPlane hop, and one on the newest transition passes L6"
+@test "a tests/e2e/c5c3/ suite with a patch is a ControlPlane hop, and one on the newest transition passes L6" {
 
   local tmp output l6
-  tmp="$(mktemp -d)"
+  tmp="$(mktemp -d "$BATS_TEST_TMPDIR/tree.XXXXXX")"
   stage_tree "$tmp" 2026.1 2026.1 2026.2
   write_fixture "$tmp" tests/e2e/c5c3/hop/00-controlplane-cr.yaml 2026.1 ""
   write_fixture "$tmp" tests/e2e/c5c3/hop/08-patch-upgrade.yaml 2026.2 ""
@@ -405,11 +387,10 @@ test_controlplane_hop_on_newest_transition_passes() {
 # ---------------------------------------------------------------------------
 # Test K: a ControlPlane hop on a stale pair, with a stray pin, or unreadable
 # ---------------------------------------------------------------------------
-test_controlplane_hop_stale_or_unreadable_fails() {
-  echo "Test: a ControlPlane hop on a stale pair, with a pin outside it, or without a readable transition fails L6"
+@test "a ControlPlane hop on a stale pair, with a pin outside it, or without a readable transition fails L6" {
 
   local tmp output l6
-  tmp="$(mktemp -d)"
+  tmp="$(mktemp -d "$BATS_TEST_TMPDIR/tree.XXXXXX")"
   stage_tree "$tmp" 2026.1 2026.1 2026.2 2027.1
   write_fixture "$tmp" tests/e2e/c5c3/hop/00-controlplane-cr.yaml 2026.1 ""
   write_fixture "$tmp" tests/e2e/c5c3/hop/08-patch-upgrade.yaml 2026.2 ""
@@ -431,11 +412,10 @@ test_controlplane_hop_stale_or_unreadable_fails() {
 # ---------------------------------------------------------------------------
 # Test L: every upgrade-path suite on the newest transition
 # ---------------------------------------------------------------------------
-test_upgrade_suites_on_newest_transition_pass() {
-  echo "Test: release-upgrade, upgrade-flow, skip-level and upgrade-abort suites on the newest transition pass L6"
+@test "release-upgrade, upgrade-flow, skip-level and upgrade-abort suites on the newest transition pass L6" {
 
   local tmp output l6
-  tmp="$(mktemp -d)"
+  tmp="$(mktemp -d "$BATS_TEST_TMPDIR/tree.XXXXXX")"
   stage_tree "$tmp" 2026.1 2026.1 2026.2
   write_fixture "$tmp" "$RELEASE_UPGRADE/00-keystone-cr.yaml" 2026.1 2026.1
   write_fixture "$tmp" "$RELEASE_UPGRADE/01-patch-upgrade.yaml" 2026.2 2026.2
@@ -466,11 +446,10 @@ test_upgrade_suites_on_newest_transition_pass() {
 # ---------------------------------------------------------------------------
 # Test M: a release was added, one suite stayed on the previous transition
 # ---------------------------------------------------------------------------
-test_stale_transition_fails() {
-  echo "Test: a suite on the previous transition, a pin outside its pair and a sequential skip target fail L6"
+@test "a suite on the previous transition, a pin outside its pair and a sequential skip target fail L6" {
 
   local tmp output l6
-  tmp="$(mktemp -d)"
+  tmp="$(mktemp -d "$BATS_TEST_TMPDIR/tree.XXXXXX")"
   stage_tree "$tmp" 2026.1 2026.1 2026.2 2027.1
   write_fixture "$tmp" "$RELEASE_UPGRADE/00-keystone-cr.yaml" 2026.1 2026.1
   write_fixture "$tmp" "$RELEASE_UPGRADE/01-patch-upgrade.yaml" 2026.2 2026.2
@@ -498,11 +477,10 @@ test_stale_transition_fails() {
 # ---------------------------------------------------------------------------
 # Test N: a suite without a patch, a patch whose fields disagree
 # ---------------------------------------------------------------------------
-test_unreadable_suite_and_release_disagreement_fail() {
-  echo "Test: a suite without a patch and a patch whose openStackRelease disagrees with its tag fail L6"
+@test "a suite without a patch and a patch whose openStackRelease disagrees with its tag fail L6" {
 
   local tmp output l6
-  tmp="$(mktemp -d)"
+  tmp="$(mktemp -d "$BATS_TEST_TMPDIR/tree.XXXXXX")"
   stage_tree "$tmp" 2026.1 2026.1 2026.2
   write_fixture "$tmp" "$RELEASE_UPGRADE/00-keystone-cr.yaml" 2026.1 2026.1
   write_fixture "$tmp" "$UPGRADE_FLOW/00-keystone-cr.yaml" 2026.1 2026.1
@@ -523,11 +501,10 @@ test_unreadable_suite_and_release_disagreement_fail() {
 # ---------------------------------------------------------------------------
 # Test O: a wired skip target, an abort that keeps the .invalid registry
 # ---------------------------------------------------------------------------
-test_wired_skip_target_and_unrestored_abort_fail() {
-  echo "Test: a wired skip target and an abort patch that keeps the .invalid registry fail L6"
+@test "a wired skip target and an abort patch that keeps the .invalid registry fail L6" {
 
   local tmp output l6
-  tmp="$(mktemp -d)"
+  tmp="$(mktemp -d "$BATS_TEST_TMPDIR/tree.XXXXXX")"
   stage_tree "$tmp" 2026.1 2026.1 2026.2
   write_fixture "$tmp" "$UPGRADE_FLOW/00-keystone-cr.yaml" 2026.1 2026.1
   write_fixture "$tmp" "$UPGRADE_FLOW/01-patch-upgrade.yaml" 2026.2 2026.2
@@ -549,11 +526,10 @@ test_wired_skip_target_and_unrestored_abort_fail() {
 # ---------------------------------------------------------------------------
 # Test O2: an abort that keeps the stuck tag, a suite without an abort patch
 # ---------------------------------------------------------------------------
-test_abort_on_stuck_tag_or_missing_fails() {
-  echo "Test: an abort patch that keeps the stuck tag and a suite without an abort patch fail L6"
+@test "an abort patch that keeps the stuck tag and a suite without an abort patch fail L6" {
 
   local tmp output l6
-  tmp="$(mktemp -d)"
+  tmp="$(mktemp -d "$BATS_TEST_TMPDIR/tree.XXXXXX")"
   stage_tree "$tmp" 2026.1 2026.1 2026.2
   write_image_fixture "$tmp" "$UPGRADE_ABORT/00-keystone-cr.yaml" ghcr.io/c5c3/keystone 2026.1
   write_image_fixture "$tmp" "$UPGRADE_ABORT/01-patch-stuck-upgrade.yaml" registry.invalid/c5c3/keystone 2026.2
@@ -574,11 +550,10 @@ test_abort_on_stuck_tag_or_missing_fails() {
 # ---------------------------------------------------------------------------
 # Test O3: a skip fixture without a tag, upgrade-abort suites that cannot wedge
 # ---------------------------------------------------------------------------
-test_unreadable_skip_and_unwedged_abort_fail() {
-  echo "Test: a skip fixture without a tag and upgrade-abort suites that do not wedge a sequential upgrade fail L6"
+@test "a skip fixture without a tag and upgrade-abort suites that do not wedge a sequential upgrade fail L6" {
 
   local tmp output l6
-  tmp="$(mktemp -d)"
+  tmp="$(mktemp -d "$BATS_TEST_TMPDIR/tree.XXXXXX")"
   stage_tree "$tmp" 2026.1 2026.1 2026.2
   write_fixture "$tmp" "$UPGRADE_FLOW/02-patch-skip-level.yaml" 2027.2 ""
   write_image_fixture "$tmp" tests/e2e/cinder/upgrade-abort/00-cinder-cr.yaml ghcr.io/c5c3/cinder 2026.1
@@ -608,11 +583,10 @@ test_unreadable_skip_and_unwedged_abort_fail() {
 # ---------------------------------------------------------------------------
 # Test P: a single release has no transition
 # ---------------------------------------------------------------------------
-test_single_release_reports_no_transition() {
-  echo "Test: with one release L6 reports no transition and fails no suite"
+@test "with one release L6 reports no transition and fails no suite" {
 
   local tmp output l6
-  tmp="$(mktemp -d)"
+  tmp="$(mktemp -d "$BATS_TEST_TMPDIR/tree.XXXXXX")"
   stage_tree "$tmp" 2026.1 2026.1
   write_fixture "$tmp" "$RELEASE_UPGRADE/00-keystone-cr.yaml" 2026.1 2026.1
   write_fixture "$tmp" "$RELEASE_UPGRADE/01-patch-upgrade.yaml" 2026.2 2026.2
@@ -641,9 +615,7 @@ test_single_release_reports_no_transition() {
 # audit stops reading fails its [PASS] assertion. The case reads the L6 block
 # only, not the exit code, which sums every layer. With one release there is
 # no transition to require, and any L6 [FAIL] still fails the case.
-test_repository_upgrade_suites_cover_newest_transition() {
-  echo "Test: every upgrade suite of the repository tests the newest sequential transition"
-
+@test "every upgrade suite of the repository tests the newest sequential transition" {
   local out l6 d f rel prev="" newest="" n=0 suites=0
   out="$(run_audit "$PROJECT_ROOT")"
   l6="$(l6_section "$out")"
@@ -660,9 +632,7 @@ test_repository_upgrade_suites_cover_newest_transition() {
   done
   if [ "$n" -lt 2 ]; then
     assert_contains "L6 reports that there is no transition" "$l6" "[INFO] fewer than two releases"
-    echo "  SKIP: the newest-transition checks need two releases"
-    SKIP=$((SKIP + 1))
-    return
+    skip "the newest-transition checks need two releases"
   fi
 
   assert_contains "L6 derives the newest transition from releases/" "$l6" \
@@ -670,7 +640,7 @@ test_repository_upgrade_suites_cover_newest_transition() {
   for d in "$PROJECT_ROOT"/tests/e2e/*/release-upgrade "$PROJECT_ROOT"/tests/e2e/*/upgrade-flow; do
     [ -d "$d" ] || continue
     rel="${d#"$PROJECT_ROOT"/}"
-    assert_contains "$rel tests the newest transition" "$l6" \
+    soft assert_contains "$rel tests the newest transition" "$l6" \
       "[PASS] $rel tests $prev -> $newest (newest transition)"
     suites=$((suites + 1))
   done
@@ -679,49 +649,17 @@ test_repository_upgrade_suites_cover_newest_transition() {
     d="${d%/}"
     compgen -G "$d/[0-9][0-9]-patch-upgrade.yaml" >/dev/null || continue
     rel="${d#"$PROJECT_ROOT"/}"
-    assert_contains "$rel hops the ControlPlane on the newest transition" "$l6" \
+    soft assert_contains "$rel hops the ControlPlane on the newest transition" "$l6" \
       "[PASS] $rel tests $prev -> $newest (newest transition)"
   done
   for f in "$PROJECT_ROOT"/tests/e2e/*/upgrade-flow/*-patch-skip-level.yaml; do
     [ -f "$f" ] || continue
     rel="${f#"$PROJECT_ROOT"/}"
-    assert_contains "$rel targets a release neither wired nor sequential" "$l6" "[PASS] $rel targets "
+    soft assert_contains "$rel targets a release neither wired nor sequential" "$l6" "[PASS] $rel targets "
   done
   for d in "$PROJECT_ROOT"/tests/e2e/*/upgrade-abort; do
     [ -d "$d" ] || continue
     rel="${d#"$PROJECT_ROOT"/}"
-    assert_contains "$rel wedges a sequential upgrade from a wired release" "$l6" "[PASS] $rel wedges "
+    soft assert_contains "$rel wedges a sequential upgrade from a wired release" "$l6" "[PASS] $rel wedges "
   done
 }
-
-# ---------------------------------------------------------------------------
-# Run
-# ---------------------------------------------------------------------------
-test_well_formed_floor_passes
-test_lagging_floor_fails
-test_allowed_floor_lag_is_info
-test_floor_two_releases_behind_fails
-test_floor_above_oldest_release_fails
-test_own_field_decides
-test_stale_companion_pin_fails
-test_floor_name_outside_invalid_corpus_is_swept
-test_fake_compute_off_default_fails
-test_tempest_fallbacks_on_removed_release_fail
-test_repository_references_parse
-test_controlplane_hop_on_newest_transition_passes
-test_controlplane_hop_stale_or_unreadable_fails
-test_upgrade_suites_on_newest_transition_pass
-test_stale_transition_fails
-test_unreadable_suite_and_release_disagreement_fail
-test_wired_skip_target_and_unrestored_abort_fail
-test_abort_on_stuck_tag_or_missing_fails
-test_unreadable_skip_and_unwedged_abort_fail
-test_single_release_reports_no_transition
-test_repository_upgrade_suites_cover_newest_transition
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0

@@ -78,7 +78,7 @@ per-service placement notes) and gains the new service's row in Phase 5.
 Every child kind a placed service projects must be grantable by the
 target-cluster access chart
 (`deploy/bases/target-cluster-access/templates/clusterrole.yaml`,
-pinned by `tests/unit/ci/target_cluster_chart_output_test.sh`). A
+pinned by `tests/unit/ci/target_cluster_chart_output.bats`). A
 cluster-scoped child is the warning sign: Cinder mounts its NFS shares as
 inline CSI volumes (`volumes[].csi`, driver `nfs.csi.k8s.io`) rather than a
 static PV/PVC pair, because a placed Cinder would otherwise need an
