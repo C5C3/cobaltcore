@@ -185,7 +185,7 @@ behaviour. The CR names the CI job waits on come from the generator
 (`keystone-tempest-<slug>`, `keystone-<svc>-tempest-<slug>`,
 `<svc>-tempest-<slug>`, and the helper CRs of the neutron, cinder, and nova
 legs), so renaming every slug keeps both sides aligned;
-`tests/unit/ci/{neutron,cinder,nova}_e2e_matrix_test.sh` hold them together.
+`tests/unit/ci/{neutron,cinder,nova}_e2e_matrix.bats` hold them together.
 Re-triage `exclude-tests.txt` and `include-tests.txt` against the new plugin
 versions (the `re-evaluate-on:` comments name them), and list the new
 directories in
@@ -405,7 +405,7 @@ are the record of the last retirement.
    nova's `shard_two` entry and the shard list in
    [CI Workflow](../reference/ci-cd/ci-workflow.md). Update the shell tests
    that read `ci.yaml` or `deploy/`:
-   `tests/unit/ci/{nova,cinder,neutron}_e2e_matrix_test.sh`,
+   `tests/unit/ci/{nova,cinder,neutron}_e2e_matrix.bats`,
    `tests/unit/ci/e2e_multicluster_output_test.sh`,
    `tests/unit/hack/ci_resolve_changes_nova_libvirt_test.sh`,
    `tests/unit/deploy/metal_stack_hypervisor_test.sh` and

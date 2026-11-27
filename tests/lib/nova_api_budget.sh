@@ -5,7 +5,7 @@
 
 # Shared check that a tempest Nova CR gives its uWSGI workers room, for the
 # tests that pin a compute-stack leg (tests/unit/ci/nova_e2e_matrix.bats,
-# tests/unit/ci/cinder_e2e_matrix_test.sh).
+# tests/unit/ci/cinder_e2e_matrix.bats).
 #
 # What a nova-api pod needs to hold its workers is one piece of knowledge, and
 # both compute-stack legs deploy the same CR. Kept here so a change to it — a
@@ -40,7 +40,8 @@ nova_api_mib() {
 
 # assert_nova_api_fits_its_workers <nova-cr.yaml>
 # Assert the CR sizes spec.api.deployment.resources for the worker count it
-# asks for. Needs yq, and the caller's PASS/FAIL counters.
+# asks for. Needs yq and the assertions of tests/lib/bats/common.bash, which
+# both callers load.
 assert_nova_api_fits_its_workers() {
   local cr="$1" name procs request limit limit_mib
   name="$(basename "$(dirname "$cr")")/$(basename "$cr")"

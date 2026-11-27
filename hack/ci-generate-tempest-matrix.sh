@@ -172,7 +172,7 @@ for d in ${dirs[@]+"${dirs[@]}"}; do
       # fixture tests/tempest/neutron-<slug>/03-ovncentral-cr.yaml holds the
       # other copy, and a rename there would leave CI waiting out its timeout on
       # a resource that does not exist, so
-      # tests/unit/ci/neutron_e2e_matrix_test.sh asserts the two agree.
+      # tests/unit/ci/neutron_e2e_matrix.bats asserts the two agree.
       extra_keys+=",\"ovn-cr-name\":\"ovn-neutron-tempest-${slug}\""
       # The neutron legs run at two stestr workers, not the script's default of
       # four. The tempest container shares the self-hosted runner's four vCPUs
@@ -191,7 +191,7 @@ for d in ${dirs[@]+"${dirs[@]}"}; do
       # volumes from an image and upload volumes back to one, so the leg deploys
       # an image service next to the Cinder and waits on it. The name is emitted
       # here for the same reason ovn-cr-name is, and
-      # tests/unit/ci/cinder_e2e_matrix_test.sh holds it against the fixture.
+      # tests/unit/ci/cinder_e2e_matrix.bats holds it against the fixture.
       extra_keys+=",\"glance-cr-name\":\"glance-cinder-tempest-${slug}\""
       # The compute stack the compute-tagged volume tests boot a server on: a
       # Nova with one fake compute, the Placement it reports inventory to, the
@@ -203,7 +203,7 @@ for d in ${dirs[@]+"${dirs[@]}"}; do
       # glance-cr-name is, and the fixtures
       # tests/tempest/cinder-<slug>/09-ovncentral-cr.yaml, 10-neutron-cr.yaml,
       # 11-placement-cr.yaml and 13-nova-cr.yaml hold the other copy of each;
-      # tests/unit/ci/cinder_e2e_matrix_test.sh holds the two sides together.
+      # tests/unit/ci/cinder_e2e_matrix.bats holds the two sides together.
       extra_keys+=",\"nova-cr-name\":\"nova-cinder-tempest-${slug}\""
       extra_keys+=",\"ovn-cr-name\":\"ovn-cinder-tempest-${slug}\""
       extra_keys+=",\"neutron-cr-name\":\"neutron-cinder-tempest-${slug}\""

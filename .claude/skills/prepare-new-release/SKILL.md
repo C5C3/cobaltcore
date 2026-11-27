@@ -157,7 +157,7 @@ Copy `releases/<newest>/` as the template and adjust:
   `glance-`, `nova-`, `placement-`, `neutron-`, `ovn-cinder-tempest-<slug>`
   (cinder), and `placement-`, `neutron-`, `ovn-`, `glance-nova-tempest-<slug>`
   (nova). A clean slug rename keeps them aligned;
-  `tests/unit/ci/{neutron,cinder,nova}_e2e_matrix_test.sh` and
+  `tests/unit/ci/{neutron,cinder,nova}_e2e_matrix.bats` and
   [[check-release-wiring]] L2 hold the two sides together. Re-triage
   `exclude-tests.txt` / `include-tests.txt` against the new plugin
   versions (`re-evaluate-on:` comments), and add the directories to
