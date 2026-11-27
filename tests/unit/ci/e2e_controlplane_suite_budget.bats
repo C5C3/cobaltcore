@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -19,21 +19,12 @@
 # The suite list is read out of ci.yaml rather than hardcoded, so a new
 # chainsaw step is covered the day it lands.
 #
-# Usage: bash tests/unit/ci/e2e_controlplane_suite_budget_test.sh
+# Usage: bin/bats tests/unit/ci/e2e_controlplane_suite_budget.bats
 
-set -uo pipefail
+load '../../lib/bats/common'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 CHAINSAW_CONFIG="$PROJECT_ROOT/tests/e2e/chainsaw-config.yaml"
-
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -81,25 +72,30 @@ controlplane_suites() {
     | awk '!seen[$0]++'
 }
 
+setup() {
+  require_tool yq
+
+  SUITES="$(controlplane_suites)"
+  if [ -z "$SUITES" ]; then
+    fail "found no chainsaw suite directories in the e2e-controlplane job"
+  fi
+}
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
-test_catch_and_finally_are_bounded() {
-  echo "Test: every catch and finally script of an e2e-controlplane suite pins a timeout"
-
+@test "every catch and finally script of an e2e-controlplane suite pins a timeout" {
   local suite file unpinned
   for suite in $SUITES; do
     file="$PROJECT_ROOT/$suite/chainsaw-test.yaml"
     unpinned="$(yq -r '.spec.steps[] | (.catch // []) + (.finally // [])
                        | .[] | select(has("script")) | .script.timeout' "$file" \
-                | grep -c '^null$')"
-    assert_eq "$suite pins every catch/finally script timeout" "0" "$unpinned"
+                | grep -c '^null$')" || true
+    soft assert_eq "$suite pins every catch/finally script timeout" "0" "$unpinned"
   done
 }
 
-test_no_suite_outlasts_the_job_wall() {
-  echo "Test: no single suite ceiling exceeds the job's timeout-minutes"
-
+@test "no single suite ceiling exceeds the job's timeout-minutes" {
   local wall suite ceiling
   wall="$(yq -r '.jobs.e2e-controlplane."timeout-minutes"' "$CI_YAML")"
   assert_not_empty "e2e-controlplane declares timeout-minutes" "$wall"
@@ -107,33 +103,7 @@ test_no_suite_outlasts_the_job_wall() {
   for suite in $SUITES; do
     ceiling="$(suite_ceiling "$PROJECT_ROOT/$suite/chainsaw-test.yaml")"
     echo "    $suite ceiling: ${ceiling}m"
-    assert_gte "timeout-minutes outlasts the $suite ceiling (${ceiling}m)" \
+    soft assert_gte "timeout-minutes outlasts the $suite ceiling (${ceiling}m)" \
       "$wall" "$ceiling"
   done
 }
-
-# ---------------------------------------------------------------------------
-# Run
-# ---------------------------------------------------------------------------
-if ! command -v yq >/dev/null 2>&1; then
-  echo "SKIP: yq not installed (all checks skipped)"
-  echo ""
-  echo "Results: 0 passed, 0 failed, 1 skipped"
-  exit 0
-fi
-
-SUITES="$(controlplane_suites)"
-if [ -z "$SUITES" ]; then
-  echo "FAIL: found no chainsaw suite directories in the e2e-controlplane job"
-  exit 1
-fi
-
-test_catch_and_finally_are_bounded
-test_no_suite_outlasts_the_job_wall
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0

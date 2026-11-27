@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -45,32 +45,27 @@
 # port-forward. Any one of them missing leaves the leg burning its wait on a
 # resource that never comes up.
 #
-# Usage: bash tests/unit/ci/barbican_e2e_matrix_test.sh
+# Usage: bin/bats tests/unit/ci/barbican_e2e_matrix.bats
 
-set -uo pipefail
+load '../../lib/bats/common'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/ci_resolve.sh
 source "$PROJECT_ROOT/tests/lib/ci_resolve.sh"
 # shellcheck source=tests/lib/ci_yaml.sh
 source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
-# The real list from the ci.yaml resolve step env block. A shorter one would
-# make the matrix scenarios below assert nothing.
-ALL_OPS=$(ci_all_operators)
+setup_file() {
+  # The real list from the ci.yaml resolve step env block. A shorter one would
+  # make the matrix scenarios below assert nothing.
+  ALL_OPS=$(ci_all_operators)
 
-# One resolver run for an operators/barbican/ change. The e2e-operators
-# and the test-targets checks below both read their line from it.
-BARBICAN_CHANGE=$(resolve_outputs refs/heads/main "$ALL_OPS" FILTER_barbican=true)
+  # One resolver run for an operators/barbican/ change. The e2e-operators
+  # and the test-targets checks below both read their line from it.
+  BARBICAN_CHANGE=$(resolve_outputs refs/heads/main "$ALL_OPS" FILTER_barbican=true)
+  export ALL_OPS BARBICAN_CHANGE
+}
 
 # The release the e2e-chaos and ControlPlane legs load the barbican image at.
 DEFAULT_RELEASE="2026.1"
@@ -81,18 +76,14 @@ CHART="$PROJECT_ROOT/operators/barbican/helm/barbican-operator"
 # Tests
 # ---------------------------------------------------------------------------
 
-test_all_operators_lists_barbican() {
-  echo "Test: ci.yaml ALL_OPERATORS includes barbican"
-
+@test "ci.yaml ALL_OPERATORS includes barbican" {
   local line
   line=$(grep "ALL_OPERATORS:" "$CI_YAML" | head -1)
   assert_contains "ALL_OPERATORS lists barbican" "$line" "barbican"
   assert_contains "ALL_OPERATORS still lists keystone" "$line" "keystone"
 }
 
-test_service_operators_lists_barbican() {
-  echo "Test: ci.yaml SERVICE_OPERATORS includes barbican"
-
+@test "ci.yaml SERVICE_OPERATORS includes barbican" {
   # barbican ships an OpenStack service image for every release that carries a
   # barbican key in source-refs.yaml. Missing from this list, the resolver
   # treats it like the orchestration operators: the image is never rebuilt for
@@ -102,20 +93,14 @@ test_service_operators_lists_barbican() {
   line=$(grep "SERVICE_OPERATORS:" "$CI_YAML" | head -1)
   assert_contains "SERVICE_OPERATORS lists barbican" "$line" "barbican"
 
-  if ! command -v yq >/dev/null 2>&1; then
-    echo "  SKIP: yq not installed"
-    SKIP=$((SKIP + 1))
-    return
-  fi
+  require_tool yq
   assert_not_empty "barbican ships a service image per release" \
     "$(OPERATOR=barbican "$PROJECT_ROOT/hack/ci-service-image-releases.sh")"
 }
 
-test_barbican_filter_is_wired() {
-  echo "Test: the barbican paths filter reaches the resolve step"
-
-  assert_file_contains "the paths filter exists" "$CI_YAML" "^ *barbican:$"
-  assert_file_contains "the filter is passed to the resolve step" "$CI_YAML" \
+@test "the barbican paths filter reaches the resolve step" {
+  assert_file_matches "the paths filter exists" "$CI_YAML" "^ *barbican:$"
+  assert_file_matches "the filter is passed to the resolve step" "$CI_YAML" \
     "FILTER_barbican: \${{ steps.filter.outputs.barbican }}"
 
   local block
@@ -123,9 +108,7 @@ test_barbican_filter_is_wired() {
   assert_contains "the operator source path is covered" "$block" "operators/barbican/**"
 }
 
-test_barbican_image_filter_is_wired() {
-  echo "Test: an images/barbican change reaches changed-services"
-
+@test "an images/barbican change reaches changed-services" {
   # changed-services is the list build-e2e-images rebuilds from source. The
   # lock under nix/locks/ and the patches under patches/barbican/ change the
   # image as much as its build context does, so all three belong here.
@@ -143,9 +126,7 @@ test_barbican_image_filter_is_wired() {
       FILTER_image_barbican=true)"
 }
 
-test_barbican_change_produces_an_e2e_leg() {
-  echo "Test: an operators/barbican change puts barbican in the e2e-operators matrix"
-
+@test "an operators/barbican change puts barbican in the e2e-operators matrix" {
   local matrix
   matrix=$(grep "^e2e-operators=" <<<"$BARBICAN_CHANGE")
 
@@ -155,9 +136,7 @@ test_barbican_change_produces_an_e2e_leg() {
     "$matrix" "__none__"
 }
 
-test_barbican_e2e_filter_is_wired() {
-  echo "Test: an edit to the barbican suites alone runs the barbican leg"
-
+@test "an edit to the barbican suites alone runs the barbican leg" {
   # The suites sit in two directories and the e2e-operator job runs both, on
   # top of the shared helpers under tests/e2e/lib/. A filter naming fewer lets
   # an edit under the others schedule no leg at all.
@@ -176,9 +155,7 @@ test_barbican_e2e_filter_is_wired() {
       FILTER_tests_e2e_barbican=true)"
 }
 
-test_helm_filter_covers_the_barbican_chart() {
-  echo "Test: a barbican chart change re-runs helm-validate"
-
+@test "a barbican chart change re-runs helm-validate" {
   # The helm filter is the operators/*/helm/** glob; the chart directory under
   # it is what makes the glob cover this operator.
   assert_contains "the helm filter covers every operators/<op>/helm/ tree" \
@@ -187,9 +164,7 @@ test_helm_filter_covers_the_barbican_chart() {
     "$([ -d "$CHART" ] && echo yes || echo no)"
 }
 
-test_go_matrices_list_barbican() {
-  echo "Test: the unit and integration test matrices include barbican"
-
+@test "the unit and integration test matrices include barbican" {
   # Both matrices read the resolver's list, and the resolver puts the operator
   # in it when its own code changes. An operator missing from either half
   # compiles and ships with its `go test` leg never run.
@@ -205,9 +180,7 @@ test_go_matrices_list_barbican() {
     '"barbican"'
 }
 
-test_cleanup_matrices_cover_the_barbican_images() {
-  echo "Test: the derived cleanup package lists cover the barbican images"
-
+@test "the derived cleanup package lists cover the barbican images" {
   local matrix all_packages e2e_packages
   matrix=$(cd "$PROJECT_ROOT" && bash hack/ci-generate-cleanup-matrix.sh)
   all_packages=$(sed -n 's/^cleanup-packages=//p' <<<"$matrix")
@@ -223,9 +196,7 @@ test_cleanup_matrices_cover_the_barbican_images() {
     "$e2e_packages" '"barbican"'
 }
 
-test_a_keystone_only_change_produces_no_barbican_leg() {
-  echo "Test: a keystone-only change keeps barbican out of the e2e-operators matrix"
-
+@test "a keystone-only change keeps barbican out of the e2e-operators matrix" {
   # The positive case above proves the filter reaches the matrix; this one
   # proves it still gates. A filter wired to a constant would satisfy the
   # positive assertion and put every operator on every pull request.
@@ -237,9 +208,7 @@ test_a_keystone_only_change_produces_no_barbican_leg() {
   assert_not_contains "and no barbican leg" "$matrix" '"barbican"'
 }
 
-test_e2e_operator_deploy_grants_the_secret_store() {
-  echo "Test: the e2e-operator deploy grants the barbican secret store"
-
+@test "the e2e-operator deploy grants the barbican secret store" {
   # ci-deploy-operator.sh reads the value for OPERATOR=barbican only, so the
   # line sits on the shared step and the other legs ignore it.
   assert_contains "the e2e-operator deploy grants openstack the provisioner account" \
@@ -247,9 +216,7 @@ test_e2e_operator_deploy_grants_the_secret_store() {
     "BARBICAN_SECRET_STORE_GRANTS: openstack=openbao-instance-provisioner"
 }
 
-test_chaos_legs_run_the_barbican_suites() {
-  echo "Test: the e2e-chaos pod and network legs run the barbican suites"
-
+@test "the e2e-chaos pod and network legs run the barbican suites" {
   local pod network
   pod=$(e2e_chaos_matrix_entry pod)
   network=$(e2e_chaos_matrix_entry network)
@@ -302,9 +269,7 @@ test_chaos_legs_run_the_barbican_suites() {
     "$deploy" "BARBICAN_SECRET_STORE_GRANTS: openstack=openbao-instance-provisioner"
 }
 
-test_controlplane_leg_deploys_barbican() {
-  echo "Test: the e2e-controlplane leg loads and deploys barbican without the grant"
-
+@test "the e2e-controlplane leg loads and deploys barbican without the grant" {
   local pull kind_load deploy
   pull=$(job_step e2e-controlplane "Load E2E images")
   assert_contains "the leg pulls the barbican-operator image" "$pull" \
@@ -327,15 +292,13 @@ test_controlplane_leg_deploys_barbican() {
     "BARBICAN_SECRET_STORE_GRANTS"
 }
 
-test_tempest_barbican_leg_is_wired() {
-  echo "Test: the tempest barbican leg is generated and brought up"
-
-  assert_file_contains "the matrix generator knows the barbican service" \
+@test "the tempest barbican leg is generated and brought up" {
+  assert_file_matches "the matrix generator knows the barbican service" \
     "$PROJECT_ROOT/hack/ci-generate-tempest-matrix.sh" \
     "^ALL_TEMPEST_SERVICES=.*[( ]barbican[ )]"
 
   local out
-  out=$(mktemp)
+  out=$(mktemp "$BATS_TEST_TMPDIR/tempest-matrix.XXXXXX")
   GITHUB_OUTPUT="$out" TEMPEST_SERVICES=barbican \
     bash "$PROJECT_ROOT/hack/ci-generate-tempest-matrix.sh" >/dev/null 2>&1
   assert_file_contains_fixed "the generator emits a barbican leg" "$out" \
@@ -378,28 +341,3 @@ test_tempest_barbican_leg_is_wired() {
     "$(job_step tempest "Run Tempest API tests")" \
     "BARBICAN_K8S_NAME: \${{ matrix.barbican-cr-name }}"
 }
-
-# ---------------------------------------------------------------------------
-# Run
-# ---------------------------------------------------------------------------
-test_all_operators_lists_barbican
-test_service_operators_lists_barbican
-test_barbican_filter_is_wired
-test_barbican_image_filter_is_wired
-test_barbican_change_produces_an_e2e_leg
-test_barbican_e2e_filter_is_wired
-test_helm_filter_covers_the_barbican_chart
-test_go_matrices_list_barbican
-test_cleanup_matrices_cover_the_barbican_images
-test_a_keystone_only_change_produces_no_barbican_leg
-test_e2e_operator_deploy_grants_the_secret_store
-test_chaos_legs_run_the_barbican_suites
-test_controlplane_leg_deploys_barbican
-test_tempest_barbican_leg_is_wired
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -31,32 +31,27 @@
 # horizon-operator with its ServiceMonitor into horizon-system, where
 # tests/e2e/horizon/prometheus-stack reads it.
 #
-# Usage: bash tests/unit/ci/horizon_e2e_matrix_test.sh
+# Usage: bin/bats tests/unit/ci/horizon_e2e_matrix.bats
 
-set -uo pipefail
+load '../../lib/bats/common'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/ci_resolve.sh
 source "$PROJECT_ROOT/tests/lib/ci_resolve.sh"
 # shellcheck source=tests/lib/ci_yaml.sh
 source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
-# The real list from the ci.yaml resolve step env block. A shorter one would
-# make the matrix scenarios below assert nothing.
-ALL_OPS=$(ci_all_operators)
+setup_file() {
+  # The real list from the ci.yaml resolve step env block. A shorter one would
+  # make the matrix scenarios below assert nothing.
+  ALL_OPS=$(ci_all_operators)
 
-# One resolver run for an operators/horizon/ change. The e2e-operators
-# and the test-targets checks below both read their line from it.
-HORIZON_CHANGE=$(resolve_outputs refs/heads/main "$ALL_OPS" FILTER_horizon=true)
+  # One resolver run for an operators/horizon/ change. The e2e-operators
+  # and the test-targets checks below both read their line from it.
+  HORIZON_CHANGE=$(resolve_outputs refs/heads/main "$ALL_OPS" FILTER_horizon=true)
+  export ALL_OPS HORIZON_CHANGE
+}
 
 # The release the e2e-chaos and ControlPlane legs load the horizon image at.
 DEFAULT_RELEASE="2026.1"
@@ -68,18 +63,14 @@ CHART="$PROJECT_ROOT/operators/horizon/helm/horizon-operator"
 # ---------------------------------------------------------------------------
 
 
-test_all_operators_lists_horizon() {
-  echo "Test: ci.yaml ALL_OPERATORS includes horizon"
-
+@test "ci.yaml ALL_OPERATORS includes horizon" {
   local line
   line=$(grep "ALL_OPERATORS:" "$CI_YAML" | head -1)
   assert_contains "ALL_OPERATORS lists horizon" "$line" "horizon"
   assert_contains "ALL_OPERATORS still lists keystone" "$line" "keystone"
 }
 
-test_service_operators_lists_horizon() {
-  echo "Test: ci.yaml SERVICE_OPERATORS includes horizon"
-
+@test "ci.yaml SERVICE_OPERATORS includes horizon" {
   # horizon ships an OpenStack service image for every release that carries a
   # horizon key in source-refs.yaml. Missing from this list, the resolver
   # treats it like the orchestration operators: the image is never rebuilt for
@@ -89,20 +80,14 @@ test_service_operators_lists_horizon() {
   line=$(grep "SERVICE_OPERATORS:" "$CI_YAML" | head -1)
   assert_contains "SERVICE_OPERATORS lists horizon" "$line" "horizon"
 
-  if ! command -v yq >/dev/null 2>&1; then
-    echo "  SKIP: yq not installed"
-    SKIP=$((SKIP + 1))
-    return
-  fi
+  require_tool yq
   assert_not_empty "horizon ships a service image per release" \
     "$(OPERATOR=horizon "$PROJECT_ROOT/hack/ci-service-image-releases.sh")"
 }
 
-test_horizon_filter_is_wired() {
-  echo "Test: the horizon paths filter reaches the resolve step"
-
-  assert_file_contains "the paths filter exists" "$CI_YAML" "^ *horizon:$"
-  assert_file_contains "the filter is passed to the resolve step" "$CI_YAML" \
+@test "the horizon paths filter reaches the resolve step" {
+  assert_file_matches "the paths filter exists" "$CI_YAML" "^ *horizon:$"
+  assert_file_matches "the filter is passed to the resolve step" "$CI_YAML" \
     "FILTER_horizon: \${{ steps.filter.outputs.horizon }}"
 
   local block
@@ -110,9 +95,7 @@ test_horizon_filter_is_wired() {
   assert_contains "the operator source path is covered" "$block" "operators/horizon/**"
 }
 
-test_horizon_image_filter_is_wired() {
-  echo "Test: an images/horizon change reaches changed-services"
-
+@test "an images/horizon change reaches changed-services" {
   # changed-services is the list build-e2e-images rebuilds from source. The
   # lock under nix/locks/ and the patches under patches/horizon/ change the
   # image as much as its build context does, so all three belong here.
@@ -130,9 +113,7 @@ test_horizon_image_filter_is_wired() {
       FILTER_image_horizon=true)"
 }
 
-test_horizon_change_produces_an_e2e_leg() {
-  echo "Test: an operators/horizon change puts horizon in the e2e-operators matrix"
-
+@test "an operators/horizon change puts horizon in the e2e-operators matrix" {
   local matrix
   matrix=$(grep "^e2e-operators=" <<<"$HORIZON_CHANGE")
 
@@ -142,9 +123,7 @@ test_horizon_change_produces_an_e2e_leg() {
     "$matrix" "__none__"
 }
 
-test_horizon_e2e_filter_is_wired() {
-  echo "Test: an edit to the horizon suites alone runs the horizon leg"
-
+@test "an edit to the horizon suites alone runs the horizon leg" {
   # The suites sit in two directories and the e2e-operator job runs both, on
   # top of the shared helpers under tests/e2e/lib/. A filter naming fewer lets
   # an edit under the others schedule no leg at all.
@@ -163,9 +142,7 @@ test_horizon_e2e_filter_is_wired() {
       FILTER_tests_e2e_horizon=true)"
 }
 
-test_helm_filter_covers_the_horizon_chart() {
-  echo "Test: a horizon chart change re-runs helm-validate"
-
+@test "a horizon chart change re-runs helm-validate" {
   # The helm filter is the operators/*/helm/** glob; the chart directory under
   # it is what makes the glob cover this operator.
   assert_contains "the helm filter covers every operators/<op>/helm/ tree" \
@@ -174,9 +151,7 @@ test_helm_filter_covers_the_horizon_chart() {
     "$([ -d "$CHART" ] && echo yes || echo no)"
 }
 
-test_go_matrices_list_horizon() {
-  echo "Test: the unit and integration test matrices include horizon"
-
+@test "the unit and integration test matrices include horizon" {
   # Both matrices read the resolver's list, and the resolver puts the operator
   # in it when its own code changes. An operator missing from either half
   # compiles and ships with its `go test` leg never run.
@@ -192,9 +167,7 @@ test_go_matrices_list_horizon() {
     '"horizon"'
 }
 
-test_cleanup_matrices_cover_the_horizon_images() {
-  echo "Test: the derived cleanup package lists cover the horizon images"
-
+@test "the derived cleanup package lists cover the horizon images" {
   local matrix all_packages e2e_packages
   matrix=$(cd "$PROJECT_ROOT" && bash hack/ci-generate-cleanup-matrix.sh)
   all_packages=$(sed -n 's/^cleanup-packages=//p' <<<"$matrix")
@@ -210,9 +183,7 @@ test_cleanup_matrices_cover_the_horizon_images() {
     "$e2e_packages" '"horizon"'
 }
 
-test_a_keystone_only_change_produces_no_horizon_leg() {
-  echo "Test: a keystone-only change keeps horizon out of the e2e-operators matrix"
-
+@test "a keystone-only change keeps horizon out of the e2e-operators matrix" {
   # The positive case above proves the filter reaches the matrix; this one
   # proves it still gates. A filter wired to a constant would satisfy the
   # positive assertion and put every operator on every pull request.
@@ -224,9 +195,7 @@ test_a_keystone_only_change_produces_no_horizon_leg() {
   assert_not_contains "and no horizon leg" "$matrix" '"horizon"'
 }
 
-test_chaos_legs_deploy_horizon() {
-  echo "Test: the e2e-chaos legs load and deploy horizon"
-
+@test "the e2e-chaos legs load and deploy horizon" {
   local pull kind_load deploy
   pull=$(job_step e2e-chaos "Load E2E images (keystone stack)")
   assert_contains "the keystone-stack pull skips the ovn leg alone" "$pull" \
@@ -251,9 +220,7 @@ test_chaos_legs_deploy_horizon() {
     "NAMESPACE: horizon-system"
 }
 
-test_controlplane_leg_deploys_horizon() {
-  echo "Test: the e2e-controlplane leg loads and deploys horizon"
-
+@test "the e2e-controlplane leg loads and deploys horizon" {
   local pull kind_load deploy
   pull=$(job_step e2e-controlplane "Load E2E images")
   assert_contains "the leg pulls the horizon-operator image" "$pull" \
@@ -274,9 +241,7 @@ test_controlplane_leg_deploys_horizon() {
     "NAMESPACE: horizon-system"
 }
 
-test_prometheus_leg_scrapes_horizon() {
-  echo "Test: the e2e-prometheus leg deploys and scrapes horizon"
-
+@test "the e2e-prometheus leg deploys and scrapes horizon" {
   local pull kind_load deploy run dump block
   pull=$(job_step e2e-prometheus "Load E2E images")
   assert_contains "the leg pulls the horizon-operator image" "$pull" \
@@ -310,27 +275,3 @@ test_prometheus_leg_scrapes_horizon() {
   assert_contains "tests_prometheus names the horizon ServiceMonitor template" "$block" \
     "'operators/horizon/helm/horizon-operator/templates/servicemonitor.yaml'"
 }
-
-# ---------------------------------------------------------------------------
-# Run
-# ---------------------------------------------------------------------------
-test_all_operators_lists_horizon
-test_service_operators_lists_horizon
-test_horizon_filter_is_wired
-test_horizon_image_filter_is_wired
-test_horizon_change_produces_an_e2e_leg
-test_horizon_e2e_filter_is_wired
-test_helm_filter_covers_the_horizon_chart
-test_go_matrices_list_horizon
-test_cleanup_matrices_cover_the_horizon_images
-test_a_keystone_only_change_produces_no_horizon_leg
-test_chaos_legs_deploy_horizon
-test_controlplane_leg_deploys_horizon
-test_prometheus_leg_scrapes_horizon
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0
