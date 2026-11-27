@@ -40,10 +40,26 @@ GOFUMPT ?= $(LOCALBIN)/gofumpt
 # upstream cannot change what runs. BATS defaults to the bin/ copy that
 # install-bats links; install-bats writes only under LOCALBIN, never to a
 # BATS set elsewhere.
+#
+# The three helper libraries every native bats file loads
+# (tests/lib/bats/common.bash), bats-support, bats-assert and bats-file, are
+# pinned the same way below, each as a tag and the commit it names. They
+# carry no version check: the package.json of bats-file reports 0.2.0 at tag
+# v0.4.0, so the commit ID is their only check. Renovate moves all four pins
+# in one grouped pull request.
 BATS_VERSION ?= v1.14.0
 BATS_COMMIT ?= eb7f42f8d608ac693d7a4b67474f6714ea68cfc5
 BATS_REPO ?= https://github.com/bats-core/bats-core.git
 BATS ?= $(LOCALBIN)/bats
+BATS_SUPPORT_VERSION ?= v0.3.0
+BATS_SUPPORT_COMMIT ?= 24a72e14349690bcbf7c151b9d2d1cdd32d36eb1
+BATS_SUPPORT_REPO ?= https://github.com/bats-core/bats-support.git
+BATS_ASSERT_VERSION ?= v2.2.4
+BATS_ASSERT_COMMIT ?= f1e9280eaae8f86cbe278a687e6ba755bc802c1a
+BATS_ASSERT_REPO ?= https://github.com/bats-core/bats-assert.git
+BATS_FILE_VERSION ?= v0.4.0
+BATS_FILE_COMMIT ?= 13ad5e2ffcc360281432db3d43a306f7b3667d60
+BATS_FILE_REPO ?= https://github.com/bats-core/bats-file.git
 
 # Kubernetes version for envtest binary downloads.
 # Pin to a specific version for reproducible integration tests across runs.
@@ -250,48 +266,78 @@ test-shell: install-bats
 
 .PHONY: install-bats
 # install-bats installs bats-core at BATS_COMMIT into bin/bats-core and links
-# bin/bats to its bin/bats. It does nothing, offline included, while bin/bats
-# is executable and the stamp bin/bats-core/.bats-commit holds BATS_COMMIT.
-# Otherwise it fetches the commit by its ID, which git verifies against the
-# objects it receives, checks that the checkout reports BATS_VERSION, and
-# only then replaces an older install. A failed fetch or check removes the
-# temporary directory and leaves an older install and its stamp as they
-# were, so the next run tries again.
+# bin/bats to its bin/bats, then each of bats-support, bats-assert and
+# bats-file at its *_COMMIT into bin/<library>. A part is skipped, offline
+# included, while its stamp bin/<part>/.bats-commit holds its commit and
+# bin/bats is executable (bats-core) or bin/<library>/load.bash is a file (a
+# library). Otherwise the part is fetched by its commit ID, which git
+# verifies against the objects it receives, bats-core is checked to report
+# BATS_VERSION and a library to hold load.bash, and only then an older
+# install is replaced. A failed fetch or check removes the temporary
+# directory, leaves an older install and its stamp as they were, so the next
+# run tries again, and fails the target.
 install-bats:
-	@if test -x '$(LOCALBIN)/bats' && [ "$$(cat '$(LOCALBIN)/bats-core/.bats-commit' 2>/dev/null)" = '$(BATS_COMMIT)' ]; then \
-		exit 0; \
-	fi; \
-	echo "Installing bats-core $(BATS_VERSION) into $(LOCALBIN)..."; \
-	install_failed() { \
-		echo 'install-bats: could not install bats-core into $(LOCALBIN)' >&2; \
+	@install_failed() { \
+		echo "install-bats: could not install $$1 into $(LOCALBIN)" >&2; \
 		exit 1; \
 	}; \
-	fetch_failed() { \
-		echo 'install-bats: could not fetch bats-core $(BATS_COMMIT) from $(BATS_REPO)' >&2; \
-		exit 1; \
+	if ! { test -x '$(LOCALBIN)/bats' && [ "$$(cat '$(LOCALBIN)/bats-core/.bats-commit' 2>/dev/null)" = '$(BATS_COMMIT)' ]; }; then \
+		echo "Installing bats-core $(BATS_VERSION) into $(LOCALBIN)..."; \
+		mkdir -p '$(LOCALBIN)' || install_failed bats-core; \
+		tmp="$$(mktemp -d '$(LOCALBIN)/bats-core.XXXXXX')" || install_failed bats-core; \
+		if ! { git -C "$$tmp" init -q && \
+			git -C "$$tmp" fetch -q --depth 1 '$(BATS_REPO)' '$(BATS_COMMIT)' && \
+			git -C "$$tmp" checkout -q --detach FETCH_HEAD && \
+			[ "$$(git -C "$$tmp" rev-parse HEAD)" = '$(BATS_COMMIT)' ]; }; then \
+			rm -rf "$$tmp"; \
+			echo 'install-bats: could not fetch bats-core $(BATS_COMMIT) from $(BATS_REPO)' >&2; \
+			exit 1; \
+		fi; \
+		version="$$("$$tmp/bin/bats" --version 2>&1)"; \
+		if [ "$$version" != 'Bats $(patsubst v%,%,$(BATS_VERSION))' ]; then \
+			rm -rf "$$tmp"; \
+			echo "install-bats: commit $(BATS_COMMIT) reports '$$version', BATS_VERSION says $(BATS_VERSION)" >&2; \
+			exit 1; \
+		fi; \
+		if ! { rm -rf '$(LOCALBIN)/bats-core' && \
+			mv "$$tmp" '$(LOCALBIN)/bats-core' && \
+			printf '%s\n' '$(BATS_COMMIT)' > '$(LOCALBIN)/bats-core/.bats-commit' && \
+			ln -sfn bats-core/bin/bats '$(LOCALBIN)/bats'; }; then \
+			rm -rf "$$tmp"; \
+			install_failed bats-core; \
+		fi; \
+	fi; \
+	install_library() { \
+		lib="$$1" version="$$2" commit="$$3" repo="$$4"; \
+		dir='$(LOCALBIN)'/"$$lib"; \
+		if [ -f "$$dir/load.bash" ] && [ "$$(cat "$$dir/.bats-commit" 2>/dev/null)" = "$$commit" ]; then \
+			return 0; \
+		fi; \
+		echo "Installing $$lib $$version into $(LOCALBIN)..."; \
+		tmp="$$(mktemp -d "$$dir.XXXXXX")" || install_failed "$$lib"; \
+		if ! { git -C "$$tmp" init -q && \
+			git -C "$$tmp" fetch -q --depth 1 "$$repo" "$$commit" && \
+			git -C "$$tmp" checkout -q --detach FETCH_HEAD && \
+			[ "$$(git -C "$$tmp" rev-parse HEAD)" = "$$commit" ]; }; then \
+			rm -rf "$$tmp"; \
+			echo "install-bats: could not fetch $$lib $$commit from $$repo" >&2; \
+			exit 1; \
+		fi; \
+		if [ ! -f "$$tmp/load.bash" ]; then \
+			rm -rf "$$tmp"; \
+			echo "install-bats: commit $$commit of $$lib holds no load.bash" >&2; \
+			exit 1; \
+		fi; \
+		if ! { rm -rf "$$dir" && \
+			mv "$$tmp" "$$dir" && \
+			printf '%s\n' "$$commit" > "$$dir/.bats-commit"; }; then \
+			rm -rf "$$tmp"; \
+			install_failed "$$lib"; \
+		fi; \
 	}; \
-	mkdir -p '$(LOCALBIN)' || install_failed; \
-	tmp="$$(mktemp -d '$(LOCALBIN)/bats-core.XXXXXX')" || install_failed; \
-	if ! { git -C "$$tmp" init -q && \
-		git -C "$$tmp" fetch -q --depth 1 '$(BATS_REPO)' '$(BATS_COMMIT)' && \
-		git -C "$$tmp" checkout -q --detach FETCH_HEAD && \
-		[ "$$(git -C "$$tmp" rev-parse HEAD)" = '$(BATS_COMMIT)' ]; }; then \
-		rm -rf "$$tmp"; \
-		fetch_failed; \
-	fi; \
-	version="$$("$$tmp/bin/bats" --version 2>&1)"; \
-	if [ "$$version" != 'Bats $(patsubst v%,%,$(BATS_VERSION))' ]; then \
-		rm -rf "$$tmp"; \
-		echo "install-bats: commit $(BATS_COMMIT) reports '$$version', BATS_VERSION says $(BATS_VERSION)" >&2; \
-		exit 1; \
-	fi; \
-	if ! { rm -rf '$(LOCALBIN)/bats-core' && \
-		mv "$$tmp" '$(LOCALBIN)/bats-core' && \
-		printf '%s\n' '$(BATS_COMMIT)' > '$(LOCALBIN)/bats-core/.bats-commit' && \
-		ln -sfn bats-core/bin/bats '$(LOCALBIN)/bats'; }; then \
-		rm -rf "$$tmp"; \
-		install_failed; \
-	fi
+	install_library bats-support '$(BATS_SUPPORT_VERSION)' '$(BATS_SUPPORT_COMMIT)' '$(BATS_SUPPORT_REPO)'; \
+	install_library bats-assert '$(BATS_ASSERT_VERSION)' '$(BATS_ASSERT_COMMIT)' '$(BATS_ASSERT_REPO)'; \
+	install_library bats-file '$(BATS_FILE_VERSION)' '$(BATS_FILE_COMMIT)' '$(BATS_FILE_REPO)'
 
 # ============================================================================
 # Format Targets

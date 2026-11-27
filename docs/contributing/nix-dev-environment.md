@@ -60,6 +60,7 @@ its authoritative location:
 | `kustomize` | `.github/workflows/ci.yaml` (`KUSTOMIZE_VERSION=`) |
 | `helm-unittest` | `.github/workflows/ci.yaml` (`helm plugin install … --version`) |
 | `bats` | `Makefile` `BATS_VERSION` and `BATS_COMMIT` (installed by `make install-bats`) |
+| `bats-support`, `bats-assert`, `bats-file` | `Makefile` `BATS_SUPPORT_VERSION` and `BATS_SUPPORT_COMMIT`, `BATS_ASSERT_VERSION` and `BATS_ASSERT_COMMIT`, `BATS_FILE_VERSION` and `BATS_FILE_COMMIT` (installed into `bin/` by `make install-bats`) |
 | `chainsaw`, `kind`, `kubectl`, `flux` | `hack/install-test-deps.sh` (reused as-is, with its SHA256 verification) |
 
 These come from `nixpkgs` and track it, because the pipeline itself does **not**
