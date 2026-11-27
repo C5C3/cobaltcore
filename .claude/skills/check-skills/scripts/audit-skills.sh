@@ -252,7 +252,7 @@ for sc in "${SKILLS_DIR}"/*/scripts/*; do
         fail "${sc}: Bash 4+/GNU-only construct(s): $(printf '%s' "${hits}" | cut -d: -f1 | tr '\n' ' ')"
         bad=1
       fi
-      # The shape tests/unit/ci/grep_q_here_string_guard_test.sh rejects repo-wide:
+      # The shape tests/unit/ci/grep_q_here_string_guard.bats rejects repo-wide:
       # under pipefail, grep -q exiting early can SIGPIPE the writer and fail a
       # matching pipeline. Feed grep -q from a here-string instead.
       hits="$(grep -nE "${PIPED_GREP_Q}" "${sc}" | grep -vE '^[0-9]+:[[:space:]]*#|# audit-skills: allow$' || true)"

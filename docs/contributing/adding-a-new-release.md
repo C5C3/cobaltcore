@@ -291,7 +291,7 @@ successor of the new release. That is what makes it a rejection test.
 target from `registry.invalid/…`, so it wedges whatever releases exist; it
 only has to start at a release that is still under `releases/`.
 
-CI holds these moves. `tests/unit/ci/check_release_wiring_audit_test.sh` runs
+CI holds these moves. `tests/unit/ci/check_release_wiring_audit.bats` runs
 the L6 layer of the `check-release-wiring` audit against the checkout under
 `make test-shell`, on every pull request and every push to `main`. The test
 fails when an upgrade suite or the ControlPlane hop tests another pair than

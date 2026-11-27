@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -18,24 +18,17 @@
 # sed, which scripts/apply-constraint-overrides.sh edits with, and the L7
 # case needs git.
 #
-# Usage: bash tests/unit/ci/check_nix_lock_drift_audit_test.sh
+# Usage: bin/bats tests/unit/ci/check_nix_lock_drift_audit.bats
 
-set -uo pipefail
+load '../../lib/bats/common'
+load '../../lib/bats/stubs'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 SKILL_DIR=".claude/skills/check-nix-lock-drift/scripts"
 AUDIT="$SKILL_DIR/audit-nix-lock-drift.sh"
 
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
-
-TMP_ROOT="$(mktemp -d)"
-trap 'rm -rf "$TMP_ROOT"' EXIT
+setup() {
+  TMP_ROOT="$BATS_TEST_TMPDIR"
+}
 
 # A git hook exports these (in a linked worktree with an absolute GIT_DIR),
 # and they would point the git calls of the L7 case and of the audit at the
@@ -65,13 +58,11 @@ have_git() {
   command -v git >/dev/null 2>&1
 }
 
-# skip_unless <what> <check>: print a SKIP line and return 1 unless <check>
-# succeeds.
+# skip_unless <what> <check>: skip the test with <what> as the reason unless
+# <check> succeeds.
 skip_unless() {
   if ! "$2"; then
-    echo "  SKIP: $1"
-    SKIP=$((SKIP + 1))
-    return 1
+    skip "$1"
   fi
 }
 
@@ -201,8 +192,7 @@ fails() {
 # Tests
 # ---------------------------------------------------------------------------
 
-test_consistent_tree_passes() {
-  echo "Test: a tree whose locks match their pins reports no [FAIL] and exits 0"
+@test "a tree whose locks match their pins reports no [FAIL] and exits 0" {
   skip_unless "yq (mikefarah) or jq not installed" have_tools || return
 
   local t out
@@ -219,23 +209,22 @@ test_consistent_tree_passes() {
   assert_contains "L7 is skipped outside a git checkout" "$out" "[INFO] L7 skipped: "
 }
 
-test_missing_tools_or_releases_fail_at_once() {
-  echo "Test: no yq or no releases/ is one [FAIL] and exit 1"
+@test "no yq or no releases/ is one [FAIL] and exit 1" {
   skip_unless "yq (mikefarah) or jq not installed" have_tools || return
 
   local t bin out
   t="$(stage_tree)"
   # A yq that is not mikefarah's counts as no yq.
-  bin="$(mktemp -d "$TMP_ROOT/bin.XXXXXX")"
-  printf '#!/bin/sh\necho "yq 3.4.3"\n' >"$bin/yq"
-  chmod +x "$bin/yq"
+  stub_script yq <<'EOF'
+echo "yq 3.4.3"
+EOF
+  bin="$STUB_DIR/bin"
   out="$(run_audit "$t" PATH="$bin:$PATH")"
   assert_eq "the only line names both tools" \
     "[FAIL] audit-nix-lock-drift: yq (mikefarah) v4.49.1 or newer and jq are required"$'\n'"exit 1" "$out"
 
   # A mikefarah yq older than v4.49.1 prints "\t" as a backslash and a t.
-  cat >"$bin/yq" <<'EOF'
-#!/bin/sh
+  stub_script yq <<'EOF'
 case "$1" in
   --version) echo "yq (https://github.com/mikefarah/yq/) version v4.44.1" ;;
   *) printf '%s\n' 'a\tb' ;;
@@ -251,8 +240,7 @@ EOF
     "[FAIL] audit-nix-lock-drift: no releases/ directory under $(cd "$t" && pwd)"$'\n'"exit 1" "$out"
 }
 
-test_lagging_ref_fails() {
-  echo "Test: a lock whose ref lags source-refs.yaml fails with both values"
+@test "a lock whose ref lags source-refs.yaml fails with both values" {
   skip_unless "yq (mikefarah) or jq not installed" have_tools || return
 
   local t out
@@ -265,8 +253,7 @@ test_lagging_ref_fails() {
   assert_contains "exit 1" "$out" "exit 1"
 }
 
-test_malformed_source_and_lagging_tempest_fail() {
-  echo "Test: a malformed rev or hash fails, and a tempest lock that lags test-refs.yaml"
+@test "a malformed rev or hash fails, and a tempest lock that lags test-refs.yaml" {
   skip_unless "yq (mikefarah) or jq not installed" have_tools || return
 
   local t out src
@@ -280,8 +267,7 @@ test_malformed_source_and_lagging_tempest_fail() {
     "$(fails "$out")"
 }
 
-test_project_name_drift_fails() {
-  echo "Test: a sources.json without a project fails, and a tempest lock of another project"
+@test "a sources.json without a project fails, and a tempest lock of another project" {
   skip_unless "yq (mikefarah) or jq not installed" have_tools || return
 
   local t out src
@@ -296,8 +282,7 @@ test_project_name_drift_fails() {
     "$(fails "$out")"
 }
 
-test_orphan_lock_and_release_fail() {
-  echo "Test: a lock no release pins fails, and a release without source-refs.yaml"
+@test "a lock no release pins fails, and a release without source-refs.yaml" {
   skip_unless "yq (mikefarah) or jq not installed" have_tools || return
 
   local t out
@@ -316,8 +301,7 @@ test_orphan_lock_and_release_fail() {
     "[FAIL] nix/locks/2026.1/tempest: no sources.json, uv.lock" "$(fails "$out")"
 }
 
-test_patch_list_drift_fails() {
-  echo "Test: a patch file absent from sources.json fails, a listed patch that is gone, and patches out of order"
+@test "a patch file absent from sources.json fails, a listed patch that is gone, and patches out of order" {
   skip_unless "yq (mikefarah) or jq not installed" have_tools || return
 
   local t out src
@@ -347,8 +331,7 @@ test_patch_list_drift_fails() {
     "$(fails "$out")"
 }
 
-test_unreadable_files_fail_once() {
-  echo "Test: a sources.json, pyproject.toml or image pin the parser rejects or of the wrong shape is one [FAIL] naming it"
+@test "a sources.json, pyproject.toml or image pin the parser rejects or of the wrong shape is one [FAIL] naming it" {
   skip_unless "yq (mikefarah) or jq not installed" have_tools || return
 
   local t out
@@ -376,8 +359,7 @@ test_unreadable_files_fail_once() {
     "$(fails "$out")"
 }
 
-test_project_input_drift_fails() {
-  echo "Test: a missing extra, pip package, base pin or derived group fails"
+@test "a missing extra, pip package, base pin or derived group fails" {
   skip_unless "yq (mikefarah) or jq not installed" have_tools || return
   skip_unless "sed is no GNU sed" have_gnu_sed || return
 
@@ -438,8 +420,7 @@ test_project_input_drift_fails() {
   assert_contains "the audit runs to its summary" "$out" "[FAIL] 2 lock drift finding(s)"
 }
 
-test_unpinned_dependency_fails() {
-  echo "Test: a dependency that no pip package or base pin names fails"
+@test "a dependency that no pip package or base pin names fails" {
   skip_unless "yq (mikefarah) or jq not installed" have_tools || return
   skip_unless "sed is no GNU sed" have_gnu_sed || return
 
@@ -453,8 +434,7 @@ test_unpinned_dependency_fails() {
     "$(fails "$out")"
 }
 
-test_tempest_pins_follow_nix_lock() {
-  echo "Test: the tempest lock holds the five pins hack/nix-lock.sh installs"
+@test "the tempest lock holds the five pins hack/nix-lock.sh installs" {
   skip_unless "yq (mikefarah) or jq not installed" have_tools || return
 
   local t out
@@ -471,8 +451,7 @@ test_tempest_pins_follow_nix_lock() {
     "$(fails "$out")"
 }
 
-test_uv_source_rev_drift_fails() {
-  echo "Test: a [tool.uv.sources] rev other than the one of sources.json fails"
+@test "a [tool.uv.sources] rev other than the one of sources.json fails" {
   skip_unless "yq (mikefarah) or jq not installed" have_tools || return
 
   local t out other="0123456789abcdef0123456789abcdef01234567"
@@ -491,8 +470,7 @@ test_uv_source_rev_drift_fails() {
     "$(fails "$out")"
 }
 
-test_constraint_drift_fails() {
-  echo "Test: an override line absent from constraint-dependencies fails"
+@test "an override line absent from constraint-dependencies fails" {
   skip_unless "yq (mikefarah) or jq not installed" have_tools || return
   skip_unless "sed is no GNU sed" have_gnu_sed || return
 
@@ -512,8 +490,7 @@ test_constraint_drift_fails() {
   assert_not_contains "L4 is skipped for that release" "$out" "constraint-dependencies match"
 }
 
-test_image_pin_and_operator_drift_fail() {
-  echo "Test: a malformed image pin fails, and a stale operator vendor hash"
+@test "a malformed image pin fails, and a stale operator vendor hash" {
   skip_unless "yq (mikefarah) or jq not installed" have_tools || return
 
   local t out
@@ -528,8 +505,7 @@ test_image_pin_and_operator_drift_fail() {
     "$(fails "$out")"
 }
 
-test_lock_older_than_pin_is_an_info() {
-  echo "Test: L7 names a pin committed after its lock, and a shallow clone skips it"
+@test "L7 names a pin committed after its lock, and a shallow clone skips it" {
   skip_unless "yq (mikefarah) or jq not installed" have_tools || return
   skip_unless "git not installed" have_git || return
 
@@ -551,16 +527,14 @@ test_lock_older_than_pin_is_an_info() {
   assert_contains "a shallow clone skips L7" "$out" "[INFO] L7 skipped: shallow clone"
 }
 
-test_without_gnu_sed_skips_the_merge() {
-  echo "Test: without GNU sed L4 and the base pins of L3 are skipped with an [INFO] each"
+@test "without GNU sed L4 and the base pins of L3 are skipped with an [INFO] each" {
   skip_unless "yq (mikefarah) or jq not installed" have_tools || return
 
   local t bin out
   t="$(stage_tree)"
   # A sed without the in-place edit, as the merge needs it.
-  bin="$(mktemp -d "$TMP_ROOT/bin.XXXXXX")"
-  printf '#!/bin/sh\ncase "$*" in *-i*) exit 1 ;; esac\nexec %s "$@"\n' "$(command -v sed)" >"$bin/sed"
-  chmod +x "$bin/sed"
+  stub_script sed < <(printf 'case "$*" in *-i*) exit 1 ;; esac\nexec %s "$@"\n' "$(command -v sed)")
+  bin="$STUB_DIR/bin"
   rewrite "$t/nix/base-requirements.txt" 's/^uwsgi==2.0.31/uwsgi==2.0.32/'
   out="$(run_audit "$t" PATH="$bin:$PATH")"
   assert_contains "L4 is skipped" "$out" \
@@ -570,8 +544,7 @@ test_without_gnu_sed_skips_the_merge() {
   assert_eq "the moved base pin goes unseen" "" "$(fails "$out")"
 }
 
-test_repository_passes() {
-  echo "Test: the audit passes on the repository"
+@test "the audit passes on the repository" {
   skip_unless "yq (mikefarah) or jq not installed" have_tools || return
 
   local out
@@ -579,31 +552,3 @@ test_repository_passes() {
   assert_eq "no [FAIL] at HEAD" "" "$(fails "$out")"
   assert_contains "exit 0" "$out" "exit 0"
 }
-
-# ---------------------------------------------------------------------------
-# Run
-# ---------------------------------------------------------------------------
-test_consistent_tree_passes
-test_missing_tools_or_releases_fail_at_once
-test_lagging_ref_fails
-test_malformed_source_and_lagging_tempest_fail
-test_project_name_drift_fails
-test_orphan_lock_and_release_fail
-test_patch_list_drift_fails
-test_unreadable_files_fail_once
-test_project_input_drift_fails
-test_unpinned_dependency_fails
-test_tempest_pins_follow_nix_lock
-test_uv_source_rev_drift_fails
-test_constraint_drift_fails
-test_image_pin_and_operator_drift_fail
-test_lock_older_than_pin_is_an_info
-test_without_gnu_sed_skips_the_merge
-test_repository_passes
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0

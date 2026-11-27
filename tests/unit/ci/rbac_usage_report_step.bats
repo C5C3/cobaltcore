@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -14,21 +14,13 @@
 # artifact name carries the operator and, on a nova shard, the shard, because
 # two artifacts of one run cannot share a name.
 #
-# Usage: bash tests/unit/ci/rbac_usage_report_step_test.sh
+# Usage: bin/bats tests/unit/ci/rbac_usage_report_step.bats
 
-set -uo pipefail
+load '../../lib/bats/common'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 REPORT_SH="$PROJECT_ROOT/hack/ci-rbac-usage-report.sh"
 
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/ci_yaml.sh
 source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
@@ -81,18 +73,16 @@ check_step() {
   fi
 }
 
-test_e2e_operator() {
+@test "e2e operator" {
   check_step e2e-operator "\${{ matrix.operator }}" \
     "rbac-usage-\${{ matrix.operator }}\${{ matrix.shard && format('-{0}', matrix.shard) || '' }}"
 }
 
-test_e2e_controlplane() {
+@test "e2e controlplane" {
   check_step e2e-controlplane "c5c3" "rbac-usage-e2e-controlplane"
 }
 
-test_only_the_audited_jobs_report() {
-  echo "Test: only the two jobs on the audited cluster run the report"
-
+@test "only the two jobs on the audited cluster run the report" {
   # The c5c3 entry of the e2e-operator matrix already uploads rbac-usage-c5c3.
   # upload-artifact keeps a second artifact of the same name beside it, and
   # gh run download --name then returns only one of them.
@@ -107,17 +97,3 @@ test_only_the_audited_jobs_report() {
     assert_eq "hack/ci-rbac-usage-report.sh is executable" "yes" "no"
   fi
 }
-
-# ---------------------------------------------------------------------------
-# Run
-# ---------------------------------------------------------------------------
-test_e2e_operator
-test_e2e_controlplane
-test_only_the_audited_jobs_report
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0

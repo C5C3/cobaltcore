@@ -62,7 +62,7 @@ Exit code `1` means at least one `[FAIL]`. Interpret:
   `sed -r`, and gawk's three-argument `match()`, and never pipe a
   variable into `grep -q` (under `pipefail` the early exit can SIGPIPE the
   writer and fail a matching pipeline; `grep -q PATTERN <<<"$var"` is the
-  repo's form, enforced by `tests/unit/ci/grep_q_here_string_guard_test.sh`).
+  repo's form, enforced by `tests/unit/ci/grep_q_here_string_guard.bats`).
   Python helpers must parse.
 - **Q5** — no script writes in command position: `sed -i`, git
   add/commit/push/checkout/reset/stash/rebase, `gh issue|pr

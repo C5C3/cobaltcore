@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -19,19 +19,13 @@
 # why extraconfig-edit.sh and secret-store-checks.sh live beside that suite
 # and are sourced by it.
 #
-# Usage: bash tests/unit/ci/chainsaw_script_argument_cap_test.sh
+# Usage: bin/bats tests/unit/ci/chainsaw_script_argument_cap.bats
 
-set -uo pipefail
+load '../../lib/bats/common'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
+setup() {
+  require_tool yq jq
+}
 
 # MAX_ARG_STRLEN on the 4 KiB pages of the CI runners. The content and its
 # terminating NUL have to fit, so the largest script that starts has one byte
@@ -63,11 +57,9 @@ over_cap() {
 
 # The measurement has to count bytes and find a script outside `try`, or the
 # repo-wide scan below passes vacuously.
-test_measurement_counts_bytes_at_the_cap() {
-  echo "Test: the measurement counts bytes and flags the first size that does not fit"
-
+@test "the measurement counts bytes and flags the first size that does not fit" {
   local tmp fits over sizes
-  tmp="$(mktemp -d)"
+  tmp="$(mktemp -d "$BATS_TEST_TMPDIR/fixtures.XXXXXX")"
   # 131071 bytes fit with their NUL; 131072 do not. The fitting script ends in
   # one three-byte character, so a character count would read 131069. The
   # fixtures are JSON, which yq reads as YAML, and the printf builtin writes
@@ -91,9 +83,7 @@ test_measurement_counts_bytes_at_the_cap() {
   rm -rf "$tmp"
 }
 
-test_every_suite_script_fits_one_argument() {
-  echo "Test: every chainsaw script fits into one argument"
-
+@test "every chainsaw script fits into one argument" {
   local files=() sizes offenders
   while IFS= read -r -d '' f; do
     files+=("$f")
@@ -115,23 +105,3 @@ test_every_suite_script_fits_one_argument() {
   assert_eq "no chainsaw script passes the $(( MAX_ARG_STRLEN - 1 )) bytes one argument holds" \
     "" "$offenders"
 }
-
-# ---------------------------------------------------------------------------
-# Run
-# ---------------------------------------------------------------------------
-if ! command -v yq >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
-  echo "SKIP: yq or jq not installed (all checks skipped)"
-  echo ""
-  echo "Results: 0 passed, 0 failed, 1 skipped"
-  exit 0
-fi
-
-test_measurement_counts_bytes_at_the_cap
-test_every_suite_script_fits_one_argument
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -14,20 +14,12 @@
 # 'https://github.com'". The list of steps is derived from ci.yaml itself, so
 # a new caller of the script is caught the moment it lands without the env.
 #
-# Usage: bash tests/unit/ci/github_git_auth_wiring_test.sh
+# Usage: bin/bats tests/unit/ci/github_git_auth_wiring.bats
 
-set -uo pipefail
+load '../../lib/bats/common'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/ci_yaml.sh
 source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
@@ -51,26 +43,22 @@ steps_running() {
 # Tests
 # ---------------------------------------------------------------------------
 
-test_every_cloning_step_carries_the_token() {
-  echo "Test: every ci.yaml step running a github.com-cloning script sets GITHUB_TOKEN"
-
-  # A script without a caller in ci.yaml is fine; test_known_callers_are_found
-  # keeps the derivation itself honest.
+@test "every ci.yaml step running a github.com-cloning script sets GITHUB_TOKEN" {
+  # A script without a caller in ci.yaml is fine; the test of the known
+  # callers below keeps the derivation itself honest.
   local script found job step body
   for script in $CLONING_SCRIPTS; do
     found="$(steps_running "$script")"
     while IFS=$'\t' read -r job step; do
       [ -n "$job" ] || continue
       body="$(job_step "$job" "$step")"
-      assert_not_empty "$job / '$step' is a step ci_yaml.sh can slice" "$body"
-      assert_contains "$job / '$step' hands the workflow token to $script" "$body" "$TOKEN_ENV"
+      soft assert_not_empty "$job / '$step' is a step ci_yaml.sh can slice" "$body"
+      soft assert_contains "$job / '$step' hands the workflow token to $script" "$body" "$TOKEN_ENV"
     done <<<"$found"
   done
 }
 
-test_known_callers_are_found() {
-  echo "Test: the derivation sees the callers that exist today"
-
+@test "the derivation sees the callers that exist today" {
   # A regression in steps_running() that finds nothing would pass the loop
   # above vacuously, so pin the callers known at the time of writing.
   local korc_steps
@@ -79,16 +67,3 @@ test_known_callers_are_found() {
     "e2e-operator	Install CRDs watched by the c5c3-operator"
   assert_contains "e2e-controlplane deploys K-ORC" "$korc_steps" "e2e-controlplane	Deploy K-ORC"
 }
-
-# ---------------------------------------------------------------------------
-# Run
-# ---------------------------------------------------------------------------
-test_every_cloning_step_carries_the_token
-test_known_callers_are_found
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0
