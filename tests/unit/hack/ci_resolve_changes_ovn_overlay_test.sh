@@ -18,7 +18,7 @@
 # calls. A signal nothing consumes is as silent as one nothing produces, and the
 # Makefile target is what lets a developer reproduce the job locally.
 #
-# Modelled on the sibling tests/unit/ci/e2e_multicluster_output_test.sh, with the
+# Modelled on the sibling tests/unit/ci/e2e_multicluster_output.bats, with the
 # shared resolve-script scaffolding in tests/lib/ci_resolve.sh.
 #
 # Usage: bash tests/unit/hack/ci_resolve_changes_ovn_overlay_test.sh

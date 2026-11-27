@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -15,15 +15,13 @@
 #
 # hack/ci-resolve-changes.sh is executed for real in all of its branches; the
 # ci.yaml sides are asserted against the workflow file. Modelled on the sibling
-# tests/unit/ci/e2e_multicluster_output_test.sh, with the shared resolve-script
+# tests/unit/ci/e2e_multicluster_output.bats, with the shared resolve-script
 # scaffolding in tests/lib/ci_resolve.sh.
 #
-# Usage: bash tests/unit/ci/e2e_controlplane_output_test.sh
+# Usage: bin/bats tests/unit/ci/e2e_controlplane_output.bats
 
-set -uo pipefail
+load '../../lib/bats/common'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 
 # The real list from the ci.yaml resolve step env block. The resolve script
@@ -31,12 +29,6 @@ CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 # make the FILTER_c5c3 scenario below assert nothing.
 ALL_OPERATORS_FIXTURE="keystone c5c3 horizon glance placement barbican ovn neutron cinder nova"
 
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/ci_resolve.sh
 source "$PROJECT_ROOT/tests/lib/ci_resolve.sh"
 # shellcheck source=tests/lib/ci_yaml.sh
@@ -74,18 +66,14 @@ job_block() {
 # Tests
 # ---------------------------------------------------------------------------
 
-test_own_filter_is_honoured() {
-  echo "Test: on a branch the job follows its own filter"
-
+@test "on a branch the job follows its own filter" {
   assert_eq "a changed ControlPlane path is signalled" \
     "e2e-controlplane=true" "$(run_resolve refs/heads/main true)"
   assert_eq "an untouched ControlPlane path is not signalled" \
     "e2e-controlplane=false" "$(run_resolve refs/heads/main false)"
 }
 
-test_upstream_signals_force_the_job() {
-  echo "Test: a c5c3 change and the ci:controlplane label each force the job on"
-
+@test "a c5c3 change and the ci:controlplane label each force the job on" {
   assert_eq "a change under operators/c5c3/** forces the job on" \
     "e2e-controlplane=true" "$(run_resolve refs/heads/main false FILTER_c5c3=true)"
   assert_eq "the ci:controlplane label forces the job on" \
@@ -96,9 +84,7 @@ test_upstream_signals_force_the_job() {
     "$(run_resolve refs/heads/main false PR_LABELS='["ci:full"]')"
 }
 
-test_shared_changes_no_longer_force_the_job() {
-  echo "Test: a shared Go change and another operator's suite leave the job off"
-
+@test "a shared Go change and another operator's suite leave the job off" {
   # This job and its two siblings are the most expensive in the pipeline (up to
   # 240 minutes each). They used to run on any Go change and on any edit under
   # tests/e2e/**, which is what made a one-line dependency bump cost a full
@@ -113,46 +99,35 @@ test_shared_changes_no_longer_force_the_job() {
     "e2e-controlplane=false" "$(run_resolve refs/heads/main false FILTER_keystone=true)"
 }
 
-test_unrelated_change_stays_off() {
-  echo "Test: an unrelated change leaves the job off"
-
+@test "an unrelated change leaves the job off" {
   assert_eq "a docs-only change does not schedule the job" \
     "e2e-controlplane=false" "$(run_resolve refs/heads/main false FILTER_docs=true)"
 }
 
-test_unset_filter_defaults_to_false() {
-  echo "Test: an unwired filter defaults to false rather than tripping set -u"
-
+@test "an unwired filter defaults to false rather than tripping set -u" {
   assert_eq "the output is emitted even with no FILTER_ env var" \
     "e2e-controlplane=false" \
     "$(resolve_output e2e-controlplane refs/heads/main "$ALL_OPERATORS_FIXTURE")"
 }
 
-test_tag_push_forces_the_job() {
-  echo "Test: a v* tag runs the job whatever the filter says"
-
+@test "a v* tag runs the job whatever the filter says" {
   assert_eq "the release pipeline forces the job on" \
     "e2e-controlplane=true" "$(run_resolve refs/tags/v1.2.3 false)"
 }
 
-test_resolve_script_errors_without_operators() {
-  echo "Test: the resolve script refuses to run without ALL_OPERATORS"
-
+@test "the resolve script refuses to run without ALL_OPERATORS" {
   # Pins the `::error::ALL_OPERATORS must be set` guard: a misconfigured caller
   # fails loudly instead of emitting empty outputs that the downstream jobs
   # would read as "skip everything".
-  local out rc
-  out=$(mktemp)
-  env ALL_OPERATORS="" GITHUB_OUTPUT="$out" GITHUB_REF=refs/heads/main \
-    bash "$PROJECT_ROOT/hack/ci-resolve-changes.sh" >/dev/null 2>&1
-  rc=$?
-  assert_nonzero_exit "an empty ALL_OPERATORS fails loudly" "$rc"
+  local out
+  out=$(mktemp "$BATS_TEST_TMPDIR/out.XXXXXX")
+  run env ALL_OPERATORS="" GITHUB_OUTPUT="$out" GITHUB_REF=refs/heads/main \
+    bash "$PROJECT_ROOT/hack/ci-resolve-changes.sh"
+  assert_nonzero_exit "an empty ALL_OPERATORS fails loudly" "$status"
   rm -f "$out"
 }
 
-test_ci_yaml_wires_all_four_sides() {
-  echo "Test: ci.yaml declares each filter, passes it in, exports it and gates on it"
-
+@test "ci.yaml declares each filter, passes it in, exports it and gates on it" {
   assert_filter_is_wired tests_controlplane e2e-controlplane
   assert_filter_is_wired tests_controlplane_sso e2e-controlplane-sso
   assert_filter_is_wired tests_external_keystone e2e-external-keystone
@@ -164,7 +139,7 @@ test_ci_yaml_wires_all_four_sides() {
   # permanently-skipped job this file exists to catch.
   local job
   for job in e2e-controlplane e2e-controlplane-sso e2e-external-keystone e2e-autoscaling; do
-    assert_contains "$job gates on its own output" \
+    soft assert_contains "$job gates on its own output" \
       "$(job_block "$job")" "needs.changes.outputs.${job} == 'true'"
   done
 
@@ -182,9 +157,7 @@ test_ci_yaml_wires_all_four_sides() {
     "$build_block" "needs.changes.outputs.e2e-controlplane"
 }
 
-test_filter_covers_the_machinery_and_the_suites() {
-  echo "Test: each filter lists exactly the suite its job runs"
-
+@test "each filter lists exactly the suite its job runs" {
   # A filter block ends at the next filter key at the same indent. The
   # terminator class carries a digit because several keys have one.
   filter_block() {
@@ -260,9 +233,7 @@ test_filter_covers_the_machinery_and_the_suites() {
     "$block" "images/keystone-federation-proxy/**"
 }
 
-test_job_runs_all_ten_suites() {
-  echo "Test: the job schedules all ten chainsaw suites"
-
+@test "the job schedules all ten chainsaw suites" {
   local block
   block=$(job_block e2e-controlplane)
 
@@ -316,9 +287,7 @@ test_job_runs_all_ten_suites() {
     "10" "$(grep -c 'E2E_REQUIRE_CONTROLPLANE_STACK: "true"' <<<"$block")"
 }
 
-test_job_loads_both_ends_of_the_release_hop() {
-  echo "Test: the job loads every service image at both ends of the full chain's release hop"
-
+@test "the job loads every service image at both ends of the full chain's release hop" {
   local suite="$PROJECT_ROOT/tests/e2e/c5c3/full-controlplane-keystone"
   local from to pulls loads release svc ref
   # The suite reads its two releases with the same awk, so a release move that
@@ -337,17 +306,15 @@ test_job_loads_both_ends_of_the_release_hop() {
   for release in "$from" "$to"; do
     for svc in keystone horizon glance placement barbican neutron cinder nova; do
       ref="\${{ env.IMAGE_PREFIX }}/${svc}:${release}"
-      assert_eq "the job pulls ${svc}:${release}" "1" \
+      soft assert_eq "the job pulls ${svc}:${release}" "1" \
         "$(awk -v ref="$ref" '{ sub(/^[[:space:]]+/, "") } $0 == ref { n++ } END { print n + 0 }' <<<"$pulls")"
-      assert_contains "the job loads ${svc}:${release} into kind" \
+      soft assert_contains "the job loads ${svc}:${release} into kind" \
         "$loads" "kind load docker-image ${ref} --name"
     done
   done
 }
 
-test_autoscaling_job_runs_its_suite() {
-  echo "Test: the autoscaling job runs its suite on a cluster with metrics-server"
-
+@test "the autoscaling job runs its suite on a cluster with metrics-server" {
   local block
   block=$(job_block e2e-autoscaling)
   assert_not_empty "the job exists" "$block"
@@ -358,26 +325,3 @@ test_autoscaling_job_runs_its_suite() {
   assert_contains "the job seeds the suite's ControlPlane name" \
     "$block" "CONTROLPLANE_NAME: cp-autoscaling"
 }
-
-# ---------------------------------------------------------------------------
-# Run
-# ---------------------------------------------------------------------------
-test_own_filter_is_honoured
-test_upstream_signals_force_the_job
-test_shared_changes_no_longer_force_the_job
-test_unrelated_change_stays_off
-test_unset_filter_defaults_to_false
-test_tag_push_forces_the_job
-test_resolve_script_errors_without_operators
-test_ci_yaml_wires_all_four_sides
-test_filter_covers_the_machinery_and_the_suites
-test_job_runs_all_ten_suites
-test_job_loads_both_ends_of_the_release_hop
-test_autoscaling_job_runs_its_suite
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0

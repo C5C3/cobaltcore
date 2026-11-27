@@ -108,7 +108,7 @@ bottom when scaffolding `operators/<op>/`:
   to `ALL_OPERATORS`, and to `SERVICE_OPERATORS` when it has a service image.
   The unit and integration test matrices, the e2e matrix and the
   `build-e2e-images` build set are all derived from those lists, so none of them
-  needs editing. `tests/unit/ci/change_classes_wiring_test.sh` fails when a step
+  needs editing. `tests/unit/ci/change_classes_wiring.bats` fails when a step
   is missed, and `SERVICE_OPERATORS` is pinned to the keys in
   `releases/*/source-refs.yaml` that name an operator in `ALL_OPERATORS`, so a
   service image landing a phase before its operator stays out of the list until

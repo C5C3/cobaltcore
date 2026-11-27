@@ -59,7 +59,7 @@
 #      a paths filter tests_operator_upgrade_<op> listing that directory, and a
 #      row in hack/ci-operator-upgrade-leg.sh
 #   The test matrices, the e2e matrix and the build set follow automatically;
-#   tests/unit/ci/change_classes_wiring_test.sh fails when a step is missed.
+#   tests/unit/ci/change_classes_wiring.bats fails when a step is missed.
 
 set -euo pipefail
 
