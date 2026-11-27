@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -37,25 +37,18 @@
 #
 # The kubectl stub runs the program the script hands to kubectl exec with the
 # local python3, behind a prelude that replaces socket.create_connection,
-# socket.getaddrinfo and time.sleep. Without python3 those cases are skipped
-# and counted. The structure of the fixtures is read with mikefarah yq; without
-# it those checks are skipped and counted.
+# socket.getaddrinfo and time.sleep. Without python3 those tests skip. The
+# structure of the fixtures is read with mikefarah yq; without it those checks
+# are left out and the test that holds them skips after its other checks.
 #
-# Usage: bash tests/unit/ci/assert_networkpolicy_enforced_test.sh
+# Usage: bin/bats tests/unit/ci/assert_networkpolicy_enforced.bats
 
-set -uo pipefail
+load '../../lib/bats/common'
+load '../../lib/bats/stubs'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 # shellcheck disable=SC2034 # read by tests/lib/ci_yaml.sh
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/ci_yaml.sh
 source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 # shellcheck source=tests/lib/ci_resolve.sh
@@ -63,15 +56,6 @@ source "$PROJECT_ROOT/tests/lib/ci_resolve.sh"
 
 SCRIPT="$PROJECT_ROOT/tests/e2e/lib/assert-networkpolicy-enforced.sh"
 USAGE="usage: assert-networkpolicy-enforced.sh <namespace> <pod> <expect> <host> [<port>...]"
-
-HAVE_PYTHON=0
-if command -v python3 >/dev/null 2>&1; then
-  HAVE_PYTHON=1
-fi
-HAVE_YQ=0
-if command -v yq >/dev/null 2>&1 && yq --version 2>&1 | grep -q mikefarah; then
-  HAVE_YQ=1
-fi
 
 # The eight suites under tests/e2e/<dir>/network-policy, one per line:
 #   dir|cr|fixture|target ports|sink ports admitted|sink ports denied|API ports
@@ -103,25 +87,17 @@ RESTRICTED='.spec.automountServiceAccountToken=false
 .spec.containers[0].resources.requests.memory=64Mi
 .spec.containers[0].resources.limits.memory=128Mi'
 
-STUBS="$(mktemp -d "${TMPDIR:-/tmp}/netpol-probe-test.XXXXXX")"
-trap 'rm -rf "$STUBS"' EXIT
-
-# The kubectl stub logs every call to calls.log. It answers
-# `exec -n <ns> <pod> -- python3 -c <program> <args...>` by saving the program
-# to program and the arguments after it, one per line, to argv, and then
-# running the prelude and the program with the local python3. Any other call
-# exits 99. STUB_EXEC_RC, when not 0, makes it print STUB_EXEC_ERR on stderr
-# and exit with that code instead.
-cat >"$STUBS/kubectl" <<'STUB'
-#!/bin/bash
-stubs="$(dirname "$0")"
-printf '%s\n' "$*" >>"$stubs/calls.log"
-if [ "${STUB_EXEC_RC:-0}" -ne 0 ]; then
-  if [ -n "${STUB_EXEC_ERR:-}" ]; then
-    printf '%s\n' "$STUB_EXEC_ERR" >&2
-  fi
-  exit "$STUB_EXEC_RC"
-fi
+# The kubectl stub logs every call, which stub_calls kubectl prints. It
+# answers `exec -n <ns> <pod> -- python3 -c <program> <args...>` by saving the
+# program to program and the arguments after it, one per line, to argv, and
+# then running the prelude and the program with the local python3. Any other
+# call exits 99. The files live under $STUB_DIR/state, which the tests know
+# as STUBS. A test whose kubectl exec fails declares a newer rule with --rc
+# and kubectl's message as --err. kubectl_body prints the --exec body of the
+# stub's rule.
+kubectl_body() {
+  cat <<'STUB'
+stubs="$STUB_DIR/state"
 if [ "$1 $2 $5 $6 $7" != "exec -n -- python3 -c" ]; then
   echo "unexpected kubectl call: $*" >&2
   exit 99
@@ -130,11 +106,11 @@ program="$8"
 shift 8
 printf '%s' "$program" >"$stubs/program"
 printf '%s\n' "$@" >"$stubs/argv"
-exec python3 -c "$(cat "$stubs/prelude.py")"$'\n'"$program" "$@"
+STUB_DIR="$stubs" exec python3 -c "$(cat "$stubs/prelude.py")"$'\n'"$program" "$@"
 STUB
-chmod +x "$STUBS/kubectl"
+}
 
-# The prelude the stub runs before the program:
+# write_prelude writes the prelude the stub runs before the program:
 #   STUB_CONNECT  comma list of connected, timeout or refused; each
 #                 create_connection takes the next entry and the last one
 #                 repeats (default connected). Every call appends
@@ -144,7 +120,8 @@ chmod +x "$STUBS/kubectl"
 #                 the last one repeats (default ok). Every call appends
 #                 "<host>" to resolves.log.
 # time.sleep returns at once.
-cat >"$STUBS/prelude.py" <<'PY'
+write_prelude() {
+  cat >"$STUBS/prelude.py" <<'PY'
 import os as _os, socket as _socket, time as _time
 
 _results = _os.environ.get("STUB_CONNECT", "connected").split(",")
@@ -182,12 +159,19 @@ _socket.create_connection = _create_connection
 _socket.getaddrinfo = _getaddrinfo
 _time.sleep = lambda seconds: None
 PY
+}
+
+setup() {
+  stub_on kubectl '*' --exec "$(kubectl_body)"
+  STUBS="$STUB_DIR/state"
+  write_prelude
+}
 
 # run_probe [VAR=value...] -- <args...>
-# Runs the script with the kubectl stub first on PATH and only the named
-# overrides and stub settings set. Leaves its stdout in RUN_OUT and its exit
-# code in RUN_RC, and writes its stderr to $STUBS/stderr. The logs and files of
-# the previous run are removed first.
+# Runs the script through run with the kubectl stub first on PATH and only
+# the named overrides and stub settings set: its stdout in $output, its
+# stderr in $stderr and its exit code in $status. The logs and files of the
+# previous run are removed first.
 run_probe() {
   local vars=()
   while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do
@@ -195,23 +179,13 @@ run_probe() {
     shift
   done
   shift
-  rm -f "$STUBS/calls.log" "$STUBS/connects.log" "$STUBS/resolves.log" "$STUBS/program" \
+  rm -f "$STUB_DIR/calls/kubectl" "$STUBS/connects.log" "$STUBS/resolves.log" "$STUBS/program" \
     "$STUBS/argv" "$STUBS/marker"
-  RUN_OUT="$(env -u NETPOL_PROBE_TIMEOUT -u NETPOL_PROBE_INTERVAL \
+  run --separate-stderr with_stubs env -u NETPOL_PROBE_TIMEOUT -u NETPOL_PROBE_INTERVAL \
     -u NETPOL_PROBE_ATTEMPTS -u NETPOL_DROP_CONFIRM \
-    -u STUB_CONNECT -u STUB_RESOLVE -u STUB_EXEC_RC -u STUB_EXEC_ERR \
-    PATH="$STUBS:$PATH" STUB_DIR="$STUBS" ${vars[@]+"${vars[@]}"} \
-    bash "$SCRIPT" "$@" 2>"$STUBS/stderr")"
-  RUN_RC=$?
-}
-
-# skip_without_python <what>: count a skip and return 1 when python3 is absent.
-skip_without_python() {
-  if [ "$HAVE_PYTHON" -eq 0 ]; then
-    echo "  SKIP: $1 (python3 not found)"
-    SKIP=$((SKIP + 1))
-    return 1
-  fi
+    -u STUB_CONNECT -u STUB_RESOLVE \
+    ${vars[@]+"${vars[@]}"} \
+    bash "$SCRIPT" "$@"
 }
 
 # expect_usage <description> [VAR=value...] -- <args...>
@@ -221,17 +195,15 @@ expect_usage() {
   local description="$1"
   shift
   run_probe "$@"
-  assert_eq "$description: exits 2" "2" "$RUN_RC"
-  assert_contains "$description: prints the usage line on stderr" "$(cat "$STUBS/stderr")" "$USAGE"
-  assert_eq "$description: calls no kubectl" "" "$(cat "$STUBS/calls.log" 2>/dev/null)"
+  assert_eq "$description: exits 2" "2" "$status"
+  assert_contains "$description: prints the usage line on stderr" "$stderr" "$USAGE"
+  assert_eq "$description: calls no kubectl" "" "$(stub_calls kubectl)"
   assert_eq "$description: runs no command it was handed" "absent" \
     "$([ -e "$STUBS/marker" ] && echo present || echo absent)"
 }
 
 # --- Test 1: the arguments ---
-test_wrong_arguments_exit_2() {
-  echo "Test: wrong arguments exit 2 with the usage line and call no kubectl"
-
+@test "wrong arguments exit 2 with the usage line and call no kubectl" {
   local inject="PATH[\$(touch $STUBS/marker)]"
   expect_usage "no argument" --
   expect_usage "one argument" -- openstack
@@ -255,157 +227,153 @@ test_wrong_arguments_exit_2() {
     openstack p dropped 10.0.0.1 9999
 
   run_probe -- openstack p open 10.0.0.1 08
-  assert_contains "the second stderr line names the bad port" "$(cat "$STUBS/stderr")" \
+  assert_contains "the second stderr line names the bad port" "$stderr" \
     "port must be a number from 1 to 65535, got '08'"
 }
 
 # --- Test 2: open ---
-test_open() {
-  echo "Test: open passes at the first connect and fails with the last result"
-  skip_without_python "open" || return 0
+@test "open passes at the first connect and fails with the last result" {
+  require_tool python3
 
   run_probe STUB_CONNECT=connected -- openstack p open 10.0.0.1 5000
-  assert_eq "a connect exits 0" "0" "$RUN_RC"
-  assert_contains "it prints the OK line of attempt 1" "$RUN_OUT" \
+  assert_eq "a connect exits 0" "0" "$status"
+  assert_contains "it prints the OK line of attempt 1" "$output" \
     "OK: TCP 5000 to 10.0.0.1 is open from openstack/p (attempt 1)"
 
   run_probe STUB_CONNECT=timeout,timeout,connected -- openstack p open 10.0.0.1 5000
-  assert_eq "a connect at the third attempt exits 0" "0" "$RUN_RC"
-  assert_contains "it names attempt 3" "$RUN_OUT" \
+  assert_eq "a connect at the third attempt exits 0" "0" "$status"
+  assert_contains "it names attempt 3" "$output" \
     "OK: TCP 5000 to 10.0.0.1 is open from openstack/p (attempt 3)"
 
   run_probe STUB_CONNECT=refused NETPOL_PROBE_ATTEMPTS=3 -- openstack p open 10.0.0.1 5000
-  assert_eq "a refusal on every attempt exits 1" "1" "$RUN_RC"
-  assert_contains "the FAIL line names port, host, attempts and the refusal" "$RUN_OUT" \
+  assert_eq "a refusal on every attempt exits 1" "1" "$status"
+  assert_contains "the FAIL line names port, host, attempts and the refusal" "$output" \
     "FAIL: TCP 5000 to 10.0.0.1 did not open from openstack/p in 3 attempts; last result: [Errno 111] Connection refused"
   assert_not_contains "the program's own FAIL line is not reported as an exec failure" \
-    "$RUN_OUT" "cannot run the probe"
+    "$output" "cannot run the probe"
 
   run_probe STUB_CONNECT=timeout NETPOL_PROBE_ATTEMPTS=3 -- openstack p open 10.0.0.1 5000
-  assert_eq "a timeout on every attempt exits 1" "1" "$RUN_RC"
-  assert_contains "the FAIL line names the timeout" "$RUN_OUT" \
+  assert_eq "a timeout on every attempt exits 1" "1" "$status"
+  assert_contains "the FAIL line names the timeout" "$output" \
     "in 3 attempts; last result: timed out"
 
   run_probe STUB_CONNECT=timeout -- openstack p open 10.0.0.1 5000
-  assert_contains "without an override the FAIL line names 15 attempts" "$RUN_OUT" \
+  assert_contains "without an override the FAIL line names 15 attempts" "$output" \
     "FAIL: TCP 5000 to 10.0.0.1 did not open from openstack/p in 15 attempts; last result: timed out"
 
   run_probe STUB_CONNECT=connected,timeout NETPOL_PROBE_ATTEMPTS=2 -- openstack p open 10.0.0.1 3306 11211
-  assert_eq "a second port that never opens exits 1" "1" "$RUN_RC"
-  assert_contains "the first port passes" "$RUN_OUT" \
+  assert_eq "a second port that never opens exits 1" "1" "$status"
+  assert_contains "the first port passes" "$output" \
     "OK: TCP 3306 to 10.0.0.1 is open from openstack/p (attempt 1)"
-  assert_contains "the second port fails" "$RUN_OUT" \
+  assert_contains "the second port fails" "$output" \
     "FAIL: TCP 11211 to 10.0.0.1 did not open from openstack/p in 2 attempts; last result: timed out"
 }
 
 # --- Test 3: dropped ---
-test_dropped() {
-  echo "Test: dropped passes on confirmed timeouts and fails on anything else"
-  skip_without_python "dropped" || return 0
+@test "dropped passes on confirmed timeouts and fails on anything else" {
+  require_tool python3
 
   run_probe STUB_CONNECT=timeout -- openstack p dropped 10.0.0.1 9999
-  assert_eq "three timeouts exit 0" "0" "$RUN_RC"
-  assert_contains "it prints the OK line" "$RUN_OUT" \
+  assert_eq "three timeouts exit 0" "0" "$status"
+  assert_contains "it prints the OK line" "$output" \
     "OK: TCP 9999 to 10.0.0.1 is dropped from openstack/p (3 timeouts in a row)"
 
   run_probe STUB_CONNECT=connected,connected,timeout -- openstack p dropped 10.0.0.1 9999
-  assert_eq "connects before the first timeout are polled through" "0" "$RUN_RC"
+  assert_eq "connects before the first timeout are polled through" "0" "$status"
   assert_eq "two connects, the timeout and two confirmations" "5" \
     "$(wc -l <"$STUBS/connects.log" | tr -d ' ')"
 
   run_probe STUB_CONNECT=refused,refused,timeout -- openstack p dropped 10.0.0.1 9999
-  assert_eq "refusals before the first timeout are polled through" "0" "$RUN_RC"
-  assert_contains "it prints the OK line after the refusals" "$RUN_OUT" \
+  assert_eq "refusals before the first timeout are polled through" "0" "$status"
+  assert_contains "it prints the OK line after the refusals" "$output" \
     "OK: TCP 9999 to 10.0.0.1 is dropped from openstack/p (3 timeouts in a row)"
   assert_eq "two refusals, the timeout and two confirmations" "5" \
     "$(wc -l <"$STUBS/connects.log" | tr -d ' ')"
 
   run_probe STUB_CONNECT=timeout -- openstack p dropped 10.0.0.1 5900 9999
-  assert_eq "two dropped ports exit 0" "0" "$RUN_RC"
-  assert_contains "the first port passes" "$RUN_OUT" \
+  assert_eq "two dropped ports exit 0" "0" "$status"
+  assert_contains "the first port passes" "$output" \
     "OK: TCP 5900 to 10.0.0.1 is dropped from openstack/p (3 timeouts in a row)"
-  assert_contains "the second port passes" "$RUN_OUT" \
+  assert_contains "the second port passes" "$output" \
     "OK: TCP 9999 to 10.0.0.1 is dropped from openstack/p (3 timeouts in a row)"
 
   run_probe STUB_CONNECT=connected NETPOL_PROBE_ATTEMPTS=2 -- openstack p dropped 10.0.0.1 5900 9999
-  assert_eq "a first port that is never dropped exits 1" "1" "$RUN_RC"
-  assert_contains "the FAIL line names the first port" "$RUN_OUT" \
+  assert_eq "a first port that is never dropped exits 1" "1" "$status"
+  assert_contains "the FAIL line names the first port" "$output" \
     "FAIL: TCP 5900 to 10.0.0.1 was never dropped from openstack/p in 2 attempts"
   assert_eq "the run ends at the first failing port" "0" \
     "$(grep -c '^10.0.0.1 9999 ' "$STUBS/connects.log")"
 
   run_probe STUB_CONNECT=timeout NETPOL_DROP_CONFIRM=0 -- openstack p dropped 10.0.0.1 9999
-  assert_contains "NETPOL_DROP_CONFIRM=0 passes on one timeout" "$RUN_OUT" "(1 timeouts in a row)"
+  assert_contains "NETPOL_DROP_CONFIRM=0 passes on one timeout" "$output" "(1 timeouts in a row)"
 
   run_probe STUB_CONNECT=connected -- openstack p dropped 10.0.0.1 9999
-  assert_eq "a connect on every attempt exits 1" "1" "$RUN_RC"
-  assert_contains "the FAIL line says the port was never dropped" "$RUN_OUT" \
+  assert_eq "a connect on every attempt exits 1" "1" "$status"
+  assert_contains "the FAIL line says the port was never dropped" "$output" \
     "FAIL: TCP 9999 to 10.0.0.1 was never dropped from openstack/p in 15 attempts; last result: connected"
-  assert_contains "the FAIL line names NetworkPolicy enforcement" "$RUN_OUT" \
+  assert_contains "the FAIL line names NetworkPolicy enforcement" "$output" \
     "the CNI does not enforce NetworkPolicy, or the policy admits this port"
 
   run_probe STUB_CONNECT=refused -- openstack p dropped 10.0.0.1 9999
-  assert_eq "a refusal is never a drop" "1" "$RUN_RC"
-  assert_contains "the FAIL line names the refusal" "$RUN_OUT" \
+  assert_eq "a refusal is never a drop" "1" "$status"
+  assert_contains "the FAIL line names the refusal" "$output" \
     "last result: [Errno 111] Connection refused"
 
   run_probe STUB_CONNECT=timeout,connected -- openstack p dropped 10.0.0.1 9999
-  assert_eq "a connect after the first timeout exits 1" "1" "$RUN_RC"
-  assert_contains "the FAIL line names the connect after the drop" "$RUN_OUT" \
+  assert_eq "a connect after the first timeout exits 1" "1" "$status"
+  assert_contains "the FAIL line names the connect after the drop" "$output" \
     "FAIL: TCP 9999 to 10.0.0.1 returned connected from openstack/p after a drop"
 
   run_probe STUB_CONNECT=timeout,refused -- openstack p dropped 10.0.0.1 9999
-  assert_eq "a refusal after the first timeout exits 1" "1" "$RUN_RC"
-  assert_contains "the FAIL line names the refusal after the drop" "$RUN_OUT" \
+  assert_eq "a refusal after the first timeout exits 1" "1" "$status"
+  assert_contains "the FAIL line names the refusal after the drop" "$output" \
     "returned [Errno 111] Connection refused from openstack/p after a drop"
 }
 
 # --- Test 4: resolves ---
-test_resolves() {
-  echo "Test: resolves passes with the first address, retries, and fails with the lookup error"
-  skip_without_python "resolves" || return 0
+@test "resolves passes with the first address, retries, and fails with the lookup error" {
+  require_tool python3
 
   run_probe STUB_RESOLVE=ok -- openstack p resolves kubernetes.default.svc.cluster.local.
-  assert_eq "a resolvable name exits 0" "0" "$RUN_RC"
-  assert_contains "it prints the first address" "$RUN_OUT" \
+  assert_eq "a resolvable name exits 0" "0" "$status"
+  assert_contains "it prints the first address" "$output" \
     "OK: kubernetes.default.svc.cluster.local. resolves from openstack/p to 10.96.0.1"
 
   run_probe STUB_RESOLVE=fail,fail,ok -- openstack p resolves kubernetes.default.svc.cluster.local.
-  assert_eq "a lookup error is retried" "0" "$RUN_RC"
+  assert_eq "a lookup error is retried" "0" "$status"
   assert_eq "two failed lookups and the one that resolves" "3" \
     "$(wc -l <"$STUBS/resolves.log" | tr -d ' ')"
 
   run_probe STUB_RESOLVE=fail -- openstack p resolves kubernetes.default.svc.cluster.local.
-  assert_eq "an unresolvable name exits 1" "1" "$RUN_RC"
-  assert_contains "the FAIL line carries the gaierror text" "$RUN_OUT" \
+  assert_eq "an unresolvable name exits 1" "1" "$status"
+  assert_contains "the FAIL line carries the gaierror text" "$output" \
     "FAIL: kubernetes.default.svc.cluster.local. does not resolve from openstack/p in 15 attempts; last error: [Errno -2] Name or service not known"
   assert_eq "it looks the name up 15 times" "15" \
     "$(grep -cx 'kubernetes.default.svc.cluster.local.' "$STUBS/resolves.log")"
 }
 
 # --- Test 5: kubectl exec fails ---
-test_an_exec_failure_is_reported() {
-  echo "Test: a kubectl exec that cannot run the probe fails with its last line"
-
-  run_probe STUB_EXEC_RC=1 'STUB_EXEC_ERR=error: pods "p" not found' -- openstack p open 10.0.0.1 5000
-  assert_eq "a missing pod exits 1" "1" "$RUN_RC"
-  assert_contains "it names the pod and kubectl's error" "$RUN_OUT" \
+@test "a kubectl exec that cannot run the probe fails with its last line" {
+  stub_on kubectl '*' --rc 1 --err 'error: pods "p" not found'
+  run_probe -- openstack p open 10.0.0.1 5000
+  assert_eq "a missing pod exits 1" "1" "$status"
+  assert_contains "it names the pod and kubectl's error" "$output" \
     'FAIL: cannot run the probe in openstack/p: error: pods "p" not found'
 
-  run_probe STUB_EXEC_RC=126 -- openstack p open 10.0.0.1 5000
-  assert_eq "an exec failure without output exits 1" "1" "$RUN_RC"
-  assert_contains "it names the exit code" "$RUN_OUT" \
+  stub_on kubectl '*' --rc 126
+  run_probe -- openstack p open 10.0.0.1 5000
+  assert_eq "an exec failure without output exits 1" "1" "$status"
+  assert_contains "it names the exit code" "$output" \
     "FAIL: cannot run the probe in openstack/p: kubectl exec exited 126"
 }
 
 # --- Test 6: the arguments the program receives ---
-test_host_and_ports_arrive_as_argv() {
-  echo "Test: host and ports reach the program as arguments, never in its text"
-  skip_without_python "the program's arguments" || return 0
+@test "host and ports reach the program as arguments, never in its text" {
+  require_tool python3
 
   run_probe STUB_CONNECT=connected -- openstack p open 10.0.0.1 5000
   assert_starts_with "kubectl execs python3 -c in the pod" \
-    "$(head -n 1 "$STUBS/calls.log")" "exec -n openstack p -- python3 -c "
+    "$(stub_calls kubectl | head -n 1)" "exec -n openstack p -- python3 -c "
   assert_not_contains "the program text does not carry the host" "$(cat "$STUBS/program")" "10.0.0.1"
   assert_not_contains "the program text does not carry the port" "$(cat "$STUBS/program")" "5000"
   assert_eq "the arguments after the program are expect, source, host, defaults and port" \
@@ -422,32 +390,28 @@ test_host_and_ports_arrive_as_argv() {
 }
 
 # --- Test 7: the script file ---
-test_the_script_parses_and_is_linted() {
-  echo "Test: the script is executable, parses, and make shellcheck lints it"
-
+@test "the script is executable, parses, and make shellcheck lints it" {
   assert_eq "the script is executable" "yes" "$([ -x "$SCRIPT" ] && echo yes || echo no)"
-  bash -n "$SCRIPT"
-  assert_eq "bash -n passes" "0" "$?"
+  run bash -n "$SCRIPT"
+  assert_eq "bash -n passes" "0" "$status"
   assert_file_contains_fixed "make shellcheck lints tests/e2e/lib/" "$PROJECT_ROOT/Makefile" \
     "@shellcheck --severity=warning tests/e2e/lib/*.sh"
 }
 
 # --- Test 8: the path filters ---
-test_the_filters_name_the_probe() {
-  echo "Test: an edit to the probe runs the leg of every operator but c5c3"
-
+@test "an edit to the probe runs the leg of every operator but c5c3" {
   local op block filters=()
   for op in keystone horizon glance placement barbican cinder nova; do
     block="$(filter_block "tests_e2e_$op")"
-    assert_contains "tests_e2e_$op lists the shared directory" "$block" "'tests/e2e/lib/**'"
+    soft assert_contains "tests_e2e_$op lists the shared directory" "$block" "'tests/e2e/lib/**'"
   done
   # The network-policy-egress suites of neutron and ovn run the probe, which
   # their filters name beside the other shared scripts they run.
   for op in neutron ovn; do
     block="$(filter_block "tests_e2e_$op")"
-    assert_contains "tests_e2e_$op names the probe" "$block" \
+    soft assert_contains "tests_e2e_$op names the probe" "$block" \
       "'tests/e2e/lib/assert-networkpolicy-enforced.sh'"
-    assert_not_contains "tests_e2e_$op leaves the shared directory out" "$block" "tests/e2e/lib/**"
+    soft assert_not_contains "tests_e2e_$op leaves the shared directory out" "$block" "tests/e2e/lib/**"
   done
   # c5c3 runs no network-policy suite.
   block="$(filter_block tests_e2e_c5c3)"
@@ -499,12 +463,16 @@ ascending() {
 }
 
 # --- Test 9: the eight suites ---
-test_each_suite_probes_its_policy() {
-  echo "Test: each service network-policy suite probes its policy with the fixture of the table"
-
+@test "each service network-policy suite probes its policy with the fixture of the table" {
   local found dir cr fixture target sink_open sink_denied api suite fx patch patches path value
   local listener="" program pod vnc pods namespaces step first
   local order=()
+  # The structure of the fixtures is read with mikefarah yq; without it the
+  # loop checks the rest of each suite and the test skips at its end.
+  HAVE_YQ=0
+  if command -v yq >/dev/null 2>&1 && yq --version 2>&1 | grep -q mikefarah; then
+    HAVE_YQ=1
+  fi
   found="$(for suite in "$PROJECT_ROOT"/tests/e2e/*/network-policy/chainsaw-test.yaml; do
     suite="${suite%/network-policy/chainsaw-test.yaml}"
     echo "${suite##*/}"
@@ -515,28 +483,28 @@ test_each_suite_probes_its_policy() {
   while IFS='|' read -r dir cr fixture target sink_open sink_denied api; do
     suite="$PROJECT_ROOT/tests/e2e/$dir/network-policy/chainsaw-test.yaml"
     fx="$PROJECT_ROOT/tests/e2e/$dir/network-policy/$fixture"
-    assert_eq "the $dir fixture $fixture exists" "yes" "$([ -f "$fx" ] && echo yes || echo no)"
-    assert_file_not_contains "the $dir suite has no SCOPE CAVEAT" "$suite" "SCOPE CAVEAT"
-    assert_file_contains_fixed "the $dir suite applies its fixture" "$suite" "file: $fixture"
-    assert_file_contains_fixed "the $dir suite runs the probe" "$suite" \
+    soft assert_eq "the $dir fixture $fixture exists" "yes" "$([ -f "$fx" ] && echo yes || echo no)"
+    soft assert_file_not_matches "the $dir suite has no SCOPE CAVEAT" "$suite" "SCOPE CAVEAT"
+    soft assert_file_contains_fixed "the $dir suite applies its fixture" "$suite" "file: $fixture"
+    soft assert_file_contains_fixed "the $dir suite runs the probe" "$suite" \
       "PROBE=../../lib/assert-networkpolicy-enforced.sh"
-    assert_file_contains_fixed "the $dir target is dropped on the denied sink ports" "$suite" \
+    soft assert_file_contains_fixed "the $dir target is dropped on the denied sink ports" "$suite" \
       "\"\${PROBE}\" openstack $cr-probe-target dropped \"\${SINK}\" $sink_denied"
-    assert_file_contains_fixed "the $dir target resolves a cluster name" "$suite" \
+    soft assert_file_contains_fixed "the $dir target resolves a cluster name" "$suite" \
       "\"\${PROBE}\" openstack $cr-probe-target resolves kubernetes.default.svc.cluster.local."
-    assert_file_contains_fixed "the $dir target reaches the admitted sink ports" "$suite" \
+    soft assert_file_contains_fixed "the $dir target reaches the admitted sink ports" "$suite" \
       "\"\${PROBE}\" openstack $cr-probe-target open \"\${SINK}\" $sink_open"
-    assert_file_contains_fixed "the $dir inside client is dropped on 9999" "$suite" \
+    soft assert_file_contains_fixed "the $dir inside client is dropped on 9999" "$suite" \
       "\"\${PROBE}\" $dir-system $cr-probe-inside dropped \"\${TARGET}\" 9999"
-    assert_file_contains_fixed "the $dir inside client reaches the API ports" "$suite" \
+    soft assert_file_contains_fixed "the $dir inside client reaches the API ports" "$suite" \
       "\"\${PROBE}\" $dir-system $cr-probe-inside open \"\${TARGET}\" $api"
-    assert_file_contains_fixed "the $dir outside client is dropped on the API ports" "$suite" \
+    soft assert_file_contains_fixed "the $dir outside client is dropped on the API ports" "$suite" \
       "\"\${PROBE}\" $cr-outside $cr-probe-outside dropped \"\${TARGET}\" $api"
-    assert_file_contains_fixed "the $dir outside client reaches the API ports after the patch" "$suite" \
+    soft assert_file_contains_fixed "the $dir outside client reaches the API ports after the patch" "$suite" \
       "\"\${PROBE}\" $cr-outside $cr-probe-outside open \"\${TARGET}\" $api"
     patches=("$PROJECT_ROOT"/tests/e2e/"$dir"/network-policy/0*-patch-update-ingress.yaml)
     patch="${patches[0]}"
-    assert_file_contains_fixed "the $dir update patch admits $cr-outside" "$patch" \
+    soft assert_file_contains_fixed "the $dir update patch admits $cr-outside" "$patch" \
       "kubernetes.io/metadata.name: $cr-outside"
     # The suite's reasoning rests on this order: the target's first drop waits
     # for kindnet, the inside open shows kindnet knows the clients before the
@@ -551,89 +519,73 @@ test_each_suite_probes_its_policy() {
       "\"\${PROBE}\" $cr-outside $cr-probe-outside open"; do
       order+=("$(grep -nF -m 1 -- "$step" "$suite" | cut -d: -f1)")
     done
-    assert_eq "the $dir target's drop is the first probe" "$first" "${order[0]}"
-    assert_eq "the $dir inside open, outside drop, patch and outside open come in order" yes \
+    soft assert_eq "the $dir target's drop is the first probe" "$first" "${order[0]}"
+    soft assert_eq "the $dir inside open, outside drop, patch and outside open come in order" yes \
       "$(ascending "${order[@]}")"
     # Nova's console proxy has a policy of its own, which a fifth pod with the
     # proxy's component label probes.
     vnc=""
     if [ "$dir" = nova ]; then
       vnc="$cr-probe-vnc"
-      assert_file_contains_fixed "the $dir console stand-in reaches the display range" "$suite" \
+      soft assert_file_contains_fixed "the $dir console stand-in reaches the display range" "$suite" \
         "\"\${PROBE}\" openstack $vnc open \"\${SINK}\" 5900 9999"
     fi
 
     if [ "$HAVE_YQ" -eq 0 ]; then
-      echo "  SKIP: the structure of $fixture of $dir (mikefarah yq not found)"
-      SKIP=$((SKIP + 1))
+      # The structure of $fixture of $dir needs mikefarah yq.
       continue
     fi
-    assert_eq "the $dir sink ports are the asserted TCP egress ports but 53 and 443" "$sink_open" \
+    soft assert_eq "the $dir sink ports are the asserted TCP egress ports but 53 and 443" "$sink_open" \
       "$(policy_tcp_ports "$suite" "$cr" egress)"
-    assert_eq "the $dir API ports are the asserted TCP ingress ports" \
+    soft assert_eq "the $dir API ports are the asserted TCP ingress ports" \
       "$(tr ' ' '\n' <<<"$api" | sort -n | paste -s -d ' ' -)" "$(policy_tcp_ports "$suite" "$cr" ingress)"
-    assert_eq "the $dir fixture creates the Namespace $cr-outside" "$cr-outside" \
+    soft assert_eq "the $dir fixture creates the Namespace $cr-outside" "$cr-outside" \
       "$(yq ea '[select(.kind == "Namespace")] | map(.metadata.name) | join(",")' "$fx")"
     pods="$cr-probe-target $cr-probe-sink $cr-probe-inside $cr-probe-outside${vnc:+ $vnc}"
     namespaces="openstack openstack $dir-system $cr-outside${vnc:+ openstack}"
-    assert_eq "the $dir fixture holds the probe pods" "$pods" \
+    soft assert_eq "the $dir fixture holds the probe pods" "$pods" \
       "$(yq ea '[select(.kind == "Pod")] | map(.metadata.name) | join(" ")' "$fx")"
-    assert_eq "the $dir probe pods run in openstack, $dir-system and $cr-outside" "$namespaces" \
+    soft assert_eq "the $dir probe pods run in openstack, $dir-system and $cr-outside" "$namespaces" \
       "$(yq ea '[select(.kind == "Pod")] | map(.metadata.namespace) | join(" ")' "$fx")"
-    assert_eq "the $dir target carries the policy's two selector labels and no other" \
+    soft assert_eq "the $dir target carries the policy's two selector labels and no other" \
       "app.kubernetes.io/instance=$cr,app.kubernetes.io/name=$dir" \
       "$(pod_field "$fx" "$cr-probe-target" '.metadata.labels | to_entries | map(.key + "=" + .value) | sort | join(",")')"
-    assert_eq "only the console stand-in among the $dir probe pods carries a component label" "$vnc" \
+    soft assert_eq "only the console stand-in among the $dir probe pods carries a component label" "$vnc" \
       "$(yq ea '[select(.kind == "Pod") | select(.metadata.labels | has("app.kubernetes.io/component"))] | map(.metadata.name) | join(" ")' "$fx")"
     if [ -n "$vnc" ]; then
-      assert_eq "the $dir console stand-in carries the console policy's three selector labels" \
+      soft assert_eq "the $dir console stand-in carries the console policy's three selector labels" \
         "app.kubernetes.io/component=novncproxy,app.kubernetes.io/instance=$cr,app.kubernetes.io/name=$dir" \
         "$(pod_field "$fx" "$vnc" '.metadata.labels | to_entries | map(.key + "=" + .value) | sort | join(",")')"
     fi
-    assert_eq "the $dir probe pods run the $dir image" "ghcr.io/c5c3/$dir:2026.1" \
+    soft assert_eq "the $dir probe pods run the $dir image" "ghcr.io/c5c3/$dir:2026.1" \
       "$(yq ea '[select(.kind == "Pod")] | map(.spec.containers[0].image) | unique | join(",")' "$fx")"
     # The pod count is pinned above, so one value per field covers every pod;
     # a pod without the field adds null.
     while IFS='=' read -r path value; do
-      assert_eq "the $dir probe pods set $path" "$value" \
+      soft assert_eq "the $dir probe pods set $path" "$value" \
         "$(yq ea '[select(.kind == "Pod")] | map('"$path"') | unique | join(",")' "$fx")"
     done <<<"$RESTRICTED"
-    assert_eq "the $dir target listens on the table's ports" "$target" \
+    soft assert_eq "the $dir target listens on the table's ports" "$target" \
       "$(pod_field "$fx" "$cr-probe-target" '.spec.containers[0].command | .[3:] | join(" ")')"
-    assert_eq "the $dir sink listens on the table's ports" "$sink_open $sink_denied" \
+    soft assert_eq "the $dir sink listens on the table's ports" "$sink_open $sink_denied" \
       "$(pod_field "$fx" "$cr-probe-sink" '.spec.containers[0].command | .[3:] | join(" ")')"
     for pod in "$cr-probe-inside" "$cr-probe-outside" ${vnc:+"$vnc"}; do
-      assert_eq "$pod sleeps" "sleep infinity" \
+      soft assert_eq "$pod sleeps" "sleep infinity" \
         "$(pod_field "$fx" "$pod" '.spec.containers[0].command | join(" ")')"
     done
     for pod in "$cr-probe-target" "$cr-probe-sink"; do
-      assert_eq "$pod runs python3 -c" "python3 -c" \
+      soft assert_eq "$pod runs python3 -c" "python3 -c" \
         "$(pod_field "$fx" "$pod" '.spec.containers[0].command | .[0:2] | join(" ")')"
       program="$(pod_field "$fx" "$pod" '.spec.containers[0].command[2]')"
       if [ -z "$listener" ]; then
         listener="$program"
-        assert_contains "the listener binds each port it is given" "$listener" \
+        soft assert_contains "the listener binds each port it is given" "$listener" \
           'srv.bind(("0.0.0.0", int(port)))'
       fi
-      assert_eq "$pod runs the listener of the first target" "$listener" "$program"
+      soft assert_eq "$pod runs the listener of the first target" "$listener" "$program"
     done
   done <<<"$SUITES"
+  if [ "$HAVE_YQ" -eq 0 ]; then
+    skip "mikefarah yq is not installed; the structure of the fixtures is not checked"
+  fi
 }
-
-# --- Run ---
-test_wrong_arguments_exit_2
-test_open
-test_dropped
-test_resolves
-test_an_exec_failure_is_reported
-test_host_and_ports_arrive_as_argv
-test_the_script_parses_and_is_linted
-test_the_filters_name_the_probe
-test_each_suite_probes_its_policy
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0
