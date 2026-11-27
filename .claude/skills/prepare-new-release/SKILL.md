@@ -178,7 +178,7 @@ Copy `releases/<newest>/` as the template and adjust:
   `<svc>_basic_<slug>`; check with
   `grep -rnE 'basic[-_]<year>([^-_0-9]|$)' tests/e2e/*/basic-deployment-<slug>/`.
   Add the nova variant to `shard_two` in `ci.yaml`
-  (`tests/unit/ci/nova_e2e_matrix_test.sh` asserts one shard per suite),
+  (`tests/unit/ci/nova_e2e_matrix.bats` asserts one shard per suite),
   and add the suite's row, section and tree entry to
   `docs/reference/testing/{keystone,cinder,nova}-e2e-tests.md` and the
   shard list in `docs/reference/ci-cd/ci-workflow.md`. A variant that
@@ -228,7 +228,7 @@ Copy `releases/<newest>/` as the template and adjust:
   and multi-line lists
   (`grep -rnE --include='*_test.go' '^[[:space:]]+"<prev>"[,}]' operators internal`)
   need a read; `tests/unit/hack/ci_resolve_e2e_images_test.sh` and
-  `tests/unit/ci/nova_e2e_matrix_test.sh` pin image and leg counts; the
+  `tests/unit/ci/nova_e2e_matrix.bats` pin image and leg counts; the
   prose grep of `docs/contributing/adding-a-new-release.md` finds the
   pages that count releases.
 
@@ -333,7 +333,7 @@ audit for everything this skill sets up; run it as the gate on the PR.
   those. Neither sees a multi-line list or a `{release: "…"}` table row.
 - **Two shell suites pin counts** —
   `tests/unit/hack/ci_resolve_e2e_images_test.sh` (image-map size,
-  per-service release lists) and `tests/unit/ci/nova_e2e_matrix_test.sh`
+  per-service release lists) and `tests/unit/ci/nova_e2e_matrix.bats`
   (nova ref count, nova Tempest leg count) move with every release.
 - **Packages move into extras, wheels drop dependencies** — cinder
   29.0.0's backup libraries and os-vif 5.2.1's pyroute2; fix each in the
