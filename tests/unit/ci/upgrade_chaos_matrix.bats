@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -17,20 +17,12 @@
 # backend mounts, and without WITH_MESSAGING cinder-upgrade-db-partition has
 # no broker to take its vhost on.
 #
-# Usage: bash tests/unit/ci/upgrade_chaos_matrix_test.sh
+# Usage: bin/bats tests/unit/ci/upgrade_chaos_matrix.bats
 
-set -uo pipefail
+load '../../lib/bats/common'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/ci_yaml.sh
 source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
@@ -44,8 +36,7 @@ step_if() {
   job_step e2e-chaos "$1" | grep -E '^ *if:' | sed 's/^ *//'
 }
 
-test_the_entry_runs_the_upgrade_suites() {
-  echo "Test: the upgrade entry runs on self-hosted runners and holds the two Cinder upgrade suites alone"
+@test "the upgrade entry runs on self-hosted runners and holds the two Cinder upgrade suites alone" {
   local job entry suite leg other
   job="$(job_block e2e-chaos)"
   entry="$(e2e_chaos_matrix_entry upgrade)"
@@ -54,18 +45,17 @@ test_the_entry_runs_the_upgrade_suites() {
   assert_eq "it health-checks the chaos-mesh install first" "tests/e2e/infrastructure/chaos-mesh-health" \
     "$(grep -m1 -oE 'tests/e2e[^ ]*' <<<"$entry")"
   for suite in "${UPGRADE_SUITES[@]}"; do
-    assert_contains "it runs ${suite}" "$entry" "tests/e2e-chaos/${suite}"
+    soft assert_contains "it runs ${suite}" "$entry" "tests/e2e-chaos/${suite}"
     for leg in pod network ovn nova controlplane multinode; do
       other="$(e2e_chaos_matrix_entry "$leg")"
-      assert_not_contains "the ${leg} entry does not run ${suite}" "$other" "tests/e2e-chaos/${suite}"
+      soft assert_not_contains "the ${leg} entry does not run ${suite}" "$other" "tests/e2e-chaos/${suite}"
     done
   done
   assert_eq "it runs nothing but the health check and the two suites" \
     "$((1 + ${#UPGRADE_SUITES[@]}))" "$(grep -cE '^ +tests/' <<<"$entry")"
 }
 
-test_the_leg_loads_the_cinder_images() {
-  echo "Test: the upgrade leg pulls the cinder-operator and both cinder images and loads them onto the node"
+@test "the upgrade leg pulls the cinder-operator and both cinder images and loads them onto the node" {
   local pull load ref
   pull="$(job_step e2e-chaos "Load E2E images")"
   load="$(job_step e2e-chaos "Load upgrade leg images into kind")"
@@ -73,9 +63,9 @@ test_the_leg_loads_the_cinder_images() {
   assert_eq "it runs on the upgrade leg alone" "if: matrix.suite == 'upgrade'" \
     "$(step_if "Load upgrade leg images into kind")"
   for ref in "${UPGRADE_REFS[@]}"; do
-    assert_contains "Load E2E images pulls ${ref} on the upgrade leg alone" "$pull" \
+    soft assert_contains "Load E2E images pulls ${ref} on the upgrade leg alone" "$pull" \
       "\${{ matrix.suite == 'upgrade' && format('{0}/${ref}', env.IMAGE_PREFIX) || '' }}"
-    assert_contains "and ${ref} reaches the kind node" "$load" \
+    soft assert_contains "and ${ref} reaches the kind node" "$load" \
       "kind load docker-image \${{ env.IMAGE_PREFIX }}/${ref} --name \${{ env.KIND_CLUSTER }}"
   done
   # The network leg runs no upgrade, so its cinder load stays on 2026.1.
@@ -83,8 +73,7 @@ test_the_leg_loads_the_cinder_images() {
     "$(job_step e2e-chaos "Load cinder images into kind")" "cinder:2026.2"
 }
 
-test_the_leg_asks_for_nfs_and_the_broker() {
-  echo "Test: setup-e2e-infra installs the NFS export and the shared broker on the upgrade leg"
+@test "setup-e2e-infra installs the NFS export and the shared broker on the upgrade leg" {
   local setup
   setup="$(job_step e2e-chaos "Setup E2E infrastructure")"
   assert_contains "WITH_NFS on the network and upgrade legs" "$setup" \
@@ -95,8 +84,7 @@ test_the_leg_asks_for_nfs_and_the_broker() {
   assert_not_contains "the leg asks for no ControlPlane path" "$setup" "matrix.suite == 'upgrade' && 'external'"
 }
 
-test_the_leg_deploys_the_cinder_operator() {
-  echo "Test: the upgrade leg deploys the cinder-operator through a step of its own"
+@test "the upgrade leg deploys the cinder-operator through a step of its own" {
   local deploy job ovn_at deploy_at run_at
   deploy="$(job_step e2e-chaos "Deploy cinder operator (upgrade leg)")"
   assert_not_empty "a deploy step exists" "$deploy"
@@ -120,8 +108,7 @@ test_the_leg_deploys_the_cinder_operator() {
   assert_gte "and before the suites run" "$run_at" "$deploy_at"
 }
 
-test_the_leg_dumps_the_cinder_operator() {
-  echo "Test: the upgrade leg dumps the cinder-operator"
+@test "the upgrade leg dumps the cinder-operator" {
   local dump
   dump="$(job_step e2e-chaos "Dump diagnostic info (upgrade leg)")"
   assert_not_empty "a diagnostics step exists" "$dump"
@@ -131,25 +118,10 @@ test_the_leg_dumps_the_cinder_operator() {
     "OPERATOR=cinder OPERATOR_ONLY=1 hack/ci-dump-diagnostics.sh"
 }
 
-test_the_leg_has_its_wall() {
-  echo "Test: the upgrade leg has an 80-minute wall"
+@test "the upgrade leg has an 80-minute wall" {
   local job
   job="$(job_block e2e-chaos)"
   assert_contains "its arm of the wall reads 80 minutes" \
     "$(grep -E '^ +timeout-minutes:' <<<"$job")" "matrix.suite == 'upgrade' && 80"
-  # Gating is job-wide; e2e_chaos_job_test.sh pins it (#1388).
+  # Gating is job-wide; e2e_chaos_job.bats pins it (#1388).
 }
-
-test_the_entry_runs_the_upgrade_suites
-test_the_leg_loads_the_cinder_images
-test_the_leg_asks_for_nfs_and_the_broker
-test_the_leg_deploys_the_cinder_operator
-test_the_leg_dumps_the_cinder_operator
-test_the_leg_has_its_wall
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0

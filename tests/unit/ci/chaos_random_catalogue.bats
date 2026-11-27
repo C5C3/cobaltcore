@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -30,24 +30,17 @@
 #
 # Requires yq (mikefarah) and jq; without either the file skips.
 #
-# Usage: bash tests/unit/ci/chaos_random_catalogue_test.sh
+# Usage: bin/bats tests/unit/ci/chaos_random_catalogue.bats
 
-set -uo pipefail
+load '../../lib/bats/common'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 SUITES_DIR="$PROJECT_ROOT/tests/e2e-chaos"
 CATALOGUE="$PROJECT_ROOT/tests/chaos-random/catalogue.yaml"
 
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
-
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+setup() {
+  require_tool yq jq
+  TMP_DIR="$BATS_TEST_TMPDIR"
+}
 
 NAME_RE='^[a-z0-9]([-a-z0-9]{0,40}[a-z0-9])?$'
 HOST_NETWORK_NAMES='["libvirt","novacompute","ovnchassis","neutronmetadataagent","migration-port-reservation"]'
@@ -186,8 +179,7 @@ expect_problem() {
 # Tests
 # ---------------------------------------------------------------------------
 
-test_the_suites() {
-  echo "Test: every suite names catalogue entries, or one none line"
+@test "every suite names catalogue entries, or one none line" {
   local root="$TMP_DIR/suites" f n
 
   fixture "$root"
@@ -217,8 +209,7 @@ test_the_suites() {
   expect_problem "two none lines" "$root" "$f:$n: a \"none\" line beside another \"# Chaos random:\" line"
 }
 
-test_the_entries() {
-  echo "Test: every entry is well formed, unique and named by a suite or a source"
+@test "every entry is well formed, unique and named by a suite or a source" {
   local root="$TMP_DIR/entries" c n
 
   fixture "$root"
@@ -284,7 +275,7 @@ test_the_entries() {
     c="$root/catalogue.yaml"
     yq -i "(.[] | select(.name == \"mariadb-pod-kill\")).duration = \"$value\"" "$c"
     n="$(awk '/^- name: mariadb-pod-kill$/ { on = 1 } on && /^  duration:/ { print NR; exit }' "$c")"
-    expect_problem "a duration of '$value'" "$root" \
+    soft expect_problem "a duration of '$value'" "$root" \
       "$c:$n: entry mariadb-pod-kill: duration \"$value\" is not <n>s with n >= 1"
   done
   fixture "$root"
@@ -295,8 +286,7 @@ test_the_entries() {
     "$c:$n: entry mariadb-pod-kill: recovery \"\" is not <n>s with n >= 1"
 }
 
-test_the_repository() {
-  echo "Test: the repository's catalogue and suite headers agree"
+@test "the repository's catalogue and suite headers agree" {
   local out entries
   out="$(check_catalogue "$SUITES_DIR" "$CATALOGUE")"
   assert_eq "check_catalogue reports nothing" "" "$out"
@@ -309,24 +299,3 @@ test_the_repository() {
   assert_eq "only the fake compute is ci alone" "nova-fake-compute-pod-kill" \
     "$(yq -r '[.[] | select((.environments | length) == 1 and .environments[0] == "ci") | .name] | join(" ")' "$CATALOGUE")"
 }
-
-# ---------------------------------------------------------------------------
-# Run
-# ---------------------------------------------------------------------------
-if ! command -v yq >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
-  echo "SKIP: yq or jq not installed (every check of this file skipped)"
-  echo ""
-  echo "Results: 0 passed, 0 failed, 1 skipped"
-  exit 0
-fi
-
-test_the_suites
-test_the_entries
-test_the_repository
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0

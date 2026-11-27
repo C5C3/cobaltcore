@@ -227,7 +227,7 @@ and a `recorded` block that names where they come from.
 The tolerance is 20 %, the figure #625 Phase 8 named. A measured file whose
 `meta.release` differs from `recorded.release` makes `compare` exit 2 and name
 both releases, so moving the nightly to another release forces a new baseline.
-`tests/unit/ci/performance_workflow_test.sh` fails when the file is missing,
+`tests/unit/ci/performance_workflow.bats` fails when the file is missing,
 names another release than the nightly resolves, or lacks one of the twenty
 metrics, so `make test-shell` reports what would otherwise turn the night red.
 

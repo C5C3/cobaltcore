@@ -127,7 +127,7 @@ as in `tests/e2e/README.md`. Chaos-specific rules:
   `# Chaos random: <entry>` line each beside the matrix lines, or carries
   exactly one `# Chaos random: none (<reason>)` line. A new suite lands its
   entry, adding one to the catalogue for a fault no entry has, or its `none`
-  line in the same change; `tests/unit/ci/chaos_random_catalogue_test.sh`
+  line in the same change; `tests/unit/ci/chaos_random_catalogue.bats`
   fails on a suite without one and on an entry no suite names. The random
   runs of `hack/chaos-random.sh` draw from the catalogue (the chaos page's
   Random runs section).

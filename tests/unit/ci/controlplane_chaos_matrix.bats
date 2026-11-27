@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -15,20 +15,12 @@
 # still carries the standalone MariaDB and Memcached of `openstack`. Without
 # K-ORC no plane reaches KORCReady.
 #
-# Usage: bash tests/unit/ci/controlplane_chaos_matrix_test.sh
+# Usage: bin/bats tests/unit/ci/controlplane_chaos_matrix.bats
 
-set -uo pipefail
+load '../../lib/bats/common'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/ci_yaml.sh
 source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
@@ -48,8 +40,7 @@ step_if() {
   job_step e2e-chaos "$1" | grep -E '^ *if:' | sed 's/^ *//'
 }
 
-test_the_entry_runs_the_controlplane_suites() {
-  echo "Test: the controlplane entry runs on self-hosted runners and holds the ControlPlane suites"
+@test "the controlplane entry runs on self-hosted runners and holds the ControlPlane suites" {
   local job entry pod suite
   job="$(job_block e2e-chaos)"
   entry="$(e2e_chaos_matrix_entry controlplane)"
@@ -59,12 +50,12 @@ test_the_entry_runs_the_controlplane_suites() {
   assert_eq "it health-checks the chaos-mesh install first" "tests/e2e/infrastructure/chaos-mesh-health" \
     "$(grep -m1 -oE 'tests/e2e[^ ]*' <<<"$entry")"
   for suite in ${CONTROLPLANE_SUITES[@]+"${CONTROLPLANE_SUITES[@]}"}; do
-    assert_contains "it runs ${suite}" "$entry" "tests/e2e-chaos/${suite}"
-    assert_not_contains "the pod entry does not run ${suite}" "$pod" "tests/e2e-chaos/${suite}"
+    soft assert_contains "it runs ${suite}" "$entry" "tests/e2e-chaos/${suite}"
+    soft assert_not_contains "the pod entry does not run ${suite}" "$pod" "tests/e2e-chaos/${suite}"
   done
   for suite in "${POD_SUITES[@]}"; do
-    assert_contains "the pod entry runs ${suite}" "$pod" "tests/e2e-chaos/${suite}"
-    assert_not_contains "it does not run the pod suite ${suite}" "$entry" "tests/e2e-chaos/${suite}"
+    soft assert_contains "the pod entry runs ${suite}" "$pod" "tests/e2e-chaos/${suite}"
+    soft assert_not_contains "it does not run the pod suite ${suite}" "$entry" "tests/e2e-chaos/${suite}"
   done
   assert_eq "it runs nothing but the health check and the ControlPlane suites" \
     "$((1 + ${#CONTROLPLANE_SUITES[@]}))" "$(grep -cE '^ +tests/' <<<"$entry")"
@@ -78,8 +69,7 @@ entry_key() {
     on' | grep -oE 'tests/[^ ]+'
 }
 
-test_no_suite_runs_isolated() {
-  echo "Test: every suite of the controlplane leg runs in its one chainsaw invocation"
+@test "every suite of the controlplane leg runs in its one chainsaw invocation" {
   assert_eq "the entry holds no isolated_test_dirs" "" "$(entry_key isolated_test_dirs)"
   assert_contains "test_dirs holds controlplane-provisioning-mariadb-kill" "$(entry_key test_dirs)" \
     "tests/e2e-chaos/controlplane-provisioning-mariadb-kill"
@@ -87,8 +77,7 @@ test_no_suite_runs_isolated() {
     "$(job_step e2e-chaos "Run isolated chaos E2E tests (controlplane leg)")"
 }
 
-test_the_leg_loads_the_c5c3_operator_image() {
-  echo "Test: the controlplane leg pulls the c5c3-operator image and loads it onto the node"
+@test "the controlplane leg pulls the c5c3-operator image and loads it onto the node" {
   assert_contains "Load E2E images pulls it on the controlplane leg alone" \
     "$(job_step e2e-chaos "Load E2E images")" \
     "\${{ matrix.suite == 'controlplane' && format('{0}/c5c3-operator:dev', env.IMAGE_PREFIX) || '' }}"
@@ -101,8 +90,7 @@ test_the_leg_loads_the_c5c3_operator_image() {
     "kind load docker-image \${{ env.IMAGE_PREFIX }}/c5c3-operator:dev --name \${{ env.KIND_CLUSTER }}"
 }
 
-test_the_leg_asks_for_the_controlplane_path() {
-  echo "Test: setup-e2e-infra prepares the ControlPlane path on the controlplane leg"
+@test "setup-e2e-infra prepares the ControlPlane path on the controlplane leg" {
   local setup
   setup="$(job_step e2e-chaos "Setup E2E infrastructure")"
   assert_contains "WITH_CONTROLPLANE on the controlplane leg alone" "$setup" \
@@ -112,8 +100,7 @@ test_the_leg_asks_for_the_controlplane_path() {
   assert_contains "Chaos Mesh stays on for every leg" "$setup" 'WITH_CHAOS_MESH: "true"'
 }
 
-test_the_leg_deploys_korc_and_the_c5c3_operator() {
-  echo "Test: the controlplane leg deploys K-ORC with the Placement CRD, then the c5c3-operator"
+@test "the controlplane leg deploys K-ORC with the Placement CRD, then the c5c3-operator" {
   local korc c5c3
   korc="$(job_step e2e-chaos "Deploy K-ORC (controlplane leg)")"
   c5c3="$(job_step e2e-chaos "Deploy c5c3 operator")"
@@ -147,8 +134,7 @@ test_the_leg_deploys_korc_and_the_c5c3_operator() {
   assert_gte "both precede the suites" "$run_at" "$c5c3_at"
 }
 
-test_the_leg_dumps_its_operators() {
-  echo "Test: the controlplane leg dumps the c5c3-operator and the K-ORC log"
+@test "the controlplane leg dumps the c5c3-operator and the K-ORC log" {
   local dump
   dump="$(job_step e2e-chaos "Dump diagnostic info (controlplane leg)")"
   assert_not_empty "a diagnostics step exists" "$dump"
@@ -160,26 +146,10 @@ test_the_leg_dumps_its_operators() {
     "kubectl logs -n orc-system deployment/orc-controller-manager --tail=500 || true"
 }
 
-test_the_leg_has_its_wall() {
-  echo "Test: the controlplane leg has a 120-minute wall"
+@test "the controlplane leg has a 120-minute wall" {
   local job
   job="$(job_block e2e-chaos)"
   assert_contains "its arm of the wall reads 120 minutes" \
     "$(grep -E '^ +timeout-minutes:' <<<"$job")" "matrix.suite == 'controlplane' && 120"
-  # Gating is job-wide; e2e_chaos_job_test.sh pins it (#1388).
+  # Gating is job-wide; e2e_chaos_job.bats pins it (#1388).
 }
-
-test_the_entry_runs_the_controlplane_suites
-test_no_suite_runs_isolated
-test_the_leg_loads_the_c5c3_operator_image
-test_the_leg_asks_for_the_controlplane_path
-test_the_leg_deploys_korc_and_the_c5c3_operator
-test_the_leg_dumps_its_operators
-test_the_leg_has_its_wall
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0

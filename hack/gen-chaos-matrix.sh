@@ -30,7 +30,7 @@
 #   # Chaos random: <entry>                       one per entry of
 #   # Chaos random: none (<reason>)               tests/chaos-random/catalogue.yaml,
 #                                                 or exactly one none line;
-#                                                 tests/unit/ci/chaos_random_catalogue_test.sh
+#                                                 tests/unit/ci/chaos_random_catalogue.bats
 #                                                 checks the entries
 #
 # The vocabulary is closed:
