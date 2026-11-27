@@ -2622,7 +2622,7 @@ signature.
 | --- | --- |
 | `tests/unit/hack/ci_cosign_sign_test.sh` | `hack/ci-cosign-sign.sh` under a stubbed `cosign`: the sign and verify arguments for a branch and a tag, the retries and their limit, the verify that never runs after a failed sign, and the usage and environment errors |
 | `tests/unit/hack/ci_helm_push_test.sh` | The `digest` and `ref` outputs of `hack/ci-helm-push.sh`, and the exit 1 when helm prints no `Pushed` or `Digest` line |
-| `tests/unit/ci/operator_image_jobs_test.sh` | The `--metadata-file` of the manifest step and the `digest` it writes, and the failure without one |
+| `tests/unit/ci/operator_image_jobs.bats` | The `--metadata-file` of the manifest step and the `digest` it writes, and the failure without one |
 | `tests/unit/ci/publish_signing_test.sh` | `id-token: write` on the three jobs alone and not in the workflow-level permissions, their `Setup Docker registry` and sign steps in order, `setup-buildx: 'false'` in the two chart jobs, no `cosign` command in `ci.yaml`, the push-only condition, and the `target_cluster_chart` paths |
 
 ## Reusable CI Scripts
@@ -2748,7 +2748,7 @@ failed build with nix's exit status; an empty image set prints
 `CACHIX_PUBLIC_KEY` constant names the key of the `cobaltcore` cache, from that cache.
 Before anything else it adds the workspace to git's `safe.directory`, because the
 container's root does not own the checkout, and its `EXIT` trap hands `.nix-e2e/` back
-to the owner of the workspace. `tests/unit/ci/nix_e2e_build_test.sh` drives it with
+to the owner of the workspace. `tests/unit/ci/nix_e2e_build.bats` drives it with
 stub `nix`, `git` and `nproc` binaries and scratch account files.
 
 ### hack/ci-collect-e2e-coverage.sh

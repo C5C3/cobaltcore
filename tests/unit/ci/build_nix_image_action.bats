@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -27,55 +27,51 @@
 # verify_build_images_workflow.sh checks the step order and conditions;
 # this test checks what the steps do.
 #
-# Usage: bash tests/unit/ci/build_nix_image_action_test.sh
+# Usage: bin/bats tests/unit/ci/build_nix_image_action.bats
 
-set -uo pipefail
+load '../../lib/bats/common'
+load '../../lib/bats/stubs'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 ACTION="$PROJECT_ROOT/.github/actions/build-nix-image/action.yaml"
 
-PASS=0
-FAIL=0
-SKIP=0
+setup_file() {
+  # The vulnix step serves the feeds on the fixed port 127.0.0.1:18765, so
+  # two vulnix tests at once would find the port taken.
+  # shellcheck disable=SC2034 # read by bats after setup_file
+  BATS_NO_PARALLELIZE_WITHIN_FILE=true
+}
 
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
+setup() {
+  require_tool yq jq
 
-if ! command -v yq >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
-  echo "SKIP: yq or jq not installed"
-  echo ""
-  echo "Results: $PASS passed, $FAIL failed, 1 skipped"
-  exit 0
-fi
+  TMP_DIR="$BATS_TEST_TMPDIR"
 
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+  WORK="$TMP_DIR/work"
+  export NIX_LOG="$TMP_DIR/nix.log"
+  export DOCKER_LOG="$TMP_DIR/docker.log"
+  export CURL_LOG="$TMP_DIR/curl.log"
+  export STUB_CONF="$TMP_DIR/conf.json"
+  export STUB_ASSETS="$TMP_DIR/assets"
+  RUNNER_TEMP_DIR="$TMP_DIR/runner-temp"
+  MIRROR="$RUNNER_TEMP_DIR/nvd-mirror"
+  THIS_YEAR="$(date -u +%Y)"
 
-STUB_DIR="$TMP_DIR/bin"
-WORK="$TMP_DIR/work"
-export NIX_LOG="$TMP_DIR/nix.log"
-export DOCKER_LOG="$TMP_DIR/docker.log"
-export CURL_LOG="$TMP_DIR/curl.log"
-export STUB_CONF="$TMP_DIR/conf.json"
-export STUB_ASSETS="$TMP_DIR/assets"
-RUNNER_TEMP_DIR="$TMP_DIR/runner-temp"
-MIRROR="$RUNNER_TEMP_DIR/nvd-mirror"
-THIS_YEAR="$(date -u +%Y)"
+  make_stubs
+  make_feeds
+}
 
 DIGEST="sha256:$(printf '%.0sa' {1..64})"
 STALE_DIGEST="sha256:$(printf '%.0sb' {1..64})"
 
 make_stubs() {
-  mkdir -p "$STUB_DIR" "$WORK"
+  mkdir -p "$WORK"
 
   # nix: records its argv, one line per call.
   #   build ...                       prints STUB_CONF (the .conf attribute)
   #   develop ... --command vulnix    prints STUB_VULNIX_OUT, exits STUB_STATUS
   #   develop ... --command skopeo    writes STUB_DIGEST to the --digestfile
   #                                   path when set, exits STUB_STATUS
-  cat >"$STUB_DIR/nix" <<'STUB'
-#!/bin/bash
+  stub_script nix <<'STUB'
 echo "nix $*" >>"$NIX_LOG"
 case "$1" in
   build)
@@ -106,11 +102,9 @@ esac
 echo "nix stub: unexpected call: $*" >&2
 exit 99
 STUB
-  chmod +x "$STUB_DIR/nix"
 
   # docker: records its argv; load prints STUB_LOADED (may be empty).
-  cat >"$STUB_DIR/docker" <<'STUB'
-#!/bin/bash
+  stub_script docker <<'STUB'
 echo "docker $*" >>"$DOCKER_LOG"
 case "$1" in
   load)
@@ -125,7 +119,6 @@ esac
 echo "docker stub: unexpected call: $*" >&2
 exit 99
 STUB
-  chmod +x "$STUB_DIR/docker"
 
   # The out-link of the build step: the stream script.
   printf '#!/bin/bash\necho image-stream\n' >"$WORK/result-image"
@@ -146,8 +139,7 @@ make_feeds() {
 # prints the release URL of tag STUB_TAG; a -o download copies the asset of
 # the URL's basename from STUB_ASSETS. Every call is logged.
 make_curl_stub() {
-  cat >"$STUB_DIR/curl" <<'STUB'
-#!/bin/bash
+  stub_script curl <<'STUB'
 echo "curl $*" >>"$CURL_LOG"
 out=""
 mode=download
@@ -173,7 +165,6 @@ if [ ! -f "$asset" ]; then
 fi
 cp "$asset" "$out"
 STUB
-  chmod +x "$STUB_DIR/curl"
 }
 
 # make_assets — one CVE-<year>.json.xz and .meta pair per year the step
@@ -197,7 +188,7 @@ run_step() {
   shift
   local script="$TMP_DIR/step-$id.sh"
   yq -r ".runs.steps[] | select(.id == \"$id\") | .run" "$ACTION" >"$script"
-  (cd "$WORK" && env PATH="$STUB_DIR:$PATH" "$@" \
+  (cd "$WORK" && env PATH="$STUB_DIR/bin:$PATH" "$@" \
     bash --noprofile --norc -eo pipefail "$script" 2>&1)
 }
 
@@ -212,73 +203,7 @@ reset_logs() {
 
 FINDINGS='[{"name":"glibc-2.42","derivation":"/nix/store/x-glibc-2.42.drv","affected_by":["CVE-1"]},{"name":"zlib-1.3.2","derivation":"/nix/store/y-zlib-1.3.2.drv","affected_by":["CVE-2"]}]'
 
-test_vulnix_completed_scans() {
-  echo "Test: vulnix exit 0 and exit 2 with a report are a completed scan"
-
-  local out rc
-  reset_logs
-  rc=0
-  out=$(run_step vulnix ATTRIBUTE=backup-shifter-image RUNNER_TEMP="$RUNNER_TEMP_DIR" \
-    GITHUB_STEP_SUMMARY="$TMP_DIR/summary" STUB_STATUS=0 STUB_VULNIX_OUT='[]') || rc=$?
-  assert_eq "exit 0 with [] passes" "0" "$rc"
-  assert_eq "the summary reports no findings" "vulnix: 0 findings in 0 derivations" \
-    "$(cat "$TMP_DIR/summary")"
-  assert_contains "the scan builds the conf of the attribute" "$(cat "$NIX_LOG")" \
-    "nix build .#backup-shifter-image.conf --no-link --print-out-paths"
-  assert_contains "vulnix scans the store paths of the image layers" "$(cat "$NIX_LOG")" \
-    "vulnix --mirror http://127.0.0.1:18765/ --cache-dir $RUNNER_TEMP_DIR/vulnix --closure --json /nix/store/aaa-rclone-1.75.1 /nix/store/bbb-glibc-2.42 /nix/store/ccc-zlib-1.3.2"
-  assert_not_contains "vulnix does not scan the stream script" "$(cat "$NIX_LOG")" "result-image"
-  assert_contains "the mirror serves the feed directory" "$(cat "$MIRROR/http.log")" \
-    "Serving HTTP on 127.0.0.1 port 18765"
-  assert_eq "the mirror is stopped with the step" "" "$(pgrep -f "http.server --bind 127.0.0.1 --directory $MIRROR" || true)"
-
-  reset_logs
-  rc=0
-  out=$(run_step vulnix ATTRIBUTE=backup-shifter-image RUNNER_TEMP="$RUNNER_TEMP_DIR" \
-    GITHUB_STEP_SUMMARY="$TMP_DIR/summary" STUB_STATUS=2 STUB_VULNIX_OUT="$FINDINGS") || rc=$?
-  assert_eq "exit 2 with findings passes" "0" "$rc"
-  assert_eq "the summary counts the findings" "vulnix: 2 findings in 2 derivations" \
-    "$(cat "$TMP_DIR/summary")"
-  assert_eq "the report is uploaded as vulnix wrote it" "$FINDINGS" \
-    "$(jq -c . "$WORK/vulnix.json")"
-}
-
-test_vulnix_failed_scans() {
-  echo "Test: a vulnix run without a report fails the step"
-
-  local out rc
-  reset_logs
-  rc=0
-  out=$(run_step vulnix ATTRIBUTE=backup-shifter-image RUNNER_TEMP="$RUNNER_TEMP_DIR" \
-    GITHUB_STEP_SUMMARY="$TMP_DIR/summary" STUB_STATUS=2 STUB_VULNIX_OUT='') || rc=$?
-  assert_nonzero_exit "exit 2 without a report fails" "$rc"
-  assert_contains "the error names the missing report" "$out" \
-    "::error::vulnix exited with status 2 and wrote no JSON report"
-  assert_eq "no summary line is written" "" "$(cat "$TMP_DIR/summary")"
-
-  reset_logs
-  rc=0
-  out=$(run_step vulnix ATTRIBUTE=backup-shifter-image RUNNER_TEMP="$RUNNER_TEMP_DIR" \
-    GITHUB_STEP_SUMMARY="$TMP_DIR/summary" STUB_STATUS=1 STUB_VULNIX_OUT='') || rc=$?
-  assert_nonzero_exit "exit 1 fails" "$rc"
-  assert_contains "the error names the status" "$out" "::error::vulnix exited with status 1"
-  assert_eq "no summary line is written" "" "$(cat "$TMP_DIR/summary")"
-
-  reset_logs
-  rm -rf "$MIRROR"
-  rc=0
-  out=$(run_step vulnix ATTRIBUTE=backup-shifter-image RUNNER_TEMP="$RUNNER_TEMP_DIR" \
-    GITHUB_STEP_SUMMARY="$TMP_DIR/summary" STUB_STATUS=0 STUB_VULNIX_OUT='[]') || rc=$?
-  assert_nonzero_exit "no feeds in RUNNER_TEMP fails" "$rc"
-  assert_contains "the error names the missing feeds" "$out" \
-    "::error::no NVD feeds in $MIRROR; the nvd-feeds step did not run"
-  assert_not_contains "vulnix does not run without feeds" "$(cat "$NIX_LOG")" "vulnix"
-  make_feeds
-}
-
-test_nvd_feeds() {
-  echo "Test: the nvd-feeds step fetches one release and rewraps its feeds"
-
+@test "the nvd-feeds step fetches one release and rewraps its feeds" {
   local out rc y
   make_curl_stub
   make_assets
@@ -330,13 +255,71 @@ test_nvd_feeds() {
   assert_contains "the error quotes the redirect" "$out" "which names no release tag"
   assert_eq "nothing is downloaded" "1" "$(wc -l <"$CURL_LOG")"
 
-  rm -f "$STUB_DIR/curl"
+  rm -f "$STUB_DIR/bin/curl"
   make_feeds
 }
 
-test_load() {
-  echo "Test: the load step tags the loaded image or fails"
+@test "vulnix exit 0 and exit 2 with a report are a completed scan" {
+  local out rc
+  reset_logs
+  rc=0
+  out=$(run_step vulnix ATTRIBUTE=backup-shifter-image RUNNER_TEMP="$RUNNER_TEMP_DIR" \
+    GITHUB_STEP_SUMMARY="$TMP_DIR/summary" STUB_STATUS=0 STUB_VULNIX_OUT='[]') || rc=$?
+  assert_eq "exit 0 with [] passes" "0" "$rc"
+  assert_eq "the summary reports no findings" "vulnix: 0 findings in 0 derivations" \
+    "$(cat "$TMP_DIR/summary")"
+  assert_contains "the scan builds the conf of the attribute" "$(cat "$NIX_LOG")" \
+    "nix build .#backup-shifter-image.conf --no-link --print-out-paths"
+  assert_contains "vulnix scans the store paths of the image layers" "$(cat "$NIX_LOG")" \
+    "vulnix --mirror http://127.0.0.1:18765/ --cache-dir $RUNNER_TEMP_DIR/vulnix --closure --json /nix/store/aaa-rclone-1.75.1 /nix/store/bbb-glibc-2.42 /nix/store/ccc-zlib-1.3.2"
+  assert_not_contains "vulnix does not scan the stream script" "$(cat "$NIX_LOG")" "result-image"
+  assert_contains "the mirror serves the feed directory" "$(cat "$MIRROR/http.log")" \
+    "Serving HTTP on 127.0.0.1 port 18765"
+  assert_eq "the mirror is stopped with the step" "" "$(pgrep -f "http.server --bind 127.0.0.1 --directory $MIRROR" || true)"
 
+  reset_logs
+  rc=0
+  out=$(run_step vulnix ATTRIBUTE=backup-shifter-image RUNNER_TEMP="$RUNNER_TEMP_DIR" \
+    GITHUB_STEP_SUMMARY="$TMP_DIR/summary" STUB_STATUS=2 STUB_VULNIX_OUT="$FINDINGS") || rc=$?
+  assert_eq "exit 2 with findings passes" "0" "$rc"
+  assert_eq "the summary counts the findings" "vulnix: 2 findings in 2 derivations" \
+    "$(cat "$TMP_DIR/summary")"
+  assert_eq "the report is uploaded as vulnix wrote it" "$FINDINGS" \
+    "$(jq -c . "$WORK/vulnix.json")"
+}
+
+@test "a vulnix run without a report fails the step" {
+  local out rc
+  reset_logs
+  rc=0
+  out=$(run_step vulnix ATTRIBUTE=backup-shifter-image RUNNER_TEMP="$RUNNER_TEMP_DIR" \
+    GITHUB_STEP_SUMMARY="$TMP_DIR/summary" STUB_STATUS=2 STUB_VULNIX_OUT='') || rc=$?
+  assert_nonzero_exit "exit 2 without a report fails" "$rc"
+  assert_contains "the error names the missing report" "$out" \
+    "::error::vulnix exited with status 2 and wrote no JSON report"
+  assert_eq "no summary line is written" "" "$(cat "$TMP_DIR/summary")"
+
+  reset_logs
+  rc=0
+  out=$(run_step vulnix ATTRIBUTE=backup-shifter-image RUNNER_TEMP="$RUNNER_TEMP_DIR" \
+    GITHUB_STEP_SUMMARY="$TMP_DIR/summary" STUB_STATUS=1 STUB_VULNIX_OUT='') || rc=$?
+  assert_nonzero_exit "exit 1 fails" "$rc"
+  assert_contains "the error names the status" "$out" "::error::vulnix exited with status 1"
+  assert_eq "no summary line is written" "" "$(cat "$TMP_DIR/summary")"
+
+  reset_logs
+  rm -rf "$MIRROR"
+  rc=0
+  out=$(run_step vulnix ATTRIBUTE=backup-shifter-image RUNNER_TEMP="$RUNNER_TEMP_DIR" \
+    GITHUB_STEP_SUMMARY="$TMP_DIR/summary" STUB_STATUS=0 STUB_VULNIX_OUT='[]') || rc=$?
+  assert_nonzero_exit "no feeds in RUNNER_TEMP fails" "$rc"
+  assert_contains "the error names the missing feeds" "$out" \
+    "::error::no NVD feeds in $MIRROR; the nvd-feeds step did not run"
+  assert_not_contains "vulnix does not run without feeds" "$(cat "$NIX_LOG")" "vulnix"
+  make_feeds
+}
+
+@test "the load step tags the loaded image or fails" {
   local out rc
   reset_logs
   rc=0
@@ -369,9 +352,7 @@ push_case() {
     STUB_STATUS="$status" STUB_DIGEST="$digest" "$@"
 }
 
-test_push() {
-  echo "Test: the push step exports only the digest of a clean skopeo run"
-
+@test "the push step exports only the digest of a clean skopeo run" {
   local out rc
   rc=0
   out=$(push_case 0 "$DIGEST") || rc=$?
@@ -415,23 +396,3 @@ test_push() {
   out=$(push_case 0 "$DIGEST" MANIFEST_FORMAT=) || rc=$?
   assert_not_contains "an empty manifest-format passes no --format" "$(cat "$NIX_LOG")" "--format"
 }
-
-make_stubs
-make_feeds
-
-test_nvd_feeds
-echo ""
-test_vulnix_completed_scans
-echo ""
-test_vulnix_failed_scans
-echo ""
-test_load
-echo ""
-test_push
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0

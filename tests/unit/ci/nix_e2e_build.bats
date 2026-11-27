@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -39,40 +39,30 @@
 # the operator images through the script, retags them :dev and verifies the
 # operator images.
 #
-# Usage: bash tests/unit/ci/nix_e2e_build_test.sh
+# Usage: bin/bats tests/unit/ci/nix_e2e_build.bats
 
-set -uo pipefail
+load '../../lib/bats/common'
+load '../../lib/bats/stubs'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 SCRIPT="$PROJECT_ROOT/hack/ci-nix-build-e2e-images.sh"
 # shellcheck disable=SC2034 # read by tests/lib/ci_yaml.sh
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/ci_yaml.sh
 source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+setup() {
+  TMP_DIR="$BATS_TEST_TMPDIR"
 
-STUB_DIR="$TMP_DIR/bin"
-export NIX_LOG="$TMP_DIR/nix.log"
-export GIT_LOG="$TMP_DIR/git.log"
-mkdir -p "$STUB_DIR"
+  export NIX_LOG="$TMP_DIR/nix.log"
+  export GIT_LOG="$TMP_DIR/git.log"
 
-# nix logs its arguments and fails like nix when an attribute is the one in
-# NIX_MISSING_ATTR. Otherwise it writes, for the n-th .# attribute, an
-# executable stream script that prints the attribute at the --out-link path,
-# suffixed -<n> from the second attribute on, the way nix build links the
-# results of several attributes.
-cat >"$STUB_DIR/nix" <<'EOF'
-#!/bin/bash
+  # nix logs its arguments and fails like nix when an attribute is the one in
+  # NIX_MISSING_ATTR. Otherwise it writes, for the n-th .# attribute, an
+  # executable stream script that prints the attribute at the --out-link path,
+  # suffixed -<n> from the second attribute on, the way nix build links the
+  # results of several attributes.
+  stub_script nix <<'EOF'
 echo "$*" >>"$NIX_LOG"
 args=("$@")
 attrs=()
@@ -97,12 +87,11 @@ for i in "${!attrs[@]}"; do
 done
 exit 0
 EOF
-cat >"$STUB_DIR/git" <<'EOF'
-#!/bin/sh
+  stub_script git <<'EOF'
 echo "$*" >>"$GIT_LOG"
 EOF
-printf '#!/bin/sh\necho 3\n' >"$STUB_DIR/nproc"
-chmod +x "$STUB_DIR/nix" "$STUB_DIR/git" "$STUB_DIR/nproc"
+  printf 'echo 3\n' | stub_script nproc
+}
 
 # run_script <workspace> [--unset <NAME>] [VAR=value...] runs the script in a
 # fresh workspace with fresh account files in a new ETC_DIR and sets OUTPUT
@@ -126,14 +115,12 @@ run_script() {
   echo "root:x:0:0:root:/root:/bin/bash" >"$ETC_DIR/passwd"
   echo "root:x:0:" >"$ETC_DIR/group"
   RC=0
-  OUTPUT=$(cd "$workspace" && env ${unset_name:+-u "$unset_name"} PATH="$STUB_DIR:$PATH" \
+  OUTPUT=$(cd "$workspace" && env ${unset_name:+-u "$unset_name"} PATH="$STUB_DIR/bin:$PATH" \
     GITHUB_WORKSPACE="$workspace" NIX_E2E_ETC="$ETC_DIR" "${inputs[@]}" \
     "$@" bash "$SCRIPT" 2>&1) || RC=$?
 }
 
-test_builds_service_and_tempest_images() {
-  echo "Test: service lines and Tempest releases become streamed flake attributes"
-
+@test "service lines and Tempest releases become streamed flake attributes" {
   local ws="$TMP_DIR/ws-build"
   run_script "$ws" BUILD_SERVICE_IMAGES=$'glance 2026.1\nnova 2026.1 nova-compute\n' \
     BUILD_TEMPEST_RELEASES=$'2026.2\n'
@@ -160,9 +147,7 @@ test_builds_service_and_tempest_images() {
     "$(cat "$GIT_LOG")"
 }
 
-test_malformed_line_fails() {
-  echo "Test: a line with four fields exits 1 and builds nothing"
-
+@test "a line with four fields exits 1 and builds nothing" {
   run_script "$TMP_DIR/ws-malformed" BUILD_SERVICE_IMAGES=$'keystone 2026.1\nnova 2026.1 nova-compute extra\n'
 
   assert_eq "the script exits 1" "1" "$RC"
@@ -172,9 +157,7 @@ test_malformed_line_fails() {
   assert_not_contains "no build user is written" "$(cat "$ETC_DIR/passwd" "$ETC_DIR/group")" "e2ebld"
 }
 
-test_missing_attribute_fails() {
-  echo "Test: an attribute nix cannot build exits with nix's status and writes no image"
-
+@test "an attribute nix cannot build exits with nix's status and writes no image" {
   local ws="$TMP_DIR/ws-missing"
   run_script "$ws" BUILD_SERVICE_IMAGES=$'keystone 2026.1\nswift 2026.1\n' \
     NIX_MISSING_ATTR=swift-2026_1-image
@@ -191,9 +174,7 @@ test_missing_attribute_fails() {
     "$([ -e "$ws/.nix-e2e/keystone-federation-proxy-latest.tar" ] && echo true || echo false)"
 }
 
-test_builds_the_ovn_image() {
-  echo "Test: BUILD_OVN builds ovn-image and lists it under OVN_VERSION"
-
+@test "BUILD_OVN builds ovn-image and lists it under OVN_VERSION" {
   local ws="$TMP_DIR/ws-ovn"
   run_script "$ws" BUILD_OVN=true OVN_VERSION=26.03.2
 
@@ -217,9 +198,7 @@ test_builds_the_ovn_image() {
     "$(cat "$ws/.nix-e2e/ovn-26.03.2.tar")"
 }
 
-test_ovn_without_a_version_fails() {
-  echo "Test: BUILD_OVN without OVN_VERSION exits 1 and builds nothing"
-
+@test "BUILD_OVN without OVN_VERSION exits 1 and builds nothing" {
   run_script "$TMP_DIR/ws-ovn-noversion" BUILD_SERVICE_IMAGES=$'keystone 2026.1\n' BUILD_OVN=true
 
   assert_eq "the script exits 1" "1" "$RC"
@@ -229,9 +208,7 @@ test_ovn_without_a_version_fails() {
   assert_not_contains "no build user is written" "$(cat "$ETC_DIR/passwd" "$ETC_DIR/group")" "e2ebld"
 }
 
-test_builds_the_libvirt_image() {
-  echo "Test: BUILD_LIBVIRT builds libvirt-image and lists it as libvirt latest"
-
+@test "BUILD_LIBVIRT builds libvirt-image and lists it as libvirt latest" {
   local ws="$TMP_DIR/ws-libvirt"
   run_script "$ws" BUILD_LIBVIRT=true
 
@@ -257,9 +234,7 @@ test_builds_the_libvirt_image() {
     "ci-nix-build-e2e-images.sh: nothing to build"
 }
 
-test_builds_the_proxy_image() {
-  echo "Test: BUILD_PROXY builds keystone-federation-proxy-image and lists it as keystone-federation-proxy latest"
-
+@test "BUILD_PROXY builds keystone-federation-proxy-image and lists it as keystone-federation-proxy latest" {
   local ws="$TMP_DIR/ws-proxy"
   run_script "$ws" BUILD_PROXY=true
 
@@ -292,9 +267,7 @@ test_builds_the_proxy_image() {
   assert_eq "an unset BUILD_PROXY calls no nix" "" "$(cat "$NIX_LOG" 2>/dev/null)"
 }
 
-test_builds_the_operator_images() {
-  echo "Test: BUILD_OPERATORS builds <op>-operator-image and lists it as <op>-operator latest"
-
+@test "BUILD_OPERATORS builds <op>-operator-image and lists it as <op>-operator latest" {
   local ws="$TMP_DIR/ws-operators"
   run_script "$ws" BUILD_OPERATORS=$'keystone\nc5c3'
 
@@ -330,9 +303,7 @@ test_builds_the_operator_images() {
   assert_eq "an empty BUILD_OPERATORS calls no nix" "" "$(cat "$NIX_LOG" 2>/dev/null)"
 }
 
-test_builds_the_cover_images() {
-  echo "Test: BUILD_COVER_OPERATORS builds <op>-operator-cover-image and lists it under cover"
-
+@test "BUILD_COVER_OPERATORS builds <op>-operator-cover-image and lists it under cover" {
   local ws="$TMP_DIR/ws-cover"
   run_script "$ws" BUILD_COVER_OPERATORS=$'keystone\nnova'
 
@@ -366,9 +337,7 @@ test_builds_the_cover_images() {
     "cover-image"
 }
 
-test_ci_wires_the_cover_images() {
-  echo "Test: build-e2e-images resolves, builds, verifies and pushes the cover images"
-
+@test "build-e2e-images resolves, builds, verifies and pushes the cover images" {
   assert_contains "Resolve images asks for the cover images when a coverage job runs" \
     "$(job_step build-e2e-images "Resolve images")" \
     "BUILD_COVER_IMAGES: \${{ needs.changes.outputs.has-e2e-operators == 'true' || needs.changes.outputs.e2e-chaos == 'true' || needs.changes.outputs.tempest == 'true' }}"
@@ -389,9 +358,7 @@ test_ci_wires_the_cover_images() {
     'push_image "${IMAGE_PREFIX}/${op}-operator:cover"'
 }
 
-test_ci_wires_the_operators_through_the_nix_step() {
-  echo "Test: build-e2e-images builds the operator images in the Nix step and retags them :dev"
-
+@test "build-e2e-images builds the operator images in the Nix step and retags them :dev" {
   local nix_step tag_step
   nix_step=$(job_step build-e2e-images "Build Nix images")
   assert_contains "Build Nix images passes BUILD_OPERATORS" "$nix_step" \
@@ -403,22 +370,18 @@ test_ci_wires_the_operators_through_the_nix_step() {
     "make "
 }
 
-test_ci_verifies_the_operator_images() {
-  echo "Test: build-e2e-images verifies each operator image it built"
-
+@test "build-e2e-images verifies each operator image it built" {
   assert_contains "the verify step runs verify_operator_image.sh on each operator's dev image" \
     "$(job_step build-e2e-images "Verify operator images")" \
     'bash tests/container-images/verify_operator_image.sh "${IMAGE_PREFIX}/${op}-operator:dev" "${op}"'
 }
 
-test_ci_wires_the_proxy_through_the_nix_step() {
-  echo "Test: build-e2e-images builds the federation proxy in the Nix step and retags it :dev"
-
+@test "build-e2e-images builds the federation proxy in the Nix step and retags it :dev" {
   local filter nix_step tag_step glob
   filter=$(filter_block image_proxy)
   for glob in "'images/keystone-federation-proxy/**'" "'flake.nix'" "'flake.lock'" "'nix/lib/**'" \
     "'hack/ci-nix-build-e2e-images.sh'"; do
-    assert_contains "the image_proxy filter names $glob" "$filter" "- $glob"
+    soft assert_contains "the image_proxy filter names $glob" "$filter" "- $glob"
   done
   nix_step=$(job_step build-e2e-images "Build Nix images")
   assert_contains "Build Nix images passes BUILD_PROXY" "$nix_step" 'BUILD_PROXY: ${{ env.BUILD_PROXY }}'
@@ -430,9 +393,7 @@ test_ci_wires_the_proxy_through_the_nix_step() {
     "$(job_block build-e2e-images)" "images/keystone-federation-proxy/"
 }
 
-test_nothing_to_build() {
-  echo "Test: an empty image set builds nothing and exits 0"
-
+@test "an empty image set builds nothing and exits 0" {
   run_script "$TMP_DIR/ws-empty" BUILD_SERVICE_IMAGES="" BUILD_OVN=false OVN_VERSION=26.03.2
 
   assert_eq "the script exits 0" "0" "$RC"
@@ -442,9 +403,7 @@ test_nothing_to_build() {
   assert_not_contains "no build user is written" "$(cat "$ETC_DIR/passwd" "$ETC_DIR/group")" "e2ebld"
 }
 
-test_checkout_persists_no_token() {
-  echo "Test: the build-e2e-images checkout persists no token for the build users to read"
-
+@test "the build-e2e-images checkout persists no token for the build users to read" {
   local checkout
   checkout=$(job_block build-e2e-images | awk '
     /^      - uses: actions\/checkout@/ { in_step = 1; print; next }
@@ -456,41 +415,11 @@ test_checkout_persists_no_token() {
   assert_contains "the checkout sets persist-credentials: false" "$checkout" "persist-credentials: false"
 }
 
-test_script_is_shellcheck_clean() {
-  echo "Test: ci-nix-build-e2e-images.sh is shellcheck-clean at --severity=warning"
-
-  if ! command -v shellcheck >/dev/null 2>&1; then
-    echo "  SKIP: shellcheck not installed"
-    SKIP=$((SKIP + 1))
-    return
-  fi
+@test "ci-nix-build-e2e-images.sh is shellcheck-clean at --severity=warning" {
+  require_tool shellcheck
 
   local output exit_code=0
   output=$(shellcheck --severity=warning "$SCRIPT" 2>&1) || exit_code=$?
   [ "$exit_code" -eq 0 ] || echo "$output"
   assert_eq "shellcheck exits 0" "0" "$exit_code"
 }
-
-test_builds_service_and_tempest_images
-test_malformed_line_fails
-test_missing_attribute_fails
-test_builds_the_ovn_image
-test_ovn_without_a_version_fails
-test_builds_the_libvirt_image
-test_builds_the_proxy_image
-test_builds_the_operator_images
-test_builds_the_cover_images
-test_ci_wires_the_cover_images
-test_ci_wires_the_operators_through_the_nix_step
-test_ci_verifies_the_operator_images
-test_ci_wires_the_proxy_through_the_nix_step
-test_nothing_to_build
-test_checkout_persists_no_token
-test_script_is_shellcheck_clean
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0

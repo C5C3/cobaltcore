@@ -477,7 +477,7 @@ sets every image flag to `true` regardless. That is why no gated job needs a
 `github.event_name` term in its condition.
 
 `ALL_SERVICES` is a hand-maintained list, because `dorny/paths-filter` has no dynamic
-filter names. `tests/unit/ci/build_images_services_lockstep_test.sh` pins it to the
+filter names. `tests/unit/ci/build_images_services_lockstep.bats` pins it to the
 union of the keys in `releases/*/source-refs.yaml` and fails when a service is missing
 its filter or its `FILTER_svc_<service>` env line. It runs under `make test-shell` on
 every pull request.
@@ -1655,7 +1655,7 @@ because its filter names cannot be generated:
    line in the `env:` of the resolve step.
 3. The name appended to `ALL_SERVICES` in that same `env:` block.
 
-`tests/unit/ci/build_images_services_lockstep_test.sh` fails under `make test-shell`
+`tests/unit/ci/build_images_services_lockstep.bats` fails under `make test-shell`
 when any of the three is missing. Without them the service is in the matrix but never
 resolves to `true`, so its images stop being built on pull requests while the pipeline
 stays green.

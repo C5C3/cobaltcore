@@ -21,7 +21,7 @@ run that paid for the lesson; the lesson itself is the part to carry.
   `svc_<svc>` paths filter and the `FILTER_svc_<svc>` env line (plus the
   option-catalog trigger lists when the build re-derives the service's
   catalog) are added by hand;
-  `tests/unit/ci/build_images_services_lockstep_test.sh` fails when one is
+  `tests/unit/ci/build_images_services_lockstep.bats` fails when one is
   missing.
 - **Image patches need upstream test hunks:** `test-service-images (<svc>,
   <release>)` clones the upstream project at its ref, applies

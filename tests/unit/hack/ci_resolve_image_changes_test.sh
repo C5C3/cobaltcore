@@ -31,7 +31,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 RESOLVER="$PROJECT_ROOT/hack/ci-resolve-image-changes.sh"
 
 # The real list from the changes job of .github/workflows/build-images.yaml.
-# tests/unit/ci/build_images_services_lockstep_test.sh pins it to the keys of
+# tests/unit/ci/build_images_services_lockstep.bats pins it to the keys of
 # releases/*/source-refs.yaml.
 ALL="keystone horizon glance placement barbican neutron"
 
