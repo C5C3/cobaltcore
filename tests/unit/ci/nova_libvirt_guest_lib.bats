@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -51,116 +51,137 @@
 #      joins, and fails without an ok disk line; gl_backend_holds passes on
 #      probe-N and probe-N+1 and fails on any other value.
 #
-# Usage: bash tests/unit/ci/nova_libvirt_guest_lib_test.sh
+# Usage: bin/bats tests/unit/ci/nova_libvirt_guest_lib.bats
 
-set -uo pipefail
+load '../../lib/bats/common'
+load '../../lib/bats/stubs'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 LIB="$PROJECT_ROOT/tests/e2e-nova-libvirt/guest-dataplane/guest-lib.sh"
 
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
-
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
-STUB="$TMP_DIR/stub"
-mkdir -p "$STUB/bin" "$STUB/consoles"
-
-# The stub kubectl appends every call to $STUB_STATE/calls, fails every call
-# when STUB_ALL_FAIL is set, and answers from the environment:
-#   STUB_CONSOLES      the console reads in order, each a file name under
-#                      $STUB/consoles or fail; the last one repeats
-#   STUB_LIBVIRT_PODS  the libvirt-e2e pod list (default one Running pod
-#                      libvirt-e2e-abc)
-#   STUB_PROC          the proc tree the process scan reads
-#   STUB_INJECTED      fail: the AllInjected wait fails
-#   STUB_PODS_SEQ      the pod lists of a selector in order, separated by |
-#   STUB_READY         fail: the Ready wait of a pod fails
-#   STUB_SERVERS_SEQ   the server lists in order (default empty)
-#   STUB_VOLUME_SEQ    the volume status reads in order, gone for a missing
-#                      volume (default available)
-#   STUB_NETWORK       the network list (default empty)
-#   STUB_SERVER_SEQ    the server status reads in order (default ACTIVE)
-#   STUB_COMPUTE_SEQ   the compute service State and Updated At in order
-#                      (default up)
-#   STUB_CM            the ConfigMap JSON (default no data)
-cat >"$STUB/bin/kubectl" <<'SH'
-#!/bin/bash
-state="$STUB_STATE"
-echo "$*" >>"$state/calls"
-[ -z "${STUB_ALL_FAIL:-}" ] || { echo "error: the stub refuses" >&2; exit 1; }
-# next <name> <list> <separator>: the next item of the list, the last one
-# repeated.
-next() {
-  local n=0 sep="${3:-,}"
-  [ -f "$state/$1" ] && n="$(cat "$state/$1")"
-  echo $((n + 1)) >"$state/$1"
-  IFS="$sep" read -ra items <<<"$2"
-  echo "${items[$n]:-${items[${#items[@]}-1]}}"
+setup() {
+  TMP_DIR="$BATS_TEST_TMPDIR"
+  STUB="$TMP_DIR/stub"
+  mkdir -p "$STUB/consoles"
+  default_rules
 }
+
+# The stub kubectl answers by rules, which default_rules declares; a call no
+# rule names prints nothing and exits 0. A test changes an answer before
+# run_lib, and run_lib declares the defaults again after the run:
+#   console_rule <name>   a console read, a file name under $STUB/consoles or
+#                         fail (default good)
+#   get pod ... libvirt-e2e
+#                         the libvirt-e2e pod list (default one Running pod
+#                         libvirt-e2e-abc)
+#   exec ... -- bash -c   the process scan, run on the proc tree $TMP_DIR/proc
+#   wait ... AllInjected  the AllInjected wait (default it passes)
+#   novacompute_pods_rule <JSON>
+#                         the pod list of the novacompute selector (default
+#                         empty, as for every other selector)
+#   wait ... Ready        the Ready wait of a pod (default it passes)
+#   servers_rule <ids>    the server list (default none: empty)
+#   volume_rule <status>  the volume status read, gone for a missing volume
+#                         (default available)
+#   network list          the network list (default empty)
+#   server_rule <status>  the server status read (default ACTIVE)
+#   compute_rule <line>   the compute service State and Updated At, fail for
+#                         a read that fails (default up)
+#   get configmap         the ConfigMap JSON (default no data)
+#   apply                 writes its stdin to $STUB_DIR/state/applied
+#   describe              prints "Name: <name> (described)"
+# seq_rules <rule> <list> [<separator>] declares the answers of a sequence
+# in order, the last one repeated.
 libvirt_default='{"items":[{"metadata":{"name":"libvirt-e2e-old","uid":"u0","deletionTimestamp":"2026-11-06T10:00:00Z"},"status":{"phase":"Running"}},{"metadata":{"name":"libvirt-e2e-abc","uid":"u1"},"status":{"phase":"Running"}}]}'
-case "$1" in
-  exec)
-    case "$*" in
-      *" -- openstack console log show "*)
-        item="$(next console "${STUB_CONSOLES:-good}")"
-        if [ "$item" = fail ]; then
-          echo "error: unable to upgrade connection" >&2
-          exit 1
-        fi
-        cat "$STUB_CONSOLE_DIR/$item"
-        ;;
-      *" -- openstack server list "*)
-        item="$(next servers "${STUB_SERVERS_SEQ:-none}")"
-        [ "$item" = none ] || echo "$item"
-        ;;
-      *" -- openstack volume show "*)
-        item="$(next volume "${STUB_VOLUME_SEQ:-available}")"
-        if [ "$item" = gone ]; then
-          echo "No volume found for nova-pool-guest-vol" >&2
-          exit 1
-        fi
-        echo "$item"
-        ;;
-      *" -- openstack network list "*) echo "${STUB_NETWORK:-}" ;;
-      *" -- openstack server show "*" -c status") next server "${STUB_SERVER_SEQ:-ACTIVE}" ;;
-      *" -- openstack server show "*" -c fault") echo "{'code': 500, 'message': 'No valid host was found.'}" ;;
-      *" -- openstack compute service list "*)
-        item="$(next compute "${STUB_COMPUTE_SEQ:-up}")"
-        [ "$item" = fail ] && exit 1
-        echo "$item"
-        ;;
-      *" -- bash -c "*) bash -c "${10}" gl-pids "${12}" "$STUB_PROC" ;;
-    esac
-    ;;
-  get)
-    case "$*" in
-      "get pod -n openstack -l app.kubernetes.io/name=libvirt-e2e -o json") echo "${STUB_LIBVIRT_PODS:-$libvirt_default}" ;;
-      "get pod -n openstack -l "*" -o json") next pods "${STUB_PODS_SEQ:-{\"items\":[]\}}" '|' ;;
-      "get configmap nova-pool-guest -n openstack -o json") echo "${STUB_CM:-{\"data\":{\}\}}" ;;
-    esac
-    ;;
-  apply) cat >"$state/applied" ;;
-  wait)
-    case "$*" in
-      *AllInjected*) [ "${STUB_INJECTED:-}" != fail ] || exit 1 ;;
-      *"--for=condition=Ready"*) [ "${STUB_READY:-}" != fail ] || exit 1 ;;
-    esac
-    ;;
-  describe) echo "Name: $3 (described)" ;;
-esac
-exit 0
-SH
-chmod +x "$STUB/bin/kubectl"
+
+# The rules below take the options of stub_on after their own argument, so
+# seq_rules can pass --times 1.
+console_rule() {
+  local item="$1"
+  shift
+  if [ "$item" = fail ]; then
+    stub_on kubectl 'exec * -- openstack console log show *' --rc 1 \
+      --err "error: unable to upgrade connection" "$@"
+  else
+    stub_on kubectl 'exec * -- openstack console log show *' \
+      --exec "cat $(printf %q "$STUB/consoles/$item")" "$@"
+  fi
+}
+servers_rule() {
+  local item="$1"
+  shift
+  if [ "$item" = none ]; then
+    stub_on kubectl 'exec * -- openstack server list *' "$@"
+  else
+    stub_on kubectl 'exec * -- openstack server list *' --out "$item" "$@"
+  fi
+}
+volume_rule() {
+  local item="$1"
+  shift
+  if [ "$item" = gone ]; then
+    stub_on kubectl 'exec * -- openstack volume show *' --rc 1 \
+      --err "No volume found for nova-pool-guest-vol" "$@"
+  else
+    stub_on kubectl 'exec * -- openstack volume show *' --out "$item" "$@"
+  fi
+}
+server_rule() {
+  stub_on kubectl 'exec * -- openstack server show * -c status' --out "$@"
+}
+compute_rule() {
+  local item="$1"
+  shift
+  if [ "$item" = fail ]; then
+    stub_on kubectl 'exec * -- openstack compute service list *' --rc 1 "$@"
+  else
+    stub_on kubectl 'exec * -- openstack compute service list *' --out "$item" "$@"
+  fi
+}
+novacompute_pods_rule() {
+  stub_on kubectl 'get pod -n openstack -l app.kubernetes.io/name=novacompute,* -o json' --out "$@"
+}
+
+# seq_rules <rule> <list> [<separator>]: the calls <rule> answers take the
+# items of the list, split at the separator (default ,), in order, the last
+# one repeated. The last item is a lasting rule, and each item before it
+# answers one call, declared after the ones it precedes so that it is newer.
+seq_rules() {
+  local rule="$1" items i
+  IFS="${3:-,}" read -ra items <<<"$2"
+  i=$((${#items[@]} - 1))
+  "$rule" "${items[$i]}"
+  while [ "$i" -gt 0 ]; do
+    i=$((i - 1))
+    "$rule" "${items[$i]}" --times 1
+  done
+}
+
+default_rules() {
+  stub_on kubectl '*'
+  console_rule good
+  servers_rule none
+  volume_rule available
+  stub_on kubectl 'exec * -- openstack network list *' --out-raw $'\n'
+  server_rule ACTIVE
+  stub_on kubectl 'exec * -- openstack server show * -c fault' \
+    --out "{'code': 500, 'message': 'No valid host was found.'}"
+  compute_rule up
+  stub_on kubectl 'exec * -- bash -c *' \
+    --exec "bash -c \"\${10}\" gl-pids \"\${12}\" $(printf %q "$TMP_DIR/proc")"
+  stub_on kubectl 'get pod -n openstack -l * -o json' --out '{"items":[]}'
+  stub_on kubectl 'get pod -n openstack -l app.kubernetes.io/name=libvirt-e2e -o json' --out "$libvirt_default"
+  stub_on kubectl 'get configmap nova-pool-guest -n openstack -o json' --out '{"data":{}}'
+  # shellcheck disable=SC2016 # $STUB_DIR and $3 expand in the stub
+  stub_on kubectl 'apply *' --exec 'cat >"$STUB_DIR/state/applied"'
+  # shellcheck disable=SC2016
+  stub_on kubectl 'describe *' --exec 'echo "Name: $3 (described)"'
+}
 
 # run_lib <VAR=value...> -- <shell code>: run code under set -euo pipefail
 # with the library sourced, the stub first on PATH, NAMESPACE=openstack and
-# GL_POLL=0 unless given; GL_OUT and GL_RC hold the result.
+# GL_POLL=0 unless given; GL_OUT and GL_RC hold the result. The calls and the
+# state of the run stay in $STUB/state, and the rules go back to the
+# defaults, so a rule a test declares before run_lib answers that run alone.
 run_lib() {
   local envs=()
   while [ "$1" != "--" ]; do
@@ -169,12 +190,13 @@ run_lib() {
   done
   shift
   rm -rf "$STUB/state"
-  mkdir -p "$STUB/state"
-  : >"$STUB/state/calls"
   GL_RC=0
-  GL_OUT="$(env STUB_STATE="$STUB/state" STUB_CONSOLE_DIR="$STUB/consoles" \
-    NAMESPACE=openstack GL_POLL=0 PATH="$STUB/bin:$PATH" \
+  GL_OUT="$(env NAMESPACE=openstack GL_POLL=0 PATH="$STUB_DIR/bin:$PATH" \
     ${envs[@]+"${envs[@]}"} bash -c "set -euo pipefail; . '$LIB'; $1" 2>&1)" || GL_RC=$?
+  mv "$STUB_DIR/state" "$STUB/state"
+  stub_calls kubectl >"$STUB/state/calls"
+  rm -rf "$STUB_DIR"
+  default_rules
 }
 
 calls() {
@@ -197,8 +219,7 @@ console() {
 }
 
 # --- Test 1 ---------------------------------------------------------------
-test_gl_window() {
-  echo "Test: gl_window judges a window by its seqs, and gl_last_seq reads the highest"
+@test "gl_window judges a window by its seqs, and gl_last_seq reads the highest" {
   local ok
   ok="$(lines net 1 9; lines disk 1 30)"
 
@@ -258,8 +279,7 @@ EOF"
 }
 
 # --- Test 2 ---------------------------------------------------------------
-test_gl_console() {
-  echo "Test: gl_console keeps the whole probe lines and names a server without any"
+@test "gl_console keeps the whole probe lines and names a server without any" {
   console kernel "[    0.000000] Linux version 5.15.0-71-generic
 [    1.234567] Run /init as init process"
   console mixed "[    2.000000] random: crng init done
@@ -270,15 +290,18 @@ guest-probe disk 1 10:00:04 ok 1"
   console cut "guest-probe net 1 10:00:02 ok
 guest-probe net 2 10:00:04 ok"
 
-  run_lib STUB_CONSOLES=fail -- 'gl_console probe'
+  console_rule fail
+  run_lib -- 'gl_console probe'
   assert_eq "a failed read returns 1" "1" "$GL_RC"
   assert_eq "it names the server" "FAIL: no guest-probe line in the console log of probe" "$GL_OUT"
 
-  run_lib STUB_CONSOLES=kernel -- 'gl_console probe'
+  console_rule kernel
+  run_lib -- 'gl_console probe'
   assert_eq "a log of kernel lines returns 1" "1" "$GL_RC"
   assert_eq "it names the server" "FAIL: no guest-probe line in the console log of probe" "$GL_OUT"
 
-  run_lib STUB_CONSOLES=mixed -- 'gl_console nova-pool-guest-probe'
+  console_rule mixed
+  run_lib -- 'gl_console nova-pool-guest-probe'
   assert_eq "a log with probe lines passes" "0" "$GL_RC"
   assert_eq "it keeps the probe lines, without \\r and without what precedes them" \
     "guest-probe dhcp 1 10:00:01 ok 10.241.0.5
@@ -289,46 +312,52 @@ guest-probe disk 1 10:00:04 ok 1" "$GL_OUT"
 
   printf 'guest-probe net 1 10:00:02 ok\r\nguest-probe net 2 10:00:04 ok\r\nguest-probe net 3 10:00:0\n' \
     >"$STUB/consoles/cut"
-  run_lib STUB_CONSOLES=cut -- 'gl_console probe'
+  console_rule cut
+  run_lib -- 'gl_console probe'
   assert_eq "the last line of the log, which a read can cut short, is dropped" \
     "guest-probe net 1 10:00:02 ok
 guest-probe net 2 10:00:04 ok" "$GL_OUT"
 }
 
 # --- Test 3 ---------------------------------------------------------------
-test_gl_wait_window() {
-  echo "Test: gl_wait_window polls through a failed read and times out with the last failure"
+@test "gl_wait_window polls through a failed read and times out with the last failure" {
   console upto12 "$(lines net 1 12)"
   console upto15 "$(lines net 1 15)"
   console lost "$(lines net 1 12; lines net 13 13 lost; lines net 14 16)"
 
-  run_lib GL_POLL=1 STUB_CONSOLES=upto12 -- 'gl_wait_window probe net 12 3 2'
+  console_rule upto12
+  run_lib GL_POLL=1 -- 'gl_wait_window probe net 12 3 2'
   assert_eq "a window that stays short fails at the bound" "1" "$GL_RC"
   assert_eq "with the last failure prefixed by the bound" \
     "FAIL: after 2 s: 0 net lines after 12, want 3" "$GL_OUT"
 
-  run_lib STUB_CONSOLES=fail -- 'gl_wait_window probe net 0 3 0'
+  console_rule fail
+  run_lib -- 'gl_wait_window probe net 0 3 0'
   assert_eq "a log that cannot be read fails at the bound too" \
     "FAIL: after 0 s: no guest-probe line in the console log of probe" "$GL_OUT"
 
-  run_lib STUB_CONSOLES=fail,upto15 -- 'gl_wait_window probe net 12 3 60; echo after'
+  seq_rules console_rule fail,upto15
+  run_lib -- 'gl_wait_window probe net 12 3 60; echo after'
   assert_eq "it passes once the read works again" "0" "$GL_RC"
   assert_eq "and the caller goes on under set -e" "OK: net 13..15 all ok
 after" "$GL_OUT"
   assert_eq "it read the console twice" "2" "$(grep -c 'console log show' "$STUB/state/calls")"
 
-  run_lib STUB_CONSOLES=lost -- 'gl_wait_window probe net 12 3 60'
+  console_rule lost
+  run_lib -- 'gl_wait_window probe net 12 3 60'
   assert_eq "a lost line ends the wait" "1" "$GL_RC"
   assert_eq "with its own message" "FAIL: net line 13 says lost: guest-probe net 13 10:00:13 lost" "$GL_OUT"
   assert_eq "after one read" "1" "$(grep -c 'console log show' "$STUB/state/calls")"
 
   console deny2 "$(lines net 1 12; lines net 13 14 lost)"
   console deny3 "$(lines net 1 12; lines net 13 15 lost)"
-  run_lib STUB_CONSOLES=deny2,deny3 -- 'gl_wait_window probe net 12 3 60 lost'
+  seq_rules console_rule deny2,deny3
+  run_lib -- 'gl_wait_window probe net 12 3 60 lost'
   assert_eq "it waits for a window of the given result" "OK: net 13..15 all lost" "$GL_OUT"
   assert_eq "over two reads" "2" "$(grep -c 'console log show' "$STUB/state/calls")"
 
-  run_lib STUB_CONSOLES=upto15 -- 'gl_wait_window probe net 12 3 60 lost'
+  console_rule upto15
+  run_lib -- 'gl_wait_window probe net 12 3 60 lost'
   assert_eq "an ok line ends a wait for lost lines at once" \
     "FAIL: net line 13 says ok: guest-probe net 13 10:00:13 ok" "$GL_OUT"
 
@@ -336,28 +365,32 @@ after" "$GL_OUT"
   console garbled "$(lines net 1 13
     printf 'guest-probe net 14 10:00:1[   12.3] sh (99): drop_caches: 1\n4 ok\n'
     lines net 15 17)"
-  run_lib STUB_CONSOLES=garbled -- 'gl_wait_window probe net 12 3 60'
+  console_rule garbled
+  run_lib -- 'gl_wait_window probe net 12 3 60'
   assert_eq "a line garbled by a kernel message ends the wait as a gap" \
     "FAIL: net sequence jumps from 13 to 15" "$GL_OUT"
   assert_eq "after one read too" "1" "$(grep -c 'console log show' "$STUB/state/calls")"
 }
 
 # --- Test 4 ---------------------------------------------------------------
-test_gl_wait_result() {
-  echo "Test: gl_wait_result prints the seq of the first matching line"
+@test "gl_wait_result prints the seq of the first matching line" {
   console deny "$(lines net 1 5; lines net 6 8 lost; lines net 9 10)"
 
-  run_lib STUB_CONSOLES=deny -- 'gl_wait_result probe net lost 4 60'
+  console_rule deny
+  run_lib -- 'gl_wait_result probe net lost 4 60'
   assert_eq "it returns 0" "0" "$GL_RC"
   assert_eq "it prints the first lost seq after 4" "6" "$GL_OUT"
 
-  run_lib STUB_CONSOLES=deny -- 'gl_wait_result probe net ok 6 60'
+  console_rule deny
+  run_lib -- 'gl_wait_result probe net ok 6 60'
   assert_eq "it prints the first ok seq after 6" "9" "$GL_OUT"
 
-  run_lib STUB_CONSOLES=fail,deny -- 'gl_wait_result probe net lost 6 60'
+  seq_rules console_rule fail,deny
+  run_lib -- 'gl_wait_result probe net lost 6 60'
   assert_eq "it polls through a failed read" "7" "$GL_OUT"
 
-  run_lib STUB_CONSOLES=deny -- 'gl_wait_result probe net lost 8 0'
+  console_rule deny
+  run_lib -- 'gl_wait_result probe net lost 8 0'
   assert_eq "no match within the bound returns 1" "1" "$GL_RC"
   assert_eq "it names the kind, the result and the bound" \
     "FAIL: no net lost line after 8 within 0 s" "$GL_OUT"
@@ -376,8 +409,7 @@ proc_entry() {
   fi
 }
 
-test_gl_pids() {
-  echo "Test: the process scan finds QEMU by its -name and libvirtd by argv[0]"
+@test "the process scan finds QEMU by its -name and libvirtd by argv[0]" {
   rm -rf "$TMP_DIR/proc"
   proc_entry 1 /sbin/init
   proc_entry 2
@@ -387,7 +419,7 @@ test_gl_pids() {
   proc_entry 400 /bin/virsh domstate instance-0000000a
   proc_entry 500 /bin/libvirtd-helper guest=instance-0000000b,
 
-  run_lib STUB_PROC="$TMP_DIR/proc" -- 'gl_pids instance-0000000a'
+  run_lib -- 'gl_pids instance-0000000a'
   assert_eq "it returns 0 on one QEMU and one libvirtd" "0" "$GL_RC"
   assert_eq "it prints both PIDs" "qemu=200 libvirtd=100" "$GL_OUT"
   assert_contains "it scans in the Running libvirt pod that is not terminating" "$(calls)" \
@@ -398,7 +430,7 @@ test_gl_pids() {
   # shellcheck source=tests/e2e-nova-libvirt/guest-dataplane/guest-lib.sh
   scan="$(. "$LIB" && printf '%s' "$GL_PIDS_SCRIPT")"
   proc_entry 700 bash -c "$scan" gl-pids instance-0000000a
-  run_lib STUB_PROC="$TMP_DIR/proc" -- 'gl_pids instance-0000000a'
+  run_lib -- 'gl_pids instance-0000000a'
   assert_eq "the argv of a scanning shell does not count" "qemu=200 libvirtd=100" "$GL_OUT"
 
   # The scan skips its own PID whatever that argv holds: it runs as the PID
@@ -411,18 +443,19 @@ test_gl_pids() {
   assert_eq "the scanning shell's own PID does not count" "qemu= libvirtd=" "$GL_OUT"
 
   proc_entry 600 /bin/qemu-system-x86_64 -name guest=instance-0000000a,debug-threads=on
-  run_lib STUB_PROC="$TMP_DIR/proc" -- 'gl_pids instance-0000000a'
+  run_lib -- 'gl_pids instance-0000000a'
   assert_eq "two QEMU processes of the domain fail" "1" "$GL_RC"
   assert_eq "it names them" "FAIL: 2 QEMU processes of instance-0000000a in libvirt-e2e-abc: 200,600" "$GL_OUT"
 
-  run_lib STUB_PROC="$TMP_DIR/proc" -- 'gl_pids instance-0000000c'
+  run_lib -- 'gl_pids instance-0000000c'
   assert_eq "no QEMU of the domain fails" "FAIL: 0 QEMU processes of instance-0000000c in libvirt-e2e-abc: none" "$GL_OUT"
 
   rm -rf "$TMP_DIR/proc/100"
-  run_lib STUB_PROC="$TMP_DIR/proc" -- 'gl_pids instance-0000000b'
+  run_lib -- 'gl_pids instance-0000000b'
   assert_eq "no libvirtd fails" "FAIL: 0 libvirtd processes in libvirt-e2e-abc: none" "$GL_OUT"
 
-  run_lib STUB_LIBVIRT_PODS='{"items":[]}' -- 'gl_pids instance-0000000a'
+  stub_on kubectl 'get pod -n openstack -l app.kubernetes.io/name=libvirt-e2e -o json' --out '{"items":[]}'
+  run_lib -- 'gl_pids instance-0000000a'
   assert_eq "no libvirt pod fails" "1" "$GL_RC"
   assert_eq "it says so" "FAIL: no Running libvirt-e2e pod" "$GL_OUT"
 
@@ -432,23 +465,26 @@ test_gl_pids() {
 }
 
 # --- Test 5b --------------------------------------------------------------
-test_gl_wait_status() {
-  echo "Test: gl_wait_status and gl_wait_compute_up poll until the wanted state"
+@test "gl_wait_status and gl_wait_compute_up poll until the wanted state" {
 
-  run_lib STUB_SERVER_SEQ="BUILD,BUILD,ACTIVE" -- 'gl_wait_status server nova-pool-guest-peer ACTIVE 60'
+  seq_rules server_rule BUILD,BUILD,ACTIVE
+  run_lib -- 'gl_wait_status server nova-pool-guest-peer ACTIVE 60'
   assert_eq "a server that goes ACTIVE passes" "OK: server nova-pool-guest-peer is ACTIVE" "$GL_OUT"
   assert_eq "after three reads" "3" "$(grep -c 'server show nova-pool-guest-peer -f value -c status' "$STUB/state/calls")"
 
-  run_lib STUB_SERVER_SEQ="BUILD,ERROR" -- 'gl_wait_status server nova-pool-guest-peer ACTIVE 60'
+  seq_rules server_rule BUILD,ERROR
+  run_lib -- 'gl_wait_status server nova-pool-guest-peer ACTIVE 60'
   assert_eq "a server in ERROR fails at once" "1" "$GL_RC"
   assert_eq "with its fault" \
     "FAIL: server nova-pool-guest-peer is ERROR: {'code': 500, 'message': 'No valid host was found.'}" "$GL_OUT"
 
-  run_lib STUB_VOLUME_SEQ="creating" -- 'gl_wait_status volume nova-pool-guest-vol available 0'
+  volume_rule creating
+  run_lib -- 'gl_wait_status volume nova-pool-guest-vol available 0'
   assert_eq "a volume that stays creating fails at the bound" \
     "FAIL: volume nova-pool-guest-vol is creating, not available, after 0 s" "$GL_OUT"
 
-  run_lib STUB_COMPUTE_SEQ="fail,down 2026-11-06T09:59:58.000000,up 2026-11-06T10:00:08.000000,up 2026-11-06T10:00:18.000000" -- \
+  seq_rules compute_rule "fail,down 2026-11-06T09:59:58.000000,up 2026-11-06T10:00:08.000000,up 2026-11-06T10:00:18.000000"
+  run_lib -- \
     'gl_wait_compute_up kind-control-plane 60 2026-11-06T10:00:10'
   assert_eq "a compute service that reports up after the given time passes" \
     "OK: the compute service of kind-control-plane is up, last report at 2026-11-06T10:00:18.000000" "$GL_OUT"
@@ -457,25 +493,27 @@ test_gl_wait_status() {
     "openstack compute service list --service nova-compute --host kind-control-plane -f value -c State -c Updated At"
 
   # Nova reads a killed nova-compute as up for 60 s after its last report.
-  run_lib STUB_COMPUTE_SEQ="up 2026-11-06T10:00:08.000000" -- \
+  compute_rule "up 2026-11-06T10:00:08.000000"
+  run_lib -- \
     'gl_wait_compute_up kind-control-plane 0 2026-11-06T10:00:10'
   assert_eq "an up from a report before the given time fails" "1" "$GL_RC"
   assert_eq "naming the report" \
     "FAIL: the compute service of kind-control-plane is up with its last report at 2026-11-06T10:00:08.000000, not up with a report after 2026-11-06T10:00:10, after 0 s" "$GL_OUT"
 
-  run_lib STUB_COMPUTE_SEQ="up 2026-11-06T10:00:10.000000" -- \
+  compute_rule "up 2026-11-06T10:00:10.000000"
+  run_lib -- \
     'gl_wait_compute_up kind-control-plane 0 2026-11-06T10:00:10'
   assert_eq "a report in the second of the given time does not count" "1" "$GL_RC"
 
-  run_lib STUB_COMPUTE_SEQ="down 2026-11-06T10:00:18.000000" -- \
+  compute_rule "down 2026-11-06T10:00:18.000000"
+  run_lib -- \
     'gl_wait_compute_up kind-control-plane 0 2026-11-06T10:00:10'
   assert_eq "a compute service that stays down fails" \
     "FAIL: the compute service of kind-control-plane is down with its last report at 2026-11-06T10:00:18.000000, not up with a report after 2026-11-06T10:00:10, after 0 s" "$GL_OUT"
 }
 
 # --- Test 6 ---------------------------------------------------------------
-test_gl_pod_kill() {
-  echo "Test: gl_pod_kill applies a labelled pod-kill and waits for AllInjected"
+@test "gl_pod_kill applies a labelled pod-kill and waits for AllInjected" {
   local applied
 
   run_lib -- 'gl_pod_kill guest-nova-compute-kill app.kubernetes.io/name=novacompute,app.kubernetes.io/instance=pool-libvirt'
@@ -495,7 +533,8 @@ test_gl_pod_kill() {
   assert_contains "it waits for AllInjected" "$(calls)" \
     "wait podchaos/guest-nova-compute-kill -n openstack --for=condition=AllInjected --timeout=120s"
 
-  run_lib STUB_INJECTED=fail -- 'gl_pod_kill guest-libvirt-kill app.kubernetes.io/name=libvirt-e2e'
+  stub_on kubectl 'wait *AllInjected*' --rc 1
+  run_lib -- 'gl_pod_kill guest-libvirt-kill app.kubernetes.io/name=libvirt-e2e'
   assert_eq "a missed AllInjected fails" "1" "$GL_RC"
   assert_eq "it prints the describe output, then its message" \
     "Name: guest-libvirt-kill (described)
@@ -503,25 +542,28 @@ FAIL: PodChaos guest-libvirt-kill did not reach AllInjected within 120 s" "$GL_O
 }
 
 # --- Test 7 ---------------------------------------------------------------
-test_gl_wait_replaced() {
-  echo "Test: gl_wait_replaced waits for a Ready pod with another UID"
+@test "gl_wait_replaced waits for a Ready pod with another UID" {
   local old new terminating
   old='{"items":[{"metadata":{"name":"p-old","uid":"u-old"}}]}'
   terminating='{"items":[{"metadata":{"name":"p-old","uid":"u-old","deletionTimestamp":"2026-11-06T10:00:00Z"}},{"metadata":{"name":"p-gone","uid":"u-gone","deletionTimestamp":"2026-11-06T10:00:00Z"}}]}'
   new='{"items":[{"metadata":{"name":"p-new","uid":"u-new"}}]}'
 
-  run_lib STUB_PODS_SEQ="$old|$terminating|$new" -- 'gl_wait_replaced app.kubernetes.io/name=novacompute,app.kubernetes.io/instance=pool-libvirt u-old 60'
+  seq_rules novacompute_pods_rule "$old|$terminating|$new" '|'
+  run_lib -- 'gl_wait_replaced app.kubernetes.io/name=novacompute,app.kubernetes.io/instance=pool-libvirt u-old 60'
   assert_eq "a new UID that turns Ready passes" "0" "$GL_RC"
   assert_starts_with "it names the new pod" "$GL_OUT" "OK: p-new (u-new) is Ready after "
   assert_contains "it waits for that pod" "$(calls)" "wait pod p-new -n openstack --for=condition=Ready"
   assert_not_contains "it never waits for a terminating pod" "$(calls)" "wait pod p-gone"
 
-  run_lib STUB_PODS_SEQ="$old" -- 'gl_wait_replaced app.kubernetes.io/name=novacompute,app.kubernetes.io/instance=pool-libvirt u-old 0'
+  novacompute_pods_rule "$old"
+  run_lib -- 'gl_wait_replaced app.kubernetes.io/name=novacompute,app.kubernetes.io/instance=pool-libvirt u-old 0'
   assert_eq "the old UID alone fails" "1" "$GL_RC"
   assert_eq "it names the selector, the UID and the bound" \
     "FAIL: no Ready pod of app.kubernetes.io/name=novacompute,app.kubernetes.io/instance=pool-libvirt other than u-old within 0 s" "$GL_OUT"
 
-  run_lib STUB_PODS_SEQ="$new" STUB_READY=fail -- 'gl_wait_replaced app.kubernetes.io/name=novacompute,app.kubernetes.io/instance=pool-libvirt u-old 0'
+  novacompute_pods_rule "$new"
+  stub_on kubectl 'wait *--for=condition=Ready*' --rc 1
+  run_lib -- 'gl_wait_replaced app.kubernetes.io/name=novacompute,app.kubernetes.io/instance=pool-libvirt u-old 0'
   assert_eq "a new pod that never turns Ready fails" "1" "$GL_RC"
 }
 
@@ -537,8 +579,7 @@ junit() {
   } >"$path"
 }
 
-test_gl_tempest_verdict() {
-  echo "Test: gl_tempest_verdict wants every test passed and none skipped"
+@test "gl_tempest_verdict wants every test passed and none skipped" {
   local ids basic advanced detach old
   ids="tempest.scenario.test_server_basic_ops.TestServerBasicOps.test_server_basic_ops tempest.scenario.test_server_advanced_ops.TestServerAdvancedOps.test_server_sequence_suspend_resume tempest.scenario.test_server_volume_attachment.TestServerVolumeAttachmentScenario.test_server_detach_rules tempest.scenario.test_server_volume_attachment.TestServerVolumeAttachScenarioOldVersion.test_old_versions_reject"
   basic='<testcase classname="tempest.scenario.test_server_basic_ops.TestServerBasicOps" name="test_server_basic_ops[compute,id-7fff3fb3-91d8-4fd0-bd7d-0204f1f180ba,network,smoke]" time="60.0" />'
@@ -588,10 +629,11 @@ test_gl_tempest_verdict() {
 }
 
 # --- Test 9 ---------------------------------------------------------------
-test_gl_teardown_guests() {
-  echo "Test: gl_teardown_guests removes the servers before the volume and the network"
+@test "gl_teardown_guests removes the servers before the volume and the network" {
 
-  run_lib STUB_SERVERS_SEQ="id-1 id-2,id-1,none" STUB_VOLUME_SEQ="detaching,available" -- 'gl_teardown_guests'
+  seq_rules servers_rule "id-1 id-2,id-1,none"
+  seq_rules volume_rule detaching,available
+  run_lib -- 'gl_teardown_guests'
   assert_eq "it returns 0" "0" "$GL_RC"
   assert_contains "it reports the servers gone" "$GL_OUT" \
     "OK: nova-pool-guest-probe and nova-pool-guest-peer are gone"
@@ -607,23 +649,26 @@ test_gl_teardown_guests() {
   assert_contains "it deletes the network last" "$(tail -n 2 "$STUB/state/calls")" \
     "openstack network delete nova-pool-guest-net"
 
-  run_lib STUB_VOLUME_SEQ=gone STUB_NETWORK=net-1 -- 'gl_teardown_guests'
+  volume_rule gone
+  stub_on kubectl 'exec * -- openstack network list *' --out net-1
+  run_lib -- 'gl_teardown_guests'
   assert_eq "a network left over fails" "1" "$GL_RC"
   assert_contains "it says so" "$GL_OUT" "FAIL: nova-pool-guest-net is left after the teardown"
   assert_not_contains "a volume already gone is not deleted" "$(calls)" "volume delete"
 }
 
 # --- Test 10 --------------------------------------------------------------
-test_state_dump_and_sourcing() {
-  echo "Test: gl_recall, gl_dump and sourcing the library"
+@test "gl_recall, gl_dump and sourcing the library" {
 
-  run_lib STUB_CM='{"data":{"node":"kind-control-plane"}}' -- 'gl_recall node'
+  stub_on kubectl 'get configmap nova-pool-guest -n openstack -o json' --out '{"data":{"node":"kind-control-plane"}}'
+  run_lib -- 'gl_recall node'
   assert_eq "gl_recall prints a value" "kind-control-plane" "$GL_OUT"
   run_lib -- 'gl_recall instance-name'
   assert_eq "an absent key fails" "1" "$GL_RC"
   assert_eq "naming the key" "FAIL: ConfigMap nova-pool-guest holds no instance-name" "$GL_OUT"
 
-  run_lib STUB_ALL_FAIL=1 -- 'gl_dump >/dev/null; gl_dump_chaos >/dev/null; echo done'
+  stub_on kubectl '*' --rc 1 --err 'error: the stub refuses'
+  run_lib -- 'gl_dump >/dev/null; gl_dump_chaos >/dev/null; echo done'
   assert_eq "gl_dump and gl_dump_chaos exit 0 with every kubectl call failing" "0" "$GL_RC"
   assert_eq "and the caller goes on" "done" "$GL_OUT"
 
@@ -636,8 +681,7 @@ test_state_dump_and_sourcing() {
 }
 
 # --- Test 11 --------------------------------------------------------------
-test_user_data_matches_parser() {
-  echo "Test: the lines guest-user-data.sh writes are the lines the library reads"
+@test "the lines guest-user-data.sh writes are the lines the library reads" {
   local ud="$PROJECT_ROOT/tests/e2e-nova-libvirt/guest-dataplane/guest-user-data.sh" probe
 
   assert_eq "the rendered user-data names the peer" "PEER=10.241.0.9" \
@@ -666,8 +710,7 @@ raw() {
   } >"$TMP_DIR/$1"
 }
 
-test_backend_read() {
-  echo "Test: gl_last_ok_disk reads the last ok disk line, gl_backend_holds the volume"
+@test "gl_last_ok_disk reads the last ok disk line, gl_backend_holds the volume" {
   raw newline "$(lines disk 1 7; lines net 1 9; lines disk 8 8)" ""
   raw cut "$(lines disk 1 8; lines net 1 9)" "guest-probe disk 9 10:0"
   raw joined "$(lines disk 1 8)" "guest-probe disk 9 10:00:09 ok 9"
@@ -697,24 +740,3 @@ test_backend_read() {
   assert_eq "an empty read fails" "1" "$GL_RC"
   assert_eq "naming the value" "FAIL: the volume file holds '', the last ok disk line counted 8" "$GL_OUT"
 }
-
-test_gl_window
-test_gl_console
-test_gl_wait_window
-test_gl_wait_result
-test_gl_pids
-test_gl_wait_status
-test_gl_pod_kill
-test_gl_wait_replaced
-test_gl_tempest_verdict
-test_gl_teardown_guests
-test_state_dump_and_sourcing
-test_user_data_matches_parser
-test_backend_read
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0

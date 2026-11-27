@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -39,32 +39,24 @@
 #      library.
 #
 # The checks of 2 and 3 that read the YAML structure need mikefarah yq and
-# are skipped without it, as in tests/unit/ci/chaos_workload_test.sh.
+# are skipped without it, as in tests/unit/ci/chaos_workload.bats.
 #
-# Usage: bash tests/unit/ci/lab_failover_suites_test.sh
+# Usage: bin/bats tests/unit/ci/lab_failover_suites.bats
 
-set -uo pipefail
+load '../../lib/bats/common'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 LF_DIR="$PROJECT_ROOT/tests/lab-failover"
 LF_SH="$PROJECT_ROOT/hack/lab-failover.sh"
 FIXTURES="$LF_DIR/fixtures"
 
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
-
 # The two budget lines, as tests/e2e-chaos/lib/workload.sh and
-# tests/unit/ci/chaos_workload_test.sh read them.
+# tests/unit/ci/chaos_workload.bats read them.
 BUDGET_RE='^# Chaos budget: failures=([0-9]+) recovery=([0-9]+)s$'
 MEASURED_RE='^# Chaos budget measured: [0-9]{4}-[0-9]{2}-[0-9]{2}, [a-z]+, failures [0-9]+(/[0-9]+){0,2}, recovery [0-9]+(/[0-9]+){0,2} s$'
 
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+setup() {
+  TMP_DIR="$BATS_TEST_TMPDIR"
+}
 
 have_yq() {
   command -v yq >/dev/null 2>&1 && yq --version 2>&1 | grep -q 'mikefarah'
@@ -110,8 +102,7 @@ placeholder_problems() {
 }
 
 # --- Test 1 ---------------------------------------------------------------
-test_scenarios_are_the_directories() {
-  echo "Test: the suite directories are the scenarios of hack/lab-failover.sh"
+@test "the suite directories are the scenarios of hack/lab-failover.sh" {
   assert_eq "no difference" "" "$(scenario_problems "$LF_SH" "$LF_DIR")"
   assert_eq "eleven scenarios" "11" \
     "$(bash -c '. "$1" && echo "${#LF_SCENARIOS[@]}"' _ "$LF_SH")"
@@ -150,7 +141,6 @@ check_suite() {
   assert_eq "$suite: one lf_workload_start with the directory name as its id" "1" \
     "$(grep -cE "^ +lf_workload_start $suite [a-z,]+$" "$file")"
   if ! have_yq; then
-    SKIP=$((SKIP + 4))
     return 0
   fi
   assert_eq "$suite: a stop in a cleanup" "1" "$(yq 'explode(.) | [.spec.steps[].cleanup[]? | select(has("script"))
@@ -170,18 +160,19 @@ check_suite() {
   assert_eq "$suite: every chaos manifest is deleted in a finally" "" "$missing"
 }
 
-test_suites() {
-  echo "Test: each suite keeps the harness contract and lifts its fault"
+@test "each suite keeps the harness contract and lifts its fault" {
   local dir
   for dir in "$LF_DIR"/*/; do
     [[ -f "$dir/chainsaw-test.yaml" ]] || continue
-    check_suite "${dir%/}"
+    soft check_suite "${dir%/}"
   done
+  # check_suite left out the checks of the YAML structure without yq, after
+  # every other check of every suite ran.
+  require_mikefarah_yq
 }
 
 # --- Test 3 ---------------------------------------------------------------
-test_manifests() {
-  echo "Test: every chaos manifest stays in openstack-ha, self-limits and is filled by its lf_render call"
+@test "every chaos manifest stays in openstack-ha, self-limits and is filled by its lf_render call" {
   local dir manifest problems="" copy
   for dir in "$LF_DIR"/*/; do
     [[ -f "$dir/chainsaw-test.yaml" ]] || continue
@@ -200,11 +191,8 @@ test_manifests() {
   assert_contains "a manifest no call renders is a problem" "$(placeholder_problems "$copy/galera-primary-loss")" \
     "galera-primary-loss/02-podchaos.yaml: no lf_render call renders it"
 
-  if ! have_yq; then
-    echo "  SKIP: yq not installed (the field checks of the manifests skipped)"
-    SKIP=$((SKIP + 1))
-    return 0
-  fi
+  # The field checks of the manifests need mikefarah yq.
+  require_mikefarah_yq
   local bad=""
   for manifest in "$LF_DIR"/*/[0-9][0-9]-*chaos.yaml; do
     bad="${bad}$(yq '
@@ -223,8 +211,7 @@ test_manifests() {
 }
 
 # --- Test 4 ---------------------------------------------------------------
-test_no_host_network_or_nodes() {
-  echo "Test: no suite reaches a node or a hostNetwork pod, and no read hides its status"
+@test "no suite reaches a node or a hostNetwork pod, and no read hides its status" {
   assert_eq "no allowHostNetworkTesting, nodes: or nodeSelectors:" "" \
     "$(grep -rnE 'allowHostNetworkTesting|(^|[[:space:]])nodes:|nodeSelectors:' "$LF_DIR" || true)"
   assert_eq "no cp_status or cp_reason read inside [" "" \
@@ -232,8 +219,7 @@ test_no_host_network_or_nodes() {
 }
 
 # --- Test 5 ---------------------------------------------------------------
-test_fixtures() {
-  echo "Test: the fixtures are the second plane of boundary 1 to 3"
+@test "the fixtures are the second plane of boundary 1 to 3" {
   local cp="$FIXTURES/03-controlplane.yaml" deadline bound retries grace
   assert_eq "the ControlPlane carries none of the dropped keys" "" \
     "$(data_lines "$cp" | grep -E '^[[:space:]]*(profileRef|gateway|publicEndpoint|hypervisorOperator|backupBackend):' || true)"
@@ -255,11 +241,8 @@ test_fixtures() {
     'value: d13d13d1-0000-4000-8000-000000001393'
   assert_eq "the fake compute names no other plane" "" \
     "$(data_lines "$FIXTURES/05-fake-compute.yaml" | grep -E 'controlplane-keystone|namespace: openstack$' || true)"
-  if ! have_yq; then
-    echo "  SKIP: yq not installed (the field checks of the fixtures skipped)"
-    SKIP=$((SKIP + 1))
-    return 0
-  fi
+  # The field checks of the fixtures need mikefarah yq.
+  require_mikefarah_yq
   assert_eq "the ControlPlane is openstack-ha/cp-ha on Standard" "ControlPlane openstack-ha/cp-ha Standard" \
     "$(yq '.kind + " " + .metadata.namespace + "/" + .metadata.name + " " + .spec.sizing.profile' "$cp")"
   assert_eq "the ControlPlane references cp-ha-ovn" "cp-ha-ovn" "$(yq '.spec.services.neutron.ovn.centralRef.name' "$cp")"
@@ -299,8 +282,7 @@ test_fixtures() {
 }
 
 # --- Test 6 ---------------------------------------------------------------
-test_spdx_and_lint() {
-  echo "Test: every new file carries the SPDX pair, and make shellcheck lints the library"
+@test "every new file carries the SPDX pair, and make shellcheck lints the library" {
   local file missing=""
   while IFS= read -r file; do
     if ! grep -q '^# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company$' "$file" ||
@@ -313,17 +295,3 @@ test_spdx_and_lint() {
     "$(awk '/^shellcheck:/ { s = 1; next } s && /^[^\t]/ { exit } s' "$PROJECT_ROOT/Makefile")" \
     "shellcheck --severity=warning tests/lab-failover/lib/*.sh"
 }
-
-test_scenarios_are_the_directories
-test_suites
-test_manifests
-test_no_host_network_or_nodes
-test_fixtures
-test_spdx_and_lint
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0
