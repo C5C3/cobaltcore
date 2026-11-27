@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -36,45 +36,32 @@
 # written to the scratch directory and run with the runner's python3, which is
 # also the interpreter workload.py is run with.
 #
-# Usage: bash tests/unit/ci/chaos_workload_test.sh
+# Usage: bin/bats tests/unit/ci/chaos_workload.bats
 
-set -uo pipefail
+load '../../lib/bats/common'
+load '../../lib/bats/stubs'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 LIB_DIR="$PROJECT_ROOT/tests/e2e-chaos/lib"
 WORKLOAD_PY="$LIB_DIR/workload.py"
 
-PASS=0
-FAIL=0
-SKIP=0
-
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/ci_yaml.sh
 source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
-TMP_DIR="$(mktemp -d)"
-STUB_PID=""
-TLS_STUB_PID=""
-cleanup() {
-  local pid
-  for pid in "$STUB_PID" "$TLS_STUB_PID"; do
-    if [ -n "$pid" ]; then
-      kill "$pid" 2>/dev/null || true
-    fi
-  done
-  rm -rf "$TMP_DIR"
-}
-trap cleanup EXIT
+# Each test starts a stub of its own in its scratch directory, so the tests
+# run side by side; the stub of a test sees only that test's requests.
+setup() {
+  TMP_DIR="$BATS_TEST_TMPDIR"
+  STUB_PID=""
+  TLS_STUB_PID=""
+  RUN_PID=""
 
-# ---------------------------------------------------------------------------
-# The stub OpenStack
-# ---------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # The stub OpenStack
+  # ---------------------------------------------------------------------------
 
-cat >"$TMP_DIR/stub_server.py" <<'PY'
+  cat >"$TMP_DIR/stub_server.py" <<'PY'
 """A stub of the OpenStack APIs workload.py talks to, on one port."""
 import json
 import os
@@ -539,7 +526,7 @@ os.rename(sys.argv[1] + ".tmp", sys.argv[1])
 server.serve_forever()
 PY
 
-cat >"$TMP_DIR/stub_ctl.py" <<'PY'
+  cat >"$TMP_DIR/stub_ctl.py" <<'PY'
 """Send one control request to the stub and print its JSON answer."""
 import sys
 import urllib.request
@@ -550,13 +537,49 @@ with opener.open(req, timeout=10) as resp:
     sys.stdout.write(resp.read().decode())
 PY
 
-python3 -I "$TMP_DIR/stub_server.py" "$TMP_DIR/port" &
-STUB_PID=$!
-for _ in $(seq 1 100); do
-  [ -f "$TMP_DIR/port" ] && break
-  sleep 0.1
-done
-STUB="http://127.0.0.1:$(cat "$TMP_DIR/port" 2>/dev/null)"
+  # 3>&- keeps the stub off the descriptor bats waits on.
+  python3 -I "$TMP_DIR/stub_server.py" "$TMP_DIR/port" 3>&- &
+  STUB_PID=$!
+  for _ in $(seq 1 100); do
+    [ -f "$TMP_DIR/port" ] && break
+    sleep 0.1
+  done
+  STUB="http://127.0.0.1:$(cat "$TMP_DIR/port" 2>/dev/null)"
+
+  ENDPOINTS=(
+    --keystone "$STUB/identity/v3"
+    --http "$STUB/http/ok"
+    --neutron "$STUB/network"
+    --nova "$STUB/compute/v2.1"
+    --image-ref img-1
+    --flavor m1.nano
+    --cinder "$STUB/volume"
+    --glance "$STUB/image"
+    --placement "$STUB/placement"
+    --barbican "$STUB/keymanager"
+  )
+
+  # workload.sh runs with a sleep that returns at once and the kubectl fake
+  # of new_stub, whose state lives under $KSTUB/state.
+  stub_on sleep '*'
+  KSTUB="$STUB_DIR"
+}
+
+# cleanup — stop the stubs, and the run of a test that failed before end_run;
+# bats removes the scratch directory.
+cleanup() {
+  local pid
+  for pid in "$STUB_PID" "$TLS_STUB_PID" "$RUN_PID"; do
+    if [ -n "$pid" ]; then
+      kill "$pid" 2>/dev/null || true
+    fi
+  done
+}
+
+teardown() {
+  cleanup
+  common_teardown
+}
 
 # ctl <method> <path> — one control request; prints the answer.
 ctl() {
@@ -573,19 +596,6 @@ jq_py() {
 closed_port() {
   python3 -I -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
 }
-
-ENDPOINTS=(
-  --keystone "$STUB/identity/v3"
-  --http "$STUB/http/ok"
-  --neutron "$STUB/network"
-  --nova "$STUB/compute/v2.1"
-  --image-ref img-1
-  --flavor m1.nano
-  --cinder "$STUB/volume"
-  --glance "$STUB/image"
-  --placement "$STUB/placement"
-  --barbican "$STUB/keymanager"
-)
 
 # start_run <name> [VAR=value...] -- <run options> — start workload.py run
 # with the id t1 in the background; RUN_OUT, RUN_ERR, RUN_STOP and RUN_PID
@@ -604,7 +614,7 @@ start_run() {
   RUN_STOP="$TMP_DIR/$name.stop"
   rm -f "$RUN_STOP"
   env OS_PASSWORD=s3cret ${envs[@]+"${envs[@]}"} python3 -I "$WORKLOAD_PY" run --id t1 \
-    --stop-file "$RUN_STOP" "$@" >"$RUN_OUT" 2>"$RUN_ERR" &
+    --stop-file "$RUN_STOP" "$@" >"$RUN_OUT" 2>"$RUN_ERR" 3>&- &
   RUN_PID=$!
 }
 
@@ -632,6 +642,8 @@ ready_on() {
 }
 
 # end_run — wait up to 60 s for the run to end; RUN_RC holds its exit status.
+# RUN_PID is emptied once the run is reaped, so cleanup never signals a
+# process ID the system may have handed out again.
 end_run() {
   local i
   for ((i = 0; i < 600; i++)); do
@@ -646,6 +658,7 @@ end_run() {
   fi
   RUN_RC=0
   wait "$RUN_PID" || RUN_RC=$?
+  RUN_PID=""
 }
 
 # finish_run — create the stop file and end the run.
@@ -672,8 +685,7 @@ count_lines() {
 }
 
 # --- Test 1 ---------------------------------------------------------------
-test_run_reaches_ready_on_every_stream() {
-  echo "Test: run reaches READY on all eight streams and writes a parseable record per operation"
+@test "run reaches READY on all eight streams and writes a parseable record per operation" {
   ctl POST /_control/reset >/dev/null
 
   start_run ready -- --streams token,http,network,server,volume,image,placement,secret "${ENDPOINTS[@]}"
@@ -683,7 +695,7 @@ test_run_reaches_ready_on_every_stream() {
   assert_eq "run exits 0" "0" "$RUN_RC"
   local s
   for s in token http network server volume image placement secret; do
-    assert_eq "one READY line for $s" "1" "$(grep -cx "READY $s" "$RUN_OUT")"
+    soft assert_eq "one READY line for $s" "1" "$(grep -cx "READY $s" "$RUN_OUT")"
   done
 
   local bad
@@ -715,7 +727,7 @@ print(",".join(bad))
     "image create" "image upload" "image active" "image delete" \
     "placement create-rp" "placement list-rp" "placement delete-rp" \
     "secret create-secret" "secret read-payload" "secret delete-secret"; do
-    assert_contains "an ok record for $op" "$ops" "$op true"
+    soft assert_contains "an ok record for $op" "$ops" "$op true"
   done
   assert_eq "no failed record" "" "$(records 'not r["ok"]')"
   local reqs
@@ -744,8 +756,7 @@ print("ok")' "$WORKLOAD_PY" 2>&1)"
 }
 
 # --- Test 2 ---------------------------------------------------------------
-test_a_503_fails_one_stream_and_leaves_the_others_ok() {
-  echo "Test: a 503 on the http target fails that stream alone"
+@test "a 503 on the http target fails that stream alone" {
   ctl POST /_control/reset >/dev/null
   ctl POST "/_control/fail?prefix=/http/&code=503" >/dev/null
 
@@ -765,8 +776,7 @@ test_a_503_fails_one_stream_and_leaves_the_others_ok() {
 }
 
 # --- Test 2b --------------------------------------------------------------
-test_a_503_on_create_fails_placement_and_secret_while_token_keeps_going() {
-  echo "Test: a 503 to POST /resource_providers and POST /v1/secrets fails create-rp and create-secret while the token stream stays ok"
+@test "a 503 to POST /resource_providers and POST /v1/secrets fails create-rp and create-secret while the token stream stays ok" {
   ctl POST /_control/reset >/dev/null
   ctl POST "/_control/fail-n?prefix=/placement/resource_providers&method=POST&code=503&count=3" >/dev/null
   ctl POST "/_control/fail-n?prefix=/keymanager/v1/secrets&method=POST&code=503&count=3" >/dev/null
@@ -788,8 +798,7 @@ test_a_503_on_create_fails_placement_and_secret_while_token_keeps_going() {
 }
 
 # --- Test 2c --------------------------------------------------------------
-test_resolve_sends_the_request_to_the_mapped_address() {
-  echo "Test: --resolve reaches the stub by a name that resolves nowhere and keeps that name in the Host header"
+@test "--resolve reaches the stub by a name that resolves nowhere and keeps that name in the Host header" {
   ctl POST /_control/reset >/dev/null
   local port name
   port="$(cat "$TMP_DIR/port")"
@@ -842,22 +851,15 @@ test_resolve_sends_the_request_to_the_mapped_address() {
 }
 
 # --- Test 2d --------------------------------------------------------------
-test_insecure_tls_is_needed_against_a_self_signed_stub() {
-  echo "Test: an HTTPS stub with a self-signed certificate answers with --insecure-tls and fails verification without it"
-  if ! command -v openssl >/dev/null 2>&1; then
-    echo "  SKIP: openssl not installed (TLS checks skipped)"
-    SKIP=$((SKIP + 1))
-    return 0
-  fi
+@test "an HTTPS stub with a self-signed certificate answers with --insecure-tls and fails verification without it" {
+  require_tool openssl
   local name="chaos-stub.invalid" port
   if ! openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=${name}" \
     -addext "subjectAltName=DNS:${name}" -keyout "$TMP_DIR/tls.key" -out "$TMP_DIR/tls.crt" \
     >"$TMP_DIR/openssl.log" 2>&1; then
-    FAIL=$((FAIL + 1))
-    echo "  FAIL: openssl req -x509 could not write a certificate: $(cat "$TMP_DIR/openssl.log")"
-    return 0
+    fail "openssl req -x509 could not write a certificate: $(cat "$TMP_DIR/openssl.log")"
   fi
-  python3 -I "$TMP_DIR/stub_server.py" "$TMP_DIR/tls-port" "$TMP_DIR/tls.crt" "$TMP_DIR/tls.key" &
+  python3 -I "$TMP_DIR/stub_server.py" "$TMP_DIR/tls-port" "$TMP_DIR/tls.crt" "$TMP_DIR/tls.key" 3>&- &
   TLS_STUB_PID=$!
   wait_for "the HTTPS stub's port" 10 test -f "$TMP_DIR/tls-port"
   port="$(cat "$TMP_DIR/tls-port")"
@@ -892,8 +894,7 @@ test_insecure_tls_is_needed_against_a_self_signed_stub() {
 }
 
 # --- Test 3 ---------------------------------------------------------------
-test_a_closed_port_records_a_null_code_and_the_urlerror() {
-  echo "Test: a closed port is a record with code null and the URLError text; noauth Cinder works without --keystone"
+@test "a closed port is a record with code null and the URLError text; noauth Cinder works without --keystone" {
   ctl POST /_control/reset >/dev/null
   local port
   port="$(closed_port)"
@@ -917,8 +918,7 @@ test_a_closed_port_records_a_null_code_and_the_urlerror() {
 }
 
 # --- Test 3a --------------------------------------------------------------
-test_a_300_is_an_answer_to_the_http_stream() {
-  echo "Test: the http stream takes a 300 Multiple Choices, Glance's root answer, as an answer"
+@test "the http stream takes a 300 Multiple Choices, Glance's root answer, as an answer" {
   ctl POST /_control/reset >/dev/null
 
   start_run multiple -- --streams http --http "$STUB/http/multiple"
@@ -931,8 +931,7 @@ test_a_300_is_an_answer_to_the_http_stream() {
 }
 
 # --- Test 3b --------------------------------------------------------------
-test_a_failed_cycle_deletes_what_it_created() {
-  echo "Test: a failed cycle deletes what it created, so a fault cannot fill a quota"
+@test "a failed cycle deletes what it created, so a fault cannot fill a quota" {
   ctl POST /_control/reset >/dev/null
   ctl POST "/_control/error-volumes?count=4" >/dev/null
 
@@ -952,8 +951,7 @@ test_a_failed_cycle_deletes_what_it_created() {
 }
 
 # --- Test 3c --------------------------------------------------------------
-test_a_failed_cycle_deletes_the_newest_resource_first() {
-  echo "Test: a failed cycle deletes its attachment before the volume the attachment reserves"
+@test "a failed cycle deletes its attachment before the volume the attachment reserves" {
   ctl POST /_control/reset >/dev/null
   # Two attach-update calls fail. Like Cinder, the stub refuses to delete the
   # volume their attachment still reserves.
@@ -975,8 +973,7 @@ test_a_failed_cycle_deletes_the_newest_resource_first() {
 }
 
 # --- Test 3d --------------------------------------------------------------
-test_a_payload_that_differs_fails_read_payload() {
-  echo "Test: a payload that differs from the one stored fails read-payload and the cycle deletes its secret"
+@test "a payload that differs from the one stored fails read-payload and the cycle deletes its secret" {
   ctl POST /_control/reset >/dev/null
 
   start_run payload -- --streams secret "${ENDPOINTS[@]}"
@@ -995,8 +992,7 @@ test_a_payload_that_differs_fails_read_payload() {
 }
 
 # --- Test 3e --------------------------------------------------------------
-test_a_closed_placement_port_records_a_null_code() {
-  echo "Test: a closed --placement port is a create-rp record with code null and the URLError text"
+@test "a closed --placement port is a create-rp record with code null and the URLError text" {
   ctl POST /_control/reset >/dev/null
   local port
   port="$(closed_port)"
@@ -1018,8 +1014,7 @@ test_a_closed_placement_port_records_a_null_code() {
 }
 
 # --- Test 3f --------------------------------------------------------------
-test_a_provider_listing_that_differs_fails_list_rp() {
-  echo "Test: a listing by name that holds another provider fails list-rp and the cycle deletes its provider"
+@test "a listing by name that holds another provider fails list-rp and the cycle deletes its provider" {
   ctl POST /_control/reset >/dev/null
 
   start_run listrp -- --streams placement "${ENDPOINTS[@]}"
@@ -1038,8 +1033,7 @@ test_a_provider_listing_that_differs_fails_list_rp() {
 }
 
 # --- Test 3g --------------------------------------------------------------
-test_a_create_without_a_location_fails_create_rp() {
-  echo "Test: a 201 without a Location fails create-rp, and the sweep deletes the provider it created"
+@test "a 201 without a Location fails create-rp, and the sweep deletes the provider it created" {
   ctl POST /_control/reset >/dev/null
 
   start_run nolocation -- --streams placement "${ENDPOINTS[@]}"
@@ -1058,8 +1052,7 @@ test_a_create_without_a_location_fails_create_rp() {
 }
 
 # --- Test 4 ---------------------------------------------------------------
-test_a_401_reissues_the_token_once_and_retries() {
-  echo "Test: a 401 to an authenticated call issues one new token and retries the call"
+@test "a 401 to an authenticated call issues one new token and retries the call" {
   ctl POST /_control/reset >/dev/null
 
   start_run reauth -- --streams network "${ENDPOINTS[@]}"
@@ -1089,8 +1082,7 @@ print("same call" if (retry[1], retry[2]) == (refused[1], refused[2]) else "othe
 }
 
 # --- Test 4c --------------------------------------------------------------
-test_a_401_to_the_provider_listing_reissues_the_token() {
-  echo "Test: a 401 to GET /resource_providers?name= issues one new token and the listing succeeds on the retry"
+@test "a 401 to GET /resource_providers?name= issues one new token and the listing succeeds on the retry" {
   ctl POST /_control/reset >/dev/null
 
   start_run reauth-rp -- --streams placement "${ENDPOINTS[@]}"
@@ -1121,8 +1113,7 @@ print("same call" if (retry[1], retry[2]) == (refused[1], refused[2]) else "othe
 }
 
 # --- Test 4b --------------------------------------------------------------
-test_a_stream_defect_ends_the_run_without_done() {
-  echo "Test: an exception that is no request failure stops every stream and ends the run with its traceback"
+@test "an exception that is no request failure stops every stream and ends the run with its traceback" {
   ctl POST /_control/reset >/dev/null
   # A flavor list of strings makes the server stream call .get on a str.
   ctl POST /_control/bad-flavors >/dev/null
@@ -1137,8 +1128,7 @@ test_a_stream_defect_ends_the_run_without_done() {
 }
 
 # --- Test 5 ---------------------------------------------------------------
-test_usage_errors_exit_2_before_any_request() {
-  echo "Test: a bad command line exits 2 with a usage: line before any request"
+@test "a bad command line exits 2 with a usage: line before any request" {
   ctl POST /_control/reset >/dev/null
   local rc out
   local cases=(
@@ -1154,8 +1144,8 @@ test_usage_errors_exit_2_before_any_request() {
     rc=0
     # shellcheck disable=SC2086 # the case strings are split on purpose
     out="$(OS_PASSWORD=s3cret python3 -I "$WORKLOAD_PY" run --id t1 --stop-file "$TMP_DIR/x.stop" $args 2>&1)" || rc=$?
-    assert_eq "streams ${label}: exit 2" "2" "$rc"
-    assert_starts_with "streams ${label}: a usage: line" "$out" "usage:"
+    soft assert_eq "streams ${label}: exit 2" "2" "$rc"
+    soft assert_starts_with "streams ${label}: a usage: line" "$out" "usage:"
   done
   # <label>|<run options>|<the usage line>
   local missing=(
@@ -1173,16 +1163,16 @@ test_usage_errors_exit_2_before_any_request() {
     rc=0
     # shellcheck disable=SC2086 # the case strings are split on purpose
     out="$(OS_PASSWORD=s3cret python3 -I "$WORKLOAD_PY" run --id t1 --stop-file "$TMP_DIR/x.stop" $args 2>&1)" || rc=$?
-    assert_eq "${label}: exit 2" "2" "$rc"
-    assert_eq "${label}: the usage line names the option" "$want" "$out"
+    soft assert_eq "${label}: exit 2" "2" "$rc"
+    soft assert_eq "${label}: the usage line names the option" "$want" "$out"
   done
   local value
   for value in nocolon :127.0.0.1 chaos-stub.invalid: chaos-stub.invalid:not-an-ip; do
     rc=0
     out="$(OS_PASSWORD=s3cret python3 -I "$WORKLOAD_PY" run --id t1 --stop-file "$TMP_DIR/x.stop" \
       --streams token --keystone "$STUB/identity/v3" --resolve "$value" 2>&1)" || rc=$?
-    assert_eq "--resolve ${value}: exit 2" "2" "$rc"
-    assert_eq "--resolve ${value}: the usage line" "usage: --resolve wants HOST:ADDR" "$out"
+    soft assert_eq "--resolve ${value}: exit 2" "2" "$rc"
+    soft assert_eq "--resolve ${value}: the usage line" "usage: --resolve wants HOST:ADDR" "$out"
   done
   rc=0
   out="$(OS_PASSWORD=s3cret python3 -I "$WORKLOAD_PY" run --id t1 --stop-file "$TMP_DIR/x.stop" --streams=bogus 2>&1)" || rc=$?
@@ -1198,15 +1188,14 @@ test_usage_errors_exit_2_before_any_request() {
     rc=0
     out="$(CHAOS_WORKLOAD_SETTLE_SECONDS=$settle python3 -I "$WORKLOAD_PY" run --id t1 --stop-file "$TMP_DIR/x.stop" \
       --streams http --http "$STUB/http/ok" 2>&1)" || rc=$?
-    assert_eq "CHAOS_WORKLOAD_SETTLE_SECONDS=${settle}: exit 2" "2" "$rc"
-    assert_contains "it names the value" "$out" "usage: CHAOS_WORKLOAD_SETTLE_SECONDS=${settle} is not a number of seconds"
+    soft assert_eq "CHAOS_WORKLOAD_SETTLE_SECONDS=${settle}: exit 2" "2" "$rc"
+    soft assert_contains "it names the value" "$out" "usage: CHAOS_WORKLOAD_SETTLE_SECONDS=${settle} is not a number of seconds"
   done
   assert_eq "the stub saw no request" "0" "$(ctl GET /_control/requests | jq_py 'len(d)')"
 }
 
 # --- Test 6 ---------------------------------------------------------------
-test_the_stop_file_sweeps_checks_and_prints_done() {
-  echo "Test: the stop file sweeps every prefixed resource, checks each service and prints DONE"
+@test "the stop file sweeps every prefixed resource, checks each service and prints DONE" {
   ctl POST /_control/reset >/dev/null
   ctl POST "/_control/seed-leftovers?id=t1" >/dev/null
 
@@ -1223,7 +1212,7 @@ test_the_stop_file_sweeps_checks_and_prints_done() {
   assert_eq "DONE is the last line" "DONE" "$(tail -n1 "$RUN_OUT")"
   local check
   for check in networks servers volumes images resource-providers secrets; do
-    assert_eq "CONSISTENCY-OK ${check}" "1" "$(grep -cx "CONSISTENCY-OK ${check}" "$RUN_OUT")"
+    soft assert_eq "CONSISTENCY-OK ${check}" "1" "$(grep -cx "CONSISTENCY-OK ${check}" "$RUN_OUT")"
   done
   assert_eq "no CONSISTENCY-FAIL" "0" "$(grep -c '^CONSISTENCY-FAIL' "$RUN_OUT")"
 
@@ -1240,7 +1229,7 @@ test_the_stop_file_sweeps_checks_and_prints_done() {
   local sweeps kind
   sweeps="$(records 'r["op"].startswith("sweep-")')"
   for kind in servers ports networks volumes attachments images resource-providers secrets; do
-    assert_contains "an ok sweep-${kind} record" "$sweeps" "sweep-${kind} true"
+    soft assert_contains "an ok sweep-${kind} record" "$sweeps" "sweep-${kind} true"
   done
   assert_eq "no sweep record failed" "" "$(grep -v ' true ' <<<"$sweeps")"
   assert_eq "the held server has a create record and no active record" \
@@ -1249,8 +1238,7 @@ test_the_stop_file_sweeps_checks_and_prints_done() {
 }
 
 # --- Test 7 ---------------------------------------------------------------
-test_stuck_resources_fail_the_checks_after_the_settle_window() {
-  echo "Test: stuck resources fail all six checks, each after re-reading for the settle window"
+@test "stuck resources fail all six checks, each after re-reading for the settle window" {
   ctl POST /_control/reset >/dev/null
 
   start_run stuck CHAOS_WORKLOAD_SETTLE_SECONDS=2 -- --streams network,server,volume,image,placement,secret "${ENDPOINTS[@]}"
@@ -1293,8 +1281,7 @@ for path in ("/compute/v2.1/servers/detail?all_tenants=1",
 }
 
 # --- Test 8 ---------------------------------------------------------------
-test_a_check_that_cannot_read_reports_the_error_as_detail() {
-  echo "Test: a listing that keeps failing fails the sweep record and the check with the HTTP error"
+@test "a listing that keeps failing fails the sweep record and the check with the HTTP error" {
   ctl POST /_control/reset >/dev/null
 
   start_run unreadable CHAOS_WORKLOAD_SETTLE_SECONDS=1 -- --streams server "${ENDPOINTS[@]}"
@@ -1309,8 +1296,7 @@ test_a_check_that_cannot_read_reports_the_error_as_detail() {
 }
 
 # --- Test 8b --------------------------------------------------------------
-test_a_volume_sweep_without_a_token_still_ends_in_done() {
-  echo "Test: a volume sweep that cannot get a token records the failed listing and the run still ends in DONE"
+@test "a volume sweep that cannot get a token records the failed listing and the run still ends in DONE" {
   ctl POST /_control/reset >/dev/null
 
   start_run notoken CHAOS_WORKLOAD_SETTLE_SECONDS=1 -- --streams volume --keystone "$STUB/identity/v3" --cinder "$STUB/volume"
@@ -1352,8 +1338,7 @@ evaluate_log() {
 MARKS=(--fault-start 1000 --fault-end 1100 --recovery 60)
 
 # --- Test 9 ---------------------------------------------------------------
-test_evaluate_passes_a_clean_log_and_fails_each_violation() {
-  echo "Test: evaluate passes a clean log and fails each violation (window 1000..1160)"
+@test "evaluate passes a clean log and fails each violation (window 1000..1160)" {
   local base
   base="$(rec 900 token issue true 201)"$'\n'"$(rec 1200 token issue true 201)"$'\n'
 
@@ -1431,8 +1416,7 @@ test_evaluate_passes_a_clean_log_and_fails_each_violation() {
 }
 
 # --- Test 10 --------------------------------------------------------------
-test_evaluate_without_marks_fails_any_failure() {
-  echo "Test: without marks there is no window"
+@test "without marks there is no window" {
   local base
   base="$(rec 900 token issue true 201)"$'\n'"$(rec 950 http get true)"$'\n'
   evaluate_log nomarks-clean "${base}DONE"$'\n' --budget-failures 100 --recovery 600
@@ -1447,8 +1431,7 @@ test_evaluate_without_marks_fails_any_failure() {
 }
 
 # --- Test 11 --------------------------------------------------------------
-test_evaluate_input_errors_exit_2_naming_the_cause() {
-  echo "Test: evaluate input errors exit 2 and name the cause"
+@test "evaluate input errors exit 2 and name the cause" {
   evaluate_log empty "" --budget-failures 0 "${MARKS[@]}"
   assert_eq "an empty log: exit 2" "2" "$EVAL_RC"
   assert_contains "it says empty" "$EVAL_OUT" "is empty"
@@ -1469,8 +1452,7 @@ test_evaluate_input_errors_exit_2_naming_the_cause() {
 }
 
 # --- Test 12 --------------------------------------------------------------
-test_evaluate_summary_counts_match_the_hand_computed_values() {
-  echo "Test: the summary line carries the counts and the recovery offset"
+@test "the summary line carries the counts and the recovery offset" {
   # Window 1000..1160. token: ok at 990, 1050, 1180, 1190; failed in the
   # window at 1010 and 1120.5 (recovery 1120.5 - 1100 = 20.5 s), outside at
   # 1170. http: failed in the window at 1050 only, before fault_end, so its
@@ -1500,131 +1482,113 @@ DONE
 # ---------------------------------------------------------------------------
 
 WORKLOAD_SH="$LIB_DIR/workload.sh"
-KSTUB="$TMP_DIR/kstub"
-mkdir -p "$KSTUB/bin"
 
-# The stub kubectl keeps its state in $STUB_DIR:
-#   calls        one line per call; an argument over 300 bytes is written as
-#                <N bytes>, the source after `run ... -c` lands in
-#                run-source and the --overrides JSON in overrides
+# The stub kubectl answers by rules (tests/lib/bats/stubs.bash), and the
+# newest rule that matches a call answers it: new_stub declares the answers
+# for a pod that runs, and a test declares after it what it changes. A call
+# no rule expects fails with "stub kubectl: unexpected ...". The answers keep
+# their state in $KSTUB/state:
+#   run-source   the source after `run ... -c`
+#   overrides    the --overrides JSON of `run`
 #   log          what `logs <pod>` prints; log.after is appended to it when
-#                the stop file is touched, log.later on the
-#                $STUB_READY_AFTER-th `logs <pod>` call
+#                the stop file is touched
 #   clock        the pod clock `exec ... date +%s` reads; each read adds 10
 #   ann-<mark>   the annotations `annotate` wrote
-# and reads these switches: STUB_PHASE (Running), STUB_POD_MISSING,
-# STUB_EMPTY_SECRET (the Secret holds no password),
-# STUB_EXEC_FAIL (the date exec fails with it), STUB_TOUCH_FAIL,
-# STUB_AUDIT_RC and STUB_AUDIT_OUT, STUB_CRONJOB (the sync mode the CronJob's
-# command carries; unset, there is no CronJob), STUB_JOB_STATE, STUB_JOB_LOG.
-cat >"$KSTUB/bin/kubectl" <<'SH'
-#!/bin/bash
-{
-  for a in "$@"; do
-    if [ "${#a}" -gt 300 ]; then printf '<%d bytes> ' "${#a}"; else printf '%s ' "$a"; fi
-  done
-  echo
-} >>"$STUB_DIR/calls"
-missing() {
-  echo "Error from server (NotFound): $1 \"$2\" not found" >&2
-  exit 1
-}
-args="$*"
-case "$1" in
-  run)
-    prev=""
-    for a in "$@"; do
-      if [ "$prev" = "-c" ]; then printf '%s' "$a" >"$STUB_DIR/run-source"; fi
-      case "$a" in --overrides=*) printf '%s' "${a#--overrides=}" >"$STUB_DIR/overrides" ;; esac
-      prev="$a"
-    done
-    ;;
-  delete | create) ;;
-  annotate)
-    for a in "$@"; do
-      case "$a" in
-        chaos.c5c3.io/*=*) k="${a%%=*}"; printf '%s' "${a#*=}" >"$STUB_DIR/ann-${k#chaos.c5c3.io/}" ;;
-      esac
-    done
-    ;;
-  logs)
-    case "$args" in
-      *job/*) printf '%s\n' "${STUB_JOB_LOG:-}"; exit 0 ;;
-    esac
-    if [ -n "${STUB_POD_MISSING:-}" ]; then missing pods "$2"; fi
-    n=$(( $(cat "$STUB_DIR/logs.calls" 2>/dev/null || echo 0) + 1 ))
-    echo "$n" >"$STUB_DIR/logs.calls"
-    if [ "$n" = "${STUB_READY_AFTER:-}" ]; then cat "$STUB_DIR/log.later" >>"$STUB_DIR/log"; fi
-    cat "$STUB_DIR/log" 2>/dev/null
-    ;;
-  describe)
-    if [ -n "${STUB_POD_MISSING:-}" ]; then missing pods "$3"; fi
-    printf 'Name:         %s\nStatus:       %s\n    Command:\n      python3\n      -c\n      """Workload and consistency harness."""\n    State:        Running\n    Environment:\n      OS_PASSWORD:  s3cret\n' "$3" "${STUB_PHASE:-Running}"
-    ;;
-  exec)
-    case "$args" in
-      *"date +%s.%N"*)
-        if [ -n "${STUB_EXEC_FAIL:-}" ]; then echo "$STUB_EXEC_FAIL" >&2; exit 1; fi
-        echo "${STUB_CLOCK:-1760000123.456789012}"
-        ;;
-      *"date +%s"*)
-        if [ -n "${STUB_EXEC_FAIL:-}" ]; then echo "$STUB_EXEC_FAIL" >&2; exit 1; fi
-        c="$(cat "$STUB_DIR/clock")"
-        echo "$c"
-        echo $((c + 10)) >"$STUB_DIR/clock"
-        ;;
-      *"touch /tmp/chaos-workload.stop"*)
-        if [ -n "${STUB_TOUCH_FAIL:-}" ]; then echo "$STUB_TOUCH_FAIL" >&2; exit 1; fi
-        cat "$STUB_DIR/log.after" >>"$STUB_DIR/log" 2>/dev/null
-        ;;
-      *nova-manage*)
-        printf '%s\n' "${STUB_AUDIT_OUT:-}"
-        exit "${STUB_AUDIT_RC:-0}"
-        ;;
-      *) echo "stub kubectl: unexpected exec: $args" >&2; exit 1 ;;
-    esac
-    ;;
-  get)
-    case "$2" in
-      secret)
-        if [ -z "${STUB_EMPTY_SECRET:-}" ]; then printf '%s' "$(printf 's3cret' | base64)"; fi
-        ;;
-      cronjob)
-        if [ -z "${STUB_CRONJOB:-}" ]; then missing cronjobs.batch "$3"; fi
-        printf '["neutron-ovn-db-sync-util","--config-file","/etc/neutron/neutron.conf","--ovn-neutron_sync_mode","%s"]' "$STUB_CRONJOB"
-        ;;
-      job) printf '%s' "${STUB_JOB_STATE:-}" ;;
-      pod)
-        if [ -n "${STUB_POD_MISSING:-}" ]; then missing pods "$3"; fi
-        case "$args" in
-          *phase=*) printf 'phase=%s fault-start=%s fault-end=%s\n' "${STUB_PHASE:-Running}" \
-            "$(cat "$STUB_DIR/ann-fault-start" 2>/dev/null)" "$(cat "$STUB_DIR/ann-fault-end" 2>/dev/null)" ;;
-          *fault-start*) cat "$STUB_DIR/ann-fault-start" 2>/dev/null ;;
-          *fault-end*) cat "$STUB_DIR/ann-fault-end" 2>/dev/null ;;
-          *status.phase*) printf '%s' "${STUB_PHASE:-Running}" ;;
-        esac
-        ;;
-      *) echo "stub kubectl: unexpected get: $args" >&2; exit 1 ;;
-    esac
-    ;;
-  *) echo "stub kubectl: unexpected call: $args" >&2; exit 1 ;;
-esac
-exit 0
-SH
-printf '#!/bin/sh\nexit 0\n' >"$KSTUB/bin/sleep"
-chmod +x "$KSTUB/bin/kubectl" "$KSTUB/bin/sleep"
+# The helpers below declare the answers that take more than one rule or a
+# long text: the pod phase (Running), a missing pod, the placement audit,
+# the sync mode the CronJob's command carries (without one, there is no
+# CronJob), and the conditions and the log of the db-sync Job.
 
-# new_stub — empty the stub state; the pod clock starts at 1000.
+# pod_phase <phase> — the answers that carry the pod phase: the phase read,
+# the line of dump, and the pod description, which carries the source and the
+# password as a real one does.
+pod_phase() {
+  stub_on kubectl 'describe *' --exec "phase=$1
+printf 'Name:         %s\nStatus:       %s\n    Command:\n      python3\n      -c\n      \"\"\"Workload and consistency harness.\"\"\"\n    State:        Running\n    Environment:\n      OS_PASSWORD:  s3cret\n' \"\$3\" \"\$phase\""
+  stub_on kubectl 'get pod *status.phase*' --out-raw "$1"
+  # Declared last, since the jsonpath of dump names the annotations and
+  # status.phase too.
+  stub_on kubectl 'get pod *phase=*' --exec "phase=$1"'
+printf "phase=%s fault-start=%s fault-end=%s\n" "$phase" \
+  "$(cat "$STUB_DIR/state/ann-fault-start" 2>/dev/null)" "$(cat "$STUB_DIR/state/ann-fault-end" 2>/dev/null)"'
+}
+
+# pod_missing <pod> — kubectl finds no pod <pod>.
+pod_missing() {
+  local not_found="Error from server (NotFound): pods \"$1\" not found"
+  stub_on kubectl "logs $1 *" --err "$not_found" --rc 1
+  stub_on kubectl "describe pod $1 *" --err "$not_found" --rc 1
+  stub_on kubectl "get pod $1 *" --err "$not_found" --rc 1
+}
+
+# audit_answer <status> [<output>] — nova-manage placement audit prints
+# <output> on a line of its own and exits <status>.
+audit_answer() {
+  stub_on kubectl 'exec *nova-manage*' --out-raw "${2:-}"$'\n' --rc "$1"
+}
+
+# cronjob_mode <mode> — the db-sync CronJob's command carries the sync mode
+# <mode>.
+cronjob_mode() {
+  stub_on kubectl 'get cronjob *' --out-raw \
+    "$(printf '["neutron-ovn-db-sync-util","--config-file","/etc/neutron/neutron.conf","--ovn-neutron_sync_mode","%s"]' "$1")"
+}
+
+# db_sync_job <conditions> <log> — the conditions of the db-sync Job that are
+# True, and the log of the Job.
+db_sync_job() {
+  stub_on kubectl 'get job *' --out-raw "$1"
+  stub_on kubectl 'logs *job/*' --out-raw "$2"$'\n'
+}
+
+# new_stub — empty the stub state and declare the default answers again; the
+# pod clock starts at 1000, and calls leaves out the calls made before.
 new_stub() {
   rm -rf "$KSTUB/state"
   mkdir -p "$KSTUB/state"
-  : >"$KSTUB/state/calls"
   : >"$KSTUB/state/log"
   echo 1000 >"$KSTUB/state/clock"
+  KCALLS="$(stub_calls kubectl | wc -l | tr -d ' ')"
+
+  stub_on kubectl '*' --exec 'echo "stub kubectl: unexpected call: $*" >&2; exit 1'
+  stub_on kubectl 'run *' --exec '
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "-c" ]; then printf "%s" "$a" >"$STUB_DIR/state/run-source"; fi
+  case "$a" in --overrides=*) printf "%s" "${a#--overrides=}" >"$STUB_DIR/state/overrides" ;; esac
+  prev="$a"
+done'
+  stub_on kubectl 'delete *'
+  stub_on kubectl 'create *'
+  stub_on kubectl 'annotate *' --exec '
+for a in "$@"; do
+  case "$a" in
+    chaos.c5c3.io/*=*) k="${a%%=*}"; printf "%s" "${a#*=}" >"$STUB_DIR/state/ann-${k#chaos.c5c3.io/}" ;;
+  esac
+done'
+  stub_on kubectl 'logs *' --exec 'cat "$STUB_DIR/state/log" 2>/dev/null; exit 0'
+  stub_on kubectl 'exec *' --exec 'echo "stub kubectl: unexpected exec: $*" >&2; exit 1'
+  audit_answer 0
+  stub_on kubectl 'exec *touch /tmp/chaos-workload.stop*' \
+    --exec 'cat "$STUB_DIR/state/log.after" >>"$STUB_DIR/state/log" 2>/dev/null; exit 0'
+  stub_on kubectl 'exec *date +%s*' --exec '
+c="$(cat "$STUB_DIR/state/clock")"
+echo "$c"
+echo $((c + 10)) >"$STUB_DIR/state/clock"'
+  stub_on kubectl 'exec *date +%s.%N*' --out 1760000123.456789012
+  stub_on kubectl 'get *' --exec 'echo "stub kubectl: unexpected get: $*" >&2; exit 1'
+  stub_on kubectl 'get secret *' --out-raw "$(printf 's3cret' | base64)"
+  stub_on kubectl 'get cronjob *' \
+    --exec 'echo "Error from server (NotFound): cronjobs.batch \"$3\" not found" >&2; exit 1'
+  db_sync_job "" ""
+  stub_on kubectl 'get pod *'
+  stub_on kubectl 'get pod *fault-end*' --exec 'cat "$STUB_DIR/state/ann-fault-end" 2>/dev/null; exit 0'
+  stub_on kubectl 'get pod *fault-start*' --exec 'cat "$STUB_DIR/state/ann-fault-start" 2>/dev/null; exit 0'
+  pod_phase Running
 }
 
 # wl <dir> [VAR=value...] -- <workload.sh args> — run workload.sh from <dir>
-# with the stub first on PATH; WL_OUT and WL_RC hold the result.
+# with the stubs first on PATH; WL_OUT and WL_RC hold the result.
 wl() {
   local dir="$1"
   shift
@@ -1635,12 +1599,26 @@ wl() {
   done
   shift
   WL_RC=0
-  WL_OUT="$(cd "$dir" && env STUB_DIR="$KSTUB/state" NAMESPACE=openstack PATH="$KSTUB/bin:$PATH" \
+  WL_OUT="$(cd "$dir" && with_stubs env NAMESPACE=openstack \
     ${envs[@]+"${envs[@]}"} bash "$WORKLOAD_SH" "$@" 2>&1)" || WL_RC=$?
 }
 
+# calls — the kubectl calls since new_stub, one per line. The two arguments
+# of `run` over 300 bytes, the source and the --overrides JSON, are written
+# as <N bytes>, so that the call stays on one line.
 calls() {
-  cat "$KSTUB/state/calls"
+  stub_calls kubectl | sed -n "$((KCALLS + 1)),\$p" | python3 -I -c '
+import sys
+log = sys.stdin.buffer.read()
+for name in sys.argv[1:]:
+    try:
+        with open(name, "rb") as handle:
+            arg = handle.read()
+    except OSError:
+        continue
+    if len(arg) > 300:
+        log = log.replace(arg, b"<%d bytes>" % len(arg))
+sys.stdout.buffer.write(log)' "$KSTUB/state/run-source" "$KSTUB/state/overrides"
 }
 
 # suite_dir <name> <header lines> — a scratch suite directory whose
@@ -1652,11 +1630,13 @@ suite_dir() {
 }
 
 # --- Test 13 --------------------------------------------------------------
-test_start_runs_the_pod_as_specified() {
-  echo "Test: start runs chaos-wl-<id> with both labels, the image, the password only with --keystone, and waits for READY"
+@test "start runs chaos-wl-<id> with both labels, the image, the password only with --keystone, and waits for READY" {
   new_stub
   printf 'READY token\nREADY http\n' >"$KSTUB/state/log.later"
-  wl "$TMP_DIR" STUB_READY_AFTER=3 -- start t-one -- --streams token,http --keystone http://k:5000/v3 --http http://h/
+  # The log holds both READY lines from its third read on.
+  stub_on kubectl 'logs chaos-wl-t-one *' --out-file "$KSTUB/state/log.later"
+  stub_on kubectl 'logs chaos-wl-t-one *' --times 2
+  wl "$TMP_DIR" -- start t-one -- --streams token,http --keystone http://k:5000/v3 --http http://h/
   assert_eq "start exits 0" "0" "$WL_RC"
   assert_contains "it reports READY" "$WL_OUT" "OK: workload chaos-wl-t-one is READY on token,http"
   local c
@@ -1684,7 +1664,7 @@ test_start_runs_the_pod_as_specified() {
   assert_eq "the pod mounts no ServiceAccount token" "False" \
     "$(jq_py 'd["spec"]["automountServiceAccountToken"]' <"$KSTUB/state/overrides")"
   assert_contains "merged strategically" "$run" "--override-type=strategic"
-  assert_eq "the log was read until both READY lines were there" "3" "$(cat "$KSTUB/state/logs.calls")"
+  assert_eq "the log was read until both READY lines were there" "3" "$(calls | grep -c '^logs ')"
 
   new_stub
   printf 'READY http\n' >"$KSTUB/state/log"
@@ -1711,7 +1691,8 @@ test_start_runs_the_pod_as_specified() {
   assert_not_contains "and keystone-admin is not read" "$(calls)" "get secret keystone-admin"
 
   new_stub
-  wl "$TMP_DIR" STUB_EMPTY_SECRET=1 CHAOS_WORKLOAD_ADMIN_SECRET=cp-x-keystone-admin-credentials -- \
+  stub_on kubectl 'get secret *'
+  wl "$TMP_DIR" CHAOS_WORKLOAD_ADMIN_SECRET=cp-x-keystone-admin-credentials -- \
     start t-five -- --streams token --keystone http://k:5000/v3
   assert_eq "a Secret without a password fails start" "1" "$WL_RC"
   assert_contains "the failure names the Secret" "$WL_OUT" \
@@ -1720,11 +1701,11 @@ test_start_runs_the_pod_as_specified() {
 }
 
 # --- Test 14 --------------------------------------------------------------
-test_start_fails_on_a_terminal_pod_or_a_missing_ready() {
-  echo "Test: start fails on a pod that ended before READY and on a READY that never comes"
+@test "start fails on a pod that ended before READY and on a READY that never comes" {
   new_stub
   printf 'usage: stream network needs --keystone\n' >"$KSTUB/state/log"
-  wl "$TMP_DIR" STUB_PHASE=Failed -- start t1 -- --streams network --neutron http://n/
+  pod_phase Failed
+  wl "$TMP_DIR" -- start t1 -- --streams network --neutron http://n/
   assert_eq "a Failed pod: exit 1" "1" "$WL_RC"
   assert_contains "it names the phase" "$WL_OUT" "FAIL: start t1: the pod reached Failed before READY on: network"
   assert_contains "it prints the log" "$WL_OUT" "usage: stream network needs --keystone"
@@ -1744,8 +1725,7 @@ test_start_fails_on_a_terminal_pod_or_a_missing_ready() {
 }
 
 # --- Test 15 --------------------------------------------------------------
-test_start_rejects_an_invalid_id() {
-  echo "Test: start refuses an id outside ^[a-z0-9]([-a-z0-9]{0,38}[a-z0-9])?$"
+@test "start refuses an id outside ^[a-z0-9]([-a-z0-9]{0,38}[a-z0-9])?\$" {
   local id40 id41
   id40="$(printf 'a%.0s' $(seq 1 40))"
   id41="${id40}a"
@@ -1766,10 +1746,10 @@ test_start_rejects_an_invalid_id() {
 }
 
 # --- Test 16 --------------------------------------------------------------
-test_mark_writes_the_pod_clock_and_fails_with_the_exec_error() {
-  echo "Test: mark writes the pod clock to the annotation and fails with the exec error"
+@test "mark writes the pod clock to the annotation and fails with the exec error" {
   new_stub
-  wl "$TMP_DIR" STUB_CLOCK=1760000123.456789012 -- mark t1 fault-start
+  stub_on kubectl 'exec *date +%s.%N*' --out 1760000123.456789012
+  wl "$TMP_DIR" -- mark t1 fault-start
   assert_eq "mark exits 0" "0" "$WL_RC"
   assert_eq "the pod clock lands in chaos.c5c3.io/fault-start" "1760000123.456789012" "$(cat "$KSTUB/state/ann-fault-start")"
   assert_contains "the clock is read in the pod" "$(calls)" "exec chaos-wl-t1 -n openstack -- date +%s.%N"
@@ -1777,7 +1757,8 @@ test_mark_writes_the_pod_clock_and_fails_with_the_exec_error() {
     "annotate pod chaos-wl-t1 -n openstack chaos.c5c3.io/fault-start=1760000123.456789012 --overwrite"
 
   new_stub
-  wl "$TMP_DIR" STUB_EXEC_FAIL="error: unable to upgrade connection: container not found" -- mark t1 fault-end
+  stub_on kubectl 'exec *date +%s*' --err "error: unable to upgrade connection: container not found" --rc 1
+  wl "$TMP_DIR" -- mark t1 fault-end
   assert_eq "a failed exec: exit 1" "1" "$WL_RC"
   assert_contains "it prints the error" "$WL_OUT" "error: unable to upgrade connection: container not found"
   assert_eq "nothing is annotated" "no" "$([ -f "$KSTUB/state/ann-fault-end" ] && echo yes || echo no)"
@@ -1787,8 +1768,7 @@ test_mark_writes_the_pod_clock_and_fails_with_the_exec_error() {
 }
 
 # --- Test 17 --------------------------------------------------------------
-test_verify_refuses_a_missing_double_or_malformed_budget_line() {
-  echo "Test: verify refuses a suite without exactly one valid budget line"
+@test "verify refuses a suite without exactly one valid budget line" {
   local dir
   new_stub
   dir="$(suite_dir no-budget '# A suite without a budget.')"
@@ -1819,14 +1799,14 @@ good_run() {
 }
 
 # --- Test 18 --------------------------------------------------------------
-test_verify_maps_the_placement_audit_exit_codes() {
-  echo "Test: verify maps the placement audit's exit codes 0, 3 and 1"
+@test "verify maps the placement audit's exit codes 0, 3 and 1" {
   local dir
   dir="$(suite_dir audit '# Chaos budget: failures=0 recovery=0s')"
 
   new_stub
   good_run >"$KSTUB/state/log.after"
-  wl "$dir" STUB_AUDIT_RC=0 STUB_AUDIT_OUT="Processed 1 allocation." -- verify t1 --placement-audit nova-x
+  audit_answer 0 "Processed 1 allocation."
+  wl "$dir" -- verify t1 --placement-audit nova-x
   assert_eq "exit 0 from the audit: verify passes" "0" "$WL_RC"
   assert_contains "it reports the audit" "$WL_OUT" "CONSISTENCY-OK placement-audit"
   assert_contains "evaluate ran" "$WL_OUT" "stream token: 2 ok"
@@ -1840,14 +1820,16 @@ test_verify_maps_the_placement_audit_exit_codes() {
 
   new_stub
   good_run >"$KSTUB/state/log.after"
-  wl "$dir" STUB_AUDIT_RC=3 STUB_AUDIT_OUT="Allocations were set on resource provider rp1 for consumer c1" -- verify t1 --placement-audit nova-x
+  audit_answer 3 "Allocations were set on resource provider rp1 for consumer c1"
+  wl "$dir" -- verify t1 --placement-audit nova-x
   assert_eq "exit 3 from the audit: exit 1" "1" "$WL_RC"
   assert_contains "it is a consistency failure" "$WL_OUT" "CONSISTENCY-FAIL placement-audit"
   assert_contains "with the output" "$WL_OUT" "for consumer c1"
 
   new_stub
   good_run >"$KSTUB/state/log.after"
-  wl "$dir" STUB_AUDIT_RC=1 STUB_AUDIT_OUT="An error has occurred" -- verify t1 --placement-audit nova-x
+  audit_answer 1 "An error has occurred"
+  wl "$dir" -- verify t1 --placement-audit nova-x
   assert_eq "exit 1 from the audit: exit 1" "1" "$WL_RC"
   assert_contains "it names the code" "$WL_OUT" "FAIL: placement-audit: nova-manage exited 1"
   assert_contains "with the output" "$WL_OUT" "An error has occurred"
@@ -1879,7 +1861,8 @@ test_verify_maps_the_placement_audit_exit_codes() {
     rec 1011 token issue false 503
     printf 'DONE\n'
   } >"$KSTUB/state/log.after"
-  wl "$dir" STUB_AUDIT_RC=0 -- verify t1 --placement-audit nova-x
+  audit_answer 0
+  wl "$dir" -- verify t1 --placement-audit nova-x
   assert_eq "a log evaluate fails: exit 1" "1" "$WL_RC"
   assert_contains "it names evaluate" "$WL_OUT" "FAIL: workload.py evaluate exited 1"
   assert_contains "the audit still runs" "$WL_OUT" "CONSISTENCY-OK placement-audit"
@@ -1889,13 +1872,14 @@ test_verify_maps_the_placement_audit_exit_codes() {
 }
 
 # --- Test 19 --------------------------------------------------------------
-test_verify_fails_on_a_stop_exec_error_or_a_missing_done() {
-  echo "Test: verify fails with the log and the pod status on a failed stop and on a missing DONE"
+@test "verify fails with the log and the pod status on a failed stop and on a missing DONE" {
   local dir
   dir="$(suite_dir stop '# Chaos budget: failures=0 recovery=0s')"
   new_stub
   printf 'READY token\n' >"$KSTUB/state/log"
-  wl "$dir" STUB_TOUCH_FAIL="error: Internal error occurred: container is not running" -- verify t1
+  stub_on kubectl 'exec *touch /tmp/chaos-workload.stop*' \
+    --err "error: Internal error occurred: container is not running" --rc 1
+  wl "$dir" -- verify t1
   assert_eq "a failed touch: exit 1" "1" "$WL_RC"
   assert_contains "it prints the exec error" "$WL_OUT" "creating the stop file failed: error: Internal error occurred"
   assert_contains "the log" "$WL_OUT" "READY token"
@@ -1913,27 +1897,29 @@ test_verify_fails_on_a_stop_exec_error_or_a_missing_done() {
   new_stub
   printf 'READY token\n' >"$KSTUB/state/log"
   rec 1001 token issue true 201 >"$KSTUB/state/log.after"
-  wl "$dir" STUB_PHASE=Failed -- verify t1
+  pod_phase Failed
+  wl "$dir" -- verify t1
   assert_eq "a pod that ended without DONE: exit 1" "1" "$WL_RC"
   assert_contains "it names the phase" "$WL_OUT" "the workload ended Failed without DONE"
 
   new_stub
-  wl "$dir" STUB_POD_MISSING=1 -- verify t1
+  pod_missing chaos-wl-t1
+  wl "$dir" -- verify t1
   assert_eq "a missing pod: exit 1" "1" "$WL_RC"
   assert_contains "it says the pod is missing" "$WL_OUT" 'the workload pod is missing: Error from server (NotFound): pods "chaos-wl-t1" not found'
 }
 
 # --- Test 20 --------------------------------------------------------------
-test_verify_reads_the_ovn_db_sync_log() {
-  echo "Test: verify runs the OVN db-sync CronJob once and reads its log"
+@test "verify runs the OVN db-sync CronJob once and reads its log" {
   local dir c
   dir="$(suite_dir ovn '# Chaos budget: failures=0 recovery=0s')"
 
   new_stub
   good_run >"$KSTUB/state/log.after"
-  wl "$dir" STUB_CRONJOB=log STUB_JOB_STATE="SuccessCriteriaMet Complete" \
-    STUB_JOB_LOG=$'Neutron OVN DB sync started\nNetwork found in OVN NB DB but not in Neutron, network_id=x\nNeutron OVN DB sync completed' \
-    -- verify t1 --ovn-db-sync neutron-x
+  cronjob_mode log
+  db_sync_job "SuccessCriteriaMet Complete" \
+    $'Neutron OVN DB sync started\nNetwork found in OVN NB DB but not in Neutron, network_id=x\nNeutron OVN DB sync completed'
+  wl "$dir" -- verify t1 --ovn-db-sync neutron-x
   assert_eq "a drift line: exit 1" "1" "$WL_RC"
   assert_contains "it is a consistency failure" "$WL_OUT" "CONSISTENCY-FAIL ovn-db-sync"
   assert_contains "with the drift line" "$WL_OUT" "Network found in OVN NB DB but not in Neutron, network_id=x"
@@ -1948,11 +1934,12 @@ test_verify_reads_the_ovn_db_sync_log() {
   while IFS= read -r line; do
     new_stub
     good_run >"$KSTUB/state/log.after"
-    wl "$dir" STUB_CRONJOB=log STUB_JOB_STATE="SuccessCriteriaMet Complete" \
-      STUB_JOB_LOG=$'Neutron OVN DB sync started\n'"${line}"$'\nNeutron OVN DB sync completed' \
-      -- verify t1 --ovn-db-sync neutron-x
-    assert_eq "'${line}': exit 1" "1" "$WL_RC"
-    assert_contains "it is a consistency failure with the line" "$WL_OUT" $'CONSISTENCY-FAIL ovn-db-sync: Neutron and OVN disagree\n'"${line}"
+    cronjob_mode log
+    db_sync_job "SuccessCriteriaMet Complete" \
+      $'Neutron OVN DB sync started\n'"${line}"$'\nNeutron OVN DB sync completed'
+    wl "$dir" -- verify t1 --ovn-db-sync neutron-x
+    soft assert_eq "'${line}': exit 1" "1" "$WL_RC"
+    soft assert_contains "it is a consistency failure with the line" "$WL_OUT" $'CONSISTENCY-FAIL ovn-db-sync: Neutron and OVN disagree\n'"${line}"
   done <<'LINES'
 Number of Port Groups to add: 1, remove: 0
 ACLs to be added: 2 ACLs to be removed: 0
@@ -1968,9 +1955,10 @@ LINES
 
   new_stub
   good_run >"$KSTUB/state/log.after"
-  wl "$dir" STUB_CRONJOB=log STUB_JOB_STATE="SuccessCriteriaMet Complete" \
-    STUB_JOB_LOG=$'Neutron OVN DB sync started\nHost h1 found both in OVN SB DB and Neutron. Trigger updating its SegmentHostMapping in Neutron, to keep OVN SB DB and Neutron data consistent\nNeutron OVN DB sync completed' \
-    -- verify t1 --ovn-db-sync neutron-x
+  cronjob_mode log
+  db_sync_job "SuccessCriteriaMet Complete" \
+    $'Neutron OVN DB sync started\nHost h1 found both in OVN SB DB and Neutron. Trigger updating its SegmentHostMapping in Neutron, to keep OVN SB DB and Neutron data consistent\nNeutron OVN DB sync completed'
+  wl "$dir" -- verify t1 --ovn-db-sync neutron-x
   assert_eq "a clean log: exit 0" "0" "$WL_RC"
   assert_contains "it reports the comparison" "$WL_OUT" "CONSISTENCY-OK ovn-db-sync"
   assert_contains "and shows that the sync ran" "$WL_OUT" "Neutron OVN DB sync completed"
@@ -1981,11 +1969,12 @@ LINES
   while IFS= read -r line; do
     new_stub
     good_run >"$KSTUB/state/log.after"
-    wl "$dir" STUB_CRONJOB=log STUB_JOB_STATE="SuccessCriteriaMet Complete" \
-      STUB_JOB_LOG=$'Neutron OVN DB sync started\n'"${line}"$'\nNeutron OVN DB sync completed' \
-      -- verify t1 --ovn-db-sync neutron-x
-    assert_eq "'${line}': exit 0" "0" "$WL_RC"
-    assert_contains "it reports the comparison" "$WL_OUT" "CONSISTENCY-OK ovn-db-sync"
+    cronjob_mode log
+    db_sync_job "SuccessCriteriaMet Complete" \
+      $'Neutron OVN DB sync started\n'"${line}"$'\nNeutron OVN DB sync completed'
+    wl "$dir" -- verify t1 --ovn-db-sync neutron-x
+    soft assert_eq "'${line}': exit 0" "0" "$WL_RC"
+    soft assert_contains "it reports the comparison" "$WL_OUT" "CONSISTENCY-OK ovn-db-sync"
   done <<'LINES'
 New host h1 found in OVN SB DB, but not in Neutron. Add its SegmentHostMapping in Neutron
 Stale host h1 found in Neutron, but not in OVN SB DB. Clear its SegmentHostMapping in Neutron
@@ -1993,9 +1982,10 @@ LINES
 
   new_stub
   good_run >"$KSTUB/state/log.after"
-  wl "$dir" STUB_CRONJOB=log STUB_JOB_STATE="SuccessCriteriaMet Complete" \
-    STUB_JOB_LOG=$'Neutron OVN DB sync started\nNew host h1 found in OVN SB DB, but not in Neutron. Add its SegmentHostMapping in Neutron\nPort found in Neutron but not in OVN NB DB, port_id=p1\nNeutron OVN DB sync completed' \
-    -- verify t1 --ovn-db-sync neutron-x
+  cronjob_mode log
+  db_sync_job "SuccessCriteriaMet Complete" \
+    $'Neutron OVN DB sync started\nNew host h1 found in OVN SB DB, but not in Neutron. Add its SegmentHostMapping in Neutron\nPort found in Neutron but not in OVN NB DB, port_id=p1\nNeutron OVN DB sync completed'
+  wl "$dir" -- verify t1 --ovn-db-sync neutron-x
   assert_eq "a Northbound line beside a Southbound one: exit 1" "1" "$WL_RC"
   assert_contains "it fails on the Northbound line" "$WL_OUT" \
     $'CONSISTENCY-FAIL ovn-db-sync: Neutron and OVN disagree\nPort found in Neutron but not in OVN NB DB, port_id=p1'
@@ -2004,9 +1994,9 @@ LINES
   # The Job would pass, so only the mode check can fail the run.
   new_stub
   good_run >"$KSTUB/state/log.after"
-  wl "$dir" STUB_CRONJOB=repair STUB_JOB_STATE="SuccessCriteriaMet Complete" \
-    STUB_JOB_LOG=$'Neutron OVN DB sync started\nNeutron OVN DB sync completed' \
-    -- verify t1 --ovn-db-sync neutron-x
+  cronjob_mode repair
+  db_sync_job "SuccessCriteriaMet Complete" $'Neutron OVN DB sync started\nNeutron OVN DB sync completed'
+  wl "$dir" -- verify t1 --ovn-db-sync neutron-x
   assert_eq "a CronJob in repair mode: exit 1" "1" "$WL_RC"
   assert_contains "it asks for log mode" "$WL_OUT" \
     "cronjob neutron-x-ovn-db-sync does not run in log mode: set spec.ovnDBSync.syncMode: log on the Neutron CR"
@@ -2014,22 +2004,26 @@ LINES
 
   new_stub
   good_run >"$KSTUB/state/log.after"
-  wl "$dir" STUB_CRONJOB=log STUB_JOB_STATE="" CHAOS_WORKLOAD_DB_SYNC_SECONDS=1 -- verify t1 --ovn-db-sync neutron-x
+  cronjob_mode log
+  db_sync_job "" ""
+  wl "$dir" CHAOS_WORKLOAD_DB_SYNC_SECONDS=1 -- verify t1 --ovn-db-sync neutron-x
   assert_eq "a Job that never finishes: exit 1" "1" "$WL_RC"
   assert_contains "it names the bound" "$WL_OUT" "FAIL: ovn-db-sync: job chaos-wl-t1-ovn-db-sync did not complete within 1s"
   assert_contains "the Job is deleted" "$(calls)" "delete job chaos-wl-t1-ovn-db-sync -n openstack --ignore-not-found --wait=false"
 
   new_stub
   good_run >"$KSTUB/state/log.after"
-  wl "$dir" STUB_CRONJOB=log STUB_JOB_STATE="SuccessCriteriaMet Complete" STUB_JOB_LOG="" \
-    -- verify t1 --ovn-db-sync neutron-x
+  cronjob_mode log
+  db_sync_job "SuccessCriteriaMet Complete" ""
+  wl "$dir" -- verify t1 --ovn-db-sync neutron-x
   assert_eq "a completed Job whose log never reports completion: exit 1" "1" "$WL_RC"
   assert_contains "it names the missing line" "$WL_OUT" "has no 'Neutron OVN DB sync completed' line"
 
   new_stub
   good_run >"$KSTUB/state/log.after"
-  wl "$dir" STUB_CRONJOB=log STUB_JOB_STATE="FailureTarget Failed" STUB_JOB_LOG="Traceback: cannot connect to OVN NB" \
-    -- verify t1 --ovn-db-sync neutron-x
+  cronjob_mode log
+  db_sync_job "FailureTarget Failed" "Traceback: cannot connect to OVN NB"
+  wl "$dir" -- verify t1 --ovn-db-sync neutron-x
   assert_eq "a failed Job: exit 1" "1" "$WL_RC"
   assert_contains "it says the Job failed" "$WL_OUT" "FAIL: ovn-db-sync: job chaos-wl-t1-ovn-db-sync failed"
   assert_contains "with its log" "$WL_OUT" "Traceback: cannot connect to OVN NB"
@@ -2045,13 +2039,13 @@ LINES
 }
 
 # --- Test 21 --------------------------------------------------------------
-test_dump_and_stop_exit_0_without_a_pod() {
-  echo "Test: dump and stop exit 0 when the pod is gone"
+@test "dump and stop exit 0 when the pod is gone" {
   new_stub
-  wl "$TMP_DIR" STUB_POD_MISSING=1 -- dump t1
+  pod_missing chaos-wl-t1
+  wl "$TMP_DIR" -- dump t1
   assert_eq "dump exits 0" "0" "$WL_RC"
   assert_contains "it says what it dumps" "$WL_OUT" "=== chaos workload chaos-wl-t1 ==="
-  wl "$TMP_DIR" STUB_POD_MISSING=1 -- stop t1
+  wl "$TMP_DIR" -- stop t1
   assert_eq "stop exits 0" "0" "$WL_RC"
   assert_contains "stop deletes without waiting" "$(calls)" "delete pod chaos-wl-t1 -n openstack --ignore-not-found --wait=false"
 
@@ -2123,8 +2117,7 @@ check_adopter() {
     "$(grep -c "workload\.sh mark $suite fault-start" "$file")" \
     "$(grep -c "workload\.sh mark $suite fault-end" "$file")"
   if ! have_yq; then
-    # The two yq checks below.
-    SKIP=$((SKIP + 2))
+    # The two yq checks below; the test skips once its other checks ran.
     return 0
   fi
   assert_eq "$suite: a stop in a cleanup block" "1" "$(yq 'explode(.) | [.spec.steps[].cleanup[]? | select(has("script"))
@@ -2134,14 +2127,13 @@ check_adopter() {
 }
 
 # --- Test 22 --------------------------------------------------------------
-test_every_suite_adopts_the_harness_or_declines_it() {
-  echo "Test: the fifty-nine adopters keep the harness contract, deletion-stuck-finalizer, c5c3-operator-pod-kill and controlplane-deletion-korc-outage decline it"
+@test "the fifty-nine adopters keep the harness contract, deletion-stuck-finalizer, c5c3-operator-pod-kill and controlplane-deletion-korc-outage decline it" {
   local file suite found=""
   for file in "$CHAOS_DIR"/*/chainsaw-test.yaml; do
     suite="$(basename "$(dirname "$file")")"
     if grep -q 'lib/workload\.sh start' "$file"; then
       found="$found $suite"
-      check_adopter "$suite" "$file"
+      soft check_adopter "$suite" "$file"
     fi
   done
   # shellcheck disable=SC2086 # word splitting builds the sorted list
@@ -2163,7 +2155,7 @@ test_every_suite_adopts_the_harness_or_declines_it() {
     suite="$(basename "$(dirname "$file")")"
     if grep -q 'e2e-chaos/lib/workload\.sh start' "$file"; then
       found_upgrade="$found_upgrade $suite"
-      check_adopter "$suite" "$file" ../../e2e-chaos/lib
+      soft check_adopter "$suite" "$file" ../../e2e-chaos/lib
     fi
   done
   # shellcheck disable=SC2086 # word splitting builds the sorted list
@@ -2171,9 +2163,7 @@ test_every_suite_adopts_the_harness_or_declines_it() {
     "$UPGRADE_ADOPTERS" "$(printf '%s\n' $found_upgrade | sort | xargs)"
 
   if ! have_yq; then
-    echo "  SKIP: yq not installed (two checks per adopter and the untimed-call check skipped)"
-    SKIP=$((SKIP + 1))
-    return 0
+    skip "yq not installed (two checks per adopter and the untimed-call check skipped)"
   fi
   local untimed
   untimed="$(for file in "$CHAOS_DIR"/*/chainsaw-test.yaml "$UPGRADE_DIR"/*/chainsaw-test.yaml; do
@@ -2189,8 +2179,7 @@ test_every_suite_adopts_the_harness_or_declines_it() {
 # ---------------------------------------------------------------------------
 
 # --- Test 23 --------------------------------------------------------------
-test_ci_loads_the_tempest_image_on_the_keystone_stack_legs() {
-  echo "Test: every non-ovn e2e-chaos leg loads the Tempest image, and make shellcheck lints the harness"
+@test "every non-ovn e2e-chaos leg loads the Tempest image, and make shellcheck lints the harness" {
   local stack kind_load
   stack="$(job_step e2e-chaos "Load E2E images (keystone stack)")"
   kind_load="$(job_step e2e-chaos "Load images into kind")"
@@ -2215,14 +2204,12 @@ test_ci_loads_the_tempest_image_on_the_keystone_stack_legs() {
     out="$(cd "$PROJECT_ROOT" && shellcheck --severity=warning tests/e2e-chaos/lib/workload.sh 2>&1)" || rc=$?
     assert_eq "workload.sh passes shellcheck${out:+: $out}" "0" "$rc"
   else
-    echo "  SKIP: shellcheck not installed (1 check skipped)"
-    SKIP=$((SKIP + 1))
+    skip "shellcheck not installed (1 check skipped)"
   fi
 }
 
 # --- Test 24 --------------------------------------------------------------
-test_ci_runs_placement_on_the_pod_and_network_legs() {
-  echo "Test: the pod and network e2e-chaos legs load and deploy Placement, the nova leg keeps its own steps"
+@test "the pod and network e2e-chaos legs load and deploy Placement, the nova leg keeps its own steps" {
   # The placement stream needs a Placement on every leg that runs a placement
   # suite: placement-operator-pod-kill and placement-keystone-outage on pod,
   # placement-mariadb-outage on network.
@@ -2236,7 +2223,7 @@ test_ci_runs_placement_on_the_pod_and_network_legs() {
   local name step
   for name in "Load placement images into kind" "Deploy placement operator"; do
     step="$(job_step e2e-chaos "$name")"
-    assert_eq "${name}: runs on the pod and network legs alone" \
+    soft assert_eq "${name}: runs on the pod and network legs alone" \
       "if: matrix.suite == 'pod' || matrix.suite == 'network'" \
       "$(grep -E '^ *if:' <<<"$step" | sed 's/^ *//')"
   done
@@ -2246,49 +2233,3 @@ test_ci_runs_placement_on_the_pod_and_network_legs() {
   assert_contains "the network leg runs the placement database outage" \
     "$(e2e_chaos_matrix_entry network)" "tests/e2e-chaos/placement-mariadb-outage"
 }
-
-# --- Run ---
-test_run_reaches_ready_on_every_stream
-test_a_503_fails_one_stream_and_leaves_the_others_ok
-test_a_503_on_create_fails_placement_and_secret_while_token_keeps_going
-test_resolve_sends_the_request_to_the_mapped_address
-test_insecure_tls_is_needed_against_a_self_signed_stub
-test_a_closed_port_records_a_null_code_and_the_urlerror
-test_a_300_is_an_answer_to_the_http_stream
-test_a_failed_cycle_deletes_what_it_created
-test_a_failed_cycle_deletes_the_newest_resource_first
-test_a_payload_that_differs_fails_read_payload
-test_a_closed_placement_port_records_a_null_code
-test_a_provider_listing_that_differs_fails_list_rp
-test_a_create_without_a_location_fails_create_rp
-test_a_401_reissues_the_token_once_and_retries
-test_a_401_to_the_provider_listing_reissues_the_token
-test_a_stream_defect_ends_the_run_without_done
-test_usage_errors_exit_2_before_any_request
-test_the_stop_file_sweeps_checks_and_prints_done
-test_stuck_resources_fail_the_checks_after_the_settle_window
-test_a_check_that_cannot_read_reports_the_error_as_detail
-test_a_volume_sweep_without_a_token_still_ends_in_done
-test_evaluate_passes_a_clean_log_and_fails_each_violation
-test_evaluate_without_marks_fails_any_failure
-test_evaluate_input_errors_exit_2_naming_the_cause
-test_evaluate_summary_counts_match_the_hand_computed_values
-test_start_runs_the_pod_as_specified
-test_start_fails_on_a_terminal_pod_or_a_missing_ready
-test_start_rejects_an_invalid_id
-test_mark_writes_the_pod_clock_and_fails_with_the_exec_error
-test_verify_refuses_a_missing_double_or_malformed_budget_line
-test_verify_maps_the_placement_audit_exit_codes
-test_verify_fails_on_a_stop_exec_error_or_a_missing_done
-test_verify_reads_the_ovn_db_sync_log
-test_dump_and_stop_exit_0_without_a_pod
-test_every_suite_adopts_the_harness_or_declines_it
-test_ci_loads_the_tempest_image_on_the_keystone_stack_legs
-test_ci_runs_placement_on_the_pod_and_network_legs
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0
