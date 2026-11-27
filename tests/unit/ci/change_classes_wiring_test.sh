@@ -413,7 +413,7 @@ test_always_on_gates_skip_a_noop_run() {
   done
 
   # test-shell is deliberately exempt: it carries no `if:` at all so a breakage
-  # that lands on main fails main's own run. tests/unit/ci/test_shell_event_guard_test.sh
+  # that lands on main fails main's own run. tests/unit/ci/test_shell_event_guard.bats
   # pins that; asserting the absence here too would duplicate it.
   assert_not_contains "test-shell is not gated on the resolver" \
     "$(job_block test-shell)" "needs.changes.outputs"

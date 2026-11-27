@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -16,20 +16,11 @@
 # trigger itself: dropping `main` or `v*` from `on.push` takes the job off
 # those runs without touching the job block.
 #
-# Usage: bash tests/unit/ci/test_shell_event_guard_test.sh
+# Usage: bin/bats tests/unit/ci/test_shell_event_guard.bats
 
-set -uo pipefail
+load '../../lib/bats/common'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
-
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -52,7 +43,7 @@ extract_block() {
   ' "$CI_YAML"
 }
 
-# PASS when the YAML block $2 lists $3 (an ERE) as a whole entry, in flow
+# Passes when the YAML block $2 lists $3 (an ERE) as a whole entry, in flow
 # (`[main]`) or block (`- main`) style, alone or alongside others. A plain
 # substring test would accept a `branches: [main-experiment]` that no
 # longer covers main; pinning one exact spelling would instead turn red
@@ -63,13 +54,11 @@ assert_lists_entry() {
   local boundary='[^A-Za-z0-9_./-]'
 
   if grep -qE "(^|${boundary})${entry}(${boundary}|\$)" <<<"$block"; then
-    echo "  PASS: $description"
-    PASS=$((PASS + 1))
+    check_passed "$description"
   else
-    echo "  FAIL: $description"
     echo "    expected a list entry matching: $entry"
     printf '%s\n' "$block" | sed 's/^/    /'
-    FAIL=$((FAIL + 1))
+    fail "$description"
   fi
 }
 
@@ -77,9 +66,7 @@ assert_lists_entry() {
 # Tests
 # ---------------------------------------------------------------------------
 
-test_shell_job_carries_no_event_guard() {
-  echo "Test: the test-shell job block declares no if: key"
-
+@test "the test-shell job block declares no if: key" {
   local block
   block="$(extract_block '^  test-shell:$' 2)"
 
@@ -90,18 +77,14 @@ test_shell_job_carries_no_event_guard() {
   # Job-level keys sit at four spaces; step-level keys are deeper, so this
   # matches the event guard without matching a step's own `if:`.
   if grep -qE '^    if:' <<<"$block"; then
-    echo "  FAIL: test-shell carries a job-level if: — it must run on push to main and v* tags too"
     printf '%s\n' "$block" | grep -E '^    if:' | sed 's/^/    /'
-    FAIL=$((FAIL + 1))
+    fail "test-shell carries a job-level if: — it must run on push to main and v* tags too"
   else
-    echo "  PASS: test-shell carries no job-level if:"
-    PASS=$((PASS + 1))
+    check_passed "test-shell carries no job-level if:"
   fi
 }
 
-test_push_trigger_covers_main_and_tags() {
-  echo "Test: on.push still covers the main branch and v* tags"
-
+@test "on.push still covers the main branch and v* tags" {
   local block
   block="$(extract_block '^  push:$' 2)"
 
@@ -116,24 +99,9 @@ test_push_trigger_covers_main_and_tags() {
   # exists for — a push to main that only touches tests/ is exactly the
   # lockstep breakage that has to fail main's own run.
   if grep -qE '^ *paths(-ignore)?:' <<<"$block"; then
-    echo "  FAIL: on.push carries a paths filter — it can skip test-shell on a push to main"
     printf '%s\n' "$block" | grep -E '^ *paths(-ignore)?:' | sed 's/^/    /'
-    FAIL=$((FAIL + 1))
+    fail "on.push carries a paths filter — it can skip test-shell on a push to main"
   else
-    echo "  PASS: on.push carries no paths filter"
-    PASS=$((PASS + 1))
+    check_passed "on.push carries no paths filter"
   fi
 }
-
-# ---------------------------------------------------------------------------
-# Run
-# ---------------------------------------------------------------------------
-test_shell_job_carries_no_event_guard
-test_push_trigger_covers_main_and_tags
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0
