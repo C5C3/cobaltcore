@@ -1906,7 +1906,7 @@ logs from `cinder-system`.
   `FAIL: the lock holder lost its lock:` and the first `error errno=5` line.
   Neither a create nor a CR shows that failure. The check reads the cluster
   through `kubectl` alone, and
-  `tests/unit/ci/cinder_nfs_outage_lock_check_test.sh` runs it against a stub.
+  `tests/unit/ci/cinder_nfs_outage_lock_check.bats` runs it against a stub.
 - The pod identity is recorded as a UID and a restart count together. A restart
   count read on its own falls back to 0 on a replaced pod, which is the value a
   pod that never restarted reports.

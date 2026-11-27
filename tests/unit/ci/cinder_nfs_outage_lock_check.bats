@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -20,28 +20,16 @@
 #
 # The script reads the cluster through kubectl alone, so the stub answers
 # `logs` from a file that grows by one line per call, `get` with a phase, and
-# records `delete`. Checks that need yq are counted as SKIP without it.
+# records `delete`. A test that needs yq skips without it.
 #
-# Usage: bash tests/unit/ci/cinder_nfs_outage_lock_check_test.sh
+# Usage: bin/bats tests/unit/ci/cinder_nfs_outage_lock_check.bats
 
-set -uo pipefail
+load '../../lib/bats/common'
+load '../../lib/bats/stubs'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 SUITE_DIR="$PROJECT_ROOT/tests/e2e-chaos/cinder-nfs-outage"
 SUITE="$SUITE_DIR/chainsaw-test.yaml"
 HOLDER="$SUITE_DIR/02-lock-holder-pod.yaml"
-
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
-
-have_yq() {
-  command -v yq >/dev/null 2>&1
-}
 
 # script_index <step> <text> — the positions in the try list of step <step>
 # (0-based) of the scripts whose content holds <text>, one per line.
@@ -59,48 +47,45 @@ lock_check() {
   yq -r '.spec.steps[].try[] | select(has("script")) | .script.content | select(contains("LOCK-KEPT-OK"))' "$SUITE"
 }
 
-# write_stubs <dir> — a kubectl and a sleep for run_check.
+# write_stubs — a kubectl and a sleep for run_check, with their files in
+# $STUB_DIR/state.
 #   kubectl logs: fails with $STUB_LOGS_ERROR on stderr when it is set;
 #     otherwise prints log.base and, on its n-th call, the first n-1 lines of
 #     log.more.
 #   kubectl get: prints $STUB_PHASE.
 #   kubectl delete: appends its arguments to deletes.
 #   sleep: returns at once.
+# run_check declares the logs and get answers, those of STUB_LOGS_ERROR and
+# STUB_PHASE included, for each run.
 write_stubs() {
-  mkdir -p "$1/bin"
-  cat >"$1/bin/kubectl" <<'EOF'
-#!/bin/bash
-case "$1" in
-  logs)
-    if [ -n "${STUB_LOGS_ERROR:-}" ]; then
-      echo "$STUB_LOGS_ERROR" >&2
-      exit 1
-    fi
-    n=$(( $(cat "$STUB_DIR/logs.calls") + 1 ))
-    echo "$n" >"$STUB_DIR/logs.calls"
-    cat "$STUB_DIR/log.base"
-    head -n $(( n - 1 )) "$STUB_DIR/log.more"
-    ;;
-  get) echo "${STUB_PHASE:-Running}" ;;
-  delete) echo "$*" >>"$STUB_DIR/deletes" ;;
-  *) echo "stub kubectl: unexpected call: $*" >&2; exit 1 ;;
-esac
-EOF
-  printf '#!/bin/sh\nexit 0\n' >"$1/bin/sleep"
-  chmod +x "$1/bin/kubectl" "$1/bin/sleep"
+  stub_on kubectl '*' --exec 'echo "stub kubectl: unexpected call: $*" >&2; exit 1'
+  stub_on kubectl 'delete *' --exec 'echo "$*" >>"$STUB_DIR/state/deletes"'
+  stub_on sleep '*'
 }
 
 # run_check <dir> <base log> <lines added per logs call> [VAR=value...]
 # Runs the lock check with the stubs first on PATH. Prints its output and
 # returns its exit status.
 run_check() {
-  local dir="$1" base="$2" more="$3"
+  local dir="$1" base="$2" more="$3" arg
   shift 3
   printf '%s' "$base" >"$dir/log.base"
   printf '%s' "$more" >"$dir/log.more"
   echo 0 >"$dir/logs.calls"
   : >"$dir/deletes"
-  env "$@" STUB_DIR="$dir" NAMESPACE=openstack PATH="$dir/bin:$PATH" bash -c "$CHECK" 2>&1
+  stub_on kubectl 'logs *' --exec '
+n=$(( $(cat "$STUB_DIR/state/logs.calls") + 1 ))
+echo "$n" >"$STUB_DIR/state/logs.calls"
+cat "$STUB_DIR/state/log.base"
+head -n $(( n - 1 )) "$STUB_DIR/state/log.more"'
+  stub_on kubectl 'get *' --out Running
+  for arg in "$@"; do
+    case "$arg" in
+      STUB_LOGS_ERROR=*) stub_on kubectl 'logs *' --rc 1 --err "${arg#*=}" ;;
+      STUB_PHASE=*) stub_on kubectl 'get *' --out "${arg#*=}" ;;
+    esac
+  done
+  with_stubs env NAMESPACE=openstack bash -c "$CHECK" 2>&1
 }
 
 # probe_lines <result> <first> <last> — holder log lines, as the holder prints
@@ -113,14 +98,8 @@ probe_lines() {
 }
 
 # --- Test 1: step 2 starts the holder, and its cleanup removes it ---
-test_step_2_starts_and_cleans_up_the_holder() {
-  echo "Test: step 2 starts the lock holder and its cleanup deletes it and its file"
-
-  if ! have_yq; then
-    echo "  SKIP: yq not installed (9 checks skipped)"
-    SKIP=$((SKIP + 9))
-    return
-  fi
+@test "step 2 starts the lock holder and its cleanup deletes it and its file" {
+  require_tool yq
 
   local start cleanup
   start="$(yq -r '.spec.steps[1].try[] | select(has("script")) | .script.content | select(contains("LOCK-HELD-OK"))' "$SUITE")"
@@ -146,47 +125,31 @@ test_step_2_starts_and_cleans_up_the_holder() {
 }
 
 # --- Test 2: step 5 checks the lock right after the server is back ---
-test_step_5_checks_the_lock_after_the_return() {
-  echo "Test: step 5 holds one lock check, right after the server is back"
-
-  if ! have_yq; then
-    echo "  SKIP: yq not installed (2 checks skipped)"
-    SKIP=$((SKIP + 2))
-    return
-  fi
+@test "step 5 holds one lock check, right after the server is back" {
+  require_tool yq
 
   assert_not_empty "the suite holds exactly one script that prints LOCK-KEPT-OK" "$(lock_check)"
   local back lock
   back="$(script_index 4 'OK: the NFS server is back')"
   lock="$(script_index 4 'LOCK-KEPT-OK')"
   if [[ "$back" =~ ^[0-9]+$ && "$lock" =~ ^[0-9]+$ && "$lock" -eq $((back + 1)) ]]; then
-    echo "  PASS: the lock check is the step 5 script right after the one that brings the server back"
-    PASS=$((PASS + 1))
+    check_passed "the lock check is the step 5 script right after the one that brings the server back"
   else
-    echo "  FAIL: the lock check sits at '$lock' in step 5, the server's return at '$back'"
-    FAIL=$((FAIL + 1))
+    fail "the lock check sits at '$lock' in step 5, the server's return at '$back'"
   fi
 }
 
 # --- Test 3: the lock check, against a stub kubectl ---
-test_lock_check_verdicts() {
-  echo "Test: the lock check passes on three new ok lines and fails with its own message otherwise"
-
-  if ! have_yq; then
-    echo "  SKIP: yq not installed (19 checks skipped)"
-    SKIP=$((SKIP + 19))
-    return
-  fi
+@test "the lock check passes on three new ok lines and fails with its own message otherwise" {
+  require_tool yq
   CHECK="$(lock_check)"
   if [ -z "$CHECK" ]; then
-    echo "  FAIL: no single LOCK-KEPT-OK script to run (19 checks)"
-    FAIL=$((FAIL + 19))
-    return
+    fail "no single LOCK-KEPT-OK script to run (19 checks)"
   fi
 
   local tmp out rc base
-  tmp="$(mktemp -d)"
-  write_stubs "$tmp"
+  write_stubs
+  tmp="$STUB_DIR/state"
   base="holder: lock held"$'\n'"$(probe_lines ok 1 40)"$'\n'
 
   rc=0
@@ -231,18 +194,6 @@ test_lock_check_verdicts() {
   assert_eq "a holder that is not Running fails" "1" "$rc"
   assert_contains "it names the phase" "$out" "FAIL: the lock holder is Failed, not Running"
   assert_eq "it deletes nothing" "" "$(cat "$tmp/deletes")"
-
-  rm -rf "$tmp"
 }
 
 # --- Run ---
-test_step_2_starts_and_cleans_up_the_holder
-test_step_5_checks_the_lock_after_the_return
-test_lock_check_verdicts
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0
