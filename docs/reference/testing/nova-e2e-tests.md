@@ -247,7 +247,7 @@ line would read as a gap.
 `guest-lib.sh` reads the log through the compute API and judges the lines of
 one kind by their sequence numbers. A window passes when every line after a
 given one says `ok` and no number is missing, so no verdict depends on the
-guest's clock. `tests/unit/ci/nova_libvirt_guest_lib_test.sh` pins each
+guest's clock. `tests/unit/ci/nova_libvirt_guest_lib.bats` pins each
 function of the library and the message it fails with, against a stub
 `kubectl`. The steps check:
 

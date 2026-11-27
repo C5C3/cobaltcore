@@ -4270,8 +4270,8 @@ suite. The raw outputs go to comments on
 No lab run of the failover suites is recorded yet.
 
 **Pinned by:** `tests/unit/hack/lab_failover_test.sh`,
-`tests/unit/ci/lab_failover_lib_test.sh`,
-`tests/unit/ci/lab_failover_suites_test.sh` and
+`tests/unit/ci/lab_failover_lib.bats`,
+`tests/unit/ci/lab_failover_suites.bats` and
 `tests/unit/docs/infrastructure_manifests_lab_failover_runs_test.sh`.
 
 ### Lab dizzy stack
