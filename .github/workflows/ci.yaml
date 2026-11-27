@@ -831,11 +831,13 @@ jobs:
       - name: Check no new unresolved reviewer markers were introduced
         run: make check-review-markers
 
-  # Run every shell unit test under tests/unit/ (every *_test.sh,
-  # found by discovery) through bats, one bats test per script, across
-  # every CPU of the runner. Repo files only — adds no injection surface.
-  # make test-shell installs bats with `make install-bats` at the
-  # BATS_VERSION / BATS_COMMIT pin of the Makefile; GNU parallel and
+  # Run every shell unit test under tests/unit/ through bats, across
+  # every CPU of the runner: each native *.bats file with one bats test
+  # per @test, and each old *_test.sh script as one bats test, both
+  # found by discovery. Repo files only — adds no injection surface.
+  # make test-shell installs bats and the three helper libraries the
+  # native files load (bats-support, bats-assert, bats-file) with
+  # `make install-bats` at the pins of the Makefile; GNU parallel and
   # flock, which bats needs for more than one worker, come from the
   # runner image. TEST_SHELL_JOBS is set, so a runner image without them
   # fails the job instead of running it serially.

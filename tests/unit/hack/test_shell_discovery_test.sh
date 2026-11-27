@@ -21,12 +21,22 @@
 # tools parallel workers need, and the messages for a missing bats and for a
 # bats that fails without a failed test.
 #
+# Native *.bats files run beside the scripts: each of their tests has its own
+# TAP line, a tree of native files only runs without the script wrapper,
+# TEST_SHELL_FILTER selects a native file by its path, TEST_SHELL_NAME runs
+# the native tests of that name and no script, and a name filter that
+# matches nothing, an invalid TEST_SHELL_FILTER and a missing helper library
+# fail with their messages before any test runs. A native file that fails
+# before its tests run is listed among the failed tests.
+#
 # The Makefile, hack/test-shell.sh and tests/unit/legacy_scripts.bats are
 # copied into a scratch tree beside stub tests that append their own path to
-# $RUN_LOG, so no repository test runs. The scratch tree runs the bats the
-# outer run exported as BATS, or bin/bats, through a bin/ of its own whose
-# stamp matches the BATS_COMMIT the command line passes, so its install-bats
-# never fetches and never touches the repository's bin/.
+# $RUN_LOG, so no repository test runs. A native stub is a plain @test file
+# that loads no helper and appends its path and test name. The scratch tree
+# runs the bats the outer run exported as BATS, or bin/bats, through a bin/
+# of its own whose stamps match the BATS_COMMIT and the library *_COMMIT
+# values the command line passes, so its install-bats never fetches and
+# never touches the repository's bin/.
 #
 # Usage: bash tests/unit/hack/test_shell_discovery_test.sh
 
@@ -59,7 +69,8 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # tests/unit/legacy_scripts.bats and an empty tests/unit/newdir/, a directory
 # name no glob of the old fixed list named, so a test found there proves
 # discovery rather than the list. Its bin/ links bats to $BATS_BIN beside the
-# stamp of $SCRATCH_COMMIT.
+# stamp of $SCRATCH_COMMIT, and holds a load.bash and the same stamp for each
+# helper library.
 make_tree() {
   # The file runs without -e, so an unchecked failure would continue with an
   # empty TREE and copy the Makefile to /Makefile.
@@ -73,6 +84,12 @@ make_tree() {
   cp "$PROJECT_ROOT/tests/unit/legacy_scripts.bats" "$TREE/tests/unit/legacy_scripts.bats"
   ln -s "$BATS_BIN" "$TREE/bin/bats"
   echo "$SCRATCH_COMMIT" > "$TREE/bin/bats-core/.bats-commit"
+  local lib
+  for lib in bats-support bats-assert bats-file; do
+    mkdir -p "$TREE/bin/$lib"
+    : > "$TREE/bin/$lib/load.bash"
+    echo "$SCRATCH_COMMIT" > "$TREE/bin/$lib/.bats-commit"
+  done
 }
 
 # add_stub <path under the tree> <exit-code> [<line>]
@@ -91,6 +108,21 @@ STUB
   } > "$TREE/$path"
 }
 
+# add_native <path under the tree> <test name>...
+# Writes a native bats file with one test per name. Each test appends
+# "<path>: <name>" to $RUN_LOG and passes.
+add_native() {
+  local path="$1" name
+  shift
+  mkdir -p "$TREE/$(dirname "$path")"
+  {
+    echo '#!/usr/bin/env bats'
+    for name in "$@"; do
+      printf '@test "%s" {\n  echo "%s: %s" >> "$RUN_LOG"\n}\n' "$name" "$path" "$name"
+    done
+  } > "$TREE/$path"
+}
+
 # run_target [VAR=value ...]
 # Runs `make test-shell` in the scratch tree, writes its stdout and stderr to
 # $TREE/stdout and $TREE/stderr, and echoes make's exit code. The variables
@@ -102,19 +134,25 @@ run_target() {
   : > "$TREE/run.log"
   RUN_LOG="$TREE/run.log" make -C "$TREE" test-shell \
     LOCALBIN="$TREE/bin" BATS="$TREE/bin/bats" BATS_COMMIT="$SCRATCH_COMMIT" \
-    TEST_SHELL_JOBS=1 TEST_SHELL_FILTER= TEST_SHELL_REPORT_DIR="$TREE/report" \
+    BATS_SUPPORT_COMMIT="$SCRATCH_COMMIT" BATS_ASSERT_COMMIT="$SCRATCH_COMMIT" \
+    BATS_FILE_COMMIT="$SCRATCH_COMMIT" \
+    TEST_SHELL_JOBS=1 TEST_SHELL_FILTER= TEST_SHELL_NAME= \
+    TEST_SHELL_REPORT_DIR="$TREE/report" \
     "$@" >"$TREE/stdout" 2>"$TREE/stderr" || exit_code=$?
   echo "$exit_code"
 }
 
-# run_script <bats>
-# Runs hack/test-shell.sh of the scratch tree directly with BATS=<bats>,
+# run_script <bats> [<library directory>]
+# Runs hack/test-shell.sh of the scratch tree directly with BATS=<bats> and
+# TEST_SHELL_BATS_LIBS=<library directory> (default: the tree's bin/),
 # without make, whose install-bats would install a bats in place of a bogus
-# one. Writes stdout and stderr like run_target and echoes the exit code.
+# one and a library in place of a missing one. Writes stdout and stderr like
+# run_target and echoes the exit code.
 run_script() {
   local exit_code=0
   : > "$TREE/run.log"
-  RUN_LOG="$TREE/run.log" BATS="$1" TEST_SHELL_JOBS=1 TEST_SHELL_FILTER='' \
+  RUN_LOG="$TREE/run.log" BATS="$1" TEST_SHELL_BATS_LIBS="${2:-$TREE/bin}" \
+    TEST_SHELL_JOBS=1 TEST_SHELL_FILTER='' TEST_SHELL_NAME='' \
     TEST_SHELL_REPORT_DIR="$TREE/report" "$TREE/hack/test-shell.sh" \
     >"$TREE/stdout" 2>"$TREE/stderr" || exit_code=$?
   echo "$exit_code"
@@ -340,7 +378,7 @@ test_an_empty_tree_fails_the_target() {
 
   assert_nonzero_exit "the target exits non-zero" "$code"
   assert_contains "stderr says no test was found" \
-    "$(cat "$TREE/stderr")" "test-shell: no *_test.sh found under tests/unit"
+    "$(cat "$TREE/stderr")" "test-shell: no *_test.sh and no *.bats test found under tests/unit"
   assert_no_plan_line "stdout names no test" "$TREE/stdout"
   rm -rf "$TREE"
 }
@@ -398,7 +436,7 @@ test_a_red_run_ends_with_the_failed_tests() {
 
   assert_nonzero_exit "the target exits non-zero" "$code"
   assert_contains "stderr counts the failed tests" \
-    "$stderr" "test-shell: 1 of 2 scripts failed:"
+    "$stderr" "test-shell: 1 of 2 tests failed:"
   assert_contains "stderr names the failed test without its timing" \
     "$stderr" "test-shell:   tests/unit/newdir/alpha_test.sh"$'\n'
   assert_not_contains "stderr does not name the passing test" \
@@ -433,8 +471,9 @@ test_a_filter_that_matches_nothing_fails() {
   assert_nonzero_exit "the target exits non-zero" "$code"
   assert_contains "stderr says the filter matches nothing" \
     "$(cat "$TREE/stderr")" \
-    "test-shell: TEST_SHELL_FILTER 'matches-nothing' matches no script"
+    "test-shell: TEST_SHELL_FILTER 'matches-nothing' matches no test file"
   assert_eq "no test ran" "0" "$(run_count)"
+  assert_no_plan_line "stdout names no test" "$TREE/stdout"
   rm -rf "$TREE"
 }
 
@@ -560,7 +599,7 @@ test_parallel_workers_report_a_red_test() {
   assert_not_contains "stdout holds no output of a passing test" \
     "$stdout" "beta-output"
   assert_contains "stderr counts the failed tests" \
-    "$stderr" "test-shell: 1 of 4 scripts failed:"
+    "$stderr" "test-shell: 1 of 4 tests failed:"
   assert_contains "stderr names the failed test without its timing" \
     "$stderr" "test-shell:   tests/unit/newdir/alpha_test.sh"$'\n'
   assert_eq "the report holds a testcase per test" \
@@ -596,7 +635,7 @@ test_a_bats_failing_without_a_failed_test() {
 
   assert_eq "the runner exits with the code of bats" "3" "$code"
   assert_contains "stderr says bats failed without a failed test" \
-    "$(cat "$TREE/stderr")" "test-shell: bats exited 3 without a failed script"
+    "$(cat "$TREE/stderr")" "test-shell: bats exited 3 without a failed test"
   rm -rf "$TREE"
 }
 
@@ -645,6 +684,167 @@ test_the_report_dir_resolves_against_the_root() {
   rm -rf "$TREE"
 }
 
+test_a_native_file_runs_each_test_on_its_own_line() {
+  echo "Test: test-shell finds a native .bats file and reports each of its tests on its own TAP line"
+  local code
+  make_tree
+  add_stub tests/unit/newdir/alpha_test.sh 0
+  add_native tests/unit/newdir/beta.bats "first case" "second case"
+  code="$(run_target)"
+
+  assert_eq "the target exits 0" "0" "$code"
+  assert_tap_line "stdout plans the script and both native tests" "$TREE/stdout" "1..3"
+  assert_tap_line "stdout reports the script as ok" \
+    "$TREE/stdout" "ok 1 tests/unit/newdir/alpha_test.sh"
+  assert_tap_line "stdout reports the first native test as ok" \
+    "$TREE/stdout" "ok 2 first case"
+  assert_tap_line "stdout reports the second native test as ok" \
+    "$TREE/stdout" "ok 3 second case"
+  assert_eq "the script and both native tests ran" "3" "$(run_count)"
+  rm -rf "$TREE"
+}
+
+test_a_tree_of_native_files_only_runs_without_the_wrapper() {
+  echo "Test: a tree with native files and no script runs without tests/unit/legacy_scripts.bats"
+  local code
+  make_tree
+  add_native tests/unit/newdir/beta.bats "only case"
+  # The wrapper logs its own evaluation, so a run that loads it shows here.
+  echo 'echo wrapper >> "$RUN_LOG"' >> "$TREE/tests/unit/legacy_scripts.bats"
+  code="$(run_target)"
+
+  assert_eq "the target exits 0" "0" "$code"
+  assert_eq "only the native test ran and the wrapper was never loaded" \
+    "tests/unit/newdir/beta.bats: only case" "$(cat "$TREE/run.log")"
+  assert_tap_line "stdout plans one test" "$TREE/stdout" "1..1"
+  rm -rf "$TREE"
+}
+
+test_the_filter_selects_a_native_file_by_path() {
+  echo "Test: TEST_SHELL_FILTER selects a native file by its path"
+  local code
+  make_tree
+  add_stub tests/unit/newdir/alpha_test.sh 0
+  add_native tests/unit/newdir/beta.bats "beta case"
+  add_native tests/unit/other/gamma.bats "gamma case"
+  code="$(run_target TEST_SHELL_FILTER=other/)"
+
+  assert_eq "the target exits 0" "0" "$code"
+  assert_eq "only the test of the matching file ran" \
+    "tests/unit/other/gamma.bats: gamma case" "$(cat "$TREE/run.log")"
+  assert_tap_line "stdout plans one test" "$TREE/stdout" "1..1"
+  rm -rf "$TREE"
+}
+
+test_the_name_filter_runs_one_native_test_and_no_script() {
+  echo "Test: TEST_SHELL_NAME runs the native test of that name and no script"
+  local code
+  make_tree
+  add_stub tests/unit/newdir/alpha_test.sh 0
+  # The name matches this script's test name too, so only dropping the
+  # scripts keeps it from running.
+  add_stub tests/unit/newdir/second_test.sh 0
+  add_native tests/unit/newdir/beta.bats "first case" "second case"
+  code="$(run_target TEST_SHELL_NAME=second)"
+
+  assert_eq "the target exits 0" "0" "$code"
+  assert_eq "only the named native test ran" \
+    "tests/unit/newdir/beta.bats: second case" "$(cat "$TREE/run.log")"
+  assert_tap_line "stdout plans one test" "$TREE/stdout" "1..1"
+  assert_tap_line "stdout reports the named test as ok" \
+    "$TREE/stdout" "ok 1 second case"
+  rm -rf "$TREE"
+}
+
+test_a_name_filter_that_matches_nothing_fails() {
+  echo "Test: a TEST_SHELL_NAME that matches no test fails test-shell with its message"
+  local code
+  make_tree
+  add_stub tests/unit/newdir/alpha_test.sh 0
+  add_native tests/unit/newdir/beta.bats "first case"
+  code="$(run_target TEST_SHELL_NAME=matches-nothing)"
+
+  assert_nonzero_exit "the target exits non-zero with a native file selected" "$code"
+  assert_contains "stderr says the name matches no test" \
+    "$(cat "$TREE/stderr")" \
+    "test-shell: TEST_SHELL_NAME 'matches-nothing' matches no test"
+  assert_eq "no test ran" "0" "$(run_count)"
+
+  # A path filter that leaves only scripts leaves nothing a name can match.
+  rm -rf "$TREE/report"
+  code="$(run_target TEST_SHELL_FILTER=alpha TEST_SHELL_NAME=first)"
+
+  assert_nonzero_exit "the target exits non-zero without a native file" "$code"
+  assert_contains "stderr says the name matches no test without a native file" \
+    "$(cat "$TREE/stderr")" \
+    "test-shell: TEST_SHELL_NAME 'first' matches no test"
+  assert_no_plan_line "stdout names no test without a native file" "$TREE/stdout"
+  assert_eq "bats never started without a native file" "absent" \
+    "$([ -e "$TREE/report" ] && echo present || echo absent)"
+  rm -rf "$TREE"
+}
+
+test_a_native_file_that_fails_before_its_tests_is_listed() {
+  echo "Test: a native file that fails before its tests run is listed as a failed test"
+  local code
+  make_tree
+  add_native tests/unit/newdir/alpha.bats "good case"
+  printf 'source /no/such/helper\n@test "never" { true; }\n' >"$TREE/tests/unit/newdir/beta.bats"
+  code="$(run_target)"
+
+  assert_nonzero_exit "the target exits non-zero" "$code"
+  assert_contains "stderr counts the failed load" \
+    "$(cat "$TREE/stderr")" "test-shell: 1 of 1 tests failed:"
+  assert_contains "stderr names the failed load" \
+    "$(cat "$TREE/stderr")" "test-shell:   bats-gather-tests"$'\n'
+  assert_contains "stderr shows the cause bats reported" \
+    "$(cat "$TREE/stderr")" "/no/such/helper"
+
+  code="$(run_target TEST_SHELL_NAME=good)"
+
+  assert_nonzero_exit "the target exits non-zero with a name filter" "$code"
+  assert_not_contains "stderr does not blame a name that matches" \
+    "$(cat "$TREE/stderr")" "matches no test"
+  rm -rf "$TREE"
+}
+
+test_an_invalid_filter_fails() {
+  echo "Test: a TEST_SHELL_FILTER that is no valid extended regular expression fails test-shell before any test runs"
+  local code
+  make_tree
+  add_stub tests/unit/newdir/alpha_test.sh 0
+  add_native tests/unit/newdir/beta.bats "first case"
+  code="$(run_target "TEST_SHELL_FILTER=(")"
+
+  assert_nonzero_exit "the target exits non-zero" "$code"
+  assert_contains "stderr says the expression is invalid" \
+    "$(cat "$TREE/stderr")" \
+    "test-shell: TEST_SHELL_FILTER '(' is not a valid extended regular expression"
+  assert_eq "no test ran" "0" "$(run_count)"
+  assert_no_plan_line "stdout names no test" "$TREE/stdout"
+  rm -rf "$TREE"
+}
+
+test_a_missing_library_fails_a_selected_native_file() {
+  echo "Test: a selected native file with a missing helper library fails test-shell before any test runs"
+  local code
+  make_tree
+  add_stub tests/unit/newdir/alpha_test.sh 0
+  add_native tests/unit/newdir/beta.bats "first case"
+  mkdir -p "$TREE/libs/bats-support" "$TREE/libs/bats-file"
+  : > "$TREE/libs/bats-support/load.bash"
+  : > "$TREE/libs/bats-file/load.bash"
+  code="$(run_script "$TREE/bin/bats" "$TREE/libs")"
+
+  assert_eq "the runner exits 1" "1" "$code"
+  assert_contains "stderr names the missing library and the target that installs it" \
+    "$(cat "$TREE/stderr")" \
+    "test-shell: $TREE/libs/bats-assert/load.bash is missing; run make install-bats"
+  assert_eq "no test ran" "0" "$(run_count)"
+  assert_no_plan_line "stdout names no test" "$TREE/stdout"
+  rm -rf "$TREE"
+}
+
 if [ ! -f "$BATS_BIN" ] || [ ! -x "$BATS_BIN" ]; then
   echo "  SKIP: $BATS_BIN is not an executable bats; run make install-bats (1 check skipped)"
   echo ""
@@ -675,6 +875,14 @@ test_a_missing_bats_fails
 test_a_bats_failing_without_a_failed_test
 test_a_report_dir_that_cannot_be_created_fails
 test_the_report_dir_resolves_against_the_root
+test_a_native_file_runs_each_test_on_its_own_line
+test_a_tree_of_native_files_only_runs_without_the_wrapper
+test_the_filter_selects_a_native_file_by_path
+test_the_name_filter_runs_one_native_test_and_no_script
+test_a_name_filter_that_matches_nothing_fails
+test_an_invalid_filter_fails
+test_a_missing_library_fails_a_selected_native_file
+test_a_native_file_that_fails_before_its_tests_is_listed
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
