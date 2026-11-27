@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -29,32 +29,24 @@
 #     grants itself issues: write, and a copy whose report job runs on
 #     self-hosted fail the checks.
 #
-# The resolver's night outputs are pinned by resolve_changes_scenarios_test.sh,
-# the --fail-fast line by e2e_chaos_job_test.sh, and the reporter by
+# The resolver's night outputs are pinned by resolve_changes_scenarios.bats,
+# the --fail-fast line by e2e_chaos_job.bats, and the reporter by
 # tests/unit/hack/ci_report_nightly_chaos_test.sh.
 #
-# Usage: bash tests/unit/ci/nightly_chaos_wiring_test.sh
+# Usage: bin/bats tests/unit/ci/nightly_chaos_wiring.bats
 
-set -uo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-
-PASS=0
-FAIL=0
-SKIP=0
+load '../../lib/bats/common'
 
 WORKFLOW="$PROJECT_ROOT/.github/workflows/ci.yaml"
 # shellcheck disable=SC2034 # read by tests/lib/ci_yaml.sh
 CI_YAML="$WORKFLOW"
 
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/ci_yaml.sh
 source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+setup() {
+  TMP_DIR="$BATS_TEST_TMPDIR"
+}
 
 REPORT_JOB="report-nightly-chaos"
 NIGHT_EVENTS="(github.event_name == 'pull_request' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&"
@@ -101,14 +93,21 @@ filter_step() {
   '
 }
 
-# fails_on <check> <file> — Run the check against <file> on counters of its
-# own, quietly, and echo how many of its assertions failed.
+# fails_on <check> <file> — Run the check against <file> on a count of its
+# own, quietly and outside the check ledger, and echo how many of its
+# assertions failed. Every failed assertion calls fail once, which counts
+# here instead of ending the test; soft runs its check in place, so a failure
+# under it is counted too. Called inside $( ), where errexit is off, so every
+# assertion of the check runs.
 fails_on() {
   (
-    PASS=0
-    FAIL=0
+    unset TEST_SHELL_CHECK_LOG
+    fails="$BATS_TEST_TMPDIR/fails_on.count"
+    : >"$fails"
+    fail() { echo >>"$fails"; return 1; }
+    soft() { "$@"; }
     "$1" "$2" >/dev/null
-    echo "$FAIL"
+    wc -l <"$fails" | tr -d ' '
   )
 }
 
@@ -121,7 +120,7 @@ check_triggers() {
   local wf="$1"
   assert_eq "the schedule is 22:00 UTC alone" '    - cron: "0 22 * * *"' \
     "$(on_block "$wf" schedule)"
-  assert_file_contains "the night can be dispatched" "$wf" '^  workflow_dispatch:$'
+  assert_file_matches "the night can be dispatched" "$wf" '^  workflow_dispatch:$'
   assert_eq "a dispatch takes no inputs" "" "$(on_block "$wf" workflow_dispatch)"
   assert_contains "push still runs main and the tags" "$(on_block "$wf" push)" 'branches: [main]'
   assert_contains "pull_request still runs" "$(on_block "$wf" pull_request)" 'types: [opened, synchronize, reopened, labeled]'
@@ -228,7 +227,7 @@ check_issue_writers() {
     block="$(CI_YAML="$wf" job_block "$job")"
     if grep -qE '^ +issues: write$' <<<"$block"; then
       writers="${writers:+$writers }$job"
-      assert_eq "$job, which holds issues: write, is GitHub-hosted" "" \
+      soft assert_eq "$job, which holds issues: write, is GitHub-hosted" "" \
         "$(grep -E '^    runs-on: self-hosted' <<<"$block")"
     fi
   done
@@ -240,8 +239,7 @@ check_issue_writers() {
 # Tests
 # ---------------------------------------------------------------------------
 
-test_the_night() {
-  echo "Test: triggers and concurrency"
+@test "triggers and concurrency" {
   check_triggers "$WORKFLOW"
   check_concurrency "$WORKFLOW"
 
@@ -259,19 +257,15 @@ test_the_night() {
   check_issue_writers "$WORKFLOW"
 }
 
-test_a_copy_without_the_night_group_fails() {
-  echo "Test: a copy that runs the night in the push group fails"
-
+@test "a copy that runs the night in the push group fails" {
   local copy="$TMP_DIR/no-night-group.yaml"
   sed "s/format('{0}-{1}-{2}', github.ref, github.workflow, github.event_name)/format('{0}-{1}', github.ref, github.workflow)/" \
     "$WORKFLOW" >"$copy"
-  assert_file_not_contains "the copy has no night group" "$copy" "format('{0}-{1}-{2}'"
+  assert_file_not_matches "the copy has no night group" "$copy" "format('{0}-{1}-{2}'"
   assert_eq "the concurrency check fails on it" "1" "$(fails_on check_concurrency "$copy")"
 }
 
-test_a_self_hosted_issue_writer_fails() {
-  echo "Test: a copy whose e2e-chaos job grants issues: write fails"
-
+@test "a copy whose e2e-chaos job grants issues: write fails" {
   local copy="$TMP_DIR/chaos-writes-issues.yaml"
   awk '
     $0 == "  e2e-chaos:" { in_job = 1 }
@@ -292,17 +286,3 @@ test_a_self_hosted_issue_writer_fails() {
   assert_eq "the writer check fails on it" "1" "$(fails_on check_issue_writers "$copy")"
   assert_eq "the report check fails on it" "1" "$(fails_on check_report_job "$copy")"
 }
-
-# ---------------------------------------------------------------------------
-# Run
-# ---------------------------------------------------------------------------
-test_the_night
-test_a_copy_without_the_night_group_fails
-test_a_self_hosted_issue_writer_fails
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0

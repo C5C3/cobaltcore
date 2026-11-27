@@ -640,7 +640,7 @@ faults of `ovn-chassis-loss`, `api-worker-loss` and `novacompute-node-loss`, the
 filler pods of `api-priority-preemption`, the
 lifecycle fault of `cronjob-rotation-failure`, `keystone-federation`, whose
 IdP the random plane does not configure, and `openbao-pod-kill`, whose OpenBao
-starts sealed on kind. `tests/unit/ci/chaos_random_catalogue_test.sh` fails,
+starts sealed on kind. `tests/unit/ci/chaos_random_catalogue.bats` fails,
 naming file and line, on a suite without a random line, a `none` line beside
 another, an entry no catalogue holds, an entry no suite names and no `source:`
 covers, a name that is not unique, a kind other than PodChaos or NetworkChaos,
@@ -6040,14 +6040,14 @@ tests/e2e-chaos/
    `../lib/controlplane.sh` for `cp_bring_up`, `cp_teardown` and `cp_dump`, start
    the workload with `CHAOS_WORKLOAD_ADMIN_SECRET=<cp>-keystone-admin-credentials`,
    and add the directory to the `controlplane` entry in `.github/workflows/ci.yaml`
-   and to `CONTROLPLANE_SUITES` in `tests/unit/ci/controlplane_chaos_matrix_test.sh`
+   and to `CONTROLPLANE_SUITES` in `tests/unit/ci/controlplane_chaos_matrix.bats`
 9. For a suite that faults a release upgrade, add the directory to the `upgrade`
    entry in `.github/workflows/ci.yaml`, the entry that loads the 2026.2 image, and
-   to `UPGRADE_SUITES` in `tests/unit/ci/upgrade_chaos_matrix_test.sh`
+   to `UPGRADE_SUITES` in `tests/unit/ci/upgrade_chaos_matrix.bats`
 10. For a suite that needs two workers, give its Test
    `metadata.labels: {chaos.c5c3.io/topology: multinode}`, which keeps it out of
    `make e2e-chaos`, and add the directory to the `multinode` entry and to
-   `MULTINODE_SUITES` in `tests/unit/ci/multinode_chaos_matrix_test.sh`. Fault a
+   `MULTINODE_SUITES` in `tests/unit/ci/multinode_chaos_matrix.bats`. Fault a
    node with `../lib/nodes.sh` only (see [Node faults](#node-faults)), and leave
    the workers cordoned and unlabelled in its cleanup
 11. Add the directory to a matrix entry of `e2e-chaos`; the entry gates, so the

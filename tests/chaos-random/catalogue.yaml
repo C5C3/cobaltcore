@@ -31,7 +31,7 @@
 # `# Chaos random: <entry>` lines, or carries one
 # `# Chaos random: none (<reason>)` line. No NetworkChaos selects a hostNetwork
 # workload (libvirt, novacompute, ovnchassis, neutronmetadataagent,
-# migration-port-reservation). tests/unit/ci/chaos_random_catalogue_test.sh
+# migration-port-reservation). tests/unit/ci/chaos_random_catalogue.bats
 # checks all of it.
 
 # --- The operators ---------------------------------------------------------

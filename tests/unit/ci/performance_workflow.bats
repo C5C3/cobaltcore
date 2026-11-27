@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -28,29 +28,21 @@
 #     metrics the nightly writes as numbers, because compare exits 2 otherwise;
 #     a copy of another release and a copy without a metric fail that check.
 #
-# Usage: bash tests/unit/ci/performance_workflow_test.sh
+# Usage: bin/bats tests/unit/ci/performance_workflow.bats
 
-set -uo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-
-PASS=0
-FAIL=0
-SKIP=0
+load '../../lib/bats/common'
 
 WORKFLOW="$PROJECT_ROOT/.github/workflows/performance.yaml"
 # shellcheck disable=SC2034 # read by tests/lib/ci_yaml.sh
 CI_YAML="$WORKFLOW"
 BASELINE="$PROJECT_ROOT/tests/perf/baseline.json"
 
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/ci_yaml.sh
 source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+setup() {
+  TMP_DIR="$BATS_TEST_TMPDIR"
+}
 
 COMPARE_STEP="Compare against the baseline"
 TOKEN_STEP="Measure token issue and validate"
@@ -80,14 +72,19 @@ check_writers() {
     "$(CI_YAML="$1" job_block baseline | grep -E '^    permissions:')"
 }
 
-# fails_on <check> <file> — Run the check against <file> on counters of its
-# own, quietly, and echo how many of its assertions failed.
+# fails_on <check> <file> — Run the check against <file> on a count of its
+# own, quietly and outside the check ledger, and echo how many of its
+# assertions failed. Every failed assertion calls fail once, which counts
+# here instead of ending the test. Called inside $( ), where errexit is off,
+# so every assertion of the check runs.
 fails_on() {
   (
-    PASS=0
-    FAIL=0
+    unset TEST_SHELL_CHECK_LOG
+    fails="$BATS_TEST_TMPDIR/fails_on.count"
+    : >"$fails"
+    fail() { echo >>"$fails"; return 1; }
     "$1" "$2" >/dev/null
-    echo "$FAIL"
+    wc -l <"$fails" | tr -d ' '
   )
 }
 
@@ -106,17 +103,13 @@ compare_runs_last() {
 # Tests
 # ---------------------------------------------------------------------------
 
-test_triggers_permissions_and_env() {
-  echo "Test: triggers, permissions, concurrency and the kind pin"
-
+@test "triggers, permissions, concurrency and the kind pin" {
   if [ ! -f "$WORKFLOW" ]; then
-    echo "  FAIL: $WORKFLOW is missing"
-    FAIL=$((FAIL + 1))
-    return
+    fail "$WORKFLOW is missing"
   fi
-  assert_file_contains "the workflow is named Performance" "$WORKFLOW" '^name: Performance$'
+  assert_file_matches "the workflow is named Performance" "$WORKFLOW" '^name: Performance$'
   assert_file_contains_fixed "it runs nightly at 01:30 UTC" "$WORKFLOW" 'cron: "30 1 * * *"'
-  assert_file_contains "it can be dispatched" "$WORKFLOW" '^  workflow_dispatch:'
+  assert_file_matches "it can be dispatched" "$WORKFLOW" '^  workflow_dispatch:'
   assert_eq "the permissions are contents: read and packages: read" \
     "  contents: read
   packages: read" \
@@ -132,9 +125,7 @@ test_triggers_permissions_and_env() {
   assert_not_empty "performance.yaml pins KIND_VERSION" "$(workflow_kind_pin "$WORKFLOW")"
 }
 
-test_one_self_hosted_job() {
-  echo "Test: one self-hosted job with a 75-minute wall"
-
+@test "one self-hosted job with a 75-minute wall" {
   assert_eq "the jobs are baseline and report" "baseline report" "$(job_names | paste -sd' ' -)"
   assert_eq "one job runs on self-hosted" "1" "$(grep -c '^    runs-on: self-hosted$' "$WORKFLOW")"
   local job
@@ -143,9 +134,7 @@ test_one_self_hosted_job() {
   assert_contains "its wall is 75 minutes" "$job" "    timeout-minutes: 75"
 }
 
-test_the_steps() {
-  echo "Test: the release, the cluster, the images and the operator"
-
+@test "the release, the cluster, the images and the operator" {
   local step
   step="$(job_step baseline "Resolve the release")"
   assert_contains "the release is the first keystone service image release" "$step" \
@@ -179,9 +168,7 @@ test_the_steps() {
   assert_contains "one replica, so the metrics port-forward reaches the leader" "$step" 'OPERATOR_REPLICAS: "1"'
 }
 
-test_the_measurements_and_the_comparison() {
-  echo "Test: both measurements, the comparison and the closing steps"
-
+@test "both measurements, the comparison and the closing steps" {
   local step
   step="$(job_step baseline "$TOKEN_STEP")"
   assert_contains "the token step runs perf-token-baseline.sh" "$step" "run: hack/perf-token-baseline.sh"
@@ -211,11 +198,9 @@ test_the_measurements_and_the_comparison() {
   assert_contains "and the step exits with the comparison's status" "$step" 'exit "${rc}"'
 
   if compare_runs_last "$WORKFLOW"; then
-    echo "  PASS: the comparison comes after both measurements"
-    PASS=$((PASS + 1))
+    check_passed "the comparison comes after both measurements"
   else
-    echo "  FAIL: the comparison does not come after both measurements"
-    FAIL=$((FAIL + 1))
+    fail "the comparison does not come after both measurements"
   fi
 
   step="$(job_step baseline "Upload performance results")"
@@ -236,9 +221,7 @@ test_the_measurements_and_the_comparison() {
   assert_eq "the deletion is the last step" "Delete kind cluster" "$(step_names "$WORKFLOW" | tail -1)"
 }
 
-test_the_report_job() {
-  echo "Test: the report job files a red scheduled night"
-
+@test "the report job files a red scheduled night" {
   local job step
   job="$(job_block report)"
   assert_contains "it runs after baseline" "$job" "    needs: baseline"
@@ -265,19 +248,7 @@ test_the_report_job() {
   assert_contains "with the comparison as the summary" "$step" "SUMMARY_FILE: _output/perf/summary.md"
 }
 
-test_a_baseline_job_with_a_write_fails_the_check() {
-  echo "Test: a copy whose baseline job grants itself issues: write fails"
-
-  local copy="$TMP_DIR/baseline-writes.yaml"
-  awk '{ print } $0 == "    timeout-minutes: 75" { print "    permissions:"; print "      issues: write" }' \
-    "$WORKFLOW" >"$copy"
-  assert_contains "the copy grants baseline issues: write" "$(CI_YAML="$copy" job_block baseline)" "issues: write"
-  assert_eq "the permission check fails twice on it" "2" "$(fails_on check_writers "$copy")"
-}
-
-test_a_comparison_before_a_measurement_fails_the_check() {
-  echo "Test: a copy with the comparison before a measurement fails the order check"
-
+@test "a copy with the comparison before a measurement fails the order check" {
   local copy="$TMP_DIR/performance.yaml"
   sed -e "s/- name: ${COMPARE_STEP}\$/- name: SWAP/" \
     -e "s/- name: ${TOKEN_STEP}\$/- name: ${COMPARE_STEP}/" \
@@ -285,21 +256,25 @@ test_a_comparison_before_a_measurement_fails_the_check() {
   assert_eq "the copy moves the comparison before the reconcile measurement" \
     "$TOKEN_STEP" "$(step_names "$copy" | grep -A1 -xF "$RECONCILE_STEP" | tail -1)"
   if compare_runs_last "$copy"; then
-    echo "  FAIL: the order check passes on a copy that compares before measuring"
-    FAIL=$((FAIL + 1))
+    fail "the order check passes on a copy that compares before measuring"
   else
-    echo "  PASS: the order check fails on the copy"
-    PASS=$((PASS + 1))
+    check_passed "the order check fails on the copy"
   fi
 
   grep -vF -- "- name: ${COMPARE_STEP}" "$WORKFLOW" >"$TMP_DIR/no-compare.yaml"
   if compare_runs_last "$TMP_DIR/no-compare.yaml"; then
-    echo "  FAIL: the order check passes on a copy without a comparison step"
-    FAIL=$((FAIL + 1))
+    fail "the order check passes on a copy without a comparison step"
   else
-    echo "  PASS: the order check fails on a copy without a comparison step"
-    PASS=$((PASS + 1))
+    check_passed "the order check fails on a copy without a comparison step"
   fi
+}
+
+@test "a copy whose baseline job grants itself issues: write fails" {
+  local copy="$TMP_DIR/baseline-writes.yaml"
+  awk '{ print } $0 == "    timeout-minutes: 75" { print "    permissions:"; print "      issues: write" }' \
+    "$WORKFLOW" >"$copy"
+  assert_contains "the copy grants baseline issues: write" "$(CI_YAML="$copy" job_block baseline)" "issues: write"
+  assert_eq "the permission check fails twice on it" "2" "$(fails_on check_writers "$copy")"
 }
 
 # check_baseline <file> — the baseline is one compare can judge a night against:
@@ -332,24 +307,16 @@ print("ok" if set(metrics) == want and numbers else sorted(want ^ set(metrics)))
 ' "$1" 2>&1)"
 }
 
-test_the_committed_baseline() {
-  echo "Test: tests/perf/baseline.json can judge a night"
-
+@test "tests/perf/baseline.json can judge a night" {
   if [ ! -f "$BASELINE" ]; then
-    echo "  FAIL: $BASELINE is not committed, so every nightly comparison exits 2"
-    FAIL=$((FAIL + 1))
-    return
+    fail "$BASELINE is not committed, so every nightly comparison exits 2"
   fi
   check_baseline "$BASELINE"
 }
 
-test_an_unusable_baseline_fails_the_check() {
-  echo "Test: a baseline compare could not use fails the check"
-
+@test "a baseline compare could not use fails the check" {
   if [ ! -f "$BASELINE" ]; then
-    echo "  SKIP: $BASELINE is missing, which test_the_committed_baseline reports"
-    SKIP=$((SKIP + 1))
-    return
+    skip "$BASELINE is missing, which test_the_committed_baseline reports"
   fi
   local copy="$TMP_DIR/baseline-copy.json"
   python3 -c '
@@ -367,20 +334,3 @@ json.dump(d, open(sys.argv[2], "w"))
 ' "$BASELINE" "$copy"
   assert_eq "a copy without a metric fails the metrics check" "1" "$(fails_on check_baseline "$copy")"
 }
-
-test_triggers_permissions_and_env
-test_one_self_hosted_job
-test_the_steps
-test_the_measurements_and_the_comparison
-test_the_report_job
-test_a_comparison_before_a_measurement_fails_the_check
-test_a_baseline_job_with_a_write_fails_the_check
-test_the_committed_baseline
-test_an_unusable_baseline_fails_the_check
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0

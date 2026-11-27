@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -20,21 +20,13 @@
 # before any suite. Without the nova images, operators and opt-ins the compute
 # and API suites have nothing to fault.
 #
-# Usage: bash tests/unit/ci/multinode_chaos_matrix_test.sh
+# Usage: bin/bats tests/unit/ci/multinode_chaos_matrix.bats
 
-set -uo pipefail
+load '../../lib/bats/common'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 CHAOS_DIR="$PROJECT_ROOT/tests/e2e-chaos"
 
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/ci_yaml.sh
 source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
@@ -56,8 +48,7 @@ step_at() {
   job_block e2e-chaos | grep -nxF -- "      - name: $1" | cut -d: -f1
 }
 
-test_the_entry_runs_the_multinode_suites() {
-  echo "Test: the multinode entry runs the health check, then its suites in leg order"
+@test "the multinode entry runs the health check, then its suites in leg order" {
   local entry want got suite leg other
   entry="$(e2e_chaos_matrix_entry multinode)"
   assert_not_empty "the matrix carries a multinode entry" "$entry"
@@ -70,13 +61,12 @@ test_the_entry_runs_the_multinode_suites() {
   for suite in ${MULTINODE_SUITES[@]+"${MULTINODE_SUITES[@]}"}; do
     for leg in pod network ovn nova controlplane upgrade; do
       other="$(e2e_chaos_matrix_entry "$leg")"
-      assert_not_contains "the ${leg} entry does not run ${suite}" "$other" "tests/e2e-chaos/${suite}"
+      soft assert_not_contains "the ${leg} entry does not run ${suite}" "$other" "tests/e2e-chaos/${suite}"
     done
   done
 }
 
-test_only_the_multinode_suites_carry_the_topology_label() {
-  echo "Test: the multinode suites carry chaos.c5c3.io/topology: multinode, and no other suite does"
+@test "the multinode suites carry chaos.c5c3.io/topology: multinode, and no other suite does" {
   local file suite labelled="" want
   for file in "$CHAOS_DIR"/*/chainsaw-test.yaml; do
     suite="$(basename "$(dirname "$file")")"
@@ -93,8 +83,7 @@ test_only_the_multinode_suites_carry_the_topology_label() {
   assert_eq "exactly the multinode suites carry the label" "$want" "$(xargs <<<"$labelled")"
 }
 
-test_the_leg_creates_the_two_worker_cluster() {
-  echo "Test: the multinode leg creates its cluster from the two-worker config and prepares it"
+@test "the multinode leg creates its cluster from the two-worker config and prepares it" {
   local create prepare
   create="$(job_step e2e-chaos "Create kind cluster")"
   assert_contains "the config follows the entry" "$create" \
@@ -112,8 +101,7 @@ test_the_leg_creates_the_two_worker_cluster() {
     "$(step_at "Setup E2E infrastructure")" "$(step_at "Prepare the multinode leg")"
 }
 
-test_the_leg_secures_its_disk_space() {
-  echo "Test: the multinode leg secures its disk space between the cluster and the first image pull"
+@test "the multinode leg secures its disk space between the cluster and the first image pull" {
   local guard name
   guard="$(job_step e2e-chaos "Secure disk space for the multinode leg")"
   assert_not_empty "a disk space step exists" "$guard"
@@ -129,12 +117,11 @@ test_the_leg_secures_its_disk_space() {
     "$(step_at "Create kind cluster")"
   for name in "Load E2E images (keystone stack)" "Load E2E images" "Load images into kind" \
     "Load nova leg images into kind"; do
-    assert_gte "and precedes ${name}" "$(step_at "$name")" "$(step_at "Secure disk space for the multinode leg")"
+    soft assert_gte "and precedes ${name}" "$(step_at "$name")" "$(step_at "Secure disk space for the multinode leg")"
   done
 }
 
-test_the_leg_restores_its_workers() {
-  echo "Test: the multinode leg restores its workers after the suites, before the diagnostics"
+@test "the multinode leg restores its workers after the suites, before the diagnostics" {
   local restore run_at restore_at
   restore="$(job_step e2e-chaos "Restore the workers")"
   assert_not_empty "a restore step exists" "$restore"
@@ -153,20 +140,19 @@ test_the_leg_restores_its_workers() {
   assert_gte "and the coverage counters" "$(step_at "Collect operator coverage")" "$restore_at"
 }
 
-test_the_leg_brings_up_the_nova_stack() {
-  echo "Test: the multinode leg pulls, loads and deploys the nova entry's stack"
+@test "the multinode leg pulls, loads and deploys the nova entry's stack" {
   local pull load ref name setup
   pull="$(job_step e2e-chaos "Load E2E images")"
   load="$(job_step e2e-chaos "Load nova leg images into kind")"
   for ref in "${NOVA_REFS[@]}"; do
-    assert_contains "Load E2E images pulls ${ref} on both legs" "$pull" \
+    soft assert_contains "Load E2E images pulls ${ref} on both legs" "$pull" \
       "\${{ (matrix.suite == 'nova' || matrix.suite == 'multinode') && format('{0}/${ref}', env.IMAGE_PREFIX) || '' }}"
-    assert_contains "and ${ref} reaches the kind nodes" "$load" \
+    soft assert_contains "and ${ref} reaches the kind nodes" "$load" \
       "kind load docker-image \${{ env.IMAGE_PREFIX }}/${ref} --name \${{ env.KIND_CLUSTER }}"
   done
   for name in "Load nova leg images into kind" "Deploy placement operator (nova leg)" \
     "Deploy neutron operator (nova leg)" "Deploy nova operator"; do
-    assert_eq "${name}: runs on the nova and multinode legs" "if: matrix.suite == 'nova' || matrix.suite == 'multinode'" \
+    soft assert_eq "${name}: runs on the nova and multinode legs" "if: matrix.suite == 'nova' || matrix.suite == 'multinode'" \
       "$(step_if "$name")"
   done
   assert_eq "the nova dump covers the leg" "if: always() && (matrix.suite == 'nova' || matrix.suite == 'multinode')" \
@@ -186,24 +172,8 @@ test_the_leg_brings_up_the_nova_stack() {
   assert_contains "Chaos Mesh stays on for every leg" "$setup" 'WITH_CHAOS_MESH: "true"'
 }
 
-test_the_leg_has_its_wall() {
-  echo "Test: the multinode leg has a 160-minute wall"
+@test "the multinode leg has a 160-minute wall" {
   assert_contains "its arm of the wall reads 160 minutes" \
     "$(job_block e2e-chaos | grep -E '^    timeout-minutes: ')" "matrix.suite == 'multinode' && 160"
-  # Gating is job-wide; e2e_chaos_job_test.sh pins it (#1388).
+  # Gating is job-wide; e2e_chaos_job.bats pins it (#1388).
 }
-
-test_the_entry_runs_the_multinode_suites
-test_only_the_multinode_suites_carry_the_topology_label
-test_the_leg_creates_the_two_worker_cluster
-test_the_leg_secures_its_disk_space
-test_the_leg_restores_its_workers
-test_the_leg_brings_up_the_nova_stack
-test_the_leg_has_its_wall
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -17,88 +17,62 @@
 # bring-up; a stanza another change adds to the shared policy would otherwise
 # surface there first.
 #
-# Usage: bash tests/unit/ci/chaos_policy_narrow_test.sh
+# Usage: bin/bats tests/unit/ci/chaos_policy_narrow.bats
 
-set -uo pipefail
+load '../../lib/bats/common'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 PROBE_LIB="$PROJECT_ROOT/tests/e2e-chaos/openbao-tenant-policy-narrowed/probe-lib.sh"
 POLICY_FILE="$PROJECT_ROOT/deploy/bases/shared-openbao/policies/eso-tenant.hcl"
-
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 READ_STANZA='path "kv-v2/data/openstack/keystone/{{identity.entity.aliases.auth_kubernetes_0123.metadata.service_account_namespace}}/*" {'
 
 # The policy as OpenBao holds it: the placeholder replaced by an accessor.
 POLICY="$(sed 's/KUBERNETES_MANAGEMENT_ACCESSOR/auth_kubernetes_0123/g' "$POLICY_FILE")"
 
-# run_narrow <policy>: narrow() with the probe library sourced; NARROW_OUT,
-# NARROW_ERR and NARROW_RC hold the result.
+# run_narrow <policy>: narrow() with the probe library sourced; $output and
+# $status of run hold the result, and $stderr is read from its own file as
+# before (run --separate-stderr would strip its leading and trailing spaces).
 run_narrow() {
-  local err
-  err="$(mktemp)"
-  NARROW_RC=0
-  NARROW_OUT="$(bash -c ". '$PROBE_LIB'; narrow" <<<"$1" 2>"$err")" || NARROW_RC=$?
-  NARROW_ERR="$(cat "$err")"
-  rm -f "$err"
+  local err="$BATS_TEST_TMPDIR/narrow.err"
+  run bash -c "exec 2>\"\$0\"; . '$PROBE_LIB'; narrow" "$err" <<<"$1"
+  stderr="$(cat "$err")"
 }
 
 # --- Test 1 ---------------------------------------------------------------
-test_narrow_drops_the_one_read_stanza() {
-  echo "Test: narrow drops the Keystone read stanza of the shipped policy and nothing else"
+@test "narrow drops the Keystone read stanza of the shipped policy and nothing else" {
   run_narrow "$POLICY"
-  assert_eq "it exits 0" "0" "$NARROW_RC"
-  assert_eq "it reports nothing" "" "$NARROW_ERR"
+  assert_eq "it exits 0" "0" "$status"
+  assert_eq "it reports nothing" "" "$stderr"
   assert_contains "the input holds the read stanza" "$POLICY" "$READ_STANZA"
-  assert_not_contains "the output does not" "$NARROW_OUT" "$READ_STANZA"
+  assert_not_contains "the output does not" "$output" "$READ_STANZA"
   assert_eq "exactly three lines go" "3" \
-    "$(diff <(printf '%s\n' "$POLICY") <(printf '%s\n' "$NARROW_OUT") | grep -c '^<')"
+    "$(diff <(printf '%s\n' "$POLICY") <(printf '%s\n' "$output") | grep -c '^<')"
   assert_eq "no line is added" "0" \
-    "$(diff <(printf '%s\n' "$POLICY") <(printf '%s\n' "$NARROW_OUT") | grep -c '^>')"
+    "$(diff <(printf '%s\n' "$POLICY") <(printf '%s\n' "$output") | grep -c '^>')"
 }
 
 # --- Test 2 ---------------------------------------------------------------
-test_narrow_keeps_the_sibling_stanzas() {
-  echo "Test: narrow keeps the stanzas under the same prefix and every other one"
+@test "narrow keeps the stanzas under the same prefix and every other one" {
   run_narrow "$POLICY"
   local leaf
   for leaf in fernet-keys credential-keys; do
-    assert_contains "the data stanza of ${leaf} stays" "$NARROW_OUT" "/+/${leaf}\" {"
+    soft assert_contains "the data stanza of ${leaf} stays" "$output" "/+/${leaf}\" {"
   done
   assert_eq "every other path stanza stays" \
-    "$(($(grep -c '^path ' <<<"$POLICY") - 1))" "$(grep -c '^path ' <<<"$NARROW_OUT")"
+    "$(($(grep -c '^path ' <<<"$POLICY") - 1))" "$(grep -c '^path ' <<<"$output")"
 }
 
 # --- Test 3 ---------------------------------------------------------------
-test_narrow_refuses_any_count_but_one() {
-  echo "Test: narrow exits 1 when the read stanza is there twice or not at all"
+@test "narrow exits 1 when the read stanza is there twice or not at all" {
   local without
   run_narrow "$POLICY"
-  without="$NARROW_OUT"
+  without="$output"
 
   run_narrow "$(printf '%s\n%s\n  capabilities = ["read"]\n}\n' "$POLICY" "$READ_STANZA")"
-  assert_eq "two stanzas: exit 1" "1" "$NARROW_RC"
-  assert_eq "it names the count" "FAIL: narrowing matched 2 stanzas" "$NARROW_ERR"
+  assert_eq "two stanzas: exit 1" "1" "$status"
+  assert_eq "it names the count" "FAIL: narrowing matched 2 stanzas" "$stderr"
 
   run_narrow "$without"
-  assert_eq "no stanza: exit 1" "1" "$NARROW_RC"
-  assert_eq "it names the count" "FAIL: narrowing matched 0 stanzas" "$NARROW_ERR"
+  assert_eq "no stanza: exit 1" "1" "$status"
+  assert_eq "it names the count" "FAIL: narrowing matched 0 stanzas" "$stderr"
 }
-
-# --- Run ---
-test_narrow_drops_the_one_read_stanza
-test_narrow_keeps_the_sibling_stanzas
-test_narrow_refuses_any_count_but_one
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0

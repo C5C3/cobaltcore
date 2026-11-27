@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -22,26 +22,18 @@
 # on every push, which never runs the chaos legs.
 #
 # The resolver's chaos outputs, the label gate and the kind-cluster composite
-# are pinned by resolve_changes_scenarios_test.sh,
-# change_classes_wiring_test.sh and create_kind_cluster_wiring_test.sh, the
-# controlplane entry by controlplane_chaos_matrix_test.sh, and every suite
+# are pinned by resolve_changes_scenarios.bats,
+# change_classes_wiring.bats and create_kind_cluster_wiring.bats, the
+# controlplane entry by controlplane_chaos_matrix.bats, and every suite
 # sitting in exactly one entry by tests/unit/docs/chaos_suite_inventory_test.sh.
 #
-# Usage: bash tests/unit/ci/e2e_chaos_job_test.sh
+# Usage: bin/bats tests/unit/ci/e2e_chaos_job.bats
 
-set -uo pipefail
+load '../../lib/bats/common'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 # shellcheck disable=SC2034 # read by tests/lib/ci_yaml.sh
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/ci_yaml.sh
 source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
@@ -66,9 +58,7 @@ job_line() {
 # Tests
 # ---------------------------------------------------------------------------
 
-test_the_chaos_filter_lists_the_suites_alone() {
-  echo "Test: the tests_chaos filter lists the chaos suites alone"
-
+@test "the tests_chaos filter lists the chaos suites alone" {
   # deploy/** reaches the chaos legs through the canary instead. Listing it here
   # meant every OpenBao or Flux bump paid for two chaos legs on top of the
   # pipeline it already triggered.
@@ -78,22 +68,18 @@ test_the_chaos_filter_lists_the_suites_alone() {
   assert_not_contains "the filter does not carry the deploy stack" "$block" "deploy/**"
 }
 
-test_the_job_needs_every_gate() {
-  echo "Test: e2e-chaos needs every gate it relies on"
-
+@test "e2e-chaos needs every gate it relies on" {
   local entries joined dep
   entries=$(needs_entries e2e-chaos)
   assert_not_empty "the job has a needs list" "$entries"
   joined=",$(tr '\n' ',' <<<"$entries")"
   for dep in changes lint shellcheck test test-integration verify-codegen \
     chainsaw-lint build-e2e-images e2e-operator; do
-    assert_contains "e2e-chaos needs $dep" "$joined" ",$dep,"
+    soft assert_contains "e2e-chaos needs $dep" "$joined" ",$dep,"
   done
 }
 
-test_the_gate_blocks_on_a_failed_or_cancelled_need() {
-  echo "Test: the e2e-chaos gate runs on a skipped need and blocks on a failed one"
-
+@test "the e2e-chaos gate runs on a skipped need and blocks on a failed one" {
   # always() lets the job run when the Go jobs were skipped for a pull request
   # that touches only suites; the two contains() guards keep a failed or a
   # cancelled need blocking all the same. A scheduled or dispatched run is the
@@ -114,9 +100,7 @@ test_the_gate_blocks_on_a_failed_or_cancelled_need() {
     "!contains(needs.*.result, 'cancelled')"
 }
 
-test_each_suite_has_its_own_wall() {
-  echo "Test: each e2e-chaos suite has its own wall and every suite gates"
-
+@test "each e2e-chaos suite has its own wall and every suite gates" {
   assert_eq "the wall is sized per suite" \
     "timeout-minutes: \${{ matrix.suite == 'nova' && 170 || matrix.suite == 'multinode' && 160 || matrix.suite == 'network' && 135 || matrix.suite == 'controlplane' && 120 || matrix.suite == 'upgrade' && 80 || matrix.suite == 'ovn' && 45 || 135 }}" \
     "$(job_line e2e-chaos timeout-minutes)"
@@ -125,24 +109,20 @@ test_each_suite_has_its_own_wall() {
     "$(job_line e2e-chaos continue-on-error)"
 }
 
-test_every_entry_starts_with_the_health_check() {
-  echo "Test: every e2e-chaos matrix entry opens with the Chaos Mesh health check"
-
+@test "every e2e-chaos matrix entry opens with the Chaos Mesh health check" {
   local suites suite entry first
   suites=$(job_block e2e-chaos | sed -n "s/^          - suite: //p")
   assert_not_empty "the e2e-chaos matrix has entries" "$suites"
   for suite in $suites; do
     entry=$(e2e_chaos_matrix_entry "$suite")
-    assert_not_empty "the $suite entry exists" "$entry"
+    soft assert_not_empty "the $suite entry exists" "$entry"
     first=$(grep -oE 'tests/[^ ]+' <<<"$entry" | head -1)
-    assert_eq "the $suite entry starts with the health check" \
+    soft assert_eq "the $suite entry starts with the health check" \
       "tests/e2e/infrastructure/chaos-mesh-health" "$first"
   done
 }
 
-test_the_run_step_drives_chainsaw_over_the_entry() {
-  echo "Test: the run step drives chainsaw over the entry's test directories"
-
+@test "the run step drives chainsaw over the entry's test directories" {
   local step
   step=$(job_step e2e-chaos "Run chaos E2E tests")
   assert_contains "the report directory is created" "$step" "mkdir -p _output/reports"
@@ -160,9 +140,7 @@ test_the_run_step_drives_chainsaw_over_the_entry() {
     "$(grep -A2 'chainsaw test --config tests/e2e-chaos/chainsaw-config.yaml' <<<"$step")"
 }
 
-test_diagnostics_and_the_report_survive_a_failure() {
-  echo "Test: the diagnostics and the JUnit report survive a failed run"
-
+@test "the diagnostics and the JUnit report survive a failed run" {
   local step
   step=$(job_step e2e-chaos "Dump diagnostic info")
   assert_contains "the diagnostics run after a failure" "$step" "if: always()"
@@ -180,32 +158,11 @@ test_diagnostics_and_the_report_survive_a_failure() {
   assert_contains "the report is kept for two weeks" "$step" "retention-days: 14"
 }
 
-test_the_publish_jobs_do_not_wait_for_chaos() {
-  echo "Test: the publish jobs do not wait for e2e-chaos"
-
+@test "the publish jobs do not wait for e2e-chaos" {
   local job line
   for job in build-and-push merge-operator-images helm-push github-release; do
     line=$(job_line "$job" needs)
-    assert_not_empty "$job has a needs line" "$line"
-    assert_not_contains "$job does not wait for e2e-chaos" "$line" "e2e-chaos"
+    soft assert_not_empty "$job has a needs line" "$line"
+    soft assert_not_contains "$job does not wait for e2e-chaos" "$line" "e2e-chaos"
   done
 }
-
-# ---------------------------------------------------------------------------
-# Run
-# ---------------------------------------------------------------------------
-test_the_chaos_filter_lists_the_suites_alone
-test_the_job_needs_every_gate
-test_the_gate_blocks_on_a_failed_or_cancelled_need
-test_each_suite_has_its_own_wall
-test_every_entry_starts_with_the_health_check
-test_the_run_step_drives_chainsaw_over_the_entry
-test_diagnostics_and_the_report_survive_a_failure
-test_the_publish_jobs_do_not_wait_for_chaos
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0
