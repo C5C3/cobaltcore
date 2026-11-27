@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -23,30 +23,23 @@
 # on its first pull of a reused image. The consumer check reads ci.yaml alone and
 # runs without jq.
 #
-# Usage: bash tests/unit/ci/load_e2e_images_map_test.sh
+# Usage: bin/bats tests/unit/ci/load_e2e_images_map.bats
 
-set -uo pipefail
+load '../../lib/bats/common'
+load '../../lib/bats/stubs'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 ACTION_YAML="$PROJECT_ROOT/.github/actions/load-e2e-images/action.yaml"
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/ci_yaml.sh
 source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+setup() {
+  TMP_DIR="$BATS_TEST_TMPDIR"
 
-STUB_DIR="$TMP_DIR/bin"
-DOCKER_LOG="$TMP_DIR/docker.log"
-STEP_SH="$TMP_DIR/step.sh"
+  DOCKER_LOG="$TMP_DIR/docker.log"
+  STEP_SH="$TMP_DIR/step.sh"
+}
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -69,18 +62,13 @@ extract_pull_step() {
   ' "$ACTION_YAML" >"$out"
 }
 
-# make_docker_stub <dir>
+# make_docker_stub
 # A recording docker stub: it appends its argv to $DOCKER_LOG and succeeds.
 make_docker_stub() {
-  local dir="$1"
-  mkdir -p "$dir"
-
-  cat >"$dir/docker" <<'STUB'
-#!/bin/bash
+  stub_script docker <<'STUB'
 echo "docker $*" >>"$DOCKER_LOG"
 exit 0
 STUB
-  chmod +x "$dir/docker"
 }
 
 # run_step <images> <image-map> [operator-variant]
@@ -92,7 +80,7 @@ run_step() {
   RC=0
   : >"$DOCKER_LOG"
   OUTPUT="$(
-    PATH="$STUB_DIR:$PATH" \
+    PATH="$STUB_DIR/bin:$PATH" \
       DOCKER_LOG="$DOCKER_LOG" \
       IMAGES="$images" \
       RUN_ID="12345" \
@@ -107,18 +95,67 @@ run_step() {
 # Tests
 # ---------------------------------------------------------------------------
 
-test_extraction_finds_the_step() {
-  echo "Test: the pull step's body is extractable from action.yaml"
+@test "every load-e2e-images consumer passes the build job's image map" {
+  local scan status job line
+  scan=$(consumer_scan)
+  while read -r status job line; do
+    [ "$status" = "MISS" ] || continue
+    soft fail "$job loads E2E images at ci.yaml:$line without the build job's image-map"
+  done <<<"$scan"
+  # Every consumer line in ci.yaml, whatever its indentation, spacing, quoting,
+  # trailing slash or trailing comment, must be one the scan judged; a form the
+  # scan does not know would otherwise pass unseen.
+  local total
+  total=$(grep -cE "^[[:space:]]+(-[[:space:]]+)?uses:[[:space:]]+[\"']?\./\.github/actions/load-e2e-images/?([\"'[:space:]#]|\$)" \
+    "$CI_YAML" || true)
+  assert_gte "ci.yaml has load-e2e-images consumers" "$total" 1
+  assert_eq "the scan judges every load-e2e-images consumer in ci.yaml" "$total" \
+    "$(grep -c . <<<"$scan" || true)"
 
-  extract_pull_step "$STEP_SH"
-  assert_file_contains "the extracted body pulls images" "$STEP_SH" "docker pull"
-  assert_file_contains "the extracted body re-tags them" "$STEP_SH" "docker tag"
-  assert_file_contains "the extracted body reads the map" "$STEP_SH" "IMAGE_MAP"
+  assert_file_contains_fixed "build-e2e-images exports the map" "$CI_YAML" \
+    'image-map: ${{ steps.images.outputs.image-map }}'
+  local step
+  step=$(job_step build-e2e-images "Resolve images")
+  assert_contains "the map comes from the Resolve images step" "$step" "id: images"
+  assert_contains "which runs the image resolver" "$step" \
+    "run: hack/ci-resolve-e2e-images.sh"
 }
 
-test_a_mapped_ref_is_pulled_by_digest() {
-  echo "Test: a ref the map carries is pulled from the mapped reference"
+@test "the load steps of e2e-operator, e2e-chaos and tempest pass operator-variant: cover, no other does" {
+  # The three coverage jobs deploy the instrumented operators; every other
+  # job keeps the production binary that ships.
+  local scan
+  scan=$(variant_scan)
+  assert_eq "e2e-operator has one cover load step" "1" "$(grep -cx 'e2e-operator cover' <<<"$scan")"
+  assert_eq "e2e-chaos has two cover load steps" "2" "$(grep -cx 'e2e-chaos cover' <<<"$scan")"
+  assert_eq "tempest has three cover load steps" "3" "$(grep -cx 'tempest cover' <<<"$scan")"
+  assert_eq "every load step of the three jobs passes it" "0" \
+    "$(grep -cE '^(e2e-operator|e2e-chaos|tempest) plain$' <<<"$scan")"
+  assert_eq "ci.yaml passes operator-variant: cover six times in all" "6" \
+    "$(grep -c '^          operator-variant: cover$' "$CI_YAML")"
+  assert_eq "the scan judges every load-e2e-images consumer in ci.yaml" \
+    "$(consumer_scan | grep -c .)" "$(grep -c . <<<"$scan")"
+}
 
+# pull_step_setup — the pull-step checks need jq, the docker stub and the
+# extracted step; the two ci.yaml checks above run without jq.
+pull_step_setup() {
+  require_tool jq
+
+  make_docker_stub
+  extract_pull_step "$STEP_SH"
+}
+
+@test "the pull step's body is extractable from action.yaml" {
+  pull_step_setup
+  extract_pull_step "$STEP_SH"
+  assert_file_matches "the extracted body pulls images" "$STEP_SH" "docker pull"
+  assert_file_matches "the extracted body re-tags them" "$STEP_SH" "docker tag"
+  assert_file_matches "the extracted body reads the map" "$STEP_SH" "IMAGE_MAP"
+}
+
+@test "a ref the map carries is pulled from the mapped reference" {
+  pull_step_setup
   # This is the whole point of the map: the image was published by main, so the
   # run pulls the digest behind it instead of rebuilding and pushing it.
   local digest="ghcr.io/c5c3/keystone@sha256:1111111111111111111111111111111111111111111111111111111111111111"
@@ -132,9 +169,8 @@ test_a_mapped_ref_is_pulled_by_digest() {
   assert_not_contains "it does not touch the run-scoped tag" "$LOG" "e2e-12345"
 }
 
-test_a_built_ref_is_pulled_from_the_run_tag() {
-  echo "Test: a ref the map points at the run-scoped tag is pulled from there"
-
+@test "a ref the map points at the run-scoped tag is pulled from there" {
+  pull_step_setup
   local built="ghcr.io/c5c3/glance-operator:e2e-12345-dev"
   run_step "ghcr.io/c5c3/glance-operator:dev" \
     "{\"ghcr.io/c5c3/glance-operator:dev\": \"${built}\"}"
@@ -145,9 +181,8 @@ test_a_built_ref_is_pulled_from_the_run_tag() {
     "docker tag ${built} ghcr.io/c5c3/glance-operator:dev"
 }
 
-test_a_ref_the_map_misses_falls_back() {
-  echo "Test: a ref the map does not carry falls back to the run-scoped tag"
-
+@test "a ref the map does not carry falls back to the run-scoped tag" {
+  pull_step_setup
   # A consumer may name an image the build job never heard of, and an image the
   # job pushed under the run-scoped tag is still loadable that way.
   run_step "ghcr.io/c5c3/ovn:24.09" '{"ghcr.io/c5c3/keystone:2025.2": "ghcr.io/c5c3/keystone@sha256:abc"}'
@@ -161,9 +196,8 @@ test_a_ref_the_map_misses_falls_back() {
     "docker tag ghcr.io/c5c3/ovn:e2e-12345-24.09 ghcr.io/c5c3/ovn:24.09"
 }
 
-test_an_empty_map_keeps_the_old_behaviour() {
-  echo "Test: an empty image-map pulls every ref by run-scoped tag"
-
+@test "an empty image-map pulls every ref by run-scoped tag" {
+  pull_step_setup
   # The input is optional, so a caller that passes no map behaves exactly as the
   # action did before the map existed.
   run_step "ghcr.io/c5c3/keystone-operator:dev
@@ -177,9 +211,8 @@ ghcr.io/c5c3/keystone:2025.2" ""
   assert_not_contains "no lookup is reported" "$OUTPUT" "no image-map entry"
 }
 
-test_a_malformed_map_fails_before_pulling() {
-  echo "Test: a malformed image-map fails before the first pull"
-
+@test "a malformed image-map fails before the first pull" {
+  pull_step_setup
   # Failing halfway through would leave some images re-tagged and some not,
   # which the consumer only discovers at deploy time.
   run_step "ghcr.io/c5c3/keystone:2025.2" "{"
@@ -195,9 +228,8 @@ test_a_malformed_map_fails_before_pulling() {
   assert_eq "nothing was pulled" "" "$LOG"
 }
 
-test_a_ref_without_a_tag_still_fails() {
-  echo "Test: a ref with no :tag suffix fails as it did before"
-
+@test "a ref with no :tag suffix fails as it did before" {
+  pull_step_setup
   run_step "ghcr.io/c5c3/keystone" '{"ghcr.io/c5c3/keystone": "ghcr.io/c5c3/keystone@sha256:abc"}'
 
   assert_nonzero_exit "the step fails" "$RC"
@@ -206,9 +238,8 @@ test_a_ref_without_a_tag_still_fails() {
   assert_eq "nothing was pulled" "" "$LOG"
 }
 
-test_blank_and_comment_lines_are_skipped() {
-  echo "Test: blank lines and comments in the image list are ignored"
-
+@test "blank lines and comments in the image list are ignored" {
+  pull_step_setup
   run_step "
 # the keystone leg also needs the federation proxy
 ghcr.io/c5c3/keystone-operator:dev
@@ -221,9 +252,8 @@ ghcr.io/c5c3/keystone-operator:dev
   assert_eq "only that one ref is pulled" "2" "$(grep -c . <<<"$LOG")"
 }
 
-test_cover_variant_pulls_the_cover_entry() {
-  echo "Test: operator-variant cover fills an operator's :dev ref from the map's :cover entry"
-
+@test "operator-variant cover fills an operator's :dev ref from the map's :cover entry" {
+  pull_step_setup
   local digest="ghcr.io/c5c3/keystone@sha256:2222222222222222222222222222222222222222222222222222222222222222"
   run_step "ghcr.io/c5c3/keystone-operator:dev
 ghcr.io/c5c3/keystone:2026.1" \
@@ -242,9 +272,8 @@ ghcr.io/c5c3/keystone:2026.1" \
   assert_contains "and its own ref" "$LOG" "docker tag ${digest} ghcr.io/c5c3/keystone:2026.1"
 }
 
-test_cover_variant_falls_back_to_the_run_tag() {
-  echo "Test: under operator-variant cover a map without the :cover key falls back to e2e-<run>-cover"
-
+@test "under operator-variant cover a map without the :cover key falls back to e2e-<run>-cover" {
+  pull_step_setup
   run_step "ghcr.io/c5c3/keystone-operator:dev" \
     '{"ghcr.io/c5c3/keystone-operator:dev": "ghcr.io/c5c3/keystone-operator@sha256:abc"}' cover
 
@@ -266,9 +295,8 @@ test_cover_variant_falls_back_to_the_run_tag() {
     "docker pull ghcr.io/c5c3/keystone-federation-proxy:e2e-12345-dev"
 }
 
-test_an_unknown_variant_fails_before_pulling() {
-  echo "Test: an operator-variant other than empty or cover fails before the first pull"
-
+@test "an operator-variant other than empty or cover fails before the first pull" {
+  pull_step_setup
   run_step "ghcr.io/c5c3/keystone-operator:dev" "" debug
 
   assert_nonzero_exit "the step fails" "$RC"
@@ -301,35 +329,6 @@ consumer_scan() {
   ' "$CI_YAML"
 }
 
-test_every_consumer_passes_the_map() {
-  echo "Test: every load-e2e-images consumer passes the build job's image map"
-
-  local scan status job line
-  scan=$(consumer_scan)
-  while read -r status job line; do
-    [ "$status" = "MISS" ] || continue
-    echo "  FAIL: $job loads E2E images at ci.yaml:$line without the build job's image-map"
-    FAIL=$((FAIL + 1))
-  done <<<"$scan"
-  # Every consumer line in ci.yaml, whatever its indentation, spacing, quoting,
-  # trailing slash or trailing comment, must be one the scan judged; a form the
-  # scan does not know would otherwise pass unseen.
-  local total
-  total=$(grep -cE "^[[:space:]]+(-[[:space:]]+)?uses:[[:space:]]+[\"']?\./\.github/actions/load-e2e-images/?([\"'[:space:]#]|\$)" \
-    "$CI_YAML" || true)
-  assert_gte "ci.yaml has load-e2e-images consumers" "$total" 1
-  assert_eq "the scan judges every load-e2e-images consumer in ci.yaml" "$total" \
-    "$(grep -c . <<<"$scan" || true)"
-
-  assert_file_contains_fixed "build-e2e-images exports the map" "$CI_YAML" \
-    'image-map: ${{ steps.images.outputs.image-map }}'
-  local step
-  step=$(job_step build-e2e-images "Resolve images")
-  assert_contains "the map comes from the Resolve images step" "$step" "id: images"
-  assert_contains "which runs the image resolver" "$step" \
-    "run: hack/ci-resolve-e2e-images.sh"
-}
-
 # Echo one "<job> <cover|plain>" line per load-e2e-images consumer in ci.yaml
 # outside build-e2e-images: cover when the step passes operator-variant: cover
 # before the next step begins.
@@ -351,60 +350,3 @@ variant_scan() {
     END { if (pending) print pjob " plain" }
   ' "$CI_YAML"
 }
-
-test_the_coverage_legs_pull_the_cover_operator() {
-  echo "Test: the load steps of e2e-operator, e2e-chaos and tempest pass operator-variant: cover, no other does"
-
-  # The three coverage jobs deploy the instrumented operators; every other
-  # job keeps the production binary that ships.
-  local scan
-  scan=$(variant_scan)
-  assert_eq "e2e-operator has one cover load step" "1" "$(grep -cx 'e2e-operator cover' <<<"$scan")"
-  assert_eq "e2e-chaos has two cover load steps" "2" "$(grep -cx 'e2e-chaos cover' <<<"$scan")"
-  assert_eq "tempest has three cover load steps" "3" "$(grep -cx 'tempest cover' <<<"$scan")"
-  assert_eq "every load step of the three jobs passes it" "0" \
-    "$(grep -cE '^(e2e-operator|e2e-chaos|tempest) plain$' <<<"$scan")"
-  assert_eq "ci.yaml passes operator-variant: cover six times in all" "6" \
-    "$(grep -c '^          operator-variant: cover$' "$CI_YAML")"
-  assert_eq "the scan judges every load-e2e-images consumer in ci.yaml" \
-    "$(consumer_scan | grep -c .)" "$(grep -c . <<<"$scan")"
-}
-
-# ---------------------------------------------------------------------------
-# Run
-# ---------------------------------------------------------------------------
-test_every_consumer_passes_the_map
-test_the_coverage_legs_pull_the_cover_operator
-
-if ! command -v jq >/dev/null 2>&1; then
-  echo "SKIP: jq not installed (the pull-step checks are skipped)"
-  SKIP=$((SKIP + 1))
-  echo ""
-  echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-  if [ "$FAIL" -gt 0 ]; then
-    exit 1
-  fi
-  exit 0
-fi
-
-make_docker_stub "$STUB_DIR"
-extract_pull_step "$STEP_SH"
-
-test_extraction_finds_the_step
-test_a_mapped_ref_is_pulled_by_digest
-test_a_built_ref_is_pulled_from_the_run_tag
-test_a_ref_the_map_misses_falls_back
-test_an_empty_map_keeps_the_old_behaviour
-test_a_malformed_map_fails_before_pulling
-test_a_ref_without_a_tag_still_fails
-test_blank_and_comment_lines_are_skipped
-test_cover_variant_pulls_the_cover_entry
-test_cover_variant_falls_back_to_the_run_tag
-test_an_unknown_variant_fails_before_pulling
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -31,26 +31,16 @@
 # stub docker that logs its arguments and writes the metadata file, and the
 # chart version step against a scratch Chart.yaml.
 #
-# Usage: bash tests/unit/ci/operator_image_jobs_test.sh
+# Usage: bin/bats tests/unit/ci/operator_image_jobs.bats
 
-set -uo pipefail
+load '../../lib/bats/common'
+load '../../lib/bats/stubs'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 # shellcheck disable=SC2034 # read by tests/lib/ci_yaml.sh
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/ci_yaml.sh
 source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
-
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
 
 SHA=0123456789abcdef0123456789abcdef01234567
 DIGEST=1111111111111111111111111111111111111111111111111111111111111111
@@ -60,9 +50,12 @@ INDEX_DIGEST=2222222222222222222222222222222222222222222222222222222222222222
 # DOCKER_STUB_OUTCOME: ok writes the metadata file buildx v0.39.0 writes,
 # with the index digest $INDEX_DIGEST, to the path after --metadata-file;
 # empty writes {} there; none writes nothing; fail exits 1.
-mkdir -p "$TMP_DIR/bin"
-cat >"$TMP_DIR/bin/docker" <<'EOF'
-#!/bin/bash
+setup() {
+  require_tool jq
+
+  TMP_DIR="$BATS_TEST_TMPDIR"
+
+  stub_script docker <<'EOF'
 printf '%s\n' "$@" >>"$DOCKER_LOG"
 metadata=""
 while [ $# -gt 1 ]; do
@@ -82,7 +75,7 @@ case "$DOCKER_STUB_OUTCOME" in
   fail) exit 1 ;;
 esac
 EOF
-chmod +x "$TMP_DIR/bin/docker"
+}
 
 # merge_script <digest dir> prints the run script of the manifest step for
 # keystone, reading its digests from <digest dir>.
@@ -107,7 +100,7 @@ run_merge() {
   : >"$TMP_DIR/github_output"
   RC=0
   OUTPUT=$(
-    PATH="$TMP_DIR/bin:$PATH" DOCKER_LOG="$log" IMAGE=ghcr.io/c5c3/keystone-operator \
+    PATH="$STUB_DIR/bin:$PATH" DOCKER_LOG="$log" IMAGE=ghcr.io/c5c3/keystone-operator \
       DOCKER_STUB_OUTCOME="${DOCKER_STUB_OUTCOME:-ok}" INDEX_DIGEST="$INDEX_DIGEST" \
       RUNNER_TEMP="$runner_temp" GITHUB_OUTPUT="$TMP_DIR/github_output" \
       GITHUB_SHA="$SHA" DOCKER_METADATA_OUTPUT_JSON="${2:-$(jq -cn --arg sha "$SHA" '{
@@ -126,9 +119,7 @@ run_merge() {
 # Tests
 # ---------------------------------------------------------------------------
 
-test_build_and_push_publishes_through_build_nix_image() {
-  echo "Test: build-and-push builds the operator image from the flake and pushes an OCI manifest by digest"
-
+@test "build-and-push builds the operator image from the flake and pushes an OCI manifest by digest" {
   local job line
   job=$(job_block build-and-push)
   for line in \
@@ -140,16 +131,14 @@ test_build_and_push_publishes_through_build_nix_image() {
     "push-by-digest: 'true'" \
     'artifact-name: digests-operator-${{ matrix.operator }}-${{ steps.platform-pair.outputs.value }}' \
     "manifest-format: oci"; do
-    assert_contains "build-and-push has '$line'" "$job" "$line"
+    soft assert_contains "build-and-push has '$line'" "$job" "$line"
   done
   assert_not_contains "build-and-push runs no BuildKit build" "$job" "docker/build-push-action"
   assert_contains "merge-operator-images downloads the digest artifacts build-and-push exports" \
     "$(job_step merge-operator-images "Download digests")" 'pattern: digests-operator-${{ matrix.operator }}-*'
 }
 
-test_metadata_annotations_go_onto_the_index() {
-  echo "Test: docker/metadata-action writes its annotations for the index, with the image's static values"
-
+@test "docker/metadata-action writes its annotations for the index, with the image's static values" {
   local meta line
   meta=$(job_step merge-operator-images "Generate image metadata")
   assert_contains "the annotations are index annotations" "$meta" "DOCKER_METADATA_ANNOTATIONS_LEVELS: index"
@@ -158,13 +147,11 @@ test_metadata_annotations_go_onto_the_index() {
     'org.opencontainers.image.description=CobaltCore OpenStack ${{ matrix.operator }} operator' \
     "org.opencontainers.image.licenses=Apache-2.0" \
     "org.opencontainers.image.vendor=SAP SE"; do
-    assert_contains "the metadata step sets $line" "$meta" "$line"
+    soft assert_contains "the metadata step sets $line" "$meta" "$line"
   done
 }
 
-test_the_manifest_step_writes_the_annotations() {
-  echo "Test: the manifest step creates the index with every annotation, the tags and the digests"
-
+@test "the manifest step creates the index with every annotation, the tags and the digests" {
   local digests="$TMP_DIR/digests" expected
   mkdir -p "$digests"
   : >"$digests/$DIGEST"
@@ -207,19 +194,17 @@ ghcr.io/c5c3/keystone-operator@sha256:$DIGEST"
   assert_eq "it creates no index without them" "" "$ARGS"
 }
 
-test_the_manifest_step_fails_without_an_index_digest() {
-  echo "Test: the manifest step fails when imagetools create reports no index digest"
-
+@test "the manifest step fails when imagetools create reports no index digest" {
   local digests="$TMP_DIR/digests" outcome
   mkdir -p "$digests"
   : >"$digests/$DIGEST"
 
   for outcome in none empty; do
     DOCKER_STUB_OUTCOME=$outcome run_merge "$digests"
-    assert_eq "$outcome: the step exits 1" "1" "$RC"
-    assert_contains "$outcome: it names the metadata file" "$OUTPUT" \
+    soft assert_eq "$outcome: the step exits 1" "1" "$RC"
+    soft assert_contains "$outcome: it names the metadata file" "$OUTPUT" \
       "::error::docker buildx imagetools create wrote no index digest to $TMP_DIR/runner-temp/imagetools-metadata.json"
-    assert_not_contains "$outcome: it writes no digest" "$WRITTEN" "digest="
+    soft assert_not_contains "$outcome: it writes no digest" "$WRITTEN" "digest="
   done
 
   DOCKER_STUB_OUTCOME=fail run_merge "$digests"
@@ -250,24 +235,22 @@ run_chart_version() {
   WRITTEN=$(cat "$tree/github_output")
 }
 
-test_the_chart_version_step_reads_an_x_y_z_version() {
-  echo "Test: the chart version step writes the Chart.yaml version and only warns on anything else"
-
+@test "the chart version step writes the Chart.yaml version and only warns on anything else" {
   local form
   for form in 'version: 0.14.0' 'version: "0.14.0"'; do
     run_chart_version "$form"
     [ "$RC" -eq 0 ] || echo "$OUTPUT"
-    assert_eq "'$form' exits 0" "0" "$RC"
-    assert_eq "'$form' writes version=0.14.0" "version=0.14.0" "$WRITTEN"
+    soft assert_eq "'$form' exits 0" "0" "$RC"
+    soft assert_eq "'$form' writes version=0.14.0" "version=0.14.0" "$WRITTEN"
   done
 
   # A failed step would stop the one imagetools create that writes every tag.
   for form in 'version: abc' 'version: 0.7.0-rc.1'; do
     run_chart_version "$form"
-    assert_eq "'$form' exits 0" "0" "$RC"
-    assert_contains "'$form' warns with the chart and the value" "$OUTPUT" \
+    soft assert_eq "'$form' exits 0" "0" "$RC"
+    soft assert_contains "'$form' warns with the chart and the value" "$OUTPUT" \
       "::warning::operators/keystone/helm/keystone-operator/Chart.yaml has no X.Y.Z version (got: '${form#version: }'); the image gets no chart-version tag"
-    assert_eq "'$form' writes no version" "" "$WRITTEN"
+    soft assert_eq "'$form' writes no version" "" "$WRITTEN"
   done
 
   run_chart_version 'description: no version line'
@@ -276,9 +259,7 @@ test_the_chart_version_step_reads_an_x_y_z_version() {
   assert_eq "it writes no version" "" "$WRITTEN"
 }
 
-test_verify_codegen_checks_the_operator_vendor_hashes() {
-  echo "Test: verify-codegen runs the Nix-free check of the operator vendor hashes"
-
+@test "verify-codegen runs the Nix-free check of the operator vendor hashes" {
   assert_contains "verify-codegen runs make nix-lock-check-operators" \
     "$(job_step verify-codegen "Verify the operator vendor hashes")" "run: make nix-lock-check-operators"
   assert_not_contains "verify-codegen installs no Nix" "$(job_block verify-codegen)" "setup-nix"
@@ -286,27 +267,3 @@ test_verify_codegen_checks_the_operator_vendor_hashes() {
     "bash hack/nix-lock.sh --check-operators" \
     "$(make --no-print-directory -n -C "$PROJECT_ROOT" nix-lock-check-operators)"
 }
-
-# ---------------------------------------------------------------------------
-# Run
-# ---------------------------------------------------------------------------
-if ! command -v jq >/dev/null 2>&1; then
-  echo "SKIP: jq not installed (all checks skipped)"
-  echo ""
-  echo "Results: 0 passed, 0 failed, 1 skipped"
-  exit 0
-fi
-
-test_build_and_push_publishes_through_build_nix_image
-test_metadata_annotations_go_onto_the_index
-test_the_manifest_step_writes_the_annotations
-test_the_manifest_step_fails_without_an_index_digest
-test_the_chart_version_step_reads_an_x_y_z_version
-test_verify_codegen_checks_the_operator_vendor_hashes
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0

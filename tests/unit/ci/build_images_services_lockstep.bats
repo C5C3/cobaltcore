@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -27,20 +27,11 @@
 # another composite action, but the list leaves out is changed by a pull
 # request that never starts this workflow, and the change merges unbuilt.
 #
-# Usage: bash tests/unit/ci/build_images_services_lockstep_test.sh
+# Usage: bin/bats tests/unit/ci/build_images_services_lockstep.bats
 
-set -uo pipefail
+load '../../lib/bats/common'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 WORKFLOW="$PROJECT_ROOT/.github/workflows/build-images.yaml"
-
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -125,14 +116,8 @@ listed() {
 # ---------------------------------------------------------------------------
 # Test 1: ALL_SERVICES is the union of the source-refs keys, both ways
 # ---------------------------------------------------------------------------
-test_all_services_matches_the_releases() {
-  echo "Test: ALL_SERVICES equals the union of the releases/*/source-refs.yaml keys"
-
-  if ! command -v yq >/dev/null 2>&1; then
-    echo "  SKIP: yq not installed (3 checks skipped)"
-    SKIP=$((SKIP + 3))
-    return
-  fi
+@test "ALL_SERVICES equals the union of the releases/*/source-refs.yaml keys" {
+  require_tool yq
 
   local declared from_releases
   declared=$(all_services | sort)
@@ -147,20 +132,14 @@ test_all_services_matches_the_releases() {
 # ---------------------------------------------------------------------------
 # Test 2: every service has its filter and its env line
 # ---------------------------------------------------------------------------
-test_every_service_is_wired() {
-  echo "Test: every service in ALL_SERVICES has a filter and a FILTER_ env line"
-
-  if ! command -v yq >/dev/null 2>&1; then
-    echo "  SKIP: yq not installed (checks skipped)"
-    SKIP=$((SKIP + 1))
-    return
-  fi
+@test "every service in ALL_SERVICES has a filter and a FILTER_ env line" {
+  require_tool yq
 
   local service
   while IFS= read -r service; do
-    assert_file_contains "svc_${service} paths filter exists" "$WORKFLOW" \
+    soft assert_file_matches "svc_${service} paths filter exists" "$WORKFLOW" \
       "^ *svc_${service}:$"
-    assert_file_contains "FILTER_svc_${service} reaches the resolver" "$WORKFLOW" \
+    soft assert_file_matches "FILTER_svc_${service} reaches the resolver" "$WORKFLOW" \
       "FILTER_svc_${service}: \${{ steps.filter.outputs.svc_${service} }}"
   done < <(all_services)
 }
@@ -168,14 +147,8 @@ test_every_service_is_wired() {
 # ---------------------------------------------------------------------------
 # Test 3: no filter names a service ALL_SERVICES does not carry
 # ---------------------------------------------------------------------------
-test_no_orphan_service_filter() {
-  echo "Test: no svc_ filter names a service outside ALL_SERVICES"
-
-  if ! command -v yq >/dev/null 2>&1; then
-    echo "  SKIP: yq not installed (1 check skipped)"
-    SKIP=$((SKIP + 1))
-    return
-  fi
+@test "no svc_ filter names a service outside ALL_SERVICES" {
+  require_tool yq
 
   local declared filters
   declared=$(all_services | sort)
@@ -191,7 +164,6 @@ test_no_orphan_service_filter() {
 # ---------------------------------------------------------------------------
 test_catalog_check_is_wired() {
   local service="$1"
-  echo "Test: build-images.yaml checks the ${service} option catalog"
 
   # Two `Verify option catalog` steps run the check, one on the pull-request
   # build and one on the push build, and both list the services by name.
@@ -216,13 +188,15 @@ test_catalog_check_is_wired() {
   assert_contains "the svc_${service} filter covers the ${service} catalogs" \
     "$filter" "operators/${service}/api/v1alpha1/catalogs/**"
 }
+for service in cinder nova; do
+  bats_test_function --description "build-images.yaml checks the ${service} option catalog" \
+    -- test_catalog_check_is_wired "$service"
+done
 
 # ---------------------------------------------------------------------------
 # Test 5: the pull_request trigger names what the workflow reaches
 # ---------------------------------------------------------------------------
-test_pull_request_trigger_names_what_the_workflow_reaches() {
-  echo "Test: the pull_request trigger names every action and script the workflow reaches"
-
+@test "the pull_request trigger names every action and script the workflow reaches" {
   local pr push actions scripts name
   pr=$(trigger_paths pull_request)
   push=$(trigger_paths push)
@@ -234,11 +208,11 @@ test_pull_request_trigger_names_what_the_workflow_reaches() {
   assert_not_empty "the workflow runs at least one hack script" "$scripts"
 
   for name in $actions; do
-    assert_eq "pull_request.paths names the reached action ${name}" "yes" \
+    soft assert_eq "pull_request.paths names the reached action ${name}" "yes" \
       "$(listed "$pr" ".github/actions/${name}/**")"
   done
   for name in $scripts; do
-    assert_eq "pull_request.paths names the reached script ${name}" "yes" \
+    soft assert_eq "pull_request.paths names the reached script ${name}" "yes" \
       "$(listed "$pr" "$name")"
   done
 
@@ -251,21 +225,3 @@ test_pull_request_trigger_names_what_the_workflow_reaches() {
   assert_eq "push.paths names the workflow itself" "yes" \
     "$(listed "$push" ".github/workflows/build-images.yaml")"
 }
-
-# ---------------------------------------------------------------------------
-# Run
-# ---------------------------------------------------------------------------
-test_all_services_matches_the_releases
-test_every_service_is_wired
-test_no_orphan_service_filter
-for service in cinder nova; do
-  test_catalog_check_is_wired "$service"
-done
-test_pull_request_trigger_names_what_the_workflow_reaches
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0

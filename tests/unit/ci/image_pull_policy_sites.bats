@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -15,19 +15,9 @@
 # tag. An `Image:` field that does not start its line (a one-line literal)
 # fails too, so the next-line rule cannot be sidestepped.
 #
-# Usage: bash tests/unit/ci/image_pull_policy_sites_test.sh
+# Usage: bin/bats tests/unit/ci/image_pull_policy_sites.bats
 
-set -uo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
+load '../../lib/bats/common'
 
 # Print path:line: reason for every offending Image: field. Reads the file list
 # (NUL-separated) from stdin.
@@ -68,11 +58,9 @@ scanned_files() {
 # The detector has to catch a missing policy, a one-line literal and an Image:
 # on the last line, and let a paired field and a ProxyImage: through, or the
 # repo-wide scan below passes vacuously.
-test_detector() {
-  echo "Test: the detector flags unpaired and inline Image: fields"
-
+@test "the detector flags unpaired and inline Image: fields" {
   local tmp
-  tmp="$(mktemp)"
+  tmp="$(mktemp "$BATS_TEST_TMPDIR/detector.XXXXXX")"
   printf '%s\n' \
     '	c := corev1.Container{' \
     '		Image:           ref,' \
@@ -97,9 +85,7 @@ test_detector() {
   assert_eq "flags lines 7, 10 and 14" "7 10 14 " "$hits"
 }
 
-test_every_site_carries_a_pull_policy() {
-  echo "Test: every Image: field is followed by ImagePullPolicy:"
-
+@test "every Image: field is followed by ImagePullPolicy:" {
   local files sites found
   files="$(scanned_files | tr '\0' '\n' | grep -c . || true)"
   sites="$(scanned_files | (cd "$PROJECT_ROOT" && xargs -0 cat) | grep -cE '^[[:space:]]+Image:[[:space:]]' || true)"
@@ -108,26 +94,11 @@ test_every_site_carries_a_pull_policy() {
 
   found="$(scanned_files | (cd "$PROJECT_ROOT" && offending_sites))"
   if [[ -z "$found" ]]; then
-    echo "  PASS: all ${sites} Image: fields carry an ImagePullPolicy:"
-    PASS=$((PASS + 1))
+    check_passed "all ${sites} Image: fields carry an ImagePullPolicy:"
   else
-    echo "  FAIL: Image: fields without a pull policy (add ImagePullPolicy: <ImageSpec>.EffectivePullPolicy() on the next line)"
     while IFS= read -r line; do
       echo "    $line"
     done <<<"$found"
-    FAIL=$((FAIL + 1))
+    fail "Image: fields without a pull policy (add ImagePullPolicy: <ImageSpec>.EffectivePullPolicy() on the next line)"
   fi
 }
-
-# ---------------------------------------------------------------------------
-# Run
-# ---------------------------------------------------------------------------
-test_detector
-test_every_site_carries_a_pull_policy
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0

@@ -61,7 +61,7 @@
 # To add a new service: add a svc_<service> paths filter, its FILTER_svc_<service>
 # env line, and the name to ALL_SERVICES, all in the changes job of
 # .github/workflows/build-images.yaml.
-# tests/unit/ci/build_images_services_lockstep_test.sh fails when a step is missed.
+# tests/unit/ci/build_images_services_lockstep.bats fails when a step is missed.
 
 set -euo pipefail
 
