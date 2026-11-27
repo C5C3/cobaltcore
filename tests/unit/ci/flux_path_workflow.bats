@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -22,28 +22,23 @@
 #     controlplane job grants itself a write, and a copy whose infrastructure
 #     step picks the external operators fail the checks.
 #
-# Usage: bash tests/unit/ci/flux_path_workflow_test.sh
+# Usage: bin/bats tests/unit/ci/flux_path_workflow.bats
 
-set -uo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-
-PASS=0
-FAIL=0
-SKIP=0
+load '../../lib/bats/common'
 
 WORKFLOW="$PROJECT_ROOT/.github/workflows/flux-path.yaml"
 # shellcheck disable=SC2034 # read by tests/lib/ci_yaml.sh
 CI_YAML="$WORKFLOW"
 
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/ci_yaml.sh
 source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+setup() {
+  TMP_DIR="$BATS_TEST_TMPDIR"
+  if [ ! -f "$WORKFLOW" ]; then
+    fail "$WORKFLOW is missing"
+  fi
+}
 
 SETUP_STEP="Setup E2E infrastructure"
 REPORT_STEP="Report the red night"
@@ -85,13 +80,22 @@ top_level_permissions() {
 }
 
 # fails_on <check> <file> — Run the check against <file> on counters of its
-# own, quietly, and echo how many of its assertions failed.
+# own, quietly, and echo how many of its assertions failed. Its passed checks
+# stay out of the check ledger, and fail, which every assertion of
+# tests/lib/bats/common.bash calls when it fails, counts instead of reporting.
+# Called in $( ), so errexit is off and the check runs to its end.
 fails_on() {
   (
-    PASS=0
-    FAIL=0
+    TEST_SHELL_CHECK_LOG=
+    failed="$BATS_TEST_TMPDIR/fails_on.failed"
+    : >"$failed"
+    fail() {
+      [ "$#" -gt 0 ] || cat >/dev/null
+      echo x >>"$failed"
+      return 1
+    }
     "$1" "$2" >/dev/null
-    echo "$FAIL"
+    wc -l <"$failed" | tr -d ' '
   )
 }
 
@@ -102,9 +106,9 @@ fails_on() {
 
 check_triggers() {
   local wf="$1"
-  assert_file_contains "the workflow is named Flux path" "$wf" '^name: Flux path$'
+  assert_file_matches "the workflow is named Flux path" "$wf" '^name: Flux path$'
   assert_file_contains_fixed "it runs nightly at 02:45 UTC" "$wf" 'cron: "45 2 * * *"'
-  assert_file_contains "it can be dispatched" "$wf" '^  workflow_dispatch:'
+  assert_file_matches "it can be dispatched" "$wf" '^  workflow_dispatch:'
   assert_eq "pull_request runs on the workflow and its two scripts" \
     "      - '.github/workflows/flux-path.yaml'
       - 'hack/ci-quick-start-controlplane.sh'
@@ -129,9 +133,9 @@ check_concurrency_and_env() {
   # tests/unit/renovate/workflow_pins_custommanager_test.sh asserts the pin
   # agrees with the other four.
   assert_not_empty "flux-path.yaml pins KIND_VERSION" "$(workflow_kind_pin "$wf")"
-  assert_file_not_contains "deploy-infra's operator path is its default, named nowhere" \
+  assert_file_not_matches "deploy-infra's operator path is its default, named nowhere" \
     "$wf" 'CONTROLPLANE_OPERATORS'
-  assert_file_not_contains "the night pulls anonymously, as a user does" "$wf" 'registry-login'
+  assert_file_not_matches "the night pulls anonymously, as a user does" "$wf" 'registry-login'
 }
 
 check_controlplane_job() {
@@ -237,8 +241,7 @@ $REPORT_STEP" "$(step_heads "$wf" report)"
 # Tests
 # ---------------------------------------------------------------------------
 
-test_the_workflow() {
-  echo "Test: triggers, permissions, concurrency and env"
+@test "triggers, permissions, concurrency and env" {
   check_triggers "$WORKFLOW"
   check_top_level_permissions "$WORKFLOW"
   check_concurrency_and_env "$WORKFLOW"
@@ -251,9 +254,7 @@ test_the_workflow() {
   check_report_job "$WORKFLOW"
 }
 
-test_a_copy_granting_issues_write_at_the_top_fails() {
-  echo "Test: a copy whose top-level permissions add issues: write fails"
-
+@test "a copy whose top-level permissions add issues: write fails" {
   local copy="$TMP_DIR/top-issues-write.yaml"
   awk '{ print } /^permissions:$/ { print "  issues: write" }' "$WORKFLOW" >"$copy"
   assert_contains "the copy grants issues: write at the top" \
@@ -261,9 +262,7 @@ test_a_copy_granting_issues_write_at_the_top_fails() {
   assert_gte "the permission check fails on it" "$(fails_on check_top_level_permissions "$copy")" 1
 }
 
-test_a_copy_granting_the_self_hosted_job_a_write_fails() {
-  echo "Test: a copy whose controlplane job grants itself a write fails"
-
+@test "a copy whose controlplane job grants itself a write fails" {
   local copy="$TMP_DIR/job-write.yaml"
   awk '{ print } /^  controlplane:$/ { print "    permissions:"; print "      contents: write" }' \
     "$WORKFLOW" >"$copy"
@@ -272,9 +271,7 @@ test_a_copy_granting_the_self_hosted_job_a_write_fails() {
   assert_gte "the job check fails on it" "$(fails_on check_controlplane_job "$copy")" 1
 }
 
-test_a_copy_choosing_external_operators_fails() {
-  echo "Test: a copy whose infrastructure step picks the external operators fails"
-
+@test "a copy whose infrastructure step picks the external operators fails" {
   local copy="$TMP_DIR/external-operators.yaml"
   awk '{ print } /^          WITH_CONTROLPLANE: "true"$/ { print "          CONTROLPLANE_OPERATORS: external" }' \
     "$WORKFLOW" >"$copy"
@@ -283,20 +280,3 @@ test_a_copy_choosing_external_operators_fails() {
   assert_gte "the env check fails on it" "$(fails_on check_setup_infra "$copy")" 1
   assert_gte "and so does the check for the name" "$(fails_on check_concurrency_and_env "$copy")" 1
 }
-
-if [ ! -f "$WORKFLOW" ]; then
-  echo "  FAIL: $WORKFLOW is missing"
-  FAIL=$((FAIL + 1))
-else
-  test_the_workflow
-  test_a_copy_granting_issues_write_at_the_top_fails
-  test_a_copy_granting_the_self_hosted_job_a_write_fails
-  test_a_copy_choosing_external_operators_fails
-fi
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0

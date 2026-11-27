@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -33,28 +33,21 @@
 # a suite, would fail only on a pull request that happens to run that job;
 # this test fails on every one.
 #
-# Usage: bash tests/unit/ci/operator_upgrade_wiring_test.sh
+# Usage: bin/bats tests/unit/ci/operator_upgrade_wiring.bats
 
-set -uo pipefail
+load '../../lib/bats/common'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 UPGRADE_YAML="$PROJECT_ROOT/.github/workflows/e2e-operator-upgrade.yaml"
 MAIN_YAML="$PROJECT_ROOT/.github/workflows/operator-upgrade.yaml"
 SUITES_DIR="$PROJECT_ROOT/tests/e2e-operator-upgrade"
 
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/ci_yaml.sh
 source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+setup() {
+  TMP_DIR="$BATS_TEST_TMPDIR"
+}
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -121,30 +114,26 @@ run_block() {
 # Tests
 # ---------------------------------------------------------------------------
 
-test_every_chart_has_a_pinned_suite() {
-  echo "Test: every operator chart has a suite and a baseline.yaml pin not above its version"
-
+@test "every operator chart has a suite and a baseline.yaml pin not above its version" {
   local op checked=0
   for op in $(chart_operators); do
     checked=$((checked + 1))
     if [ -f "$SUITES_DIR/${op}-helm-upgrade/chainsaw-test.yaml" ]; then
-      assert_eq "$op has tests/e2e-operator-upgrade/${op}-helm-upgrade/chainsaw-test.yaml" "yes" "yes"
+      soft assert_eq "$op has tests/e2e-operator-upgrade/${op}-helm-upgrade/chainsaw-test.yaml" "yes" "yes"
     else
-      assert_eq "$op has tests/e2e-operator-upgrade/${op}-helm-upgrade/chainsaw-test.yaml" "yes" "no"
+      soft assert_eq "$op has tests/e2e-operator-upgrade/${op}-helm-upgrade/chainsaw-test.yaml" "yes" "no"
     fi
-    assert_eq "$op's pin is X.Y.Z and not above its chart version" "" \
+    soft assert_eq "$op's pin is X.Y.Z and not above its chart version" "" \
       "$(pin_problem "$SUITES_DIR/${op}-helm-upgrade/baseline.yaml" \
         "$PROJECT_ROOT/operators/${op}/helm/${op}-operator/Chart.yaml")"
-    assert_contains "$op's suite is the Test ${op}-operator-helm-upgrade" \
+    soft assert_contains "$op's suite is the Test ${op}-operator-helm-upgrade" \
       "$(cat "$SUITES_DIR/${op}-helm-upgrade/chainsaw-test.yaml" 2>/dev/null)" \
       "  name: ${op}-operator-helm-upgrade"
   done
   assert_eq "the ten operator charts were checked" "10" "$checked"
 }
 
-test_the_pin_check_catches_a_bad_pin() {
-  echo "Test: the pin check reports a pin above its chart, compared field by field"
-
+@test "the pin check reports a pin above its chart, compared field by field" {
   local keystone_chart="$PROJECT_ROOT/operators/keystone/helm/keystone-operator/Chart.yaml"
   printf 'version: "0.99.0"\n' >"$TMP_DIR/pin.yaml"
   assert_contains "a keystone pin of 0.99.0 is above the keystone chart" \
@@ -166,27 +155,25 @@ test_the_pin_check_catches_a_bad_pin() {
     "$(pin_problem "$TMP_DIR/absent.yaml" "$TMP_DIR/chart.yaml")" "no pin at"
 }
 
-test_every_operator_has_an_upgrade_filter() {
-  echo "Test: every operator has a tests_operator_upgrade_<op> filter, and the shared one lists the shared inputs"
-
+@test "every operator has a tests_operator_upgrade_<op> filter, and the shared one lists the shared inputs" {
   local op block
   for op in $(ci_all_operators_from_ci_yaml); do
     block="$(filter_block "tests_operator_upgrade_${op}")"
-    assert_contains "tests_operator_upgrade_${op} lists the ${op} suite" "$block" \
+    soft assert_contains "tests_operator_upgrade_${op} lists the ${op} suite" "$block" \
       "- 'tests/e2e-operator-upgrade/${op}-helm-upgrade/**'"
     case "$op" in
       cinder | nova)
-        assert_contains "tests_operator_upgrade_${op} lists the vhost script its suite calls" \
+        soft assert_contains "tests_operator_upgrade_${op} lists the vhost script its suite calls" \
           "$block" "- 'tests/e2e/cinder/broker-vhost.sh'"
         ;;
       keystone)
-        assert_contains "tests_operator_upgrade_keystone lists the CRD window check its suite calls" \
+        soft assert_contains "tests_operator_upgrade_keystone lists the CRD window check its suite calls" \
           "$block" "- 'hack/ci-operator-upgrade-crd-window.sh'"
-        assert_contains "tests_operator_upgrade_keystone lists the pod-kill suite of its second pass" \
+        soft assert_contains "tests_operator_upgrade_keystone lists the pod-kill suite of its second pass" \
           "$block" "- 'tests/e2e-operator-upgrade/keystone-helm-upgrade-pod-kill/**'"
-        assert_contains "and the workload harness that suite calls" \
+        soft assert_contains "and the workload harness that suite calls" \
           "$block" "- 'tests/e2e-chaos/lib/workload.sh'"
-        assert_contains "and the workload the harness runs" \
+        soft assert_contains "and the workload the harness runs" \
           "$block" "- 'tests/e2e-chaos/lib/workload.py'"
         ;;
     esac
@@ -201,7 +188,7 @@ test_every_operator_has_an_upgrade_filter() {
     hack/ci-operator-upgrade-leg.sh \
     hack/ci-deploy-operator.sh \
     .github/workflows/e2e-operator-upgrade.yaml; do
-    assert_contains "tests_operator_upgrade lists $path" "$shared" "- '$path'"
+    soft assert_contains "tests_operator_upgrade lists $path" "$shared" "- '$path'"
   done
   assert_not_contains "tests_operator_upgrade does not list every suite at once" \
     "$shared" "tests/e2e-operator-upgrade/**"
@@ -212,9 +199,7 @@ ci_all_operators_from_ci_yaml() {
   sed -n 's/^          ALL_OPERATORS: //p' "$CI_YAML" | head -1
 }
 
-test_merge_operator_images_tags_the_chart_version() {
-  echo "Test: merge-operator-images reads the chart version and tags the index with it on main"
-
+@test "merge-operator-images reads the chart version and tags the index with it on main" {
   local job chart_at meta_at
   job="$(job_block merge-operator-images)"
   chart_at="$(grep -n -m1 '^      - name: Read the chart version$' <<<"$job" | cut -d: -f1)"
@@ -232,9 +217,7 @@ test_merge_operator_images_tags_the_chart_version() {
     'type=raw,value=${{ steps.chart.outputs.version }},enable={{is_default_branch}}'
 }
 
-test_ci_yaml_calls_the_reusable_workflow() {
-  echo "Test: the e2e-operator-upgrade job of ci.yaml calls the reusable workflow"
-
+@test "the e2e-operator-upgrade job of ci.yaml calls the reusable workflow" {
   local job
   job="$(job_block e2e-operator-upgrade)"
   assert_contains "it uses the reusable workflow" "$job" \
@@ -250,21 +233,19 @@ test_ci_yaml_calls_the_reusable_workflow() {
   assert_contains "the changes job exports the matrix" "$(job_block changes)" \
     'e2e-operator-upgrade-operators: ${{ steps.result.outputs.e2e-operator-upgrade-operators }}'
   # The run-scoped e2e images are pruned only after every job that pulls them
-  # finished. The scan of tests/unit/ci/cleanup_e2e_tags_needs_test.sh reads
+  # finished. The scan of tests/unit/ci/cleanup_e2e_tags_needs.bats reads
   # ci.yaml, where this job no longer names load-e2e-images.
   assert_contains "cleanup-e2e-tags still waits for the upgrade jobs" \
     "$(job_block cleanup-e2e-tags | sed -n '/^    needs:/,/^    [a-z]/p')" "e2e-operator-upgrade"
 }
 
-test_the_reusable_workflow_runs_the_pinned_baseline() {
-  echo "Test: the reusable workflow takes its inputs and runs the leg table and the pinned baseline"
-
+@test "the reusable workflow takes its inputs and runs the leg table and the pinned baseline" {
   local wf job
   wf="$(cat "$UPGRADE_YAML")"
   assert_contains "it is a called workflow" "$wf" "  workflow_call:"
   local input
   for input in operators image-map ref; do
-    assert_contains "it declares the $input input" "$wf" "      ${input}:"
+    soft assert_contains "it declares the $input input" "$wf" "      ${input}:"
   done
   job="$(workflow_job "$UPGRADE_YAML" upgrade)"
   assert_contains "the matrix comes from the operators input" "$job" \
@@ -295,8 +276,8 @@ test_the_reusable_workflow_runs_the_pinned_baseline() {
   assert_contains "the c5c3 leg installs the K-ORC kinds" "$wf_crds" "hack/ci-deploy-korc.sh"
   for crd_job in e2e-operator e2e-orders-multicluster; do
     job_crds="$(job_step "$crd_job" "Install CRDs watched by the c5c3-operator" | run_block)"
-    assert_not_empty "$crd_job installs the CRDs watched by the c5c3-operator" "$job_crds"
-    assert_eq "the c5c3 leg installs the CRDs $crd_job installs" "$job_crds" "$wf_crds"
+    soft assert_not_empty "$crd_job installs the CRDs watched by the c5c3-operator" "$job_crds"
+    soft assert_eq "the c5c3 leg installs the CRDs $crd_job installs" "$job_crds" "$wf_crds"
   done
 
   local ci_grants wf_grants
@@ -306,9 +287,7 @@ test_the_reusable_workflow_runs_the_pinned_baseline() {
   assert_eq "the workflow's barbican grants equal ci.yaml's" "$ci_grants" "$wf_grants"
 }
 
-test_the_keystone_job_runs_the_pod_kill_pass() {
-  echo "Test: a job whose leg sets pod-kill-suite reinstalls the baseline and runs the pod-kill suite"
-
+@test "a job whose leg sets pod-kill-suite reinstalls the baseline and runs the pod-kill suite" {
   local setup reinstall run job reinstall_at run_at first_at dump_at
   setup="$(CI_YAML="$UPGRADE_YAML" job_step upgrade "Setup E2E infrastructure")"
   assert_contains "Chaos Mesh comes from the leg table" "$setup" \
@@ -347,14 +326,8 @@ test_the_keystone_job_runs_the_pod_kill_pass() {
   assert_gte "the diagnostics dump follows both" "$dump_at" "$run_at"
 }
 
-test_the_make_target_deploys_what_the_fetch_wrote() {
-  echo "Test: make e2e-operator-upgrade deploys the image tag and chart the fetch script wrote"
-
-  if ! command -v make >/dev/null 2>&1; then
-    echo "  SKIP: make not installed (7 checks skipped)"
-    SKIP=$((SKIP + 7))
-    return
-  fi
+@test "make e2e-operator-upgrade deploys the image tag and chart the fetch script wrote" {
+  require_tool make
   local recipe fetched grants
   recipe="$(make -s -n -C "$PROJECT_ROOT" e2e-operator-upgrade OPERATOR=glance)"
   fetched="_output/operator-upgrade/glance.fetched"
@@ -375,9 +348,7 @@ test_the_make_target_deploys_what_the_fetch_wrote() {
   assert_contains "it runs the glance suite" "$recipe" "tests/e2e-operator-upgrade/glance-helm-upgrade/"
 }
 
-test_the_main_workflow_follows_the_publish_runs() {
-  echo "Test: operator-upgrade.yaml runs after main's publish runs and calls the reusable workflow"
-
+@test "operator-upgrade.yaml runs after main's publish runs and calls the reusable workflow" {
   local wf ci_name images_name resolve upgrade
   wf="$(cat "$MAIN_YAML")"
   ci_name="$(sed -n 's/^name: //p' "$CI_YAML")"
@@ -402,7 +373,7 @@ test_the_main_workflow_follows_the_publish_runs() {
     "github.event.workflow_run.event == 'push'" \
     "github.event.workflow_run.conclusion == 'success'" \
     "github.event.workflow_run.head_repository.full_name == github.repository"; do
-    assert_contains "the group joins only a run that passes $guard" "$concurrency" "$guard"
+    soft assert_contains "the group joins only a run that passes $guard" "$concurrency" "$guard"
   done
 
   resolve="$(workflow_job "$MAIN_YAML" resolve)"
@@ -419,7 +390,7 @@ test_the_main_workflow_follows_the_publish_runs() {
   assert_contains "resolve runs the matrix script" "$resolve" "run: hack/ci-operator-upgrade-main-matrix.sh"
   local output
   for output in operators has-operators image-map; do
-    assert_contains "resolve exports $output" "$resolve" \
+    soft assert_contains "resolve exports $output" "$resolve" \
       "${output}: \${{ steps.matrix.outputs.${output} }}"
   done
 
@@ -433,23 +404,3 @@ test_the_main_workflow_follows_the_publish_runs() {
   assert_contains "upgrade runs the commit the run built" "$upgrade" \
     'ref: ${{ github.event.workflow_run.head_sha }}'
 }
-
-# ---------------------------------------------------------------------------
-# Run
-# ---------------------------------------------------------------------------
-test_every_chart_has_a_pinned_suite
-test_the_pin_check_catches_a_bad_pin
-test_every_operator_has_an_upgrade_filter
-test_merge_operator_images_tags_the_chart_version
-test_ci_yaml_calls_the_reusable_workflow
-test_the_reusable_workflow_runs_the_pinned_baseline
-test_the_keystone_job_runs_the_pod_kill_pass
-test_the_make_target_deploys_what_the_fetch_wrote
-test_the_main_workflow_follows_the_publish_runs
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0

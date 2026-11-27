@@ -67,7 +67,7 @@ env:
   # they match, and the Renovate kind group bumps them in one pull request.
   KIND_VERSION: v0.33.0
   # Held in lockstep with the HELM_VERSION of ci.yaml by
-  # tests/unit/ci/helm_wiring_test.sh.
+  # tests/unit/ci/helm_wiring.bats.
   HELM_VERSION: v4.3.1
   # The barbican suite's managed BarbicanSecretStore needs the operator's
   # TokenRequest grant in openstack; hack/ci-deploy-operator.sh ignores the

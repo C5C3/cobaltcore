@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -20,19 +20,9 @@
 #     secret-store-scoping creates no K-ORC kind but dumps the log all the
 #     same, and the glob cannot select it on orc-system: that string is in
 #     the line under test, so deleting the line would drop the suite unseen.
-# Usage: bash tests/unit/ci/c5c3_catch_korc_logs_test.sh
+# Usage: bin/bats tests/unit/ci/c5c3_catch_korc_logs.bats
 
-set -uo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
+load '../../lib/bats/common'
 
 SUITES_DIR="$PROJECT_ROOT/tests/e2e/c5c3"
 DEAD_SELECTOR='app.kubernetes.io/name=openstack-resource-controller'
@@ -59,9 +49,7 @@ catch_block() {
 }
 
 # --- Test 1: no c5c3 file selects K-ORC by the label no pod carries ---
-test_no_c5c3_file_selects_korc_by_the_dead_label() {
-  echo "Test: no file under tests/e2e/c5c3/ selects K-ORC by $DEAD_SELECTOR"
-
+@test "no file under tests/e2e/c5c3/ selects K-ORC by app.kubernetes.io/name=openstack-resource-controller" {
   local offenders
   offenders="$(grep -rlF -- "$DEAD_SELECTOR" "$SUITES_DIR" 2>/dev/null || true)"
   assert_eq "no c5c3 file carries the dead K-ORC label selector (offending: ${offenders:-none})" \
@@ -69,16 +57,14 @@ test_no_c5c3_file_selects_korc_by_the_dead_label() {
 }
 
 # --- Test 2: every c5c3 suite with a catch that drives K-ORC reads the log in it ---
-test_every_korc_suite_with_a_catch_reads_the_deployment() {
-  echo "Test: every c5c3 suite with a catch that drives K-ORC kinds reads deploy/orc-controller-manager in it"
-
+@test "every c5c3 suite with a catch that drives K-ORC kinds reads deploy/orc-controller-manager in it" {
   local file examined=0
   for file in "$SUITES_DIR"/*/chainsaw-test.yaml; do
     [[ -f "$file" ]] || continue
     grep -qE '^[[:space:]]*catch:' "$file" || continue
     grep -qF 'k-orc.cloud' "$file" || continue
     examined=$((examined + 1))
-    assert_contains "${file#"$PROJECT_ROOT"/} reads the K-ORC log through deploy/orc-controller-manager in its catch block" \
+    soft assert_contains "${file#"$PROJECT_ROOT"/} reads the K-ORC log through deploy/orc-controller-manager in its catch block" \
       "$(catch_block "$file")" "$LOG_LINE"
   done
 
@@ -87,24 +73,10 @@ test_every_korc_suite_with_a_catch_reads_the_deployment() {
 }
 
 # --- Test 3: the suites that dump the log without driving K-ORC keep it ---
-test_log_only_suites_read_the_deployment() {
-  echo "Test: the c5c3 suites in LOG_ONLY_SUITES read deploy/orc-controller-manager in their catch"
-
+@test "the c5c3 suites in LOG_ONLY_SUITES read deploy/orc-controller-manager in their catch" {
   local suite
   for suite in "${LOG_ONLY_SUITES[@]}"; do
-    assert_contains "tests/e2e/c5c3/$suite reads the K-ORC log through deploy/orc-controller-manager in its catch block" \
+    soft assert_contains "tests/e2e/c5c3/$suite reads the K-ORC log through deploy/orc-controller-manager in its catch block" \
       "$(catch_block "$SUITES_DIR/$suite/chainsaw-test.yaml")" "$LOG_LINE"
   done
 }
-
-# --- Run ---
-test_no_c5c3_file_selects_korc_by_the_dead_label
-test_every_korc_suite_with_a_catch_reads_the_deployment
-test_log_only_suites_read_the_deployment
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0

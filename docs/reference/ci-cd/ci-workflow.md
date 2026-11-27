@@ -197,7 +197,7 @@ reusable `.github/workflows/e2e-operator-upgrade.yaml`, which repeats the pin in
 own env). Without a version input the action installs the newest Helm release when
 the job starts. Renovate bumps both copies in one pull request without automerge,
 because `helm-push` runs only after a merge and no pull request run pushes a chart
-with the new Helm. `tests/unit/ci/helm_wiring_test.sh` fails when a `setup-helm`
+with the new Helm. `tests/unit/ci/helm_wiring.bats` fails when a `setup-helm`
 step passes no `version` or when the two copies disagree. The other E2E jobs use the Helm of the runner image. `setup-envtest` is installed via `@release-0.23` because the
 sub-module does not publish its own release tags.
 
@@ -2425,7 +2425,7 @@ for the same ghcr.io behaviour. Helm stamps the archive's modification time as
 the manifest's creation time, so the retry builds the same manifest, skips what
 the registry already serves and repeats the tag step. Every other error fails on
 the first attempt. `tests/unit/hack/ci_helm_push_test.sh` covers the script, and
-`tests/unit/ci/helm_wiring_test.sh` fails when a workflow runs `helm push`
+`tests/unit/ci/helm_wiring.bats` fails when a workflow runs `helm push`
 directly.
 
 **Pushed digest:** helm ends a successful push with `Pushed: <repository>:<version>`
@@ -2954,7 +2954,7 @@ Usage in a workflow job:
 ```
 
 Pinned by four shell suites:
-`tests/unit/ci/create_kind_cluster_wiring_test.sh` asserts that no job creates a
+`tests/unit/ci/create_kind_cluster_wiring.bats` asserts that no job creates a
 cluster on its own and that every job that creates one ends with the teardown,
 `tests/unit/hack/ci_reset_kind_cluster_test.sh` covers the sweep,
 `tests/unit/hack/ci_create_kind_cluster_test.sh` covers the creation and its

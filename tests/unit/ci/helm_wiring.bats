@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -19,38 +19,26 @@
 # workflow does not inherit that env, so e2e-operator-upgrade.yaml repeats the
 # pin, and the copy must agree with ci.yaml's.
 #
-# Usage: bash tests/unit/ci/helm_wiring_test.sh
+# Usage: bin/bats tests/unit/ci/helm_wiring.bats
 
-set -uo pipefail
+load '../../lib/bats/common'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/ci_yaml.sh
 source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
-test_chart_pushes_use_the_script() {
-  echo "Test: helm-push and helm-push-target-cluster push through hack/ci-helm-push.sh"
-
+@test "helm-push and helm-push-target-cluster push through hack/ci-helm-push.sh" {
   local job step
   for job in helm-push helm-push-target-cluster; do
     step="$(job_step "$job" "Package and push Helm chart")"
-    assert_not_empty "$job has a Package and push Helm chart step" "$step"
-    assert_contains "$job pushes through hack/ci-helm-push.sh" "$step" \
+    soft assert_not_empty "$job has a Package and push Helm chart step" "$step"
+    soft assert_contains "$job pushes through hack/ci-helm-push.sh" "$step" \
       'hack/ci-helm-push.sh '
   done
 }
 
-test_no_bare_helm_push() {
-  echo "Test: no workflow or composite action runs helm push directly"
-
+@test "no workflow or composite action runs helm push directly" {
   local bare
   bare="$(grep -rnE '^[^#]*\bhelm push\b' "$PROJECT_ROOT/.github" | sed "s|^$PROJECT_ROOT/||")"
   assert_eq "no uncommented helm push under .github/" "" "$bare"
@@ -72,9 +60,7 @@ setup_helm_versions() {
   done
 }
 
-test_setup_helm_steps_pass_the_pin() {
-  echo "Test: every azure/setup-helm step installs HELM_VERSION"
-
+@test "every azure/setup-helm step installs HELM_VERSION" {
   local versions count
   versions="$(setup_helm_versions)"
   count="$(printf '%s\n' "$versions" | grep -c . | tr -d ' ')"
@@ -88,7 +74,7 @@ test_setup_helm_steps_pass_the_pin() {
   for f in "$PROJECT_ROOT"/.github/workflows/*.yaml; do
     [ "$f" = "$CI_YAML" ] && continue
     grep -q 'uses: azure/setup-helm@' "$f" || continue
-    assert_eq "$(basename "$f") pins the HELM_VERSION of ci.yaml" "$ci_helm" "$(helm_version_pin "$f")"
+    soft assert_eq "$(basename "$f") pins the HELM_VERSION of ci.yaml" "$ci_helm" "$(helm_version_pin "$f")"
   done
 }
 
@@ -96,14 +82,3 @@ test_setup_helm_steps_pass_the_pin() {
 helm_version_pin() {
   sed -n 's/^  HELM_VERSION: \(v[0-9][0-9.]*\)$/\1/p' "$1" | head -1
 }
-
-test_chart_pushes_use_the_script
-test_no_bare_helm_push
-test_setup_helm_steps_pass_the_pin
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -26,12 +26,10 @@
 # and operator-upgrade.yaml, and for the two nightlies flux-path.yaml and
 # performance.yaml.
 #
-# Usage: bash tests/unit/ci/create_kind_cluster_wiring_test.sh
+# Usage: bin/bats tests/unit/ci/create_kind_cluster_wiring.bats
 
-set -uo pipefail
+load '../../lib/bats/common'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 UPGRADE_YAML="$PROJECT_ROOT/.github/workflows/e2e-operator-upgrade.yaml"
 FLUX_PATH_YAML="$PROJECT_ROOT/.github/workflows/flux-path.yaml"
@@ -44,13 +42,6 @@ RESET_SH="$PROJECT_ROOT/hack/ci-reset-kind-cluster.sh"
 DELETE_SH="$PROJECT_ROOT/hack/ci-delete-kind-cluster.sh"
 
 ACTION_REF="./.github/actions/create-kind-cluster"
-
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -92,23 +83,19 @@ count_lines() {
 # ---------------------------------------------------------------------------
 # Test A: no job creates a cluster on its own any more
 # ---------------------------------------------------------------------------
-test_no_direct_kind_action() {
-  echo "Test: no job uses helm/kind-action directly"
-
+@test "no job uses helm/kind-action directly" {
   local direct
   direct="$(count_lines "uses: helm/kind-action")"
 
   assert_eq "no workflow has a helm/kind-action step of its own" "0" "$direct"
-  assert_file_contains "the composite action is the one place it is used" \
+  assert_file_matches "the composite action is the one place it is used" \
     "$ACTION_YAML" "uses: helm/kind-action@"
 }
 
 # ---------------------------------------------------------------------------
 # Test B: every cluster-creating step goes through the composite action
 # ---------------------------------------------------------------------------
-test_every_step_uses_the_action() {
-  echo "Test: every cluster-creating step uses the composite action"
-
+@test "every cluster-creating step uses the composite action" {
   local steps count wrong
   steps="$(cluster_creating_steps)"
   count="$(printf '%s\n' "$steps" | sed '/^$/d' | wc -l | tr -d ' ')"
@@ -125,9 +112,7 @@ test_every_step_uses_the_action() {
 # ---------------------------------------------------------------------------
 # Test C: the inputs the action needs are the inputs the jobs pass
 # ---------------------------------------------------------------------------
-test_inputs_match() {
-  echo "Test: the jobs pass the inputs the action declares"
-
+@test "the jobs pass the inputs the action declares" {
   local version_inputs cluster_inputs
   version_inputs="$(count_lines "^          version: \${{ env.KIND_VERSION }}$")"
   cluster_inputs="$(cluster_creating_steps | sed '/^$/d' | wc -l | tr -d ' ')"
@@ -135,17 +120,17 @@ test_inputs_match() {
   assert_eq "each cluster-creating step pins the kind version from env.KIND_VERSION" \
     "$cluster_inputs" "$version_inputs"
 
-  assert_file_contains "the action declares version" "$ACTION_YAML" "^  version:"
-  assert_file_contains "the action declares cluster-name" "$ACTION_YAML" "^  cluster-name:"
-  assert_file_contains "the action declares config" "$ACTION_YAML" "^  config:"
+  assert_file_matches "the action declares version" "$ACTION_YAML" "^  version:"
+  assert_file_matches "the action declares cluster-name" "$ACTION_YAML" "^  cluster-name:"
+  assert_file_matches "the action declares config" "$ACTION_YAML" "^  config:"
 
   local config
   while IFS= read -r config; do
     [ -n "$config" ] || continue
     if [ -f "$PROJECT_ROOT/$config" ]; then
-      assert_eq "kind config '$config' exists" "yes" "yes"
+      soft assert_eq "kind config '$config' exists" "yes" "yes"
     else
-      assert_eq "kind config '$config' exists" "yes" "no"
+      soft assert_eq "kind config '$config' exists" "yes" "no"
     fi
   done < <(kind_config_inputs | sort -u)
 }
@@ -184,14 +169,12 @@ expected_kind_config() {
   esac
 }
 
-test_each_job_uses_its_config() {
-  echo "Test: each job creates its cluster from the kind config it needs"
-
+@test "each job creates its cluster from the kind config it needs" {
   local configs job have
   configs="$(job_kind_configs)"
   for job in $(cut -f1 <<<"$configs" | uniq); do
     have="$(awk -F '\t' -v j="$job" '$1 == j { printf "%s%s", sep, $2; sep = "|" }' <<<"$configs")"
-    assert_eq "$job passes $(expected_kind_config "$job")" "$(expected_kind_config "$job")" "$have"
+    soft assert_eq "$job passes $(expected_kind_config "$job")" "$(expected_kind_config "$job")" "$have"
   done
   assert_eq "exactly two jobs create the audited cluster" "2" \
     "$(grep -c "$(printf '\t')hack/kind-config-audit.yaml\$" <<<"$configs" | tr -d ' ')"
@@ -200,40 +183,36 @@ test_each_job_uses_its_config() {
 # ---------------------------------------------------------------------------
 # Test D: what the action keeps from helm/kind-action
 # ---------------------------------------------------------------------------
-test_action_keeps_install_and_teardown() {
-  echo "Test: the action installs the binaries and keeps the post-job teardown"
-
-  assert_file_contains "helm/kind-action is SHA-pinned with a version comment" \
+@test "the action installs the binaries and keeps the post-job teardown" {
+  assert_file_matches "helm/kind-action is SHA-pinned with a version comment" \
     "$ACTION_YAML" "uses: helm/kind-action@[0-9a-f]\{40\} # v[0-9]"
-  assert_file_contains "it runs install-only, so the creation is ours" \
+  assert_file_matches "it runs install-only, so the creation is ours" \
     "$ACTION_YAML" 'install_only: "true"'
   # The post step of helm/kind-action runs `kind delete cluster --name
   # <cluster_name>`: without this input it would delete `chart-testing`, its
   # default, and leave this job's cluster on the runner — the very leftover the
   # reset exists to clear.
-  assert_file_contains "the teardown still points at this job's cluster" \
+  assert_file_matches "the teardown still points at this job's cluster" \
     "$ACTION_YAML" "cluster_name: \${{ inputs.cluster-name }}"
   # ...but it no longer decides whether the job failed. cleanup.sh runs
   # `kind delete cluster … || "${INPUT_IGNORE_FAILED_CLEAN}"`, so "false" here
   # is literally the command that fails the post step when a deletion loses a
   # race with the docker daemon. The deletion the job relies on is the
   # hack/ci-delete-kind-cluster.sh step, which runs earlier and retries.
-  assert_file_contains "a failed post-step deletion cannot fail the job" \
+  assert_file_matches "a failed post-step deletion cannot fail the job" \
     "$ACTION_YAML" 'ignore_failed_clean: "true"'
-  assert_file_contains "the creation runs through the hack script" \
+  assert_file_matches "the creation runs through the hack script" \
     "$ACTION_YAML" "run: hack/ci-create-kind-cluster.sh"
-  assert_file_contains "the cluster name reaches the script" \
+  assert_file_matches "the cluster name reaches the script" \
     "$ACTION_YAML" "CLUSTER_NAME: \${{ inputs.cluster-name }}"
-  assert_file_contains "the config reaches the script" \
+  assert_file_matches "the config reaches the script" \
     "$ACTION_YAML" "KIND_CONFIG: \${{ inputs.config }}"
 }
 
 # ---------------------------------------------------------------------------
 # Test D2: every job that creates a cluster also deletes it, last and always
 # ---------------------------------------------------------------------------
-test_every_job_tears_its_cluster_down() {
-  echo "Test: every cluster-creating job ends with the teardown step"
-
+@test "every cluster-creating job ends with the teardown step" {
   # Per job: does it create a cluster, does it run the teardown, is the teardown
   # the last step, and does it carry `if: always()`. A job is named
   # <workflow file>:<job>, so two workflows' jobs never merge.
@@ -259,11 +238,11 @@ test_every_job_tears_its_cluster_down() {
   while read -r job creates deletes guarded runs_script is_last; do
     [ -n "$job" ] || continue
     checked=$((checked + 1))
-    assert_eq "$job creates a cluster and deletes it" "1 1" "$creates $deletes"
-    assert_eq "$job guards the teardown with always()" "1" "$guarded"
-    assert_eq "$job tears down through hack/ci-delete-kind-cluster.sh" "1" "$runs_script"
+    soft assert_eq "$job creates a cluster and deletes it" "1 1" "$creates $deletes"
+    soft assert_eq "$job guards the teardown with always()" "1" "$guarded"
+    soft assert_eq "$job tears down through hack/ci-delete-kind-cluster.sh" "1" "$runs_script"
     # Last, so `Dump diagnostic info` still reads a live cluster.
-    assert_eq "$job runs the teardown as its last step" "1" "$is_last"
+    soft assert_eq "$job runs the teardown as its last step" "1" "$is_last"
   done <<<"$report"
 
   assert_gte "at least the eleven e2e jobs were checked" "$checked" "11"
@@ -278,9 +257,7 @@ test_every_job_tears_its_cluster_down() {
 # ---------------------------------------------------------------------------
 # Test E: the scripts the action calls can be executed
 # ---------------------------------------------------------------------------
-test_scripts_are_executable() {
-  echo "Test: both scripts are executable"
-
+@test "both scripts are executable" {
   # `run: hack/ci-create-kind-cluster.sh` executes the file directly, and the
   # create script executes the reset script the same way.
   if [ -x "$CREATE_SH" ]; then
@@ -301,26 +278,8 @@ test_scripts_are_executable() {
     assert_eq "hack/ci-delete-kind-cluster.sh is executable" "yes" "no"
   fi
 
-  assert_file_contains "the create script calls the reset script" \
+  assert_file_matches "the create script calls the reset script" \
     "$CREATE_SH" "ci-reset-kind-cluster.sh"
-  assert_file_contains "the delete script sweeps through the reset script" \
+  assert_file_matches "the delete script sweeps through the reset script" \
     "$DELETE_SH" "ci-reset-kind-cluster.sh"
 }
-
-# ---------------------------------------------------------------------------
-# Run
-# ---------------------------------------------------------------------------
-test_no_direct_kind_action
-test_every_step_uses_the_action
-test_inputs_match
-test_each_job_uses_its_config
-test_action_keeps_install_and_teardown
-test_every_job_tears_its_cluster_down
-test_scripts_are_executable
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0

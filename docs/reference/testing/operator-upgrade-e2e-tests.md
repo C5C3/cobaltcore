@@ -89,7 +89,7 @@ Any lower pin is fixed:
 Baseline keystone-operator 0.15.0 is frozen (main publishes 0.16.0)
 ```
 
-`tests/unit/ci/operator_upgrade_wiring_test.sh` fails when a chart has no suite, or
+`tests/unit/ci/operator_upgrade_wiring.bats` fails when a chart has no suite, or
 when a pin is not `X.Y.Z` or lies above its chart's version, compared field by field.
 
 ### Bump rule
