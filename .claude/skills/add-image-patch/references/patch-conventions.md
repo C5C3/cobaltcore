@@ -141,5 +141,5 @@ is not in the image, so run `make nix-lock` after adding one.
 | `nix-lock-check` | the lock lists the patch set of the tree | a patch was added, renumbered or retired without `make nix-lock` |
 | `build-service-images (<svc>, <release>)` | the patch applies, the image builds, `verify_<svc>.sh` passes (PR only) | the patch does not apply; a verify assertion fails |
 | `test-service-images (<svc>, <release>)` | the upstream unit suite passes on the patched tree | an upstream test pins the old behaviour and its hunk is missing |
-| `e2e-operator` leg of `<svc>` (`ci.yaml`, `image_<svc>` filter) | the operator runs against the freshly built image | the behaviour change breaks the service at runtime |
+| `e2e-operator` leg of `<svc>` (`ci-e2e-operator.yaml`, the `image_<svc>` filter of `.github/ci-filters.yaml`) | the operator runs against the freshly built image | the behaviour change breaks the service at runtime |
 | `verify-service-images` (push to main) | the published image carries the patch | as for the PR verify step |

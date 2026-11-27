@@ -1,0 +1,57 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Composite action that deploys what a Keystone-only ControlPlane needs on kind:
+# the keystone-operator and the horizon-operator, the Glance and Placement CRDs,
+# and then the c5c3-operator. The e2e-controlplane-sso and
+# e2e-external-keystone jobs (.github/workflows/ci-<job>.yaml) run the same
+# five steps in this order, so they live here once.
+#
+# The order matters. The c5c3 manager Owns() and Watches() the Keystone,
+# Horizon, Glance, GlanceBackend and Placement kinds, and an informer for a kind
+# whose CRD is absent never syncs: the elected leader dies on the cache-sync
+# timeout. Neither suite declares services.glance or services.placement, so the
+# Glance and Placement CRDs are enough there; the glance-operator and the
+# placement-operator stay undeployed. Every operator lands in <operator>-system,
+# where hack/ci-dump-diagnostics.sh looks for it.
+#
+# Each deployment runs hack/ci-deploy-operator.sh, which reads IMAGE_PREFIX and
+# the rest of its input from the calling job's environment, the way a step of
+# the job would. K-ORC is deployed before this action by the calling job.
+
+name: Deploy the Keystone-only ControlPlane operators
+description: >
+  Deploy the keystone-operator and the horizon-operator, install the Glance and
+  Placement CRDs the c5c3 manager watches, then deploy the c5c3-operator.
+
+runs:
+  using: composite
+  steps:
+    - name: Deploy keystone-operator
+      shell: bash
+      run: hack/ci-deploy-operator.sh
+      env:
+        OPERATOR: keystone
+        IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/keystone-operator
+        NAMESPACE: keystone-system
+    - name: Deploy horizon-operator
+      shell: bash
+      run: hack/ci-deploy-operator.sh
+      env:
+        OPERATOR: horizon
+        IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/horizon-operator
+        NAMESPACE: horizon-system
+    - name: Install Glance CRDs watched by the c5c3-operator
+      shell: bash
+      run: kubectl apply -f operators/glance/helm/glance-operator/crds/
+    - name: Install Placement CRDs watched by the c5c3-operator
+      shell: bash
+      run: kubectl apply -f operators/placement/helm/placement-operator/crds/
+    - name: Deploy c5c3-operator
+      shell: bash
+      run: hack/ci-deploy-operator.sh
+      env:
+        OPERATOR: c5c3
+        IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/c5c3-operator
+        NAMESPACE: c5c3-system

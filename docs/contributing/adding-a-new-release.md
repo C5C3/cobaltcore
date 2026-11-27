@@ -216,7 +216,7 @@ those names collides with the running sibling, because the suites of one
 (`tests/e2e/chainsaw-config.yaml` sets `parallel: 4`). Name every slugged resource `<svc>-basic-<slug>` and
 `<svc>_basic_<slug>`, and check with
 `grep -rnE 'basic[-_]<year>([^-_0-9]|$)' tests/e2e/*/basic-deployment-<slug>/`.
-Add the nova variant to `shard_two` in `.github/workflows/ci.yaml`
+Add the nova variant to `shard_two` in `.github/workflows/ci-e2e-operator.yaml`
 (`tests/unit/ci/nova_e2e_matrix_test.sh` asserts every suite runs in one
 shard), and add the suite's row, section and tree entry to the reference
 pages that list suites
@@ -274,7 +274,7 @@ moves to `<prev> -> <version>` as well:
 - the `ghcr.io/c5c3/keystone:<v>` client pins of its `chainsaw-test.yaml`,
   which follow the start release;
 - the sixteen service image refs of the `e2e-controlplane` job in
-  `.github/workflows/ci.yaml`, the eight services at both releases in both of
+  `.github/workflows/ci-e2e-controlplane.yaml`, the eight services at both releases in both of
   its load steps, which `tests/unit/ci/e2e_controlplane_output_test.sh` checks
   against the fixtures.
 
@@ -363,8 +363,8 @@ None of these are mechanical; decide and record each in the PR description:
   comment that names `neutron:<default>` for the multicluster target, the
   quick-start step `tests/unit/deploy/metal_stack_controlplane_test.sh` ties
   to the lab ControlPlane (`docs/quick-start-controlplane.md`), the image
-  tags hard-coded in `.github/workflows/ci.yaml` (image-upgrade re-tagging and
-  kind preloads), the tempest client image `ghcr.io/c5c3/tempest:<default>`
+  tags hard-coded in the `.github/workflows/ci-<job>.yaml` workflows of the E2E
+  jobs (image-upgrade re-tagging and kind preloads), the tempest client image `ghcr.io/c5c3/tempest:<default>`
   that e2e fixture Jobs run, and several hundred release pins across the
   `tests/e2e*/` fixture trees. Moving the default is one coordinated sweep;
   the inventory script prints every current value and the pin count.
@@ -388,8 +388,8 @@ are the record of the last retirement.
 
 1. **Move the default**, when the retiring release is the default. Change
    every default-release reference listed under
-   [Decision points](#decision-points); the `ci.yaml` image lists of every e2e
-   job and the image-upgrade retag (`:<default>-upgraded`) with the keystone
+   [Decision points](#decision-points); the image lists of every e2e job in
+   its `ci-<job>.yaml` workflow and the image-upgrade retag (`:<default>-upgraded`) with the keystone
    `image-upgrade` and `rolling-update-zero-downtime` fixtures that patch to
    it; the tempest client image of every e2e fixture Job; every pin under
    `tests/e2e*/` (the `invalid-*` corpora through their `_generate.py` and
@@ -422,8 +422,8 @@ are the record of the last retirement.
    `make test-shell` breaks) and the per-release `renovate.json` rules whose
    `matchFileNames` name it; any upgrade-path suite that still starts at the
    old release, `upgrade-abort` included; the placed-services pins in
-   `tests/e2e-multicluster/placed-services/` and their ci.yaml
-   `e2e-multicluster` preloads, if they name the old release; and every
+   `tests/e2e-multicluster/placed-services/` and their
+   `e2e-multicluster` preloads in `ci-e2e-multicluster.yaml`, if they name the old release; and every
    default-release reference that still names it. Lower the `HaveLen(N)` and
    drop the `HaveKey("<old>")` of every `option_catalog_test.go`, with the
    deprecation tests keyed on the old catalog; fix every Go test fixture that

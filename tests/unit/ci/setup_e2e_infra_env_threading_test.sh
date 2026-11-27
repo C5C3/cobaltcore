@@ -83,8 +83,8 @@ test_the_action_threads_every_key_a_job_sets() {
   assert_not_empty "the action threads at least one key" "$threaded"
 
   for job in $(job_names); do
+    step_exists "$job" "Setup E2E infrastructure" || continue
     step=$(job_step "$job" "Setup E2E infrastructure")
-    [ -n "$step" ] || continue
     jobs_with_step="${jobs_with_step} ${job}"
 
     keys=$(setup_step_keys "$step")

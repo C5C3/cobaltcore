@@ -7,7 +7,7 @@
 #
 # Reads the "version" key of images/ovn/source.json and prints the tag
 # without its leading 'v' (v26.03.2 becomes 26.03.2) on stdout. The image
-# build workflow, the e2e legs of ci.yaml, hack/ci-resolve-e2e-images.sh and
+# build workflow, the e2e workflows ci.yaml calls, hack/ci-resolve-e2e-images.sh and
 # tests/container-images/verify_ovn.sh call this script instead of reading
 # the pin themselves; the Nix build reads the file itself. Failures print an
 # ::error:: annotation on stderr, so stdout carries nothing but the version.

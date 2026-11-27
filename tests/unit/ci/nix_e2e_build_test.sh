@@ -369,9 +369,12 @@ test_builds_the_cover_images() {
 test_ci_wires_the_cover_images() {
   echo "Test: build-e2e-images resolves, builds, verifies and pushes the cover images"
 
-  assert_contains "Resolve images asks for the cover images when a coverage job runs" \
+  assert_contains "the job asks for the cover images when a coverage job runs" \
+    "$(job_block build-e2e-images)" \
+    "      build-cover-images: \${{ needs.changes.outputs.has-e2e-operators == 'true' || needs.changes.outputs.e2e-chaos == 'true' || needs.changes.outputs.tempest == 'true' }}"
+  assert_contains "and Resolve images hands that to the resolver" \
     "$(job_step build-e2e-images "Resolve images")" \
-    "BUILD_COVER_IMAGES: \${{ needs.changes.outputs.has-e2e-operators == 'true' || needs.changes.outputs.e2e-chaos == 'true' || needs.changes.outputs.tempest == 'true' }}"
+    'BUILD_COVER_IMAGES: ${{ inputs.build-cover-images }}'
   assert_contains "Build Nix images passes BUILD_COVER_OPERATORS" \
     "$(job_step build-e2e-images "Build Nix images")" \
     'BUILD_COVER_OPERATORS: ${{ env.BUILD_COVER_OPERATORS }}'

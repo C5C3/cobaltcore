@@ -83,8 +83,8 @@ test_no_suite_runs_isolated() {
   assert_eq "the entry holds no isolated_test_dirs" "" "$(entry_key isolated_test_dirs)"
   assert_contains "test_dirs holds controlplane-provisioning-mariadb-kill" "$(entry_key test_dirs)" \
     "tests/e2e-chaos/controlplane-provisioning-mariadb-kill"
-  assert_eq "no isolated run step exists" "" \
-    "$(job_step e2e-chaos "Run isolated chaos E2E tests (controlplane leg)")"
+  assert_eq "no isolated run step exists" "absent" \
+    "$(step_exists e2e-chaos "Run isolated chaos E2E tests (controlplane leg)" && echo present || echo absent)"
 }
 
 test_the_leg_loads_the_c5c3_operator_image() {

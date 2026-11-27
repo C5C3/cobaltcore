@@ -1076,4 +1076,4 @@ tests/e2e/cinder-operator/
 - [ControlPlane E2E Test Suites](./controlplane-e2e-tests.md) — Cinder as a placed service under a ControlPlane
 - [Infrastructure E2E Deployment](../infrastructure/e2e-deployment.md) — infrastructure stack deployment, `WITH_NFS` and `WITH_MESSAGING`
 - `tests/e2e/chainsaw-config.yaml` — shared Chainsaw configuration
-- `.github/workflows/ci.yaml` — the `e2e-operator` matrix leg that runs these suites
+- `.github/workflows/ci-e2e-operator.yaml` — the `e2e-operator` matrix leg that runs these suites

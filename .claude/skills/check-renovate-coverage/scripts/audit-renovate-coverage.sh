@@ -22,8 +22,9 @@
 #       (the test names its file, its dependency, or an identifier from its
 #       regex, and not only needles another manager shares)
 #   R7  every <NAME>_VERSION pin that appears in BOTH the Makefile and the
-#       .github/workflows/ci.yaml env block carries the same value (the
-#       Makefile comment "Must be kept in sync" is enforced mechanically)
+#       env of .github/workflows/ci.yaml or a ci-<job>.yaml workflow it calls
+#       carries the same value (the Makefile comment "Must be kept in sync" is
+#       enforced mechanically)
 #   R8  every HelmRelease chart version under deploy/bases/operators/releases/ and
 #       deploy/overlays/kind/ has one owner, the flux manager or a customManager (the
 #       c5c3-charts releases are excluded by design), and is spelled x.y.z or
@@ -613,8 +614,11 @@ CI_YAML=".github/workflows/ci.yaml"
 # Makefile pins: NAME ?= value
 mk_pins=$(sed -nE 's/^([A-Z][A-Z0-9_]*_VERSION)[[:space:]]*\?=[[:space:]]*([^#[:space:]]+).*/\1=\2/p' Makefile | sort -u || true)
 # Workflow pins: NAME: value (env blocks at any indentation; run-block shell
-# assignments deliberately excluded — those are step-local, not shared pins).
-ci_pins=$(sed -nE 's/^[[:space:]]+([A-Z][A-Z0-9_]*_VERSION):[[:space:]]*"?([^"#[:space:]]+)"?.*/\1=\2/p' "${CI_YAML}" | sort -u || true)
+# assignments deliberately excluded — those are step-local, not shared pins),
+# in ci.yaml and the ci-<job>.yaml workflows its jobs call, which do not
+# inherit its env and would pin a tool of their own.
+ci_pins=$(sed -nE 's/^[[:space:]]+([A-Z][A-Z0-9_]*_VERSION):[[:space:]]*"?([^"#[:space:]]+)"?.*/\1=\2/p' \
+  "${CI_YAML}" .github/workflows/ci-*.yaml | sort -u || true)
 info "Makefile pins: $(echo "${mk_pins}" | tr '\n' ' ')"
 info "ci.yaml pins: $(echo "${ci_pins}" | tr '\n' ' ')"
 while IFS= read -r mk; do

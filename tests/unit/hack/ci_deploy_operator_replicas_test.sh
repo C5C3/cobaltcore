@@ -31,6 +31,8 @@ SKIP=0
 
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
+# shellcheck source=tests/lib/ci_yaml.sh
+source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -171,10 +173,13 @@ test_ci_wiring() {
   local job
   for job in e2e-controlplane e2e-chaos-random e2e-orders-multicluster; do
     assert_eq "the job-level env of ${job} sets OPERATOR_REPLICAS to 1" "1" \
-      "$(yq ".jobs[\"${job}\"].env.OPERATOR_REPLICAS" "$CI_YAML")"
+      "$(yq ".jobs[\"${job}\"].env.OPERATOR_REPLICAS" "$(job_workflow "${job}")")"
   done
+  # ci.yaml and every workflow it calls, so a job moved into one is still seen.
   assert_eq "no other job sets OPERATOR_REPLICAS" "e2e-chaos-random,e2e-controlplane,e2e-orders-multicluster" \
-    "$(yq '[.jobs | to_entries[] | select(.value.env.OPERATOR_REPLICAS != null) | .key] | join(",")' "$CI_YAML")"
+    "$(ci_workflows | while read -r wf; do
+         yq '.jobs | to_entries[] | select(.value.env.OPERATOR_REPLICAS != null) | .key' "$wf"
+       done | LC_ALL=C sort | paste -sd, -)"
 }
 
 # ---------------------------------------------------------------------------

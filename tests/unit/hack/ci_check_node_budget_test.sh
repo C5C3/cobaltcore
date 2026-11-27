@@ -38,6 +38,8 @@ SKIP=0
 
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
+# shellcheck source=tests/lib/ci_yaml.sh
+source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
 # The script does its arithmetic in jq. The stub PATH below is tightened to
 # the stub dir plus /usr/bin and /bin, so a jq installed elsewhere (Homebrew,
@@ -458,7 +460,7 @@ test_wiring() {
     return
   fi
   assert_eq "the full-chain step of e2e-controlplane sets E2E_NODE_BUDGET=true" "true" \
-    "$(yq '.jobs["e2e-controlplane"].steps[] | select(.name == "Run full ControlPlane chain E2E test") | .env.E2E_NODE_BUDGET' "$CI_YAML")"
+    "$(yq '.jobs["e2e-controlplane"].steps[] | select(.name == "Run full ControlPlane chain E2E test") | .env.E2E_NODE_BUDGET' "$(job_workflow e2e-controlplane)")"
 }
 
 # ---------------------------------------------------------------------------

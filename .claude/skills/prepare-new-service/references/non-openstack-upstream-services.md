@@ -56,8 +56,8 @@ breaks structurally. Profile these instead of the Python questions:
 - **e2e inversion:** instead of one service version per OpenStack release,
   **one** service version runs against **N** OpenStack releases — the
   `basic-deployment` fork pair carries the same service tag against both
-  stacks, and the kind image-load legs (the ci.yaml `e2e-operator`
-  `Resolve E2E images` step, where `keystone-federation-proxy:dev` and
+  stacks, and the kind image-load legs (the `Resolve E2E images`
+  step of `ci-e2e-operator.yaml`, where `keystone-federation-proxy:dev` and
   `ovn:${OVN_VERSION}` are the precedents)
   need an entry outside `hack/ci-service-image-releases.sh`'s release
   loop; `hack/ci-resolve-e2e-images.sh` names the federation proxy

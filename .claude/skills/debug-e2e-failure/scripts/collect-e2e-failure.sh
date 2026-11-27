@@ -405,8 +405,10 @@ if [[ -n "${JOB_RE}" ]]; then
   mv "${SEL_TSV}.tmp" "${SEL_TSV}"
 fi
 
-# Skipped jobs by base name (matrix suffix " (...)" dropped), for the rerun check.
-SKIPPED="$(awk -F'\t' '$3 == "skipped" { n = $2; sub(/ \(.*$/, "", n); print n }' "${JOBS_TSV}" | sort -u | tr '\n' ' ')"
+# Skipped jobs by base name, for the rerun check: the ci.yaml job, without the
+# " / <job>" a job of a called workflow (ci-<job>.yaml) carries after its
+# caller's name, and without the matrix suffix " (...)".
+SKIPPED="$(awk -F'\t' '$3 == "skipped" { n = $2; sub(/ \/ .*$/, "", n); sub(/ \(.*$/, "", n); print n }' "${JOBS_TSV}" | sort -u | tr '\n' ' ')"
 # ci.yaml needs, one line per job: "<job> <need> <need> ...". Read from the
 # local checkout, which may differ from the run's commit.
 NEEDS_MAP=""
@@ -453,7 +455,8 @@ else
       ZERO_STEP_FAILED="${ZERO_STEP_FAILED:+${ZERO_STEP_FAILED}; }${name} (job ${id}, runner ${runner:--})"
     fi
     if [[ "${concl}" == "failure" ]]; then
-      base="${name%% (*}"
+      base="${name%% /*}"
+      base="${base%% (*}"
       down="$(downstream_skipped "${base}")"
       if [[ -n "${down}" ]]; then
         info "  skipped downstream (per local ci.yaml; a path-filtered job stays skipped): ${down}"

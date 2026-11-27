@@ -31,6 +31,8 @@ SKIP=0
 
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
+# shellcheck source=tests/lib/ci_yaml.sh
+source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -274,10 +276,13 @@ test_ci_wiring() {
   local job
   for job in e2e-operator e2e-chaos tempest; do
     assert_eq "the job-level env of ${job} sets E2E_COVERAGE to true" "true" \
-      "$(yq ".jobs[\"${job}\"].env.E2E_COVERAGE" "$CI_YAML")"
+      "$(yq ".jobs[\"${job}\"].env.E2E_COVERAGE" "$(job_workflow "${job}")")"
   done
-  assert_eq "no other job sets E2E_COVERAGE" "e2e-operator,e2e-chaos,tempest" \
-    "$(yq '[.jobs | to_entries[] | select(.value.env.E2E_COVERAGE != null or (.value.steps // [] | map(.env.E2E_COVERAGE != null) | any)) | .key] | join(",")' "$CI_YAML")"
+  # ci.yaml and every workflow it calls, so a job moved into one is still seen.
+  assert_eq "no other job sets E2E_COVERAGE" "e2e-chaos,e2e-operator,tempest" \
+    "$(ci_workflows | while read -r wf; do
+         yq '.jobs | to_entries[] | select(.value.env.E2E_COVERAGE != null or (.value.steps // [] | map(.env.E2E_COVERAGE != null) | any)) | .key' "$wf"
+       done | LC_ALL=C sort | paste -sd, -)"
 }
 
 # ---------------------------------------------------------------------------

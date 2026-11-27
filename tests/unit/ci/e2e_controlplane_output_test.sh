@@ -57,19 +57,6 @@ run_resolve() {
     FILTER_tests_controlplane="$filter" "$@"
 }
 
-# Echo the body of the top-level ci.yaml job <name>. The block ends at the next
-# 2-space line that is not part of the body — the next job key, or the comment
-# header introducing it. Every line of a job body is indented four spaces or
-# more, so stopping on '  #' as well keeps the neighbouring job's prose out of
-# the exact counts below.
-job_block() {
-  awk -v key="  $1:" '
-    $0 == key { in_block = 1; next }
-    in_block && /^  [#a-z0-9-]/ { exit }
-    in_block { print }
-  ' "$CI_YAML"
-}
-
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -177,23 +164,15 @@ test_ci_yaml_wires_all_four_sides() {
   assert_contains "build-e2e-images gates on its own flag" \
     "$build_block" "needs.changes.outputs.build-e2e-images == 'true'"
   assert_contains "build-e2e-images takes its build set from the resolver" \
-    "$build_block" 'CHANGED_OPERATORS: ${{ needs.changes.outputs.changed-operators }}'
+    "$build_block" 'changed-operators: ${{ needs.changes.outputs.changed-operators }}'
+  assert_contains "and hands it to the image resolver" \
+    "$build_block" 'CHANGED_OPERATORS: ${{ inputs.changed-operators }}'
   assert_not_contains "build-e2e-images no longer reads the ControlPlane output" \
     "$build_block" "needs.changes.outputs.e2e-controlplane"
 }
 
 test_filter_covers_the_machinery_and_the_suites() {
   echo "Test: each filter lists exactly the suite its job runs"
-
-  # A filter block ends at the next filter key at the same indent. The
-  # terminator class carries a digit because several keys have one.
-  filter_block() {
-    awk -v key="            $1:" '
-      $0 == key { in_block = 1; next }
-      in_block && /^            [a-z0-9_]+:$/ { exit }
-      in_block { print }
-    ' "$CI_YAML"
-  }
 
   local block
   block=$(filter_block tests_controlplane)

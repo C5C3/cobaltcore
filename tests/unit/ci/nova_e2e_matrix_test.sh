@@ -55,6 +55,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
+CI_FILTERS="$PROJECT_ROOT/.github/ci-filters.yaml"
 
 PASS=0
 FAIL=0
@@ -370,9 +371,9 @@ test_service_operators_lists_nova() {
 test_nova_filter_is_wired() {
   echo "Test: the nova paths filter reaches the resolve step"
 
-  assert_file_contains "the paths filter exists" "$CI_YAML" "^ *nova:$"
-  assert_file_contains "the filter is passed to the resolve step" "$CI_YAML" \
-    "FILTER_nova: \${{ steps.filter.outputs.nova }}"
+  assert_file_contains "the paths filter exists" "$CI_FILTERS" "^nova:$"
+  assert_file_contains "the matched filters reach the resolve step" "$CI_YAML" \
+    'MATCHED_FILTERS: ${{ steps.filter.outputs.changes }}'
 
   local block
   block=$(filter_block nova)
@@ -714,7 +715,7 @@ test_nova_leg_deploys_the_sibling_operators() {
   script=$(mktemp)
   output=$(mktemp)
   yq -r '.jobs.e2e-operator.steps[]
-    | select(.name == "Resolve E2E images") | .run' "$CI_YAML" >"$script"
+    | select(.name == "Resolve E2E images") | .run' "$(job_workflow e2e-operator)" >"$script"
 
   # The script shells out to hack/ by relative path.
   (cd "$PROJECT_ROOT" &&
@@ -858,8 +859,10 @@ test_nova_leg_runs_as_two_shards() {
   assert_contains "the changes job exports the sharded matrix" \
     "$(job_block changes)" \
     'e2e-operator-legs: ${{ steps.e2e-operator-legs.outputs.legs }}'
-  assert_contains "the e2e-operator job runs it" "$(job_block e2e-operator)" \
-    'matrix: ${{ fromJson(needs.changes.outputs.e2e-operator-legs) }}'
+  assert_contains "the e2e-operator job passes it to its workflow" "$(job_block e2e-operator)" \
+    '      matrix: ${{ needs.changes.outputs.e2e-operator-legs }}'
+  assert_contains "which runs one leg per entry" "$(job_block e2e-operator)" \
+    'matrix: ${{ fromJson(inputs.matrix) }}'
   local publish
   for publish in build-and-push merge-operator-images helm-push; do
     assert_not_contains "$publish keeps the unsharded matrix" \
@@ -879,7 +882,7 @@ test_nova_leg_runs_as_two_shards() {
   printf '#!/bin/bash\nprintf "%%s\\n" "$@"\n' >"$stubs/chainsaw"
   chmod +x "$stubs/chainsaw"
   yq -r '.jobs.e2e-operator.steps[]
-    | select(.name == "Run E2E tests") | .run' "$CI_YAML" >"$script"
+    | select(.name == "Run E2E tests") | .run' "$(job_workflow e2e-operator)" >"$script"
 
   one=$(cd "$work" && PATH="$stubs:$BASE_PATH" OPERATOR=nova SHARD=1 \
     bash -e -o pipefail "$script" | grep '/$')
@@ -998,7 +1001,7 @@ test_nova_leg_loads_the_tempest_image() {
   script=$(mktemp)
   output=$(mktemp)
   yq -r '.jobs.e2e-operator.steps[]
-    | select(.name == "Resolve E2E images") | .run' "$CI_YAML" >"$script"
+    | select(.name == "Resolve E2E images") | .run' "$(job_workflow e2e-operator)" >"$script"
 
   (cd "$PROJECT_ROOT" &&
     OPERATOR=nova IMAGE_PREFIX=ghcr.io/c5c3 GITHUB_OUTPUT="$output" \
@@ -1248,9 +1251,9 @@ test_nova_tempest_filter_is_wired() {
   # narrowing the two nova legs would only ever run as part of the full
   # six-service matrix, and an edit to their config would spend a runner on
   # keystone, glance, barbican, neutron and cinder as well.
-  assert_file_contains "the paths filter exists" "$CI_YAML" "^ *tempest_nova:$"
-  assert_file_contains "the filter is passed to the resolve step" "$CI_YAML" \
-    "FILTER_tempest_nova: \${{ steps.filter.outputs.tempest_nova }}"
+  assert_file_contains "the paths filter exists" "$CI_FILTERS" "^tempest_nova:$"
+  assert_file_contains "the matched filters reach the resolve step" "$CI_YAML" \
+    'MATCHED_FILTERS: ${{ steps.filter.outputs.changes }}'
 
   local block
   block=$(filter_block tempest_nova)

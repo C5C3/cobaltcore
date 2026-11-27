@@ -143,7 +143,7 @@ The leg runs as two shards, each on a kind cluster of its own and under its own
 `basic-deployment-2026-2`, `release-upgrade`, `healthcheck`,
 `deletion-cleanup`, `pod-security-restricted` and `namespace-scoped-rbac`. Shard 1 runs every other suite, so a new suite runs
 there until the `Run E2E tests` step in
-`.github/workflows/ci.yaml` names it for shard 2. See [CI Workflow](../ci-cd/ci-workflow.md#e2e-operator).
+`.github/workflows/ci-e2e-operator.yaml` names it for shard 2. See [CI Workflow](../ci-cd/ci-workflow.md#e2e-operator).
 
 ### The libvirt leg
 

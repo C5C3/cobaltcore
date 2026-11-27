@@ -277,28 +277,36 @@ test_an_unknown_variant_fails_before_pulling() {
   assert_eq "nothing was pulled" "" "$LOG"
 }
 
-# Echo one line per load-e2e-images consumer in ci.yaml outside
-# build-e2e-images: "OK <job> <line>" when the step's image-map: line follows
-# before the next step, "MISS <job> <line>" otherwise.
+# Echo one line per load-e2e-images consumer of a ci.yaml job outside
+# build-e2e-images, the steps of the workflow a job calls included: "OK <job>
+# <line>" when the step's image-map: line follows before the next step, "MISS
+# <job> <line>" otherwise. A step of a called workflow reads the map from its
+# image-map input, which counts only when the job passes it the build job's
+# map. <line> is the line within the job's body as job_block prints it.
 consumer_scan() {
-  awk '
-    /^jobs:$/ { in_jobs = 1; next }
-    !in_jobs { next }
-    /^  [a-z0-9-]+:$/ {
-      if (pending) print "MISS " pjob " " pending
-      pending = 0; job = $0; gsub(/[ :]/, "", job); next
-    }
-    job == "build-e2e-images" { next }
-    /^      (- |  )uses: \.\/\.github\/actions\/load-e2e-images$/ {
-      if (pending) print "MISS " pjob " " pending
-      pending = NR; pjob = job; next
-    }
-    pending && /^      - / { print "MISS " pjob " " pending; pending = 0 }
-    pending && $0 == "          image-map: ${{ needs.build-e2e-images.outputs.image-map }}" {
-      print "OK " pjob " " pending; pending = 0
-    }
-    END { if (pending) print "MISS " pjob " " pending }
-  ' "$CI_YAML"
+  local job body passes
+  for job in $(job_names); do
+    [ "$job" = build-e2e-images ] && continue
+    body="$(job_block "$job")"
+    passes=no
+    if grep -qxF '      image-map: ${{ needs.build-e2e-images.outputs.image-map }}' <<<"$body"; then
+      passes=yes
+    fi
+    awk -v job="$job" -v passes="$passes" '
+      /^      (- |  )uses: \.\/\.github\/actions\/load-e2e-images$/ {
+        if (pending) print "MISS " job " " pending
+        pending = NR; next
+      }
+      pending && /^      - / { print "MISS " job " " pending; pending = 0 }
+      pending && $0 == "          image-map: ${{ needs.build-e2e-images.outputs.image-map }}" {
+        print "OK " job " " pending; pending = 0
+      }
+      pending && $0 == "          image-map: ${{ inputs.image-map }}" {
+        print (passes == "yes" ? "OK " : "MISS ") job " " pending; pending = 0
+      }
+      END { if (pending) print "MISS " job " " pending }
+    ' <<<"$body"
+  done
 }
 
 test_every_consumer_passes_the_map() {
@@ -308,21 +316,23 @@ test_every_consumer_passes_the_map() {
   scan=$(consumer_scan)
   while read -r status job line; do
     [ "$status" = "MISS" ] || continue
-    echo "  FAIL: $job loads E2E images at ci.yaml:$line without the build job's image-map"
+    echo "  FAIL: $job loads E2E images at line $line of its job without the build job's image-map"
     FAIL=$((FAIL + 1))
   done <<<"$scan"
-  # Every consumer line in ci.yaml, whatever its indentation, spacing, quoting,
-  # trailing slash or trailing comment, must be one the scan judged; a form the
-  # scan does not know would otherwise pass unseen.
+  # Every consumer line in ci.yaml and the workflows it calls, whatever its
+  # indentation, spacing, quoting, trailing slash or trailing comment, must be
+  # one the scan judged; a form the scan does not know would otherwise pass
+  # unseen.
   local total
-  total=$(grep -cE "^[[:space:]]+(-[[:space:]]+)?uses:[[:space:]]+[\"']?\./\.github/actions/load-e2e-images/?([\"'[:space:]#]|\$)" \
-    "$CI_YAML" || true)
-  assert_gte "ci.yaml has load-e2e-images consumers" "$total" 1
-  assert_eq "the scan judges every load-e2e-images consumer in ci.yaml" "$total" \
+  total=$(ci_workflows | xargs cat | grep -cE "^[[:space:]]+(-[[:space:]]+)?uses:[[:space:]]+[\"']?\./\.github/actions/load-e2e-images/?([\"'[:space:]#]|\$)" || true)
+  assert_gte "the CI workflows have load-e2e-images consumers" "$total" 10
+  assert_eq "the scan judges every load-e2e-images consumer" "$total" \
     "$(grep -c . <<<"$scan" || true)"
 
-  assert_file_contains_fixed "build-e2e-images exports the map" "$CI_YAML" \
+  assert_contains "build-e2e-images exports the map" "$(job_block build-e2e-images)" \
     'image-map: ${{ steps.images.outputs.image-map }}'
+  assert_file_contains_fixed "and its workflow hands it to ci.yaml" \
+    "$(job_workflow build-e2e-images)" 'value: ${{ jobs.build-e2e-images.outputs.image-map }}'
   local step
   step=$(job_step build-e2e-images "Resolve images")
   assert_contains "the map comes from the Resolve images step" "$step" "id: images"
@@ -330,26 +340,25 @@ test_every_consumer_passes_the_map() {
     "run: hack/ci-resolve-e2e-images.sh"
 }
 
-# Echo one "<job> <cover|plain>" line per load-e2e-images consumer in ci.yaml
-# outside build-e2e-images: cover when the step passes operator-variant: cover
-# before the next step begins.
+# Echo one "<job> <cover|plain>" line per load-e2e-images consumer of a ci.yaml
+# job outside build-e2e-images, the steps of the workflow a job calls included:
+# cover when the step passes operator-variant: cover before the next step
+# begins.
 variant_scan() {
-  awk '
-    /^jobs:$/ { in_jobs = 1; next }
-    !in_jobs { next }
-    /^  [a-z0-9-]+:$/ {
-      if (pending) print pjob " plain"
-      pending = 0; job = $0; gsub(/[ :]/, "", job); next
-    }
-    job == "build-e2e-images" { next }
-    /^      (- |  )uses: \.\/\.github\/actions\/load-e2e-images$/ {
-      if (pending) print pjob " plain"
-      pending = 1; pjob = job; next
-    }
-    pending && /^      - / { print pjob " plain"; pending = 0 }
-    pending && $0 == "          operator-variant: cover" { print pjob " cover"; pending = 0 }
-    END { if (pending) print pjob " plain" }
-  ' "$CI_YAML"
+  local job body
+  for job in $(job_names); do
+    [ "$job" = build-e2e-images ] && continue
+    body="$(job_block "$job")"
+    awk -v job="$job" '
+      /^      (- |  )uses: \.\/\.github\/actions\/load-e2e-images$/ {
+        if (pending) print job " plain"
+        pending = 1; next
+      }
+      pending && /^      - / { print job " plain"; pending = 0 }
+      pending && $0 == "          operator-variant: cover" { print job " cover"; pending = 0 }
+      END { if (pending) print job " plain" }
+    ' <<<"$body"
+  done
 }
 
 test_the_coverage_legs_pull_the_cover_operator() {
@@ -364,9 +373,9 @@ test_the_coverage_legs_pull_the_cover_operator() {
   assert_eq "tempest has three cover load steps" "3" "$(grep -cx 'tempest cover' <<<"$scan")"
   assert_eq "every load step of the three jobs passes it" "0" \
     "$(grep -cE '^(e2e-operator|e2e-chaos|tempest) plain$' <<<"$scan")"
-  assert_eq "ci.yaml passes operator-variant: cover six times in all" "6" \
-    "$(grep -c '^          operator-variant: cover$' "$CI_YAML")"
-  assert_eq "the scan judges every load-e2e-images consumer in ci.yaml" \
+  assert_eq "the CI workflows pass operator-variant: cover six times in all" "6" \
+    "$(ci_workflows | xargs cat | grep -c '^          operator-variant: cover$')"
+  assert_eq "the scan judges every load-e2e-images consumer" \
     "$(consumer_scan | grep -c .)" "$(grep -c . <<<"$scan")"
 }
 

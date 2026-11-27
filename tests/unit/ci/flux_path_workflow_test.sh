@@ -6,9 +6,10 @@
 # Verify the shape of .github/workflows/flux-path.yaml, the nightly that brings
 # up the quick start ControlPlane on deploy-infra's default operator path:
 #   - the triggers (a 02:45 UTC schedule, workflow_dispatch, and pull_request
-#     on the workflow and its two scripts), top-level permissions of contents:
+#     on the workflow, its two scripts and hack/install-test-deps.sh, which
+#     pins the kind of its cluster), top-level permissions of contents:
 #     read alone, a concurrency group per event and ref that cancels only pull
-#     request runs, KIND_CLUSTER and a KIND_VERSION pin, and no operator path
+#     request runs, KIND_CLUSTER and no kind pin of its own, no operator path
 #     or GHCR login of its own;
 #   - job controlplane: the fork guard, self-hosted, a 90-minute wall, no
 #     permissions of its own and its eight steps in order, the two artifact
@@ -105,10 +106,11 @@ check_triggers() {
   assert_file_contains "the workflow is named Flux path" "$wf" '^name: Flux path$'
   assert_file_contains_fixed "it runs nightly at 02:45 UTC" "$wf" 'cron: "45 2 * * *"'
   assert_file_contains "it can be dispatched" "$wf" '^  workflow_dispatch:'
-  assert_eq "pull_request runs on the workflow and its two scripts" \
+  assert_eq "pull_request runs on the workflow, its two scripts and the kind pin" \
     "      - '.github/workflows/flux-path.yaml'
       - 'hack/ci-quick-start-controlplane.sh'
-      - 'hack/ci-report-red-run.sh'" "$(pull_request_paths "$wf")"
+      - 'hack/ci-report-red-run.sh'
+      - 'hack/install-test-deps.sh'" "$(pull_request_paths "$wf")"
 }
 
 check_top_level_permissions() {
@@ -126,9 +128,9 @@ check_concurrency_and_env() {
   assert_file_contains_fixed "only a pull request run is cancelled by a newer one" "$wf" \
     "cancel-in-progress: \${{ github.event_name == 'pull_request' }}"
   assert_file_contains_fixed "KIND_CLUSTER is cobaltcore" "$wf" 'KIND_CLUSTER: cobaltcore'
-  # tests/unit/renovate/workflow_pins_custommanager_test.sh asserts the pin
-  # agrees with the other four.
-  assert_not_empty "flux-path.yaml pins KIND_VERSION" "$(workflow_kind_pin "$wf")"
+  # The kind version is the one hack/install-test-deps.sh pins, which the
+  # create-kind-cluster action reads (tests/unit/ci/create_kind_cluster_wiring_test.sh).
+  assert_eq "flux-path.yaml pins no KIND_VERSION of its own" "" "$(workflow_kind_pin "$wf")"
   assert_file_not_contains "deploy-infra's operator path is its default, named nowhere" \
     "$wf" 'CONTROLPLANE_OPERATORS'
   assert_file_not_contains "the night pulls anonymously, as a user does" "$wf" 'registry-login'
@@ -156,7 +158,7 @@ Delete kind cluster" "$(step_heads "$wf" controlplane)"
 
   step="$(CI_YAML="$wf" job_step controlplane "Create kind cluster")"
   assert_contains "the cluster comes from create-kind-cluster" "$step" "uses: ./.github/actions/create-kind-cluster"
-  assert_contains "at KIND_VERSION" "$step" 'version: ${{ env.KIND_VERSION }}'
+  assert_not_contains "at the kind of hack/install-test-deps.sh" "$step" 'version:'
   assert_contains "named KIND_CLUSTER" "$step" 'cluster-name: ${{ env.KIND_CLUSTER }}'
   assert_contains "with hack/kind-config.yaml" "$step" "config: hack/kind-config.yaml"
 

@@ -1,0 +1,128 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+---
+# End-to-end infrastructure deployment and Chainsaw test.
+# Deploys the full infrastructure stack to a kind cluster and validates health
+# of all operators, CRs, and ExternalSecrets via Chainsaw assertions.
+#
+# The e2e-infra job of ci.yaml calls this workflow and decides when it runs.
+name: E2E Infrastructure
+
+"on":
+  workflow_call:
+
+permissions:
+  contents: read
+
+# A called workflow does not inherit the env of ci.yaml, so the values its
+# steps and scripts read are declared here. kind is not pinned here: the
+# create-kind-cluster action installs the KIND_VERSION of
+# hack/install-test-deps.sh.
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/c5c3
+  KIND_CLUSTER: cobaltcore
+
+jobs:
+  e2e-infra:
+    runs-on: self-hosted
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.work
+      - name: Create kind cluster
+        uses: ./.github/actions/create-kind-cluster
+        with:
+          config: hack/kind-config.yaml
+          cluster-name: ${{ env.KIND_CLUSTER }}
+      # Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
+      - name: Setup E2E infrastructure
+        uses: ./.github/actions/setup-e2e-infra
+      - name: Run Chainsaw E2E tests
+        run: |
+          mkdir -p _output/reports
+          chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/infrastructure/
+      # Locks the same-parameter re-run convergence (#650).  Runs make
+      # deploy-infra directly (not the composite action, and deliberately
+      # WITHOUT SKIP_KIND_CREATE) so the script's own existing-cluster
+      # detection path -- the developer flow from the bug report -- is
+      # exercised.  CLUSTER_NAME is passed explicitly from KIND_CLUSTER rather
+      # than relying on the script's default happening to match it: without it,
+      # editing KIND_CLUSTER above would make the script find no cluster of that
+      # name, `kind create cluster` a fresh one, and deploy into that instead --
+      # a silently-green second fresh deploy that tests zero convergence.
+      - name: Re-run deploy-infra with unchanged parameters
+        run: make deploy-infra
+        env:
+          CLUSTER_NAME: ${{ env.KIND_CLUSTER }}
+      # Verifies a healthy stack is left unchanged after the same-parameter
+      # re-run -- including the two `no-*` absence suites still passing.  A
+      # distinct report name keeps the first run's JUnit XML intact.
+      - name: Re-run Chainsaw E2E tests after unchanged re-run
+        run: |
+          chainsaw test --config tests/e2e/chainsaw-config.yaml --report-name chainsaw-report-rerun tests/e2e/infrastructure/
+      # Additive opt-in leg (#650, #978) -- both opt-ins are set on ONE
+      # convergence run. `make deploy-infra` is convergent: a second run
+      # re-applies every overlay and re-walks all eight steps, so a separate
+      # WITH_NFS re-run would repeat the whole base install for the sake of
+      # one `kubectl apply -k deploy/overlays/kind/nfs` and one extra name on the
+      # HelmRelease wait list. The gates that prove each opt-in landed live
+      # inside this one invocation: the script's Phase-3 wait covers the
+      # metrics-server and csi-driver-nfs HelmReleases, and its Step-3
+      # `kubectl rollout status deployment/nfs-server` covers the server (the
+      # best-effort nfs/nfsv4 modprobe runs under the same passwordless
+      # sudo the OVN legs rely on). Either failing fails the step. The
+      # additive-convergence property is unchanged: the base stack was
+      # installed by the first run and re-converged by the second, so this
+      # third one still layers opt-ins onto an existing cluster.
+      - name: Re-run deploy-infra with WITH_METRICS_SERVER=true and WITH_NFS=true
+        run: make deploy-infra
+        env:
+          CLUSTER_NAME: ${{ env.KIND_CLUSTER }}
+          WITH_METRICS_SERVER: "true"
+          WITH_NFS: "true"
+      # nfs-health SKIPs (exit 0) when Deployment/nfs-server is absent, because
+      # it also runs on the two legs that never set WITH_NFS. This leg is the
+      # only one that installs the stack, so dropping `WITH_NFS: "true"` above
+      # -- a merge resolution, a revert, a copy of the step into a new job --
+      # would leave the whole workflow green with the NFS stack shipped
+      # untested and no failing signal anywhere: deploy-infra skips the
+      # overlay, wait_for_helmreleases never gets csi-driver-nfs appended, the
+      # suite prints SKIP, and `no-nfs-when-disabled` is not in the scoped set
+      # below to contradict it. These two gets are the assertion that the
+      # opt-in landed; each fails the leg on its own.
+      - name: Assert the additive WITH_NFS opt-in landed
+        run: |
+          kubectl get deployment nfs-server -n openstack -o name
+          kubectl get helmrelease csi-driver-nfs -n kube-system -o name
+      # The full suite is NOT re-run here because
+      # `no-metrics-server-when-disabled` and `no-nfs-when-disabled` assert
+      # the absence of what this leg just (correctly) installed -- the scoped
+      # set proves the base stack is untouched, Prometheus is still absent,
+      # and both NFS exports mount through csi-driver-nfs.
+      - name: Run scoped Chainsaw E2E tests after additive re-run
+        run: |
+          chainsaw test --config tests/e2e/chainsaw-config.yaml --report-name chainsaw-report-additive tests/e2e/infrastructure/infra-stack-health tests/e2e/infrastructure/garage-health tests/e2e/infrastructure/flux-web-health tests/e2e/infrastructure/no-prometheus-when-disabled tests/e2e/infrastructure/openbao-instance tests/e2e/infrastructure/nfs-health
+      # Use shared diagnostic dump script.  `always()` (matching every other
+      # e2e job) also covers the timeout-cancellation path -- `failure()`
+      # alone is skipped when timeout-minutes expires, discarding the cluster
+      # state exactly when a hung re-run leg makes it hardest to debug.
+      - name: Dump diagnostic info
+        if: always()
+        run: hack/ci-dump-diagnostics.sh
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-infra-junit-report
+          path: _output/reports/
+          retention-days: 14
+      # Last step of the job, so the dump above still had a cluster to read;
+      # `always()` covers the failed and timed-out runs.  Never fails the job
+      # (see hack/ci-delete-kind-cluster.sh).
+      - name: Delete kind cluster
+        if: always()
+        run: hack/ci-delete-kind-cluster.sh

@@ -36,15 +36,19 @@ CLONING_SCRIPTS="hack/ci-deploy-korc.sh"
 
 # steps_running <script>
 #
-# Echo "<job><TAB><step name>" for every ci.yaml step whose body invokes
-# <script>. Comment lines and the paths-filter entries (list items) that name
-# the script are not invocations and are skipped.
+# Echo "<job><TAB><step name>" for every step of a ci.yaml job whose body
+# invokes <script>, the steps of the workflow a job calls included. Comment
+# lines and list items that name the script are not invocations and are
+# skipped.
 steps_running() {
-  awk -v script="$1" '
-    /^  [a-z0-9-]+:$/ { job = $1; sub(/:$/, "", job) }
-    /^      - name: / { step = $0; sub(/^      - name: /, "", step) }
-    index($0, script) && $0 !~ /^ *#/ && $0 !~ /^ *- / { print job "\t" step }
-  ' "$CI_YAML" | sort -u
+  local job body
+  for job in $(job_names); do
+    body="$(job_block "$job")"
+    awk -v script="$1" -v job="$job" '
+      /^      - name: / { step = $0; sub(/^      - name: /, "", step) }
+      index($0, script) && $0 !~ /^ *#/ && $0 !~ /^ *- / { print job "\t" step }
+    ' <<<"$body"
+  done | sort -u
 }
 
 # ---------------------------------------------------------------------------

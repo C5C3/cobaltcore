@@ -36,6 +36,8 @@ SKIP=0
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/ci_resolve.sh
 source "$PROJECT_ROOT/tests/lib/ci_resolve.sh"
+# shellcheck source=tests/lib/ci_yaml.sh
+source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -89,13 +91,8 @@ test_ci_yaml_wires_both_ends() {
 test_helm_filter_covers_the_chart() {
   echo "Test: a chart change also re-runs helm-validate"
 
-  # The helm filter block ends at the next filter key at the same indent.
   local helm_block
-  helm_block=$(awk '
-    /^            helm:$/ { in_block = 1; next }
-    in_block && /^            [a-z_]+:$/ { exit }
-    in_block { print }
-  ' "$CI_YAML")
+  helm_block=$(filter_block helm)
 
   assert_contains "the helm filter lists the target-cluster path" \
     "$helm_block" "deploy/bases/target-cluster-access/**"

@@ -27,7 +27,8 @@
 # org.opencontainers.image.revision annotation merge-operator-images writes on
 # its manifest list, has in its history every commit of this checkout that
 # touches the operator's sources: the paths of the operator's own change
-# filter and of go_common in the changes job of .github/workflows/ci.yaml.
+# filter and of go_common in .github/ci-filters.yaml, the filters of the
+# changes job.
 # When one build-and-push leg fails on main, merge-operator-images publishes
 # nothing and :latest keeps an older revision; such an image is built instead.
 # The check needs the checkout's full history, and an image whose revision it
@@ -168,9 +169,12 @@ if ! HEAD_COMMIT=$(git -C "${REPO_ROOT}" rev-parse --verify HEAD 2>&1); then
   exit 1
 fi
 
-# The change filters of the paths-filter step in the changes job, as YAML.
-CHANGE_FILTERS=$(yq '.jobs.changes.steps[] | select(.id == "filter") | .with.filters' \
-  "${REPO_ROOT}/.github/workflows/ci.yaml")
+# The change filters the paths-filter step of the changes job reads, as YAML.
+CHANGE_FILTERS_FILE="${REPO_ROOT}/.github/ci-filters.yaml"
+if ! CHANGE_FILTERS=$(yq '.' "${CHANGE_FILTERS_FILE}" 2>&1); then
+  echo "::error::cannot read the change filters in ${CHANGE_FILTERS_FILE}: ${CHANGE_FILTERS}"
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # 2. The key set, derived from the tree
@@ -266,13 +270,13 @@ resolve_digest() {
 PATHSPECS=()
 
 # add_pathspecs <change filter> — append the paths of that change filter to
-# PATHSPECS as git pathspecs. Exits the step when ci.yaml has no such filter,
+# PATHSPECS as git pathspecs. Exits the step when ci-filters.yaml has no such filter,
 # since the commits under its paths would then never count against an image.
 add_pathspecs() {
   local filter="$1" patterns pattern
   patterns=$(FILTER="${filter}" yq '.[strenv(FILTER)] // [] | .[]' <<<"${CHANGE_FILTERS}")
   if [[ -z "${patterns}" ]]; then
-    echo "::error::.github/workflows/ci.yaml has no change filter named ${filter}"
+    echo "::error::.github/ci-filters.yaml has no change filter named ${filter}"
     exit 1
   fi
   while read -r pattern; do

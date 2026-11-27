@@ -38,7 +38,7 @@ threads through five layers:
 |---|---|---|
 | Container image | `images/<svc>/image.nix`, `tests/container-images/verify_<svc>.sh`, `releases/*/`(source-refs, extra-packages, test-excludes) | the keystone image contract and `verify_release_config.sh` |
 | Service operator | `operators/<svc>/` (module, CRD, webhook, helm chart, dashboards) | the keystone operator scaffolding on `internal/common` |
-| CI / e2e / deploy | `.github/workflows/*.yaml`, `hack/ci-resolve-changes.sh` env, `tests/e2e/<svc>/`, `tests/e2e-chaos/`, `tests/e2e-multicluster/` (when the service joins the placed-services suite: fixtures **and** the hard-coded image list in the ci.yaml `e2e-multicluster` job), `deploy/bases/operators/`, the per-service lists in `hack/deploy-infra.sh` + `hack/refresh-operator-image-digests.sh` | the enumeration points and canonical suite set keystone populates |
+| CI / e2e / deploy | `.github/workflows/*.yaml`, `hack/ci-resolve-changes.sh` env, `tests/e2e/<svc>/`, `tests/e2e-chaos/`, `tests/e2e-multicluster/` (when the service joins the placed-services suite: fixtures **and** the hard-coded image list of the `e2e-multicluster` job in `ci-e2e-multicluster.yaml`), `deploy/bases/operators/`, the per-service lists in `hack/deploy-infra.sh` + `hack/refresh-operator-image-digests.sh` | the enumeration points and canonical suite set keystone populates |
 | ControlPlane integration | `operators/c5c3/api/` `ServicesSpec`, `internal/controller/reconcile_<svc>.go`, `internal/controller/builtin_registrations.go`, c5c3 chart RBAC | the keystone projection (`reconcile_keystone.go`, `KeystoneReady`); for the registration, `desiredGlanceRegistration`, since Keystone registers no child for itself |
 | Documentation | `docs/reference/<svc>/`, `docs/guides/<svc>/enable-<svc>-operator-*.md`, `docs/.vitepress/sidebar.ts` | the keystone reference/guide set |
 
@@ -92,8 +92,9 @@ inventory. Exit code `1` means at least one `[FAIL]`. Interpret:
 - **P4** — observability: the Grafana dashboard JSON plus its
   `dashboard_test.go` drift test, which pins every referenced metric
   to a registered one.
-- **P5** — CI wiring: the paths-filter block, `ALL_OPERATORS`,
-  `FILTER_<svc>`, the unit/integration test matrices, the
+- **P5** — CI wiring: the `.github/ci-filters.yaml` paths filters (the
+  `<svc>` filter the resolver reads by name), `ALL_OPERATORS`, the
+  unit/integration test matrices, the
   helm-validate chart loop, and both GHCR
   cleanup package lists (`cleanup-packages` and `cleanup-e2e-packages`,
   each needing `<svc>-operator` and `<svc>`), with exact list-item
@@ -238,8 +239,8 @@ The script checks presence, not content. Using the inventory, confirm:
    port-forward-tunneled OpenBao dials are the worked example. Decide
    whether the service should join the placed-services suite
    (`tests/e2e-multicluster/`) or record why keystone + barbican +
-   neutron coverage suffices; the ci.yaml `e2e-multicluster` job
-   hard-codes the image list it preloads, so suite membership means
+   neutron coverage suffices; the `e2e-multicluster` job
+   (`ci-e2e-multicluster.yaml`) hard-codes the image list it preloads, so suite membership means
    extending that job too.
 8. That the registration P13 found actually describes the service:
    `serviceType` is the catalog type upstream publishes and

@@ -26,11 +26,83 @@ prunes the run-scoped tags at the end of the workflow, with a nightly safety net
 
 ## File Location
 
-`.github/workflows/ci.yaml`
+`.github/workflows/ci.yaml`, with the reusable workflows of its E2E jobs beside it
+(`.github/workflows/ci-<job>.yaml`, see [Suite Workflows](#suite-workflows)) and
+its path filters in `.github/ci-filters.yaml`.
 
 The file uses the `.yaml` extension (matching `build-images.yaml` and
 `deploy-docs.yaml`) and quotes the trigger key as `"on"` to prevent YAML boolean
 interpretation.
+
+## Suite Workflows
+
+`ci.yaml` is the one entry point of CI. It holds the triggers, the permissions,
+the concurrency group, the job dependencies and the rules that select each job,
+and the jobs that need no cluster. Each E2E suite runs in a reusable workflow of
+its own, which the job of the same name in `ci.yaml` calls with `uses:` and
+`workflow_call`. The called workflow holds the suite's runner, wall, matrix,
+environment and steps; the caller holds its `needs`, its `if` and the inputs it
+passes, which are the image map of `build-e2e-images` and, where a leg needs
+them, the matrix and the sizing flag of the `changes` job.
+
+| Job in `ci.yaml` | Workflow with its steps | Gates the run |
+| --- | --- | --- |
+| [`build-e2e-images`](#build-e2e-images) | `.github/workflows/ci-build-e2e-images.yaml` | yes |
+| [`e2e-infra`](#e2e-infra) | `.github/workflows/ci-e2e-infra.yaml` | yes |
+| [`e2e-operator`](#e2e-operator) | `.github/workflows/ci-e2e-operator.yaml` | yes |
+| [`e2e-operator-upgrade`](#e2e-operator-upgrade) | `.github/workflows/e2e-operator-upgrade.yaml` | yes |
+| [`e2e-chaos`](#e2e-chaos) | `.github/workflows/ci-e2e-chaos.yaml` | yes |
+| [`e2e-chaos-random`](#e2e-chaos-random) | `.github/workflows/ci-e2e-chaos-random.yaml` | yes |
+| [`e2e-prometheus`](#e2e-prometheus) | `.github/workflows/ci-e2e-prometheus.yaml` | yes |
+| [`e2e-controlplane`](#e2e-controlplane) | `.github/workflows/ci-e2e-controlplane.yaml` | yes |
+| [`e2e-controlplane-sso`](#e2e-controlplane-sso) | `.github/workflows/ci-e2e-controlplane-sso.yaml` | yes |
+| [`e2e-autoscaling`](#e2e-autoscaling) | `.github/workflows/ci-e2e-autoscaling.yaml` | yes |
+| [`e2e-external-keystone`](#e2e-external-keystone) | `.github/workflows/ci-e2e-external-keystone.yaml` | yes |
+| [`e2e-multicluster`](#e2e-multicluster) | `.github/workflows/ci-e2e-multicluster.yaml` | yes |
+| [`e2e-orders-multicluster`](#e2e-orders-multicluster) | `.github/workflows/ci-e2e-orders-multicluster.yaml` | yes |
+| [`e2e-ovn-overlay`](#e2e-ovn-overlay) | `.github/workflows/ci-e2e-ovn-overlay.yaml` | no |
+| [`e2e-nova-libvirt`](#e2e-nova-libvirt) | `.github/workflows/ci-e2e-nova-libvirt.yaml` | no |
+| [`e2e-bgp-fabric`](#e2e-bgp-fabric) | `.github/workflows/ci-e2e-bgp-fabric.yaml` | no |
+| [`keystone-pressure`](#keystone-pressure) | `.github/workflows/ci-keystone-pressure.yaml` | no |
+| [`tempest`](#tempest) | `.github/workflows/ci-tempest.yaml` | yes |
+
+`e2e-operator-upgrade.yaml` keeps its name because `operator-upgrade.yaml` calls it
+as well. The checks that need no cluster stay in `ci.yaml`, and so do the publish
+jobs: their cosign certificates name `ci.yaml` as the signing workflow (see
+[Cosign Signing](#cosign-signing)), and a called workflow would sign under its own
+name instead.
+
+A few rules follow from the split:
+
+- **Check names.** The jobs of a called workflow run inside the CI run, under the
+  name `<caller> / <job>`. The leg `e2e-chaos (pod, …)` shows as
+  `e2e-chaos / e2e-chaos (pod, …)`, and `hack/ci-report-nightly-chaos.sh` matches
+  that form.
+- **Non-gating suites.** A job that calls a reusable workflow cannot carry
+  `continue-on-error`, so each non-gating suite sets it on the job in its own
+  workflow. Its failure leaves the called workflow, the caller and the run green.
+- **Environment.** A called workflow does not inherit the `env` of `ci.yaml`. Each
+  declares `REGISTRY`, `IMAGE_PREFIX` and `KIND_CLUSTER` itself, and none pins
+  kind: the [`create-kind-cluster`](#composite-action-create-kind-cluster) action
+  installs the `KIND_VERSION` of `hack/install-test-deps.sh`.
+- **Permissions.** The caller grants the token, and the called workflow declares
+  the same permissions at its top level; it can only lower them.
+- **Change detection.** Every filter of `.github/ci-filters.yaml` that switches a
+  suite on lists that suite's workflow, so an edit to the workflow runs the suite.
+  `ci-e2e-operator.yaml`, `ci-build-e2e-images.yaml` and `ci-filters.yaml` sit in
+  `ci_plumbing` beside `ci.yaml` and run the canary, and `publish_legacy` lists
+  every file that used to be part of `ci.yaml`, so a push to `main` publishes what
+  it published before. `tests/unit/ci/change_classes_wiring_test.sh` fails for a
+  called workflow that no filter of a job lists.
+- **Shared steps.** Steps that several suites repeat move into composite actions
+  under `.github/actions/tests/`. The SSO and external Keystone jobs deploy their
+  operators through `deploy-keystone-controlplane-operators`; the filters of both
+  suites list it.
+- **Tests.** `tests/lib/ci_yaml.sh` reads a job as it runs: `job_block` prints the
+  caller in `ci.yaml` followed by the job of the workflow it calls, `job_workflow`
+  names the file that holds a job's steps for a `yq` query, and `filter_block`
+  reads `.github/ci-filters.yaml`. A helper that finds no such job, step or filter
+  fails the test instead of returning an empty string.
 
 ## Trigger Events
 
@@ -91,7 +163,7 @@ scripts it calls. Nothing runs because Go code changed somewhere else.
 | `tests_controlplane`, `tests_controlplane_sso`, `tests_external_keystone` | the three ControlPlane suites; `tests_controlplane` also covers `deploy/overlays/kind/hypervisor-operator-fixtures/**`, whose `fixtures.yaml` the full-chain suite applies | the job that runs that suite |
 | `tests_chaos`, `tests_multicluster`, `tests_orders_multicluster`, `tests_prometheus` | each suite's own tree; the two multicluster classes also cover `deploy/bases/target-cluster-access/**` | the job that runs it |
 | `tests_chaos_random` | `tests/chaos-random/**`, `hack/chaos-random.sh`, `hack/dizzy-soak.sh`, `hack/dizzy-soak-runner.sh`, `deploy/overlays/metal-stack/dizzy-soak/**`, `tests/e2e-chaos/lib/consistency.sh` | `e2e-chaos-random` |
-| `tests_operator_upgrade` | the inputs every operator upgrade suite shares: `tests/e2e-operator-upgrade/chainsaw-config.yaml`, `hack/ci-fetch-released-operator.sh`, `hack/ci-read-chart-version.sh`, `hack/ci-operator-upgrade-leg.sh`, `hack/ci-deploy-operator.sh`, `.github/workflows/e2e-operator-upgrade.yaml` | every `e2e-operator-upgrade` job |
+| `tests_operator_upgrade` | the inputs every operator upgrade suite shares: `tests/e2e-operator-upgrade/chainsaw-config.yaml`, `hack/ci-fetch-released-operator.sh`, `hack/ci-read-chart-version.sh`, `hack/ci-operator-upgrade-leg.sh`, `hack/ci-deploy-operator.sh`, `.github/workflows/e2e-operator-upgrade.yaml`, `hack/install-test-deps.sh` (the `KIND_VERSION` every job creates its cluster with) | every `e2e-operator-upgrade` job |
 | `tests_operator_upgrade_<op>` (one per operator) | `tests/e2e-operator-upgrade/<op>-helm-upgrade/**`; cinder and nova also `tests/e2e/cinder/broker-vhost.sh`; keystone also `hack/ci-operator-upgrade-crd-window.sh`, which its suite calls, and `tests/e2e-operator-upgrade/keystone-helm-upgrade-pod-kill/**` with the `tests/e2e-chaos/lib/workload.sh` and `workload.py` that suite calls | that operator's `e2e-operator-upgrade` job |
 | `tests_bgp_fabric` | `tests/e2e-bgp-fabric/**`, `deploy/overlays/kind/frr-k8s/**` | `e2e-bgp-fabric` |
 | `e2e_infra` | `tests/e2e/infrastructure/**` | `e2e-infra` |
@@ -159,32 +231,30 @@ for CI reproducibility:
 env:
   REGISTRY: ghcr.io
   IMAGE_PREFIX: ghcr.io/c5c3
-  KIND_CLUSTER: cobaltcore
-  KIND_VERSION: v0.33.0
   CONTROLLER_GEN_VERSION: v0.22.0
   GOFUMPT_VERSION: v0.12.0
   GOLANGCI_LINT_VERSION: v2.14.0
   HELM_VERSION: v4.3.1
 ```
 
-`REGISTRY` and `IMAGE_PREFIX` are referenced by `build-e2e-images`, by the jobs
-that load its images (the `packages: read` row under [Permissions](#permissions)),
-and by the publish jobs (`build-and-push`, `merge-operator-images`, `helm-push`,
-`helm-push-target-cluster`) to construct image names and registry URLs.
-`KIND_CLUSTER` is the single source of truth for every E2E
-job's kind cluster name (mirroring the `CLUSTER_NAME` default in
-`hack/deploy-infra.sh`). `KIND_VERSION` is the kind binary every E2E job creates its
-cluster with, passed to the `create-kind-cluster` composite action, which hands it to
-`helm/kind-action`'s `version` input. That action defaults to v0.31.0, whose kindnetd
-does not enforce NetworkPolicy egress against the post-DNAT destination; pinning it
-keeps CI on the enforcing build and in lockstep with the `KIND_VERSION` in
-`hack/install-test-deps.sh` that local development installs, the ones of the
-nightlies `.github/workflows/performance.yaml` and
-`.github/workflows/flux-path.yaml`, and the one of the reusable
-`.github/workflows/e2e-operator-upgrade.yaml`, which does not inherit this env.
-Renovate groups the five pins, these four and the one of `ci.yaml`, so they
-bump in one pull request, and
-`tests/unit/renovate/workflow_pins_custommanager_test.sh` asserts they agree.
+`REGISTRY` and `IMAGE_PREFIX` are referenced by the publish jobs (`build-and-push`,
+`merge-operator-images`, `helm-push`, `helm-push-target-cluster`) to construct image
+names and registry URLs. The workflows the E2E jobs call do not inherit this env, so
+each declares `REGISTRY`, `IMAGE_PREFIX` and `KIND_CLUSTER: cobaltcore` itself, the
+kind cluster name that mirrors the `CLUSTER_NAME` default in `hack/deploy-infra.sh`.
+
+No workflow pins kind. The `create-kind-cluster` composite action installs the
+`KIND_VERSION` of `hack/install-test-deps.sh`, the version local development
+installs, for every E2E job, for the reusable
+`.github/workflows/e2e-operator-upgrade.yaml` and for the nightlies
+`.github/workflows/performance.yaml` and `.github/workflows/flux-path.yaml`.
+`helm/kind-action` defaults to v0.31.0, whose kindnetd does not enforce NetworkPolicy
+egress against the post-DNAT destination; the one pin keeps CI on the enforcing build
+and in lockstep with local development. Renovate bumps it in
+`hack/install-test-deps.sh` alone, and
+`tests/unit/renovate/workflow_pins_custommanager_test.sh` and
+`tests/unit/ci/create_kind_cluster_wiring_test.sh` fail when a workflow pins kind
+again.
 `CONTROLLER_GEN_VERSION` is used by `verify-codegen` to pin controller-gen to a specific
 version. `GOFUMPT_VERSION` is used by `format-check` to pin gofumpt to a specific
 version; the same version is mirrored in the Makefile (`GOFUMPT_VERSION ?= v0.12.0`) so
@@ -210,7 +280,9 @@ permissions:
   contents: read
 ```
 
-Jobs that need elevated access declare per-job `permissions:` blocks:
+Jobs that need elevated access declare per-job `permissions:` blocks. A job that
+calls a reusable workflow grants them there, and the called workflow declares the
+same permissions at its top level; it can lower them, never raise them:
 
 | Job | Additional Permissions | Reason |
 | --- | --- | --- |
@@ -310,8 +382,8 @@ The job runs on `ubuntu-latest` with `timeout-minutes: 8`.
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
-| 2 | `dorny/paths-filter@v4` | Step id `filter`. Matches the changed paths against the `filters:` block and writes one output per change class, `true` when a changed path matches. Runs on `pull_request` and `push` events only; on the nightly chaos run its outputs are empty |
-| 3 | `Resolve effective changes` | Step id `result`. Runs `hack/ci-resolve-changes.sh`. The step `env` passes each class as `FILTER_<class>`, the pull request's label names as the JSON array `PR_LABELS`, the event as `EVENT_NAME`, `EVENT_ACTION` and `EVENT_LABEL`, and the operator lists `ALL_OPERATORS`, `SERVICE_OPERATORS` and `CANARY_OPERATOR: keystone`. The script writes `noop`, the job flags, the change sets, `tempest-services`, `test-targets`, `e2e-operators` and `e2e-operator-upgrade-operators` |
+| 2 | `dorny/paths-filter@v4` | Step id `filter`. Matches the changed paths against the filters of `.github/ci-filters.yaml` and writes the names of the change classes a changed path matches as the JSON array `changes`. Runs on `pull_request` and `push` events only; on the nightly chaos run its outputs are empty |
+| 3 | `Resolve effective changes` | Step id `result`. Runs `hack/ci-resolve-changes.sh`. The step `env` passes the matched classes as the JSON array `MATCHED_FILTERS`, which the script reads as one `FILTER_<class>=true` per name, the pull request's label names as the JSON array `PR_LABELS`, the event as `EVENT_NAME`, `EVENT_ACTION` and `EVENT_LABEL`, and the operator lists `ALL_OPERATORS`, `SERVICE_OPERATORS` and `CANARY_OPERATOR: keystone`. The script writes `noop`, the job flags, the change sets, `tempest-services`, `test-targets`, `e2e-operators` and `e2e-operator-upgrade-operators` |
 | 4 | `Generate Tempest release matrix` | Step id `tempest-matrix`. Runs `hack/ci-generate-tempest-matrix.sh` with `TEMPEST_SERVICES` set to the `tempest-services` list of step 3, joined with spaces. The script scans `releases/*/` and writes `tempest-releases` with one entry per selected service and release, plus one `keystone-upgrade` entry for the newest release when `keystone` is selected and two or more releases exist. An empty selection emits every service. The script fails when the `tests/tempest/<service>-<slug>/` directory of any service is missing for any release, whatever the selection |
 | 5 | `Generate keystone-pressure release matrix` | Step id `keystone-pressure-matrix`. Runs `hack/ci-service-image-releases.sh` with `OPERATOR=keystone` and writes `keystone-pressure-releases` with one entry per release whose `releases/<release>/source-refs.yaml` carries a Keystone ref |
 | 6 | `Generate cleanup package matrix` | Step id `cleanup-matrix`. Runs `hack/ci-generate-cleanup-matrix.sh`, which derives the GHCR package names from `images/*/` and from every `operators/*/` directory that holds a `go.mod`. It writes `cleanup-packages` and `cleanup-e2e-packages`. The job exports the second |
@@ -933,7 +1005,7 @@ validates health of all operators, CRs, and ExternalSecrets.
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `actions/setup-go@v7` | Sets up Go with `go-version-file: go.work` |
-| 3 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION` |
+| 3 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at the kind of `hack/install-test-deps.sh` |
 | 4 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack |
 | 5 | `chainsaw test` | Runs E2E tests from `tests/e2e/infrastructure/` |
 | 6 | `make deploy-infra` (re-run) | Unchanged-parameter re-run (no `SKIP_KIND_CREATE`) — exercises the script's existing-cluster detection |
@@ -1077,7 +1149,7 @@ Chainsaw E2E test suites.
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `actions/setup-go@v7` | Sets up Go with `go-version-file: go.work` |
-| 3 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION` from `hack/kind-config-audit.yaml`, whose API server writes the audit log step 12 reads |
+| 3 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at the kind of `hack/install-test-deps.sh` from `hack/kind-config-audit.yaml`, whose API server writes the audit log step 12 reads |
 | 4 | `load-e2e-images` composite action | Pulls run-scoped GHCR tags and re-tags to canonical local refs; `operator-variant: cover` fills every `<op>-operator:dev` ref from the coverage-instrumented `<op>-operator:cover` image ([Operator coverage](#operator-coverage)) |
 | 5 | `kind load docker-image` | Loads the operator image, one service image per release under `releases/` (2026.1 and 2026.2 today) and the 2026.1-upgraded image into kind, plus `ovn:<pin>` on the `ovn` and `neutron` legs; the `nova` leg also loads the five sibling operator images, the sibling service images for every release (`keystone`, `placement`, `glance` and `neutron` at 2026.1 and 2026.2) and `ovn:<pin>`; the `c5c3` leg, which ships no service image, loads `keystone:2026.1` as the shell its `env-key-material` suite runs in; for `ovn` it loads `keystone:2026.1` as well, for the `python3` that the probe pods of its `network-policy-egress` suite run and the OVN image leaves out |
 | 6 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack; the `ovn`, `neutron` and `nova` legs pass `WITH_OVN_KERNEL_MODULES: true`, the `cinder` and `nova` legs pass `WITH_MESSAGING: true`, and the `cinder` leg alone passes `WITH_NFS: true` |
@@ -1095,10 +1167,14 @@ Chainsaw E2E test suites.
 
 **Matrix strategy:**
 
+The `e2e-operator` job of `ci.yaml` passes the legs as the `matrix` input
+(`matrix: ${{ needs.changes.outputs.e2e-operator-legs }}`), which
+`ci-e2e-operator.yaml` reads:
+
 ```yaml
 strategy:
   fail-fast: false
-  matrix: ${{ fromJson(needs.changes.outputs.e2e-operator-legs) }}
+  matrix: ${{ fromJson(inputs.matrix) }}
 ```
 
 The operator matrix is dynamically constructed by the `changes` job, including only operators
@@ -1254,8 +1330,9 @@ changed; see [Change classes and labels](#change-classes-and-labels).
 The reusable workflow takes three inputs: `operators` (the `{"operator":[...]}`
 matrix), `image-map`, and `ref`, the commit to check out (empty for the caller's).
 A called workflow does not inherit the caller's `env`, so it sets `REGISTRY`,
-`IMAGE_PREFIX`, `KIND_CLUSTER`, `KIND_VERSION`, `HELM_VERSION` and the
-`BARBICAN_SECRET_STORE_GRANTS` of `e2e-operator` itself. Its one job, `upgrade`,
+`IMAGE_PREFIX`, `KIND_CLUSTER`, `HELM_VERSION` and the
+`BARBICAN_SECRET_STORE_GRANTS` of `e2e-operator` itself; its kind cluster takes the
+kind of `hack/install-test-deps.sh`, as every other. Its one job, `upgrade`,
 runs on `self-hosted` with `fail-fast: false` and a 68-minute timeout:
 
 | Step | Action | Details |
@@ -1321,7 +1398,7 @@ select it through changes under `tests/e2e-chaos/`, `ci:chaos` (also
 and disable Chainsaw's fail-fast setting so they report every suite. Every leg
 gates Tempest.
 
-The matrix in `ci.yaml` assigns each suite directory to a leg. The legs can run
+The matrix in `ci-e2e-chaos.yaml` assigns each suite directory to a leg. The legs can run
 in parallel on self-hosted runners. Suites within a leg share infrastructure
 and run serially. The `multinode` leg keeps singleton services on the
 control-plane node so it can fault the workers, then restores them before
@@ -1770,7 +1847,7 @@ kind-only Quick Start observability story.
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
-| 2 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION` |
+| 2 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at the kind of `hack/install-test-deps.sh` |
 | 3 | `load-e2e-images` composite | Pulls `keystone-operator:dev`, `keystone:2026.1` and `horizon-operator:dev` from GHCR and re-tags them to their canonical local references |
 | 4 | `kind load docker-image` | Loads the two operator images and the service image into kind |
 | 5 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack with `WITH_PROMETHEUS: "true"` |
@@ -1852,23 +1929,19 @@ or the build script), and otherwise the digest behind
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
-| 2 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION` |
+| 2 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at the kind of `hack/install-test-deps.sh` |
 | 3 | `load-e2e-images` composite | Restores `keystone-operator:dev`, `c5c3-operator:dev`, `horizon-operator:dev`, `keystone-federation-proxy:dev`, `keystone:2026.1`, `horizon:2026.1` from GHCR |
 | 4 | `kind load docker-image` | Loads the six images into kind |
 | 5 | `setup-e2e-infra` composite action | Deploys infra with `WITH_CONTROLPLANE=true CONTROLPLANE_OPERATORS=external CONTROLPLANE_NAME=controlplane-sso WITH_CONTROLPLANE_CR=false` |
 | 5a | Start the sizing measurement *(`ci:measure-sizing` only)* | Starts the background watch of [Sizing measurement](#sizing-measurement); step 5 then also carries `WITH_VPA` |
 | 6 | `hack/ci-deploy-korc.sh` | Applies K-ORC CRDs + controller at the pinned commit; runs with `GITHUB_TOKEN` so the clone from `github.com` is authenticated, since GitHub can answer an anonymous clone from the runners' git 2.43 with a 401 challenge (the header comment of `hack/ci-deploy-korc.sh` has the details) |
-| 7 | `hack/ci-deploy-operator.sh` (keystone) | Deploys the keystone-operator dev image into `keystone-system` |
-| 8 | `hack/ci-deploy-operator.sh` (horizon) | Deploys the horizon-operator dev image into `horizon-system` |
-| 9 | `kubectl apply -f operators/glance/helm/glance-operator/crds/` | Installs the Glance CRDs the c5c3-operator watches; the glance-operator itself stays undeployed |
-| 10 | `kubectl apply -f operators/placement/helm/placement-operator/crds/` | Installs the Placement CRDs the c5c3-operator watches; the placement-operator itself stays undeployed |
-| 11 | `hack/ci-deploy-operator.sh` (c5c3) | Deploys the c5c3-operator dev image into `c5c3-system` |
-| 12 | `chainsaw test` | Runs `tests/e2e-controlplane-sso/` with `E2E_REQUIRE_CONTROLPLANE_STACK=true` |
-| 12a | Collect the sizing measurement (always) *(`ci:measure-sizing` only)* | Stops the watch and writes the report |
-| 12b | Upload the sizing measurement (always) *(`ci:measure-sizing` only)* | Uploads `_output/sizing/` as `sizing-e2e-controlplane-sso` (14-day retention) |
-| 13 | `hack/ci-dump-diagnostics.sh` (always) | Dumps diagnostics with `OPERATOR=c5c3` |
-| 14 | Upload JUnit report | Uploads `_output/reports/` as `e2e-controlplane-sso-junit-report` (14-day retention) |
-| 15 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
+| 7 | [`deploy-keystone-controlplane-operators`](#composite-action-tests-deploy-keystone-controlplane-operators) composite action | Deploys the keystone-operator and the horizon-operator into `keystone-system` and `horizon-system`, installs the Glance and Placement CRDs the c5c3-operator watches (their operators stay undeployed), then deploys the c5c3-operator into `c5c3-system` |
+| 8 | `chainsaw test` | Runs `tests/e2e-controlplane-sso/` with `E2E_REQUIRE_CONTROLPLANE_STACK=true` |
+| 8a | Collect the sizing measurement (always) *(`ci:measure-sizing` only)* | Stops the watch and writes the report |
+| 8b | Upload the sizing measurement (always) *(`ci:measure-sizing` only)* | Uploads `_output/sizing/` as `sizing-e2e-controlplane-sso` (14-day retention) |
+| 9 | `hack/ci-dump-diagnostics.sh` (always) | Dumps diagnostics with `OPERATOR=c5c3` |
+| 10 | Upload JUnit report | Uploads `_output/reports/` as `e2e-controlplane-sso-junit-report` (14-day retention) |
+| 11 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
 
 **Path filter:** `operators/c5c3/**` (`c5c3`) and `tests/e2e-controlplane-sso/**` (the
 `tests_controlplane_sso` class). The `ci:controlplane` and `ci:measure-sizing` labels
@@ -1917,7 +1990,7 @@ are estimates to confirm against the first green run.
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
-| 2 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION` |
+| 2 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at the kind of `hack/install-test-deps.sh` |
 | 3 | `hack/ci-resolve-ovn-version.sh` | Exports `OVN_VERSION` from the pin in `images/ovn/source.json` |
 | 4 | `load-e2e-images` composite | Restores the ten operator `:dev` images, the `keystone`, `glance`, `placement`, `barbican`, `neutron`, `cinder` and `nova` images at `2026.1`, `ovn:${OVN_VERSION}` and `tempest:2026.1` |
 | 5 | `kind load docker-image` | Loads the nineteen images into kind |
@@ -1970,7 +2043,10 @@ asserts their own per-CR OpenBao paths are never-seeded. It loads the
 `keystone:2026.1` and `tempest:2026.1` service images (but **not** `horizon:2026.1`
 — External mode never runs a Horizon workload; the horizon-operator is deployed
 only for its CRD) and runs with `E2E_REQUIRE_CONTROLPLANE_STACK: "true"` so a
-broken deployment fails the build instead of the suite skipping.
+broken deployment fails the build instead of the suite skipping. It deploys its
+operators through the
+[`deploy-keystone-controlplane-operators`](#composite-action-tests-deploy-keystone-controlplane-operators)
+composite action, as `e2e-controlplane-sso` does.
 
 **Path filter:** `operators/c5c3/**` (`c5c3`) and `tests/e2e/c5c3/external-keystone/**`
 (the `tests_external_keystone` class). The `ci:controlplane` label also schedules the
@@ -2012,7 +2088,7 @@ its `needs`.
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
-| 2 | `Create target kind cluster` | `create-kind-cluster` composite action with `version: ${{ env.KIND_VERSION }}`, `config: hack/kind-config.yaml` and `cluster-name: ${{ env.TARGET_CLUSTER }}`. Only the target takes the kind config with its host ports |
+| 2 | `Create target kind cluster` | `create-kind-cluster` composite action with `config: hack/kind-config.yaml` and `cluster-name: ${{ env.TARGET_CLUSTER }}`. Only the target takes the kind config with its host ports |
 | 3 | `Resolve OVN version` | Writes `OVN_VERSION` to `$GITHUB_ENV` from `hack/ci-resolve-ovn-version.sh`, which reads the pin in `images/ovn/source.json` |
 | 4 | `Load E2E images` | `load-e2e-images` composite action with the `image-map` output of `build-e2e-images`. Pulls eight images: `keystone-operator`, `barbican-operator`, `ovn-operator` and `neutron-operator` at `:dev`, `keystone`, `barbican` and `neutron` at `2026.1`, and `ovn:${{ env.OVN_VERSION }}` |
 | 5 | `Load service images into the target cluster` | `kind load docker-image` for `keystone:2026.1`, `barbican:2026.1`, `neutron:2026.1` and the OVN image into `cobaltcore-target`. The OVN image is a service image here: the databases and northd of the placed `OVNCentral` run on the target |
@@ -2079,7 +2155,7 @@ references. `cleanup-e2e-tags` lists the job in its `needs`.
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
-| 2 | `Create target kind cluster` | `create-kind-cluster` composite action with `version: ${{ env.KIND_VERSION }}` and `cluster-name: ${{ env.TARGET_CLUSTER }}` and no `config`, so the bare target takes no host port |
+| 2 | `Create target kind cluster` | `create-kind-cluster` composite action with `cluster-name: ${{ env.TARGET_CLUSTER }}` and no `config`, so the bare target takes no host port |
 | 3 | `Create kind cluster` | The same action with `config: hack/kind-config.yaml` and `cluster-name: ${{ env.KIND_CLUSTER }}`. Created second, so the `kubectl` context ends on the management cluster |
 | 4 | `Load E2E images` | `load-e2e-images` composite action with the `image-map` output of `build-e2e-images`. Pulls four images: `keystone-operator` and `c5c3-operator` at `:dev`, `keystone` and `tempest` at `2026.1` |
 | 5 | `Load images into kind` | `kind load docker-image` for `keystone-operator:dev`, `c5c3-operator:dev` and `keystone:2026.1` into the management cluster, and for `keystone:2026.1` and `tempest:2026.1` into `cobaltcore-target`, where the suite's verify Jobs run |
@@ -2133,7 +2209,8 @@ lists the commands of a job in order.
 `hack/ci-generate-tempest-matrix.sh` runs in the `changes` job and crosses
 `ALL_TEMPEST_SERVICES=(keystone glance barbican neutron cinder nova)` with every
 `releases/<version>/` directory, writing the result to the `tempest-releases`
-output the job consumes as `matrix: ${{ fromJson(needs.changes.outputs.tempest-releases) }}`.
+output the `tempest` job of `ci.yaml` passes to `ci-tempest.yaml` as its
+`matrix` input, read as `matrix: ${{ fromJson(inputs.matrix) }}`.
 Two releases and six services make twelve legs, and one `keystone-upgrade`
 entry for the newest transition makes thirteen. A service without a
 `tests/tempest/<service>-<slug>` configuration directory fails the generator.
@@ -2160,7 +2237,7 @@ with, see
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `actions/setup-go@v7` | Sets up Go with `go-version-file: go.work` |
-| 3 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION` |
+| 3 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at the kind of `hack/install-test-deps.sh` |
 | 4 | Resolve OVN version | `hack/ci-resolve-ovn-version.sh` writes `OVN_VERSION` to `$GITHUB_ENV`; `images/ovn/source.json` holds the pin |
 | 5 | `load-e2e-images` composite action | Pulls run-scoped GHCR tags and re-tags to canonical local refs, filling every `<op>-operator:dev` ref from the coverage-instrumented `<op>-operator:cover` image (`operator-variant: cover`, also on the glance and barbican load steps; see [Operator coverage](#operator-coverage)); the neutron leg also pulls `neutron-operator:dev`, `neutron:<release>`, `ovn-operator:dev` and `ovn:<OVN_VERSION>`; the nova and cinder legs pull the four compute-stack operator images plus `neutron:<release>`, `placement:<release>`, `nova:<release>` and `ovn:<OVN_VERSION>` |
 | 6 | `kind load docker-image` | Loads keystone operator and service images into kind; on the keystone-upgrade leg `keystone:<release>` is the image the upgrade moves to |
@@ -2869,12 +2946,13 @@ runner.
 
 | Step | Description |
 | --- | --- |
+| 0 | Resolves the kind version: the `version` input, else the `KIND_VERSION="v<x.y.z>"` line of `hack/install-test-deps.sh`; a file without one fails the step |
 | 1 | `helm/kind-action` with `install_only: true` and `ignore_failed_clean: true`: installs the pinned kind and kubectl binaries and registers the post-job `kind delete cluster` as a best-effort net, without creating anything |
 | 2 | `hack/ci-create-kind-cluster.sh`: resets the runner through `hack/ci-reset-kind-cluster.sh`, creates the cluster, and retries a failed creation |
 
 | Input | Default | Description |
 | --- | --- | --- |
-| `version` | (required) | kind version to install; every caller passes `${{ env.KIND_VERSION }}` |
+| `version` | `''` | kind version to install. Empty installs the `KIND_VERSION` of `hack/install-test-deps.sh`, and no caller passes one: that file is the one pin of kind |
 | `cluster-name` | (required) | The cluster to create, and the one the post-job net aims at when a cancelled job never reaches its own teardown step |
 | `config` | `''` | kind config file. Empty creates a cluster with no config, the way `hack/deploy-mgmt-cluster.sh` creates the management cluster |
 
@@ -2935,7 +3013,6 @@ Usage in a workflow job:
 - name: Create kind cluster
   uses: ./.github/actions/create-kind-cluster
   with:
-    version: ${{ env.KIND_VERSION }}
     config: hack/kind-config.yaml
     cluster-name: ${{ env.KIND_CLUSTER }}
 
@@ -3037,13 +3114,14 @@ as the `:dev` ref, so the job's `kind load` and deploy lines stay as they are.
 | `username` | `${{ github.actor }}` | Login user |
 | `password` | `${{ github.token }}` | Login token |
 
-Usage in a workflow job:
+Usage in a job of a workflow `ci.yaml` calls, which receives the map as its
+`image-map` input:
 
 ```yaml
 - name: Load E2E images
   uses: ./.github/actions/load-e2e-images
   with:
-    image-map: ${{ needs.build-e2e-images.outputs.image-map }}
+    image-map: ${{ inputs.image-map }}
     images: |
       ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
       ${{ env.IMAGE_PREFIX }}/keystone:2026.1
@@ -3054,6 +3132,25 @@ sequence: the 355 MB single-blob artifact intermittently timed out at the
 five-minute window (`actions/download-artifact` has no built-in retry on a stalled
 download). Layer-level pull retries plus the GHCR CDN dramatically reduce the
 failure rate.
+
+## Composite Action: tests/deploy-keystone-controlplane-operators
+
+`.github/actions/tests/deploy-keystone-controlplane-operators/` deploys what a
+ControlPlane with Keystone and Horizon alone needs, in this order: the
+keystone-operator into `keystone-system`, the horizon-operator into
+`horizon-system`, the Glance and Placement CRDs, and the c5c3-operator into
+`c5c3-system`. The c5c3 manager Owns() and Watches() the Keystone, Horizon,
+Glance, GlanceBackend and Placement kinds, and an informer for a kind whose CRD
+is absent never syncs, so the elected leader would die on its cache-sync timeout;
+neither suite declares `services.glance` or `services.placement`, so their CRDs are
+enough. Each operator goes through `hack/ci-deploy-operator.sh`, which reads
+`IMAGE_PREFIX` and the rest of its input from the job's environment.
+
+`e2e-controlplane-sso` and `e2e-external-keystone` call it after deploying K-ORC,
+and keep their suite runs and diagnostics as steps of their own. Its five steps
+show as one step of the job; the log groups them by name. The `tests_controlplane_sso`
+and `tests_external_keystone` filters list the action, so an edit to it runs both
+jobs.
 
 ## How the Pieces Fit Together
 

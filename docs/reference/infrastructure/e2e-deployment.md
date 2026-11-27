@@ -939,10 +939,12 @@ HELMRELEASE_TIMEOUT=600 make deploy-infra
 
 ## CI Job
 
-The `e2e-infra` job in `.github/workflows/ci.yaml` runs only on pull requests
-(`github.event_name == 'pull_request'`) and only when the `e2e-infra` path filter
-of the `changes` job matches. It depends only on `changes` — not on the `lint` or
-`test` jobs — so it starts as soon as the path filters are resolved.
+The `e2e-infra` job of `.github/workflows/ci.yaml` calls
+`.github/workflows/ci-e2e-infra.yaml`, which holds the steps below. It runs
+only on pull requests (`github.event_name == 'pull_request'`) and only when the
+`e2e-infra` path filter of the `changes` job matches. It depends only on
+`changes` — not on the `lint` or `test` jobs — so it starts as soon as the path
+filters are resolved.
 
 **Job steps:**
 
@@ -967,7 +969,7 @@ of the `changes` job matches. It depends only on `changes` — not on the `lint`
 | Setting | Value |
 | --- | --- |
 | `timeout-minutes` | 50 |
-| `permissions` | `contents: read` (inherited from workflow-level) |
+| `permissions` | `contents: read` (declared by `ci-e2e-infra.yaml`) |
 | `concurrency` | Cancel-in-progress on PRs (inherited from workflow-level) |
 | Action pinning | All `uses:` references are SHA-pinned with version comments |
 

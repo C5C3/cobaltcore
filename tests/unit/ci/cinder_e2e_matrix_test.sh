@@ -57,6 +57,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
+CI_FILTERS="$PROJECT_ROOT/.github/ci-filters.yaml"
 
 PASS=0
 FAIL=0
@@ -143,9 +144,9 @@ test_service_operators_lists_cinder() {
 test_cinder_filter_is_wired() {
   echo "Test: the cinder paths filter reaches the resolve step"
 
-  assert_file_contains "the paths filter exists" "$CI_YAML" "^ *cinder:$"
-  assert_file_contains "the filter is passed to the resolve step" "$CI_YAML" \
-    "FILTER_cinder: \${{ steps.filter.outputs.cinder }}"
+  assert_file_contains "the paths filter exists" "$CI_FILTERS" "^cinder:$"
+  assert_file_contains "the matched filters reach the resolve step" "$CI_YAML" \
+    'MATCHED_FILTERS: ${{ steps.filter.outputs.changes }}'
 
   local block
   block=$(filter_block cinder)
@@ -451,10 +452,10 @@ test_cinder_tempest_filter_is_wired() {
   # narrowing the two cinder legs would only ever run as part of the full
   # five-service matrix, and an edit to their config would spend a runner on
   # keystone, glance, barbican and neutron as well.
-  assert_file_contains "the paths filter exists" "$CI_YAML" \
-    "^ *tempest_cinder:$"
-  assert_file_contains "the filter is passed to the resolve step" "$CI_YAML" \
-    "FILTER_tempest_cinder: \${{ steps.filter.outputs.tempest_cinder }}"
+  assert_file_contains "the paths filter exists" "$CI_FILTERS" \
+    "^tempest_cinder:$"
+  assert_file_contains "the matched filters reach the resolve step" "$CI_YAML" \
+    'MATCHED_FILTERS: ${{ steps.filter.outputs.changes }}'
   # tempest-services is consumed inside the changes job rather than exported:
   # it is what the matrix generator step narrows its output by.
   assert_file_contains "the resolver's selection reaches the generator" \

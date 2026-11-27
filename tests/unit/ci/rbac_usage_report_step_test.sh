@@ -100,7 +100,7 @@ test_only_the_audited_jobs_report() {
     "$(job_step e2e-controlplane "Upload RBAC usage report")" "name: rbac-usage-c5c3"
 
   assert_eq "two steps run hack/ci-rbac-usage-report.sh" "2" \
-    "$(grep -c 'run: hack/ci-rbac-usage-report.sh$' "$CI_YAML" | tr -d ' ')"
+    "$(ci_workflows | xargs cat | grep -c 'run: hack/ci-rbac-usage-report.sh$' | tr -d ' ')"
   if [ -x "$REPORT_SH" ]; then
     assert_eq "hack/ci-rbac-usage-report.sh is executable" "yes" "yes"
   else

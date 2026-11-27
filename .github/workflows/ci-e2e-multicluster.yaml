@@ -1,0 +1,249 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+---
+# Two-cluster placed-services E2E on kind. Brings up a target cluster running
+# the infrastructure and no operator (INFRA_ONLY=true), a management cluster
+# running keystone-operator, barbican-operator, ovn-operator and
+# neutron-operator and no infrastructure, and runs tests/e2e-multicluster/
+# across both. The suite also runs an OVN chassis and a metadata agent on the
+# management cluster against the OVN central placed on the target, which is
+# why the management cluster gets the OVN and Neutron service images and the
+# host gets the datapath modules.
+#
+# The management cluster reaches the target EXCLUSIVELY through a kubeconfig
+# minted from the target-cluster-access chart's ServiceAccount token. Running
+# the suite on those credentials is what proves the chart's grant set: a
+# missing verb surfaces as a CR that never reaches Ready, where an admin
+# kubeconfig would paper over it.
+#
+# BARBICAN_SECRET_STORE_GRANTS is deliberately unset, as on e2e-controlplane.
+# It renders the operator's LOCAL TokenRequest Role, and a placed store mints
+# its provisioner token on the target cluster instead, through the chart's
+# grant there.
+#
+# The e2e-multicluster job of ci.yaml calls this workflow and decides when it runs.
+name: E2E Multicluster
+
+"on":
+  workflow_call:
+    inputs:
+      image-map:
+        description: >
+          JSON object mapping each canonical image ref the job loads to the
+          reference to pull for it (see .github/actions/load-e2e-images).
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  packages: read
+
+# A called workflow does not inherit the env of ci.yaml, so the values its
+# steps and scripts read are declared here. kind is not pinned here: the
+# create-kind-cluster action installs the KIND_VERSION of
+# hack/install-test-deps.sh.
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/c5c3
+  KIND_CLUSTER: cobaltcore
+
+jobs:
+  e2e-multicluster:
+    runs-on: self-hosted
+    timeout-minutes: 90
+    continue-on-error: false
+    env:
+      # The registration name the suite's fixtures reference, and the kind
+      # cluster it belongs to.
+      TARGET_CLUSTER: cobaltcore-target
+      MGMT_CLUSTER: cobaltcore-mgmt
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # The target cluster takes the workload config (host ports, containerd
+      # tuning); the management cluster is created by
+      # hack/deploy-mgmt-cluster.sh with no config at all, so the two never
+      # contend for a host port.
+      - name: Create target kind cluster
+        uses: ./.github/actions/create-kind-cluster
+        with:
+          config: hack/kind-config.yaml
+          cluster-name: ${{ env.TARGET_CLUSTER }}
+      # images/ovn/source.json holds the pin; resolving it here keeps the tag
+      # out of this workflow.
+      - name: Resolve OVN version
+        run: echo "OVN_VERSION=$(hack/ci-resolve-ovn-version.sh)" >> "$GITHUB_ENV"
+      - name: Load E2E images
+        uses: ./.github/actions/load-e2e-images
+        with:
+          image-map: ${{ inputs.image-map }}
+          images: |
+            ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
+            ${{ env.IMAGE_PREFIX }}/barbican-operator:dev
+            ${{ env.IMAGE_PREFIX }}/ovn-operator:dev
+            ${{ env.IMAGE_PREFIX }}/neutron-operator:dev
+            ${{ env.IMAGE_PREFIX }}/keystone:2026.1
+            ${{ env.IMAGE_PREFIX }}/barbican:2026.1
+            ${{ env.IMAGE_PREFIX }}/neutron:2026.1
+            ${{ env.IMAGE_PREFIX }}/ovn:${{ env.OVN_VERSION }}
+      # The service images run on the target; the operator images run on the
+      # management cluster, which does not exist yet. The OVN daemon image is a
+      # service image here: the placed OVNCentral's databases and northd all run
+      # on the target.
+      - name: Load service images into the target cluster
+        run: |
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2026.1 --name "$TARGET_CLUSTER"
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/barbican:2026.1 --name "$TARGET_CLUSTER"
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron:2026.1 --name "$TARGET_CLUSTER"
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/ovn:${{ env.OVN_VERSION }} --name "$TARGET_CLUSTER"
+      - name: Setup target-cluster infrastructure
+        uses: ./.github/actions/setup-e2e-infra
+        env:
+          INFRA_ONLY: "true"
+          CLUSTER_NAME: ${{ env.TARGET_CLUSTER }}
+          # The chassis of the suite runs on the management cluster, not on
+          # this one, but the modules load into the host kernel both kind
+          # clusters share.
+          WITH_OVN_KERNEL_MODULES: "true"
+      - name: Create the management cluster
+        run: hack/deploy-mgmt-cluster.sh
+        env:
+          CLUSTER_NAME: ${{ env.MGMT_CLUSTER }}
+      # The OVN and Neutron service images join the operator images here: the
+      # suite's OVNChassis and NeutronMetadataAgent keep their DaemonSets on
+      # the management cluster.
+      - name: Load operator and datapath images into the management cluster
+        run: |
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name "$MGMT_CLUSTER"
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/barbican-operator:dev --name "$MGMT_CLUSTER"
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/ovn-operator:dev --name "$MGMT_CLUSTER"
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron-operator:dev --name "$MGMT_CLUSTER"
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/ovn:${{ env.OVN_VERSION }} --name "$MGMT_CLUSTER"
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron:2026.1 --name "$MGMT_CLUSTER"
+      # hack/deploy-mgmt-cluster.sh left the kubectl context on the management
+      # cluster, which is where all four operators are installed.
+      - name: Deploy keystone-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: keystone
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/keystone-operator
+          NAMESPACE: keystone-system
+      - name: Deploy barbican-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: barbican
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/barbican-operator
+          NAMESPACE: barbican-system
+      # The ovn-operator projects the placed central's StatefulSets, its backup
+      # volume and its Certificates onto the target over the registered
+      # kubeconfig. No other operator in this job writes a StatefulSet or a
+      # PersistentVolumeClaim there, so those two grants of the chart are
+      # exercised only while this one runs.
+      - name: Deploy ovn-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: ovn
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/ovn-operator
+          NAMESPACE: ovn-system
+      # The neutron-operator reads the central's status on this cluster, where
+      # both CRs live, and places the API Deployment and the mirrored OVN client
+      # Secret on the target. Its OVNCentral CRD comes from the ovn-operator
+      # above, so that one is deployed first.
+      - name: Deploy neutron-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: neutron
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/neutron-operator
+          NAMESPACE: neutron-system
+      # createNamespaces=false: the openstack namespace already exists on the
+      # target from the infrastructure deploy.
+      - name: Install the target-cluster-access chart on the target
+        run: |
+          helm install --kube-context "kind-$TARGET_CLUSTER" \
+            target-cluster-access deploy/bases/target-cluster-access \
+            -n c5c3-access --create-namespace \
+            --set 'namespaces={openstack}' \
+            --set createNamespaces=false
+      # Register the target on the management cluster. The admin kubeconfig kind
+      # holds for the target is NEVER used here: the kubeconfig assembled below
+      # carries the chart's ServiceAccount token and nothing else, so every
+      # request the operators make is authorized by the chart's Role and
+      # ClusterRole. The server URL is the --internal one, because the address
+      # that has to resolve is the one a pod on the management cluster dials
+      # across the shared docker network.
+      - name: Register the target cluster
+        run: |
+          set -euo pipefail
+          secret=target-cluster-access-token
+          token=""
+          for _ in $(seq 1 30); do
+            token=$(kubectl --context "kind-$TARGET_CLUSTER" -n c5c3-access get secret "$secret" \
+              -o jsonpath='{.data.token}' 2>/dev/null || true)
+            [ -n "$token" ] && break
+            sleep 2
+          done
+          if [ -z "$token" ]; then
+            echo "::error::the token controller did not populate $secret on $TARGET_CLUSTER"
+            exit 1
+          fi
+          workdir=$(mktemp -d)
+          kubectl --context "kind-$TARGET_CLUSTER" -n c5c3-access get secret "$secret" \
+            -o jsonpath='{.data.ca\.crt}' | base64 -d > "$workdir/ca.crt"
+          kind get kubeconfig --internal --name "$TARGET_CLUSTER" > "$workdir/internal.kubeconfig"
+          server=$(kubectl --kubeconfig "$workdir/internal.kubeconfig" config view \
+            -o jsonpath='{.clusters[0].cluster.server}')
+          export KUBECONFIG="$workdir/registration.kubeconfig"
+          kubectl config set-cluster "$TARGET_CLUSTER" \
+            --server="$server" --certificate-authority="$workdir/ca.crt" --embed-certs=true
+          kubectl config set-credentials target-cluster-access --token="$(echo "$token" | base64 -d)"
+          kubectl config set-context "$TARGET_CLUSTER" \
+            --cluster="$TARGET_CLUSTER" --user=target-cluster-access
+          kubectl config use-context "$TARGET_CLUSTER"
+          unset KUBECONFIG
+          kubectl --context "kind-$MGMT_CLUSTER" create namespace c5c3-clusters
+          # The namespaces key scopes the operators' caches on this cluster to
+          # the one namespace the chart granted them.
+          kubectl --context "kind-$MGMT_CLUSTER" -n c5c3-clusters create secret generic "$TARGET_CLUSTER" \
+            --from-file=kubeconfig="$workdir/registration.kubeconfig" \
+            --from-literal=namespaces=openstack
+          kubectl --context "kind-$MGMT_CLUSTER" -n c5c3-clusters label secret "$TARGET_CLUSTER" \
+            sigs.k8s.io/multicluster-runtime-kubeconfig=true
+      # Chainsaw's own credentials for asserting on the target. This is the
+      # admin kubeconfig, and it reaches nothing the operators use: they read
+      # the registration Secret written above.
+      - name: Write the chainsaw kubeconfig for the target cluster
+        run: |
+          mkdir -p _output
+          kind get kubeconfig --name "$TARGET_CLUSTER" > _output/cobaltcore-target.kubeconfig
+      - name: Run the two-cluster E2E suite
+        run: |
+          mkdir -p _output/reports
+          kubectl config use-context "kind-$MGMT_CLUSTER"
+          make e2e-multicluster
+      - name: Dump diagnostic info (management cluster)
+        if: always()
+        run: |
+          kubectl config use-context "kind-$MGMT_CLUSTER"
+          hack/ci-dump-diagnostics.sh
+        env:
+          OPERATOR: keystone
+      # No OPERATOR on the target: it runs the infrastructure and nothing else,
+      # so the script's infrastructure section is the whole dump.
+      - name: Dump diagnostic info (target cluster)
+        if: always()
+        run: |
+          kubectl config use-context "kind-$TARGET_CLUSTER"
+          hack/ci-dump-diagnostics.sh
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-multicluster-junit-report
+          path: _output/reports/
+          retention-days: 14
+      # Last step of the job, so the dump above still had a cluster to read;
+      # `always()` covers the failed and timed-out runs.  Never fails the job
+      # (see hack/ci-delete-kind-cluster.sh).
+      - name: Delete kind cluster
+        if: always()
+        run: hack/ci-delete-kind-cluster.sh

@@ -109,9 +109,15 @@ job() {
             completed_at: ($t + ($m | tonumber) * 60 | todate)} end'
 }
 
-# leg <leg> <conclusion> <minutes> — an e2e-chaos matrix leg on self-hosted.
+# leg <leg> <conclusion> <minutes> — an e2e-chaos matrix leg on self-hosted,
+# named as GitHub names a job of the workflow the e2e-chaos job calls.
 leg() {
-  job "e2e-chaos ($1, tests/e2e/infrastructure/chaos-mesh-health tests/e2e-chaos/x...)" "$2" self-hosted "$3"
+  job "e2e-chaos / e2e-chaos ($1, tests/e2e/infrastructure/chaos-mesh-health tests/e2e-chaos/x...)" "$2" self-hosted "$3"
+}
+
+# random <conclusion> <minutes> — the random chaos run on self-hosted.
+random() {
+  job "e2e-chaos-random / e2e-chaos-random" "$1" self-hosted "$2"
 }
 
 # page <job-json...> — one page of the listing.
@@ -123,7 +129,7 @@ page() {
 green_prefix() {
   job changes success ubuntu-latest 1
   job test-shell success ubuntu-latest 7
-  job build-e2e-images success self-hosted 18
+  job "build-e2e-images / build-e2e-images" success self-hosted 18
 }
 
 # junit <leg> <suite> [<failure-message>]... — write the leg's report with
@@ -218,7 +224,7 @@ Nightly chaos suite cinder-broker-pod-kill is red|failure" "$(calls)"
   assert_eq "each call carries the run URL and the commit" \
     "$RUN|$SHA" "$(head -1 "$CALLS" | cut -d'|' -f3,4)"
   local url
-  url="$(printf '%s\n' "$STUB_JOBS" | jq -r '.jobs[] | select(.name | startswith("e2e-chaos (network,")) | .html_url')"
+  url="$(printf '%s\n' "$STUB_JOBS" | jq -r '.jobs[] | select(.name | startswith("e2e-chaos / e2e-chaos (network,")) | .html_url')"
   assert_file_contains "the summary names the leg" "$TMP_DIR/summary-1.md" '^Leg: `network`$'
   assert_file_contains "the summary names the suite" "$TMP_DIR/summary-1.md" '^Suite: `neutron-mariadb-outage`$'
   assert_file_contains_fixed "the summary links the job" "$TMP_DIR/summary-1.md" "Job: $url"
@@ -280,7 +286,7 @@ test_a_night_without_legs_files_the_run() {
   echo "Test: every leg skipped after a red image build files the run"
   reset
   STUB_JOBS="$(page "$(job changes success ubuntu-latest 1)" \
-    "$(job build-e2e-images failure self-hosted 20)" \
+    "$(job "build-e2e-images / build-e2e-images" failure self-hosted 20)" \
     "$(leg pod skipped 0)" "$(leg network skipped 0)")"
 
   run_report
@@ -288,6 +294,16 @@ test_a_night_without_legs_files_the_run() {
   assert_eq "the run is filed with the build's conclusion" "Nightly chaos run is red|failure" "$(calls)"
   assert_file_contains "the summary names the build" "$TMP_DIR/summary-1.md" 'the `build-e2e-images` job ended `failure`'
   assert_file_contains "the step summary says no leg ran" "$STEP_SUMMARY" 'No `e2e-chaos` leg ran'
+
+  echo "Test: a skipped image build, listed under its caller's name, files the run"
+  reset
+  STUB_JOBS="$(page "$(job changes success ubuntu-latest 1)" \
+    "$(job build-e2e-images skipped ubuntu-latest 0)" "$(job e2e-chaos skipped ubuntu-latest 0)")"
+
+  run_report
+  assert_eq "it exits 0" "0" "$RC"
+  assert_eq "the run is filed with the build's conclusion" "Nightly chaos run is red|skipped" "$(calls)"
+  assert_file_contains "the summary names the build" "$TMP_DIR/summary-1.md" 'the `build-e2e-images` job ended `skipped`'
 
   echo "Test: every leg skipped after a green image build files the run as skipped"
   reset
@@ -311,7 +327,7 @@ test_the_runner_budget() {
   echo "Test: 790 self-hosted minutes file the budget of 780, 770 do not"
   reset
   STUB_JOBS="$(page "$(green_prefix)" "$(leg pod success 300)" "$(leg nova success 282)" \
-    "$(job e2e-chaos-random success self-hosted 170)" \
+    "$(random success 170)" \
     "$(job report-nightly-chaos success ubuntu-latest 300)" \
     "$(job e2e-prometheus success self-hosted -)")"
 
@@ -321,14 +337,14 @@ test_the_runner_budget() {
 
   reset
   STUB_JOBS="$(page "$(green_prefix)" "$(leg pod success 300)" "$(leg nova success 283)" \
-    "$(job e2e-chaos-random success self-hosted 189)")"
+    "$(random success 189)")"
 
   run_report
   assert_eq "it exits 0" "0" "$RC"
   assert_eq "790 minutes file the budget" "Nightly chaos run is over its runner budget|failure" "$(calls)"
-  assert_file_contains "the table lists the build" "$TMP_DIR/summary-1.md" '^| `build-e2e-images` | success | 18 |$'
-  assert_file_contains "the table lists a leg" "$TMP_DIR/summary-1.md" '^| `e2e-chaos (nova, .*` | success | 283 |$'
-  assert_file_contains "the table lists the random run" "$TMP_DIR/summary-1.md" '^| `e2e-chaos-random` | success | 189 |$'
+  assert_file_contains "the table lists the build" "$TMP_DIR/summary-1.md" '^| `build-e2e-images / build-e2e-images` | success | 18 |$'
+  assert_file_contains "the table lists a leg" "$TMP_DIR/summary-1.md" '^| `e2e-chaos / e2e-chaos (nova, .*` | success | 283 |$'
+  assert_file_contains "the table lists the random run" "$TMP_DIR/summary-1.md" '^| `e2e-chaos-random / e2e-chaos-random` | success | 189 |$'
   assert_file_contains "the table carries the total" "$TMP_DIR/summary-1.md" '^| Total | | 790 |$'
 
   reset
@@ -354,7 +370,7 @@ test_the_multinode_leg() {
 test_the_random_leg() {
   echo "Test: a red e2e-chaos-random job files its failed checks as the leg random"
   reset
-  STUB_JOBS="$(page "$(green_prefix)" "$(leg pod success 100)" "$(job e2e-chaos-random failure self-hosted 110)")"
+  STUB_JOBS="$(page "$(green_prefix)" "$(leg pod success 100)" "$(random failure 110)")"
   mkdir -p "$REPORTS/e2e-chaos-junit-report-random"
   cat >"$REPORTS/e2e-chaos-junit-report-random/chaos-random-junit.xml" <<'XML'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -379,14 +395,14 @@ XML
 
   echo "Test: a red e2e-chaos-random job without a report files the leg random"
   reset
-  STUB_JOBS="$(page "$(green_prefix)" "$(leg pod success 100)" "$(job e2e-chaos-random cancelled self-hosted 120)")"
+  STUB_JOBS="$(page "$(green_prefix)" "$(leg pod success 100)" "$(random cancelled 120)")"
 
   run_report
   assert_eq "the leg is filed" "Nightly chaos leg random is red|cancelled" "$(calls)"
 
   echo "Test: a skipped e2e-chaos-random job files nothing"
   reset
-  STUB_JOBS="$(page "$(green_prefix)" "$(leg pod success 100)" "$(job e2e-chaos-random skipped self-hosted 0)")"
+  STUB_JOBS="$(page "$(green_prefix)" "$(leg pod success 100)" "$(random skipped 0)")"
 
   run_report
   assert_eq "nothing is filed" "" "$(calls)"

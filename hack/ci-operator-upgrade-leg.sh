@@ -12,7 +12,7 @@
 # .github/workflows/e2e-operator-upgrade.yaml reads it to prepare each matrix
 # job, and hack/ci-operator-upgrade-main-matrix.sh reads it to map every image
 # a main-side run loads. Each row mirrors what the e2e-operator job of
-# .github/workflows/ci.yaml gives the e2e fixtures the suite copies.
+# .github/workflows/ci-e2e-operator.yaml gives the e2e fixtures the suite copies.
 #
 # Required env vars:
 #   OPERATOR      — Operator name (e.g. keystone)

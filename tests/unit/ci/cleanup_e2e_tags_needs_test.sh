@@ -37,12 +37,15 @@ source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 # ---------------------------------------------------------------------------
 
 # Echo, one per line, every top-level job whose body uses the load-e2e-images
-# action.
+# action, in ci.yaml or in the workflow the job calls.
 image_consumers() {
-  awk '
-    /^  [a-z0-9-]+:$/ { job = substr($1, 1, length($1) - 1); next }
-    /uses: \.\/\.github\/actions\/load-e2e-images$/ && job != "" { print job }
-  ' "$CI_YAML" | sort -u
+  local job body
+  for job in $(job_names); do
+    body="$(job_block "$job")"
+    if grep -q 'uses: \./\.github/actions/load-e2e-images$' <<<"$body"; then
+      echo "$job"
+    fi
+  done | sort -u
 }
 
 # Echo, one per line, the jobs in cleanup-e2e-tags' one-line `needs` list.

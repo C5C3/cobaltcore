@@ -9,8 +9,8 @@
 # chainsaw-test.yaml. docs/reference/testing/chaos-e2e-tests.md lists every
 # suite in the `| Suite |` table under `## Test Suite Inventory`, which
 # hack/gen-chaos-matrix.sh generates from the suite headers, and describes it
-# in a `### <suite>` section. The matrix of the e2e-chaos job in
-# .github/workflows/ci.yaml runs every suite in exactly one entry: a line
+# in a `### <suite>` section. The matrix of the e2e-chaos job, in
+# ci-e2e-chaos.yaml, runs every suite in exactly one entry: a line
 # `- suite: <leg>` starts an entry, and the `tests/e2e-chaos/<suite>` tokens
 # on the lines below it are its suites. check_chaos_suites prints one problem
 # per line and nothing for a consistent tree. The fixture tests prove each
@@ -150,8 +150,12 @@ check_chaos_suites() {
     echo "missing $workflow"
     return
   fi
-  local legs
-  legs="$(CI_YAML="$workflow" job_block e2e-chaos | awk "$MATRIX_AWK")"
+  local legs=""
+  # job_block ends the test on a missing job; a fixture without one is a
+  # finding here.
+  if CI_YAML="$workflow" job_exists e2e-chaos; then
+    legs="$(CI_YAML="$workflow" job_block e2e-chaos | awk "$MATRIX_AWK")"
+  fi
   if [[ -z "$legs" ]]; then
     echo "no e2e-chaos matrix in $workflow"
     return

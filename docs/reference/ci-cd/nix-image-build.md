@@ -111,7 +111,7 @@ sdist asks for before uv can read its metadata.
 The expression of an image lives beside the image's other files, at
 `images/<name>/image.nix`. `hack/ci-generate-cleanup-matrix.sh` lists every
 `images/*/` directory, and the path filters of `build-images.yaml` and
-`ci.yaml` match `images/<name>/**`, so neither changes when an image moves.
+`.github/ci-filters.yaml` match `images/<name>/**`, so neither changes when an image moves.
 
 `nix/spike/` is the Phase 0 record of the migration (`nix/spike/README.md`,
 decisions D1 to D12). No output of the root flake reads it, no CI job builds

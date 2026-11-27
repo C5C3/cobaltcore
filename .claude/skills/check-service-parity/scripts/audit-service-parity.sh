@@ -16,7 +16,7 @@
 #   P3  helm chart: crds/, values.schema.json, helm-unittest suite set at
 #       parity with the keystone reference chart
 #   P4  observability: dashboards/<svc>-operator.json + dashboard_test.go
-#   P5  CI wiring: paths-filter, ALL_OPERATORS, FILTER_<svc>, unit-test
+#   P5  CI wiring: ci-filters.yaml filters, ALL_OPERATORS, unit-test
 #       matrices, helm-validate chart loop, and the
 #       derived GHCR cleanup package lists (exact item match)
 #   P6  e2e coverage: canonical chainsaw suite set under tests/e2e/<svc>/
@@ -249,18 +249,21 @@ done
 # ---------------------------------------------------------------------------
 # P5 — CI wiring
 # ---------------------------------------------------------------------------
-hdr "P5: CI wiring (ci.yaml, cleanup-images.yaml)"
+hdr "P5: CI wiring (ci.yaml, ci-filters.yaml, cleanup-images.yaml)"
 CI=".github/workflows/ci.yaml"
+CI_FILTERS=".github/ci-filters.yaml"
 for svc in ${SERVICES}; do
-  t=0; grep -qF "'operators/${svc}/**'" "${CI}" || t=1
+  t=0; grep -qF "'operators/${svc}/**'" "${CI_FILTERS}" || t=1
   check "${svc}" P5 "paths-filter" "${t}" \
-    "ci.yaml paths-filter watches operators/${svc}/**"
+    "ci-filters.yaml watches operators/${svc}/**"
 
   t=0; grep -E 'ALL_OPERATORS:' "${CI}" | grep -qw "${svc}" || t=1
   check "${svc}" P5 "ALL_OPERATORS" "${t}" "ci.yaml ALL_OPERATORS lists ${svc}"
 
-  t=0; grep -q "FILTER_${svc}:" "${CI}" || t=1
-  check "${svc}" P5 "FILTER" "${t}" "ci.yaml exports FILTER_${svc} to the resolver"
+  # The changes job hands the resolver the names of the matched filters, so a
+  # filter named after the operator is all the resolver needs.
+  t=0; grep -qx "${svc}:" "${CI_FILTERS}" || t=1
+  check "${svc}" P5 "FILTER" "${t}" "ci-filters.yaml declares the ${svc} filter the resolver reads"
 
   missing_matrix=$(grep -E 'target: \[' "${CI}" | grep -cvw "${svc}" || true)
   t=0; [[ "${missing_matrix}" -eq 0 ]] || t=1

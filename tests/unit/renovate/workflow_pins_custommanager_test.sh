@@ -3,13 +3,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify renovate.json has customManagers for the seven GitHub Actions env-var
+# Verify renovate.json has customManagers for the six GitHub Actions env-var
 # tool pins:
 #   - CONTROLLER_GEN_VERSION → kubernetes-sigs/controller-tools
 #   - GOFUMPT_VERSION        → mvdan/gofumpt
 #   - GOLANGCI_LINT_VERSION  → golangci/golangci-lint
 #   - HELM_VERSION           → helm/helm
-#   - KIND_VERSION           → kubernetes-sigs/kind
 #   - YQ_VERSION             → mikefarah/yq
 #   - ACTIONLINT_VERSION     → rhysd/actionlint
 #
@@ -19,15 +18,10 @@
 # main, so no pull request run proves a new helm can still push a chart, and
 # its minor/patch rule must leave the merge to a human.
 #
-# KIND_VERSION carries one extra obligation. It is pinned five times — in ci.yaml
-# for the e2e clusters, in e2e-operator-upgrade.yaml for the operator upgrade
-# clusters (a called workflow does not inherit ci.yaml's env), in
-# performance.yaml and flux-path.yaml for the two nightlies' clusters and in
-# hack/install-test-deps.sh for local development — and the five must agree,
-# or CI, the nightlies and a developer's kind enforce NetworkPolicy egress
-# differently. Renovate must therefore bump all five in ONE pull request, and
-# both kind packageRules must name every file; ungrouped it would open several,
-# each leaving the lockstep assertion below red.
+# KIND_VERSION is not among them: kind is pinned once, in
+# hack/install-test-deps.sh, and the create-kind-cluster action installs that
+# pin for every workflow's clusters. The kind test below holds every workflow to
+# that and the Renovate kind rules to that one file.
 #
 # Usage: bash tests/unit/renovate/workflow_pins_custommanager_test.sh
 
@@ -54,10 +48,6 @@ TOOLS=(
   "GOLANGCI_LINT_VERSION:golangci/golangci-lint:.github/workflows/ci.yaml"
   "HELM_VERSION:helm/helm:.github/workflows/ci.yaml"
   "HELM_VERSION:helm/helm:.github/workflows/e2e-operator-upgrade.yaml"
-  "KIND_VERSION:kubernetes-sigs/kind:.github/workflows/ci.yaml"
-  "KIND_VERSION:kubernetes-sigs/kind:.github/workflows/e2e-operator-upgrade.yaml"
-  "KIND_VERSION:kubernetes-sigs/kind:.github/workflows/flux-path.yaml"
-  "KIND_VERSION:kubernetes-sigs/kind:.github/workflows/performance.yaml"
   "YQ_VERSION:mikefarah/yq:.github/workflows/verify-container-images.yaml"
   "ACTIONLINT_VERSION:rhysd/actionlint:.github/workflows/ci.yaml"
 )
@@ -117,50 +107,43 @@ test_each_workflow_pin_has_manager() {
   done
 }
 
-test_kind_version_is_pinned_in_lockstep() {
-  echo "Test: the kind pins in ci.yaml, e2e-operator-upgrade.yaml, flux-path.yaml, performance.yaml and install-test-deps.sh agree, and bump together"
+test_kind_version_has_one_pin() {
+  echo "Test: kind is pinned once, in install-test-deps.sh, which every workflow's clusters use"
 
-  local ci_file upgrade_file flux_file perf_file install_file
-  local ci_kind upgrade_kind flux_kind perf_kind install_kind
-  ci_file="$PROJECT_ROOT/.github/workflows/ci.yaml"
-  upgrade_file="$PROJECT_ROOT/.github/workflows/e2e-operator-upgrade.yaml"
-  flux_file="$PROJECT_ROOT/.github/workflows/flux-path.yaml"
-  perf_file="$PROJECT_ROOT/.github/workflows/performance.yaml"
-  install_file="$PROJECT_ROOT/hack/install-test-deps.sh"
-
-  ci_kind="$(workflow_kind_pin "$ci_file")"
-  upgrade_kind="$(workflow_kind_pin "$upgrade_file")"
-  flux_kind="$(workflow_kind_pin "$flux_file")"
-  perf_kind="$(workflow_kind_pin "$perf_file")"
-  install_kind="$(sed -n 's/^KIND_VERSION="\(v[0-9.]*\)"$/\1/p' "$install_file" | head -1)"
-
-  assert_not_empty "ci.yaml pins KIND_VERSION" "$ci_kind"
   # CI creating its clusters with the helm/kind-action default (v0.31.0) while
   # local development installs a newer kind is how a NetworkPolicy egress posture
-  # that only holds on one of them reaches main unnoticed.
-  assert_eq "the ci.yaml and install-test-deps.sh kind pins agree" "$install_kind" "$ci_kind"
-  assert_eq "the ci.yaml and performance.yaml kind pins agree" "$ci_kind" "$perf_kind"
-  assert_eq "the ci.yaml and e2e-operator-upgrade.yaml kind pins agree" "$ci_kind" "$upgrade_kind"
-  assert_eq "the ci.yaml and flux-path.yaml kind pins agree" "$ci_kind" "$flux_kind"
+  # that only holds on one of them reaches main unnoticed. The create-kind-cluster
+  # action installs the pin of hack/install-test-deps.sh, so a workflow carries
+  # no pin of its own: a called workflow does not inherit the env of its caller,
+  # and a pin per workflow would be one more copy for every workflow ci.yaml calls.
+  local install_file install_kind wf pinned=""
+  install_file="$PROJECT_ROOT/hack/install-test-deps.sh"
+  install_kind="$(sed -n 's/^KIND_VERSION="\(v[0-9.]*\)"$/\1/p' "$install_file" | head -1)"
+  assert_not_empty "install-test-deps.sh pins KIND_VERSION" "$install_kind"
+  for wf in "$PROJECT_ROOT"/.github/workflows/*.yaml; do
+    [ -n "$(workflow_kind_pin "$wf")" ] && pinned="${pinned} ${wf#"$PROJECT_ROOT/"}"
+  done
+  assert_eq "no workflow pins KIND_VERSION" "" "$pinned"
+  assert_file_contains "the create-kind-cluster action reads the pin" \
+    "$PROJECT_ROOT/.github/actions/create-kind-cluster/action.yaml" "hack/install-test-deps.sh"
 
   if ! command -v jq >/dev/null 2>&1; then
-    echo "  SKIP: jq not installed (3 checks skipped)"
-    SKIP=$((SKIP + 3))
+    echo "  SKIP: jq not installed (4 checks skipped)"
+    SKIP=$((SKIP + 4))
     return
   fi
 
-  # One group, so Renovate bumps both files in a single pull request. Two rules
-  # would open two, and each would fail the assertion above until the other landed.
+  # One group, which a later second pin would join instead of opening a
+  # pull request of its own.
   local groups
   groups="$(jq -r '[.packageRules[]
     | select(((.matchPackageNames // []) | index("kubernetes-sigs/kind")) != null)
     | select(((.matchUpdateTypes // []) | index("minor")) != null)
     | .groupName] | unique | join(",")' "$RENOVATE_FILE")"
-  assert_eq "exactly one Renovate group owns the kind pins" "kind" "$groups"
+  assert_eq "exactly one Renovate group owns the kind pin" "kind" "$groups"
 
   # Both kind packageRules, the major-disable and the minor/patch group, name
-  # every pinning file. A rule that leaves one out lets Renovate move that pin
-  # alone, or not at all.
+  # the pinning file.
   local rules files
   rules="$(jq '[.packageRules[]
     | select(((.matchPackageNames // []) | index("kubernetes-sigs/kind")) != null)] | length' \
@@ -169,8 +152,10 @@ test_kind_version_is_pinned_in_lockstep() {
   files="$(jq -r '[.packageRules[]
     | select(((.matchPackageNames // []) | index("kubernetes-sigs/kind")) != null)
     | (.matchFileNames // []) | sort | join(",")] | unique | join(" ")' "$RENOVATE_FILE")"
-  assert_eq "both kind packageRules list the five pinning files" \
-    ".github/workflows/ci.yaml,.github/workflows/e2e-operator-upgrade.yaml,.github/workflows/flux-path.yaml,.github/workflows/performance.yaml,hack/install-test-deps.sh" "$files"
+  assert_eq "both kind packageRules name install-test-deps.sh alone" "hack/install-test-deps.sh" "$files"
+  assert_eq "no customManager looks for a kind pin in a workflow" "" \
+    "$(jq -r '.customManagers[] | select(.packageNameTemplate == "kubernetes-sigs/kind")
+      | select((.managerFilePatterns // []) | join(",") | contains("workflows")) | .matchStrings[0]' "$RENOVATE_FILE")"
 }
 
 test_workflow_pins_share_a_package_rule() {
@@ -246,7 +231,7 @@ test_helm_pin_is_not_automerged() {
 }
 
 test_each_workflow_pin_has_manager
-test_kind_version_is_pinned_in_lockstep
+test_kind_version_has_one_pin
 test_workflow_pins_share_a_package_rule
 test_helm_pin_is_not_automerged
 

@@ -5,8 +5,9 @@
 
 # hack/ci-resolve-changes.sh — Resolve effective CI changes into job flags.
 #
-# Reads the paths-filter outputs (passed as FILTER_* env vars) plus the pull
-# request's label set, and decides which jobs and which matrix legs run. The
+# Reads the paths-filter result (the names of the filters of
+# .github/ci-filters.yaml that matched) plus the pull request's label set, and
+# decides which jobs and which matrix legs run. The
 # rule is one line long: a job runs when one of ITS OWN inputs changed, never
 # because Go code changed somewhere. A job's inputs are the code it tests, the
 # images it loads, the suite it runs, and the scripts it calls.
@@ -35,6 +36,9 @@
 # Optional env vars:
 #   CANARY_OPERATOR   — Operator whose e2e leg runs for a change to the shared
 #                       e2e substrate or the workflow plumbing (default keystone)
+#   MATCHED_FILTERS   — JSON array of the filter keys that matched, the
+#                       `changes` output of dorny/paths-filter. Each name in it
+#                       reads as FILTER_<name>=true. Unset and "" mean none
 #   FILTER_<filter>   — One per paths-filter key; anything but "true" is false
 #   PR_LABELS         — JSON array of the pull request's label names. Unset, "",
 #                       null and any non-array all mean "no labels"
@@ -45,7 +49,8 @@
 #   EVENT_LABEL       — github.event.label.name, for the labeled no-op
 #
 # To add a new operator <op>:
-#   1. Add a paths filter <op> listing operators/<op>/**
+#   1. Add a paths filter <op> listing operators/<op>/** to
+#      .github/ci-filters.yaml, where every filter below goes too
 #   2. Add a paths filter tests_e2e_<op> listing tests/e2e/<op>/** and
 #      tests/e2e/<op>-operator/**, plus tests/e2e/lib/** when the operator's
 #      suites run a shared script from there (every namespace-scoped-rbac
@@ -143,6 +148,29 @@ emit() { echo "$1=$2" >>"$GITHUB_OUTPUT"; }
 
 # bool <condition-result> — normalises an exit status into true/false.
 yesno() { if "$@"; then echo true; else echo false; fi; }
+
+# ---------------------------------------------------------------------------
+# Matched filters
+#
+# The changes job hands over the names of the filters that matched as one JSON
+# array instead of one FILTER_<name> env var per filter. Each name sets its
+# FILTER_<name>, so filter_on reads both forms. A value that is not an array of
+# filter names is a wiring fault, not an empty change set: it fails the step.
+# ---------------------------------------------------------------------------
+if [[ -n "${MATCHED_FILTERS:-}" ]]; then
+  if ! matched=$(jq -r 'if type == "array" and all(.[]; type == "string")
+      then .[] else error("not an array of names") end' <<<"${MATCHED_FILTERS}" 2>/dev/null); then
+    echo "::error::MATCHED_FILTERS is not a JSON array of filter names: ${MATCHED_FILTERS}"
+    exit 1
+  fi
+  for name in $matched; do
+    if [[ ! "$name" =~ ^[a-z0-9_]+$ ]]; then
+      echo "::error::MATCHED_FILTERS names an invalid filter: ${name}"
+      exit 1
+    fi
+    printf -v "FILTER_${name}" '%s' true
+  done
+fi
 
 # ---------------------------------------------------------------------------
 # Label set
@@ -264,7 +292,7 @@ op_is_changed() { set_has "$op_changed" "$1"; }
 # green, and the next pull request to touch neutron, cinder or nova spends that
 # leg's wall on a bring-up that was already broken, with the failure attributed
 # to the wrong change. The lists mirror the `if:` conditions of the tempest
-# job's deploy steps in .github/workflows/ci.yaml.
+# job's deploy steps in .github/workflows/ci-tempest.yaml.
 #
 # Only those two. keystone, glance, neutron and nova are also deployed as
 # dependencies here, but each has a leg of its own that a change to it already

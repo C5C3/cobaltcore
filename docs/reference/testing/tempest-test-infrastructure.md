@@ -43,7 +43,8 @@ and `build-images.yaml` dynamically discovers releases for the Tempest image pip
 | `tests/tempest/test_keystone_inventory.py` | Unit tests of `keystone-inventory.py` against a fake Keystone, standard library only |
 | `hack/tempest/run-tests.sh` | Shared in-container runner invoked by both runners; holds the phase + retry + exit-code logic so it stays identical between CI and local runs |
 | `Makefile` | `tempest-test` target delegates to `hack/run-tempest.sh` |
-| `.github/workflows/ci.yaml` | `tempest` job with release matrix |
+| `.github/workflows/ci.yaml` | `tempest` job: when it runs, and the release matrix it passes |
+| `.github/workflows/ci-tempest.yaml` | the steps of each `tempest` leg |
 | `.github/workflows/build-images.yaml` | `build-tempest` and `merge-tempest-image` jobs (release-parameterized via `generate-matrix`) |
 
 ## Architecture
@@ -488,7 +489,7 @@ add another service:
    optional `NOVA_K8S_NAME` (the same three steps on 8774, polled on `/`) and
    placement the optional `PLACEMENT_K8S_NAME` (the same three steps on 8778,
    polled on `/`),
-   then add the conditional deploy steps to the `tempest` job in `ci.yaml`,
+   then add the conditional deploy steps to the `tempest` job in `ci-tempest.yaml`,
    gated on `matrix.service == '<service>'`.
 
 The scope-split needs no edit for a new plugin: `phase-2-plugin.txt` is filled

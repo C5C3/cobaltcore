@@ -1,0 +1,267 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+---
+# Centralized image build for E2E test jobs.
+# Builds all Docker images (operator, service, tempest) once and pushes them
+# to GHCR with run-scoped tags (e2e-${run_id}-<tag>).  e2e-operator,
+# e2e-chaos and tempest pull from GHCR via load-e2e-images instead of
+# rebuilding, saving ~5-10 min per CI run.
+#
+# GH-310: Replaces the previous docker-save → zstd → upload-artifact path.
+# Layer-level pull retries plus the GHCR CDN avoid the 5-minute
+# download-artifact timeouts that flaked the artifact-based transport.
+#
+# The build-e2e-images job of ci.yaml calls this workflow and decides when it runs.
+name: Build E2E Images
+
+"on":
+  workflow_call:
+    inputs:
+      changed-operators:
+        description: >
+          JSON array of the operators whose own sources changed.
+        type: string
+        required: true
+      changed-services:
+        description: >
+          JSON array of the operators whose service image sources changed.
+        type: string
+        required: true
+      changed-tempest:
+        description: >
+          "true" when the Tempest image sources changed.
+        type: string
+        required: true
+      changed-proxy:
+        description: >
+          "true" when the federation proxy image sources changed.
+        type: string
+        required: true
+      changed-ovn:
+        description: >
+          "true" when the OVN image sources changed.
+        type: string
+        required: true
+      changed-libvirt:
+        description: >
+          "true" when the libvirt image sources changed.
+        type: string
+        required: true
+      build-cover-images:
+        description: >
+          Whether a job that deploys the coverage-instrumented operator images
+          (e2e-operator, e2e-chaos, tempest) runs, so their :cover images are
+          built.
+        type: boolean
+        required: true
+    outputs:
+      image-map:
+        description: The image-map output of the build-e2e-images job.
+        value: ${{ jobs.build-e2e-images.outputs.image-map }}
+
+permissions:
+  contents: read
+  packages: write
+
+# A called workflow does not inherit the env of ci.yaml, so the values its
+# steps and scripts read are declared here.
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/c5c3
+  KIND_CLUSTER: cobaltcore
+
+jobs:
+  build-e2e-images:
+    runs-on: self-hosted
+    # 120 minutes: the 45 the job needs without the ovn and libvirt images,
+    # plus the 60 the build-ovn and build-libvirt jobs of
+    # .github/workflows/build-images.yaml budget for an uncached Nix compile
+    # of Open vSwitch and OVN, or of libvirt and QEMU, from source when this
+    # run builds those images (one nix call builds them side by side), plus
+    # slack. Under 60 the job was killed before the
+    # Tempest images were built, and every E2E job gates on its success, so
+    # the PR would have shipped with no E2E coverage at all. The ten
+    # <op>-operator-cover-image attributes build in the same nix build call
+    # and take about 6 minutes of the slack above the 105.
+    timeout-minutes: 120
+    outputs:
+      image-map: ${{ steps.images.outputs.image-map }}
+    env:
+      RUN_TAG: e2e-${{ github.run_id }}
+    steps:
+      # Full history: the resolver checks the revision of every operator image
+      # it reuses against the commits in this checkout, and builds an image
+      # whose revision it cannot find here. The checkout persists no token: the
+      # build users of "Build Nix images" could read it in /github/runner_temp,
+      # and no step of this job needs it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # buildx provides `docker buildx imagetools inspect`, which
+      # hack/ci-resolve-e2e-images.sh reads the published digests and the
+      # revision annotations with. This job runs no BuildKit build.
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+
+      - uses: ./.github/actions/registry-login
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The resolver says which image sources this pull request changed. This
+      # step builds those and resolves every other image to the digest behind
+      # the tag main last published, then hands the consumers one image-map so
+      # they pull whatever it names. A run that changes no image source builds
+      # nothing here and still leaves every consumer with a working reference.
+      # An operator image is reused only when its revision carries every commit
+      # to that operator's sources, so a :latest that main's manifest merge left
+      # behind is built here instead. When e2e-operator, e2e-chaos or tempest
+      # will run, the resolver also adds the coverage-instrumented image of
+      # every operator (<op>-operator:cover), which those three jobs deploy;
+      # main publishes none, so all ten are built.
+      - name: Resolve images
+        id: images
+        env:
+          CHANGED_OPERATORS: ${{ inputs.changed-operators }}
+          CHANGED_SERVICES: ${{ inputs.changed-services }}
+          CHANGED_TEMPEST: ${{ inputs.changed-tempest }}
+          CHANGED_PROXY: ${{ inputs.changed-proxy }}
+          CHANGED_OVN: ${{ inputs.changed-ovn }}
+          CHANGED_LIBVIRT: ${{ inputs.changed-libvirt }}
+          BUILD_COVER_IMAGES: ${{ inputs.build-cover-images }}
+        run: hack/ci-resolve-e2e-images.sh
+
+      # The operator, service, nova-compute, Tempest, ovn, libvirt and
+      # federation proxy images are flake attributes. The nixos/nix
+      # container builds them without its sandbox, which an unprivileged
+      # container cannot create, as build users of its own that can neither
+      # open the Docker socket nor write the workspace the runner mounts, and
+      # writes each image stream to .nix-e2e/<name>-<release>.tar; nothing is
+      # installed on the runner.
+      - name: Build Nix images
+        if: env.BUILD_NIX_IMAGES == 'true'
+        uses: docker://nixos/nix:2.35.3@sha256:ff480dbb23511aa1c10710aa068ceea5b93fed9bfce5f5379f3a6b07282cbc7b
+        env:
+          BUILD_SERVICE_IMAGES: ${{ env.BUILD_SERVICE_IMAGES }}
+          BUILD_TEMPEST_RELEASES: ${{ env.BUILD_TEMPEST_RELEASES }}
+          BUILD_OVN: ${{ env.BUILD_OVN }}
+          OVN_VERSION: ${{ env.OVN_VERSION }}
+          BUILD_LIBVIRT: ${{ env.BUILD_LIBVIRT }}
+          BUILD_PROXY: ${{ env.BUILD_PROXY }}
+          BUILD_OPERATORS: ${{ env.BUILD_OPERATORS }}
+          BUILD_COVER_OPERATORS: ${{ env.BUILD_COVER_OPERATORS }}
+        with:
+          entrypoint: bash
+          args: hack/ci-nix-build-e2e-images.sh
+
+      # docker load prints "Loaded image: <name>:<release>", the tag
+      # nix/lib/service-image.nix gives the image, <op>-operator:latest for
+      # an operator image and <op>-operator:cover for its
+      # coverage-instrumented variant; the push step below and the consumers
+      # address it under IMAGE_PREFIX.
+      - name: Load Nix images
+        if: env.BUILD_NIX_IMAGES == 'true'
+        run: |
+          while read -r name release; do
+            [ -n "$name" ] || continue
+            docker load -i ".nix-e2e/${name}-${release}.tar"
+            docker tag "${name}:${release}" "${IMAGE_PREFIX}/${name}:${release}"
+            rm -f ".nix-e2e/${name}-${release}.tar"
+          done < .nix-e2e/images.txt
+
+      # The keystone federation suites project the federation proxy sidecar.
+      # "Build Nix images" builds it as keystone-federation-proxy:latest when
+      # the image_proxy filter matched; the suites, the push step and the kind
+      # loads address it as :dev. Otherwise it comes from the map.
+      - name: Tag federation proxy image
+        if: env.BUILD_PROXY == 'true'
+        run: docker tag "${IMAGE_PREFIX}/keystone-federation-proxy:latest" "${IMAGE_PREFIX}/keystone-federation-proxy:dev"
+
+      # "Load Nix images" tagged each operator image this run built as
+      # <op>-operator:latest, the tag of its stream; the suites and the push
+      # step below address it as :dev.
+      - name: Tag operator images
+        run: |
+          for op in $BUILD_OPERATORS; do
+            docker tag "${IMAGE_PREFIX}/${op}-operator:latest" "${IMAGE_PREFIX}/${op}-operator:dev"
+          done
+
+      # Each operator image this run built carries the layout of
+      # nix/lib/static-image.nix and the four static labels alone; build-and-push
+      # publishes the same flake attribute without loading it. A cover image
+      # differs only in its description.
+      - name: Verify operator images
+        run: |
+          for op in $BUILD_OPERATORS; do
+            bash tests/container-images/verify_operator_image.sh "${IMAGE_PREFIX}/${op}-operator:dev" "${op}"
+          done
+          for op in $BUILD_COVER_OPERATORS; do
+            bash tests/container-images/verify_operator_image.sh "${IMAGE_PREFIX}/${op}-operator:cover" "${op}" cover
+          done
+
+      # GH-310: Push every E2E image this run built to GHCR under a run-scoped
+      # tag so consumer jobs can `docker pull` instead of downloading a 355 MB
+      # single-blob artifact (which intermittently times out at the 5-minute
+      # mark). Tags use the form e2e-${run_id}-<original-tag>; cleanup-e2e-tags
+      # prunes them at the end of the run, with a nightly safety net for
+      # cancelled workflows in cleanup-images.yaml. A reused image is never
+      # tagged here: the consumers pull it by the digest the map carries.
+      - name: Push E2E images to GHCR
+        run: |
+          # docker push has no built-in retry, so a transient ghcr.io timeout
+          # ("Client.Timeout exceeded while awaiting headers") fails the whole
+          # job even though login already succeeded. Mirror the bounded
+          # retry/backoff of the registry-login action so push flakes no
+          # longer break CI.
+          MAX_ATTEMPTS=5
+          BASE_DELAY=5
+          push_with_retry() {
+            local run_ref="$1"
+            for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
+              if docker push "${run_ref}"; then
+                return 0
+              fi
+              if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
+                local delay=$((attempt * BASE_DELAY))
+                echo "::warning::docker push ${run_ref} failed (attempt ${attempt}/${MAX_ATTEMPTS}); retrying in ${delay}s"
+                sleep "$delay"
+              fi
+            done
+            echo "::error::docker push ${run_ref} failed after ${MAX_ATTEMPTS} attempts"
+            return 1
+          }
+          push_image() {
+            local local_ref="$1"     # e.g. ghcr.io/c5c3/keystone:2026.1
+            local repo="${local_ref%:*}"
+            local tag="${local_ref##*:}"
+            local run_ref="${repo}:${RUN_TAG}-${tag}"
+            echo "::group::Push ${run_ref}"
+            docker tag "${local_ref}" "${run_ref}"
+            push_with_retry "${run_ref}"
+            echo "::endgroup::"
+          }
+          if [ "$BUILD_PROXY" = "true" ]; then
+            push_image "${IMAGE_PREFIX}/keystone-federation-proxy:dev"
+          fi
+          for op in $BUILD_OPERATORS; do
+            push_image "${IMAGE_PREFIX}/${op}-operator:dev"
+          done
+          for op in $BUILD_COVER_OPERATORS; do
+            push_image "${IMAGE_PREFIX}/${op}-operator:cover"
+          done
+          while read -r svc release image; do
+            [ -n "$svc" ] || continue
+            push_image "${IMAGE_PREFIX}/${image:-$svc}:${release}"
+          done <<<"$BUILD_SERVICE_IMAGES"
+          for release in $BUILD_TEMPEST_RELEASES; do
+            push_image "${IMAGE_PREFIX}/tempest:${release}"
+          done
+          if [ "$BUILD_OVN" = "true" ]; then
+            push_image "${IMAGE_PREFIX}/ovn:${OVN_VERSION}"
+          fi
+          if [ "$BUILD_LIBVIRT" = "true" ]; then
+            push_image "${IMAGE_PREFIX}/libvirt:latest"
+          fi

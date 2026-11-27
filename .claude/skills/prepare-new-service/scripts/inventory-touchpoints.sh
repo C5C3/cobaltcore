@@ -31,6 +31,7 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "${REPO_ROOT}"
 
 CI_YAML=.github/workflows/ci.yaml
+CI_FILTERS=.github/ci-filters.yaml
 BUILD_YAML=.github/workflows/build-images.yaml
 C5C3_CTRL=operators/c5c3/internal/controller
 C5C3_WEBHOOK=operators/c5c3/api/v1alpha1/controlplane_webhook.go
@@ -111,13 +112,13 @@ check "placement artefact: tests/e2e/${SERVICE}/invalid-cr/*-targetclusterref-em
   bash -c "ls tests/e2e/${SERVICE}/invalid-cr/*-targetclusterref-empty-name.yaml"
 
 header "Layer 3: CI / e2e / deploy"
-check "ci.yaml '${SERVICE}:' paths filter + FILTER_${SERVICE} env" \
-  bash -c "grep -Eq '^ +${SERVICE}:$' '${CI_YAML}' && grep -q 'FILTER_${SERVICE}:' '${CI_YAML}'"
+check "ci-filters.yaml '${SERVICE}:' paths filter (the resolver reads it by name)" \
+  grep -Eq "^${SERVICE}:$" "${CI_FILTERS}"
 check "ci.yaml ALL_OPERATORS includes '${SERVICE}'" list_has "${CI_YAML}" '^ +ALL_OPERATORS:'
 check "ci.yaml SERVICE_OPERATORS includes '${SERVICE}' (same edit as ALL_OPERATORS when it ships an image)" \
   list_has "${CI_YAML}" '^ +SERVICE_OPERATORS:'
-check "ci.yaml image_${SERVICE} / tests_e2e_${SERVICE} filters + FILTER_ lines" \
-  bash -c "grep -q 'FILTER_image_${SERVICE}:' '${CI_YAML}' && grep -q 'FILTER_tests_e2e_${SERVICE}:' '${CI_YAML}'"
+check "ci-filters.yaml image_${SERVICE} / tests_e2e_${SERVICE} filters" \
+  bash -c "grep -Eq '^image_${SERVICE}:$' '${CI_FILTERS}' && grep -Eq '^tests_e2e_${SERVICE}:$' '${CI_FILTERS}'"
 check ".codecov.yml unit-${SERVICE} component" grep -Eq "name: unit-${SERVICE}$" .codecov.yml
 check "pipeline contract test tests/unit/ci/${SERVICE}_e2e_matrix_test.sh (keystone has none)" \
   test -f "tests/unit/ci/${SERVICE}_e2e_matrix_test.sh"

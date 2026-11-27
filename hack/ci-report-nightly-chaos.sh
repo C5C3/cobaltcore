@@ -26,10 +26,12 @@
 #                                        the completed self-hosted jobs ran
 #                                        longer than BUDGET_MINUTES together
 #
-# A leg is a job named "e2e-chaos (<leg>, ...)", or the random chaos run, the
-# job named e2e-chaos-random, which is the leg random: its JUnit report holds
-# one suite random-<check> per check of its verdict. A skipped one did not
-# run. A
+# A leg is a job named "e2e-chaos / e2e-chaos (<leg>, ...)", or the random
+# chaos run, the job named "e2e-chaos-random / e2e-chaos-random", which is the
+# leg random: its JUnit report holds one suite random-<check> per check of its
+# verdict. Both run in a workflow the job of that name in ci.yaml calls
+# (ci-e2e-chaos.yaml, ci-e2e-chaos-random.yaml), and GitHub names such a job
+# "<caller> / <job>". A skipped one did not run. A
 # green night files nothing. Every night, green or red, writes a table of the
 # legs and the self-hosted total to $GITHUB_STEP_SUMMARY and to stdout. A failure
 # message goes into the issue inside a fence longer than any backtick run in it,
@@ -111,8 +113,8 @@ records="$(printf '%s' "${listing}" | jq -rs '
        | @tsv
   else error("no listing") end' 2>/dev/null)" || listing_failed
 
-LEG_RE='^e2e-chaos \(([a-z0-9-]+),'
-RANDOM_LEG_RE='^e2e-chaos-random$'
+LEG_RE='^e2e-chaos / e2e-chaos \(([a-z0-9-]+),'
+RANDOM_LEG_RE='^e2e-chaos-random / e2e-chaos-random$'
 
 legs=()
 leg_results=()
@@ -136,7 +138,9 @@ while IFS=$'\t' read -r name result url host seconds; do
       changes_result="${result}"
       changes_url="${url}"
       ;;
-    build-e2e-images)
+    # The job that calls ci-build-e2e-images.yaml: a skipped caller is listed
+    # under its own name, a run one under the name of the job it ran.
+    build-e2e-images | "build-e2e-images / build-e2e-images")
       build_result="${result}"
       build_url="${url}"
       ;;

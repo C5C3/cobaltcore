@@ -101,11 +101,13 @@ bottom when scaffolding `operators/<op>/`:
   `go:embed` accessor. The validating webhook checks `spec.extraConfig`
   against these catalogs; both targets need docker and the published service
   images.
-- **`.github/workflows/ci.yaml`:** add three paths filters and their
-  `FILTER_<name>` env vars: `<op>` for `operators/<op>/**`, `tests_e2e_<op>` for
-  the operator's suites, and, when the operator ships a service image,
-  `image_<op>` for `images/<op>/**` and `patches/<op>/**`. Then add the operator
-  to `ALL_OPERATORS`, and to `SERVICE_OPERATORS` when it has a service image.
+- **`.github/ci-filters.yaml` and `.github/workflows/ci.yaml`:** add three paths
+  filters to `ci-filters.yaml`: `<op>` for `operators/<op>/**`, `tests_e2e_<op>`
+  for the operator's suites, and, when the operator ships a service image,
+  `image_<op>` for `images/<op>/**` and `patches/<op>/**`. The resolver reads a
+  filter by its name, so no other line wires it. Then add the operator to
+  `ALL_OPERATORS` in `ci.yaml`, and to `SERVICE_OPERATORS` when it has a service
+  image.
   The unit and integration test matrices, the e2e matrix and the
   `build-e2e-images` build set are all derived from those lists, so none of them
   needs editing. `tests/unit/ci/change_classes_wiring_test.sh` fails when a step

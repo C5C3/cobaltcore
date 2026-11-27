@@ -44,8 +44,8 @@ with option catalogs. Every hand-maintained row applies once per service.
 | Tempest config | `tests/tempest/<svc>-<slug>/` for every service in `ALL_TEMPEST_SERVICES` of `hack/ci-generate-tempest-matrix.sh` (keystone, glance, barbican, neutron, cinder, nova) — the generator **hard-fails the whole pipeline** when any one is missing | **no** — six multi-CR directories |
 | Per-release e2e variant | `tests/e2e/<svc>/basic-deployment-<slug>/` for each of the eight services | **no** — hand-cloned, hard-coded names and image refs |
 | Upgrade-path e2e | eight `release-upgrade/`, keystone `upgrade-flow/` and `upgrade-abort/` | **no** — must move to the newest transition |
-| Placed-services release pins | `tests/e2e-multicluster/placed-services/*.yaml` and the ci.yaml `e2e-multicluster` preloads | **no** — one pinned release; bumped only when that pin moves |
-| Default-release references | kind ControlPlane, `deploy-infra` preload, `${VAR:-YYYY.N}` fallbacks in `hack/`, the `CONFIG_DIR`/`SERVICE_K8S_NAME` slug fallbacks of `hack/ci-run-tempest.sh`, the nova refs of `deploy/overlays/kind/fake-compute/fake-compute.yaml`, the metal-stack lab manifests, `ci.yaml` image tags, the eight plain `basic-deployment` suites | **no** — a decision, not a mechanical bump |
+| Placed-services release pins | `tests/e2e-multicluster/placed-services/*.yaml` and the `e2e-multicluster` preloads of `ci-e2e-multicluster.yaml` | **no** — one pinned release; bumped only when that pin moves |
+| Default-release references | kind ControlPlane, `deploy-infra` preload, `${VAR:-YYYY.N}` fallbacks in `hack/`, the `CONFIG_DIR`/`SERVICE_K8S_NAME` slug fallbacks of `hack/ci-run-tempest.sh`, the nova refs of `deploy/overlays/kind/fake-compute/fake-compute.yaml`, the metal-stack lab manifests, the image tags of the `ci-<job>.yaml` workflows, the eight plain `basic-deployment` suites | **no** — a decision, not a mechanical bump |
 
 ## Procedure
 
@@ -177,7 +177,7 @@ Copy `releases/<newest>/` as the template and adjust:
   Namespace (`parallel: 4`). Name them `<svc>-basic-<slug>` /
   `<svc>_basic_<slug>`; check with
   `grep -rnE 'basic[-_]<year>([^-_0-9]|$)' tests/e2e/*/basic-deployment-<slug>/`.
-  Add the nova variant to `shard_two` in `ci.yaml`
+  Add the nova variant to `shard_two` in `ci-e2e-operator.yaml`
   (`tests/unit/ci/nova_e2e_matrix_test.sh` asserts one shard per suite),
   and add the suite's row, section and tree entry to
   `docs/reference/testing/{keystone,cinder,nova}-e2e-tests.md` and the
@@ -246,8 +246,8 @@ None of these are mechanical; decide and record each:
   `deploy/overlays/kind/fake-compute/fake-compute.yaml`, the metal-stack lab
   manifests (`deploy/overlays/metal-stack/controlplane/controlplane-lab.yaml`,
   `deploy/overlays/metal-stack/hypervisor/compute.yaml`; the lab may lag, #1321
-  D4), the `ci.yaml` image-tag pins across
-  eight e2e jobs, the tempest client image the e2e fixtures run, and
+  D4), the image-tag pins of eight e2e jobs in their
+  `ci-<job>.yaml` workflows, the tempest client image the e2e fixtures run, and
   ~900 fixture pins under `tests/e2e*/` all name the default. Moving it
   is one coordinated sweep — the inventory prints every current value
   and the pin count.
