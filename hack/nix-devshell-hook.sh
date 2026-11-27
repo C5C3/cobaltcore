@@ -20,7 +20,13 @@
 #                                              KUSTOMIZE_VERSION,
 #                                              helm-unittest --version
 #   - Makefile                              → ENVTEST_K8S_VERSION
-#   - Makefile (make install-bats)          → BATS_VERSION, BATS_COMMIT
+#   - Makefile (make install-bats)          → BATS_VERSION, BATS_COMMIT,
+#                                              BATS_SUPPORT_VERSION,
+#                                              BATS_SUPPORT_COMMIT,
+#                                              BATS_ASSERT_VERSION,
+#                                              BATS_ASSERT_COMMIT,
+#                                              BATS_FILE_VERSION,
+#                                              BATS_FILE_COMMIT
 #   - hack/install-test-deps.sh (reused)    → chainsaw, kind, kubectl, flux
 #
 # Everything installs into the repo's gitignored bin/ (the Makefile's LOCALBIN)
