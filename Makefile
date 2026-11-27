@@ -253,16 +253,19 @@ chainsaw-lint:
 	@find tests -type f -name 'chainsaw-config.yaml' -print0 | xargs -0 -r -n1 chainsaw lint configuration -f
 
 .PHONY: test-shell
-# test-shell runs every shell-script unit test under tests/unit/ through bats,
-# one bats test per *_test.sh, with hack/test-shell.sh. Each test is a
-# self-contained bash script that uses tests/lib/assertions.sh.
-# TEST_SHELL_JOBS sets the parallel workers (default: every online CPU),
-# TEST_SHELL_FILTER selects scripts by an extended regular expression on their
-# path, and TEST_SHELL_REPORT_DIR names the directory of the JUnit report
-# report.xml (default: _output/test-shell).
+# test-shell runs every shell unit test under tests/unit/ through bats with
+# hack/test-shell.sh: each native *.bats file with one bats test per @test
+# (docs/contributing/shell-unit-tests.md), and each old *_test.sh script that
+# uses tests/lib/assertions.sh as one bats test. The native files load
+# bats-support, bats-assert and bats-file from LOCALBIN, where install-bats
+# puts them. TEST_SHELL_JOBS sets the parallel workers (default: every
+# online CPU), TEST_SHELL_FILTER selects native files and scripts by an
+# extended regular expression on their path, TEST_SHELL_NAME selects native
+# tests by name and runs no script, and TEST_SHELL_REPORT_DIR names the
+# directory of the JUnit report report.xml (default: _output/test-shell).
 test-shell: install-bats
 	@echo "Running shell unit tests..."
-	@BATS='$(BATS)' hack/test-shell.sh
+	@BATS='$(BATS)' TEST_SHELL_BATS_LIBS='$(LOCALBIN)' hack/test-shell.sh
 
 .PHONY: install-bats
 # install-bats installs bats-core at BATS_COMMIT into bin/bats-core and links
