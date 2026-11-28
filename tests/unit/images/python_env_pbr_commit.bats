@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -19,19 +19,9 @@
 # git starts maintenance at all; where it does not, the check would pass
 # vacuously and is skipped.
 #
-# Usage: bash tests/unit/images/python_env_pbr_commit_test.sh
+# Usage: bin/bats tests/unit/images/python_env_pbr_commit.bats
 
-set -uo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
+load '../../lib/bats/common'
 
 PYTHON_ENV="$PROJECT_ROOT/nix/lib/python-env.nix"
 
@@ -73,8 +63,11 @@ isolated_git_env() {
   export HOME="$1" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
 }
 
-test_hook_is_extractable() {
-  echo "Test: the preBuild hook of python-env.nix is extractable"
+setup() {
+  require_tool git
+}
+
+@test "the preBuild hook of python-env.nix is extractable" {
   local hook
   hook=$(extract_pre_build)
   assert_contains "the hook runs git init" "$hook" "git init"
@@ -82,10 +75,9 @@ test_hook_is_extractable() {
   assert_not_contains "the hook carries no other Nix interpolation" "$hook" "\${"
 }
 
-test_hook_starts_no_maintenance() {
-  echo "Test: the hook commits the tree and starts no background maintenance"
+@test "the hook commits the tree and starts no background maintenance" {
   local tmp hook exit_code=0 control spawned subject
-  tmp=$(mktemp -d)
+  tmp=$(mktemp -d "$BATS_TEST_TMPDIR/pbr.XXXXXX")
   hook=$(extract_pre_build)
 
   (
@@ -96,14 +88,11 @@ test_hook_starts_no_maintenance() {
       git add --all --force &&
       GIT_TRACE2_EVENT="$tmp/control.json" git -c user.name=t -c user.email=t@localhost \
         commit --quiet --message control
-  ) > /dev/null 2>&1
+  ) > /dev/null 2>&1 || true
   control=$(children "$tmp/control.json")
 
   if [ -z "$control" ]; then
-    echo "  SKIP: this git ($(git --version)) starts no maintenance on commit, so the check would pass vacuously"
-    SKIP=$((SKIP + 3))
-    rm -rf "$tmp"
-    return
+    skip "this git ($(git --version)) starts no maintenance on commit, so the check would pass vacuously"
   fi
 
   (
@@ -120,22 +109,4 @@ test_hook_starts_no_maintenance() {
   subject=$(cd "$tmp/tree" && HOME="$tmp" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
     git log -1 --format='%s|%an|%ad|%(trailers)' --date=raw 2>&1)
   assert_eq "the commit keeps its fixed subject, author and date" "fixture 1.0.0|nix|1 +0000|" "$subject"
-
-  rm -rf "$tmp"
 }
-
-if ! command -v git >/dev/null 2>&1; then
-  echo "SKIP: git not installed (every case needs it)"
-  SKIP=$((SKIP + 1))
-else
-  test_hook_is_extractable
-  echo ""
-  test_hook_starts_no_maintenance
-fi
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0

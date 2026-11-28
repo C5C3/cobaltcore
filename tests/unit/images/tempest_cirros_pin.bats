@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -14,25 +14,16 @@
 #   3. The rootLinks path of image.nix ends in the file name of the URL, and
 #      the guest suite's seed Job and verify_tempest.sh read that path.
 #
-# Usage: bash tests/unit/images/tempest_cirros_pin_test.sh
+# Usage: bin/bats tests/unit/images/tempest_cirros_pin.bats
 
-set -uo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
+load '../../lib/bats/common'
 
 NIX_FILE="images/tempest/image.nix"
 YAML_FILE="deploy/bases/hypervisor-fixtures/image.yaml"
 
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+setup() {
+  TMP_DIR="$BATS_TEST_TMPDIR"
+}
 
 # nix_value <root> <attribute>: the value of `<attribute> = "...";` in the
 # image.nix below root.
@@ -66,9 +57,7 @@ pin_mismatches() {
 }
 
 # --- Test 1: the two pins agree ---
-test_pins_agree() {
-  echo "Test: the cirros URL and sha256 of the tempest image equal the kind fixture's"
-
+@test "the cirros URL and sha256 of the tempest image equal the kind fixture's" {
   local out rc=0
   out="$(pin_mismatches "$PROJECT_ROOT")" || rc=$?
   assert_eq "the comparison passes" "0" "$rc"
@@ -78,9 +67,7 @@ test_pins_agree() {
 }
 
 # --- Test 2: a bump of one pin alone fails ---
-test_one_pin_alone_fails() {
-  echo "Test: a sha256 changed in image.nix alone fails and names both files"
-
+@test "a sha256 changed in image.nix alone fails and names both files" {
   # The copy's sha256 differs from the pin in its first digit, whatever the
   # pin is.
   local cur bad
@@ -99,9 +86,7 @@ test_one_pin_alone_fails() {
 }
 
 # --- Test 3: the path the image places the file at, and its readers ---
-test_path_and_readers() {
-  echo "Test: the rootLinks path carries the URL's file name and its readers name it"
-
+@test "the rootLinks path carries the URL's file name and its readers name it" {
   local rel url path reader
   rel="$(sed -n 's/^ *rootLinks\."\(usr\/share\/cirros\/[^"]*\)" = .*/\1/p' "$PROJECT_ROOT/$NIX_FILE")"
   url="$(nix_value "$PROJECT_ROOT" url)"
@@ -110,18 +95,6 @@ test_path_and_readers() {
   assert_eq "the path ends in the URL's file name" "${url##*/}" "${rel##*/}"
   for reader in tests/e2e-nova-libvirt/guest-dataplane/04-image-seed-job.yaml \
     tests/container-images/verify_tempest.sh; do
-    assert_file_contains_fixed "$reader reads $path" "$PROJECT_ROOT/$reader" "$path"
+    soft assert_file_contains_fixed "$reader reads $path" "$PROJECT_ROOT/$reader" "$path"
   done
 }
-
-# --- Run ---
-test_pins_agree
-test_one_pin_alone_fails
-test_path_and_readers
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0

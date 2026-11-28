@@ -122,7 +122,7 @@ bash nix/spike/generate-lock.sh keystone 2027.9; echo "exit=$?"
 bash nix/spike/generate-lock.sh swift 2026.1; echo "exit=$?"
 env PATH=/nonexistent /bin/bash nix/spike/generate-lock.sh keystone 2026.1; echo "exit=$?"
 https_proxy=http://127.0.0.1:9 bash nix/spike/generate-lock.sh keystone 2026.1; echo "exit=$?"
-bash tests/unit/images/nix_spike_generate_lock_test.sh
+bin/bats tests/unit/images/nix_spike_generate_lock.bats
 ```
 
 The second run printed the same line and left `git status` empty. The host

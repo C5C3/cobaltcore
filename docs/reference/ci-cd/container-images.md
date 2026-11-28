@@ -1776,7 +1776,7 @@ semantics of kolla's `healthcheck_port`. The script is cinder's
 `cinder-amqp-ready` with `NOVA_AMQP_PORT` in place of `CINDER_AMQP_PORT`, same
 default of `5672` and same semantics; the two images are independent build
 contexts, so each carries its own copy, and
-`tests/unit/images/amqp_ready_probe_copies_test.sh` fails when the code of the
+`tests/unit/images/amqp_ready_probe_copies.bats` fails when the code of the
 two copies drifts apart. It reads `/proc/net/tcp` and
 `/proc/net/tcp6`, skips a table that does not exist, and exits 0 with
 `established to broker port <n>` when a row in state `01` has a remote port
@@ -2805,7 +2805,7 @@ Helm chart of the same commit (see
   `require_pass` is what catches a patch that lost its test file. The second
   test skips as root and prints `--- SKIP`; Nix builds as a build user, and
   `refuse_root` fails a build that runs as root before any test.
-  `tests/unit/images/kna_patch_test_guard_test.sh` runs both functions
+  `tests/unit/images/kna_patch_test_guard.bats` runs both functions
   against such logs and a stubbed `id`
 - Builds `./cmd` with `CGO_ENABLED=0` and upstream's ldflags without the
   build date, with the version set to `sha-<commit>`, the tag the image is

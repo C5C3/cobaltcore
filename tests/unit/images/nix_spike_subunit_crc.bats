@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -14,19 +14,9 @@
 # of the original bytes; the expected output is the stream python-subunit
 # writes for the blanked traceback.
 #
-# Usage: bash tests/unit/images/nix_spike_subunit_crc_test.sh
+# Usage: bin/bats tests/unit/images/nix_spike_subunit_crc.bats
 
-set -uo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
+load '../../lib/bats/common'
 
 SUBUNIT_CRC="$PROJECT_ROOT/nix/spike/checks/subunit-crc.py"
 
@@ -48,23 +38,24 @@ read_hex() {
   python3 -c 'import sys; print(open(sys.argv[1], "rb").read().hex())' "$1"
 }
 
-test_blanked_stream_gets_valid_checksums() {
-  echo "Test: a stream whose store-path hashes nuke-refs blanked carries the checksums python-subunit writes"
+setup() {
+  require_tool python3
+}
+
+@test "a stream whose store-path hashes nuke-refs blanked carries the checksums python-subunit writes" {
   local tmp exit_code=0
-  tmp=$(mktemp -d)
+  tmp=$(mktemp -d "$BATS_TEST_TMPDIR/blanked.XXXXXX")
   write_hex "$BLANKED" "$tmp/testresults.subunit"
 
   python3 "$SUBUNIT_CRC" "$tmp/testresults.subunit" || exit_code=$?
   assert_eq "the run exits 0" "0" "$exit_code"
   assert_eq "the stream is the one python-subunit writes for the blanked traceback" \
     "$EXPECTED" "$(read_hex "$tmp/testresults.subunit")"
-  rm -rf "$tmp"
 }
 
-test_other_files_are_refused() {
-  echo "Test: a file that is no subunit v2 stream, or ends inside a packet, exits 1 and stays as it was"
+@test "a file that is no subunit v2 stream, or ends inside a packet, exits 1 and stays as it was" {
   local tmp output exit_code=0
-  tmp=$(mktemp -d)
+  tmp=$(mktemp -d "$BATS_TEST_TMPDIR/other.XXXXXX")
 
   echo "Ran: 5747 tests" >"$tmp/summary.txt"
   output=$(python3 "$SUBUNIT_CRC" "$tmp/summary.txt" 2>&1) || exit_code=$?
@@ -78,13 +69,11 @@ test_other_files_are_refused() {
   assert_eq "a stream cut inside its second packet exits 1" "1" "$exit_code"
   assert_contains "the message names the second packet" "$output" "no subunit v2 packet at byte 21"
   assert_eq "the cut stream is unchanged" "${BLANKED%??}" "$(read_hex "$tmp/testresults.subunit")"
-  rm -rf "$tmp"
 }
 
-test_malformed_packets_are_refused() {
-  echo "Test: a packet shorter than its own header, or with flags of another subunit version, exits 1 and stays as it was"
+@test "a packet shorter than its own header, or with flags of another subunit version, exits 1 and stays as it was" {
   local tmp output exit_code=0
-  tmp=$(mktemp -d)
+  tmp=$(mktemp -d "$BATS_TEST_TMPDIR/malformed.XXXXXX")
 
   # A four-byte length field that declares 8 bytes, the size of a packet
   # whose length field is one byte.
@@ -103,21 +92,4 @@ test_malformed_packets_are_refused() {
   assert_contains "the message names the offset" "$output" "no subunit v2 packet at byte 0"
   assert_eq "the packet of another version is unchanged" \
     "b31903150c64656d6f2e746573745f6f6bbea5839a" "$(read_hex "$tmp/v1.subunit")"
-  rm -rf "$tmp"
 }
-
-if ! command -v python3 >/dev/null 2>&1; then
-  echo "SKIP: python3 not installed (every case needs it)"
-  SKIP=$((SKIP + 1))
-else
-  test_blanked_stream_gets_valid_checksums
-  test_other_files_are_refused
-  test_malformed_packets_are_refused
-fi
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0

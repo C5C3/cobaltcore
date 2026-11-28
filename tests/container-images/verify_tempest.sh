@@ -137,7 +137,7 @@ test_cirros_image_present() {
   echo "Test: the cirros 0.6.3 guest image is present with the pinned digest"
   # tests/e2e-nova-libvirt/guest-dataplane/ seeds Glance from this file. The
   # wanted digest is read from images/tempest/image.nix, and
-  # tests/unit/images/tempest_cirros_pin_test.sh ties that pin to the one of
+  # tests/unit/images/tempest_cirros_pin.bats ties that pin to the one of
   # the kind fixture.
   local want digest exit_code=0
   want="$(sed -n 's/^ *sha256 = "\(.*\)";$/\1/p' "$SCRIPT_DIR/../../images/tempest/image.nix")"

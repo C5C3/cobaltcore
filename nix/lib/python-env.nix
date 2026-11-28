@@ -208,7 +208,7 @@ let
     # deletes the loose object directories under .git/objects/ while the
     # build already walks the tree: setuptools then fails at random with
     # "[Errno 2] No such file or directory: './.git/objects/60'".
-    # tests/unit/images/python_env_pbr_commit_test.sh runs this hook.
+    # tests/unit/images/python_env_pbr_commit.bats runs this hook.
     ${sources.project} = {
       buildSystem = {
         pbr = [ ];

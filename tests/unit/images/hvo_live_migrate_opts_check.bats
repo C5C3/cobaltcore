@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -30,31 +30,21 @@
 # file written for each case, require_pass against a log written for each
 # case, and main with a go stub.
 #
-# Usage: bash tests/unit/images/hvo_live_migrate_opts_check_test.sh
+# Usage: bin/bats tests/unit/images/hvo_live_migrate_opts_check.bats
 
-set -uo pipefail
+load '../../lib/bats/common'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 HVO_DIR="$PROJECT_ROOT/images/openstack-hypervisor-operator"
 
 # The tests of the four patches, as main checks them.
 PATCH_TESTS="TestLiveMigrateAutoBody TestHypervisorCreatedWithDefaultHighAvailability TestTraitsInSyncSetsTraitsUpdated TestServiceClientInterface"
 
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=images/openstack-hypervisor-operator/patch-checks.sh
 source "$HVO_DIR/patch-checks.sh"
-# The script turns errexit on for its own run; the cases here run failing
-# commands on purpose.
-set +e
 
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+setup() {
+  TMP_DIR="$BATS_TEST_TMPDIR"
+}
 
 # check_rc <file> <go source>
 # Writes <go source> to <file> in a fresh tree, runs check_live_migrate_opts
@@ -137,9 +127,7 @@ patch_code() {
 }
 
 # --- Test 1: the manager build runs the check ---
-test_manager_build_runs_the_check() {
-  echo "Test: manager.nix runs patch-checks.sh in its checkPhase, which defines the check"
-
+@test "manager.nix runs patch-checks.sh in its checkPhase, which defines the check" {
   local check_phase
   check_phase="$(awk '/checkPhase = /,/^  '"''"';$/' "$HVO_DIR/manager.nix")"
   assert_contains "the checkPhase runs patch-checks.sh" "$check_phase" 'bash ${./patch-checks.sh}'
@@ -150,9 +138,7 @@ test_manager_build_runs_the_check() {
 }
 
 # --- Test 2: every way of naming the type fails the build ---
-test_every_way_of_naming_the_type_fails_the_build() {
-  echo "Test: a literal, a var, new(), a pointer, an aliased import and a '/' before the type fail the build"
-
+@test "a literal, a var, new(), a pointer, an aliased import and a '/' before the type fail the build" {
   assert_eq "upstream's literal fails the build" "1" "$(check_rc internal/controller/eviction/controller.go '
 package eviction
 
@@ -193,9 +179,7 @@ package eviction
 }
 
 # --- Test 3: the patched code, comments, the builder and tests pass ---
-test_patched_code_comments_builder_and_tests_pass() {
-  echo "Test: patch 0001's code, comments, the builder interface and _test.go files pass"
-
+@test "patch 0001's code, comments, the builder interface and _test.go files pass" {
   local code
   code="$(patch_code)"
   # An awk that finds no hunk would pass the check below vacuously.
@@ -228,9 +212,7 @@ func (opts LiveMigrateOpts) ToLiveMigrateMap() (map[string]any, error) {')"
 }
 
 # --- Test 4: a grep error fails the build ---
-test_a_grep_error_fails_the_build() {
-  echo "Test: a grep error fails the build with status 2"
-
+@test "a grep error fails the build with status 2" {
   local output status=0
   output="$(grep() { return 3; }; check_live_migrate_opts . 2>&1)" || status=$?
   assert_eq "a failing grep returns 2" "2" "$status"
@@ -241,9 +223,7 @@ test_a_grep_error_fails_the_build() {
   status=0
   grep -r --include='*.go' x "$TMP_DIR/missing" >/dev/null 2>&1 || status=$?
   if [ "$status" -ne 2 ]; then
-    echo "  SKIP: this grep exits $status on a missing directory"
-    SKIP=$((SKIP + 1))
-    return
+    skip "this grep exits $status on a missing directory"
   fi
   status=0
   output="$(check_live_migrate_opts "$TMP_DIR/missing" 2>&1)" || status=$?
@@ -251,9 +231,7 @@ test_a_grep_error_fails_the_build() {
 }
 
 # --- Test 5: a top-level PASS line lets the build go on, nothing else ---
-test_require_pass_wants_the_top_level_pass_line() {
-  echo "Test: require_pass lets a top-level PASS line through and fails every other log"
-
+@test "require_pass lets a top-level PASS line through and fails every other log" {
   assert_eq "a top-level PASS line goes on" "0" "$(guard_rc TestLiveMigrateAutoBody '=== RUN   TestLiveMigrateAutoBody
 --- PASS: TestLiveMigrateAutoBody (0.00s)
 PASS')"
@@ -275,9 +253,7 @@ PASS')"
 }
 
 # --- Test 6: main selects and checks every patch test ---
-test_main_selects_and_checks_every_patch_test() {
-  echo "Test: main passes when every patch test passes and names each one that printed no PASS line"
-
+@test "main passes when every patch test passes and names each one that printed no PASS line" {
   local tree logs output test
   tree="$(mktemp -d "$TMP_DIR/tree.XXXXXX")"
 
@@ -288,16 +264,14 @@ test_main_selects_and_checks_every_patch_test() {
   for test in $PATCH_TESTS; do
     logs="$(mktemp -d "$TMP_DIR/logs.XXXXXX")"
     output="$(run_main "$tree" "$logs" "$test")"
-    assert_eq "main exits 1 without $test's PASS line" "status=1" "${output##*$'\n'}"
-    assert_contains "main names $test" "$output" \
+    soft assert_eq "main exits 1 without $test's PASS line" "status=1" "${output##*$'\n'}"
+    soft assert_contains "main names $test" "$output" \
       "patch-checks: $test printed no top-level PASS line"
   done
 }
 
 # --- Test 7: main runs the LiveMigrateOpts check ---
-test_main_runs_the_live_migrate_opts_check() {
-  echo "Test: main fails on a tree that still names servers.LiveMigrateOpts"
-
+@test "main fails on a tree that still names servers.LiveMigrateOpts" {
   local tree logs output
   tree="$(mktemp -d "$TMP_DIR/tree.XXXXXX")"
   logs="$(mktemp -d "$TMP_DIR/logs.XXXXXX")"
@@ -312,9 +286,7 @@ test_main_runs_the_live_migrate_opts_check() {
 }
 
 # --- Test 8: a failed run reaches require_pass ---
-test_a_failed_run_reaches_require_pass() {
-  echo "Test: a failing go test leaves the verdict to require_pass, with the error in the log"
-
+@test "a failing go test leaves the verdict to require_pass, with the error in the log" {
   local tree logs output
   tree="$(mktemp -d "$TMP_DIR/tree.XXXXXX")"
   logs="$(mktemp -d "$TMP_DIR/logs.XXXXXX")"
@@ -328,35 +300,15 @@ test_a_failed_run_reaches_require_pass() {
 }
 
 # --- Test 9: a run that fails after its PASS lines fails main ---
-test_a_run_failing_after_pass_fails_main() {
-  echo "Test: a go test that exits non-zero after its tests printed PASS fails main"
-
+@test "a go test that exits non-zero after its tests printed PASS fails main" {
   local tree logs output test
   tree="$(mktemp -d "$TMP_DIR/tree.XXXXXX")"
 
   for test in $PATCH_TESTS; do
     logs="$(mktemp -d "$TMP_DIR/logs.XXXXXX")"
     output="$(run_main "$tree" "$logs" "--panic=$test")"
-    assert_eq "main exits 1 when the run of $test fails after PASS" "status=1" "${output##*$'\n'}"
-    assert_contains "main says a run failed after PASS for $test" "$output" \
+    soft assert_eq "main exits 1 when the run of $test fails after PASS" "status=1" "${output##*$'\n'}"
+    soft assert_contains "main says a run failed after PASS for $test" "$output" \
       "patch-checks: a go test run exited non-zero after its tests passed"
   done
 }
-
-# --- Run ---
-test_manager_build_runs_the_check
-test_every_way_of_naming_the_type_fails_the_build
-test_patched_code_comments_builder_and_tests_pass
-test_a_grep_error_fails_the_build
-test_require_pass_wants_the_top_level_pass_line
-test_main_selects_and_checks_every_patch_test
-test_main_runs_the_live_migrate_opts_check
-test_a_failed_run_reaches_require_pass
-test_a_run_failing_after_pass_fails_main
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0
