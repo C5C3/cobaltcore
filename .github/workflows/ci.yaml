@@ -41,9 +41,9 @@ env:
   # development installs (tests/unit/renovate asserts the two match).
   KIND_VERSION: v0.33.0
   # Pin tool versions for CI reproducibility (single source of truth).
-  CONTROLLER_GEN_VERSION: v0.22.0
+  CONTROLLER_GEN_VERSION: v0.23.0
   GOFUMPT_VERSION: v0.12.0
-  GOLANGCI_LINT_VERSION: v2.14.0
+  GOLANGCI_LINT_VERSION: v2.15.0
   # Helm CLI of every job that installs it with azure/setup-helm. Without a
   # version input the action installs the newest helm release when the job
   # starts, so a helm release changes how helm-push talks to ghcr.io without a
