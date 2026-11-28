@@ -727,14 +727,74 @@ from OpenBao into Kubernetes Secrets.
 | --- | --- | --- |
 | `eso-management` | `kv-v2/data/bootstrap/*`, `kv-v2/data/infrastructure/*` | `read` |
 | `eso-control-plane` | `kv-v2/data/bootstrap/*`, `kv-v2/data/infrastructure/*`, `kv-v2/data/ceph/*` | `read` |
-| `eso-hypervisor` | `kv-v2/data/ceph/client-nova`, `kv-v2/data/openstack/nova/compute-*` | `read` |
-| `eso-storage` | `kv-v2/data/ceph/*` | `read`, `create`, `update` |
+| `eso-hypervisor` | `kv-v2/data/openstack/nova/compute-*` | `read` |
+| `eso-storage` | `kv-v2/data/ceph/*` | `read` |
 
-**Note:** `eso-storage` is the only ESO policy with write capabilities. This allows
-the Ceph cluster to write its own keys back to OpenBao via PushSecret.
+**Note:** All four ESO policies are read-only. The Ceph keys move through roles
+that bind one ServiceAccount each. `push-ceph-keys` pushes them, on
+`kubernetes/management` in the lab and on `kubernetes/storage` from a separate
+storage cluster. `read-ceph-keys` reads them on `kubernetes/management`, and a
+separate hypervisor cluster reads the cinder key as `read-ceph-client-cinder` on
+`kubernetes/hypervisor` (see [Kubernetes Auth Mounts](#kubernetes-auth-mounts)).
+A namespace that may use the shared ESO store of a cluster therefore cannot
+overwrite a Ceph key.
 
-**Note:** `eso-hypervisor` has the narrowest scope — it can only access the specific
-Ceph client key for Nova and Nova compute configuration, not broader secret paths.
+**Note:** A deployment bootstrapped at an earlier revision re-runs
+`setup-auth.sh` and `setup-policies.sh`, as in
+[Running the Full Bootstrap](#running-the-full-bootstrap), to add the two roles
+and the `read-ceph-client-cinder` policy and to narrow `eso-storage` and
+`eso-hypervisor`, with two moves between the two scripts:
+
+1. Re-run `setup-auth.sh` alone. It writes the `push-ceph-keys` role on
+   `kubernetes/storage` and the `read-ceph-client-cinder` role on
+   `kubernetes/hypervisor` and changes no policy. Then write the new
+   `read-ceph-client-cinder` policy alone, which narrows no existing policy:
+
+   ```bash
+   policies="$(mktemp -d)"
+   cp ../policies/read-ceph-client-cinder.hcl "${policies}"
+   POLICIES_DIR="${policies}" ./setup-policies.sh
+   ```
+
+2. Move a writer that writes below `kv-v2/data/ceph/` with an `eso-storage`
+   token (the KV API without ESO) to the `push-ceph-keys` role on
+   `kubernetes/storage` and the ServiceAccount `ceph-keys-push` in `rook-ceph`.
+   `setup-policies.sh` has written the `push-ceph-keys` policy since its first
+   revision, so the moved writer writes again before step 4.
+3. Move a reader of the `client.nova` key on a hypervisor cluster. No role
+   replaces the read of `kv-v2/data/ceph/client-nova` that `eso-hypervisor`
+   grants up to step 4, because `read-ceph-client-cinder` reads
+   `kv-v2/data/ceph/client-cinder` alone. Read the cinder key through a store as
+   in [Kubernetes Auth Mounts](#kubernetes-auth-mounts), with
+   `key: ceph/client-cinder` in the ExternalSecret. Once its Secret has synced,
+   switch libvirt to `client.cinder`, as
+   `deploy/overlays/metal-stack/hypervisor/libvirt-configmap.yaml` sets it up
+   in the lab. There `client.cinder` reaches the `volumes` pool alone, so a site
+   whose hypervisors use `client.nova` for ephemeral RBD disks first grants
+   `client.cinder` the caps on the pool of those disks
+   (`[libvirt] images_rbd_pool`) and sets `rbd_user` to `cinder` and
+   `rbd_secret_uuid` to the UUID of the `client.cinder` secret in the
+   `[libvirt]` section of nova.conf. Define that secret under a new UUID, and
+   keep the old secret with the `client.nova` key defined on every hypervisor
+   until every attachment has been refreshed and every server with an
+   ephemeral RBD disk has been hard-rebooted or cold-migrated. Nova reuses the
+   UUID stored in each attachment's connection_info, and a live migration keeps
+   the UUID and user of a server's ephemeral RBD disks. A running server keeps
+   the key its QEMU started with, so a wrong libvirt secret breaks it only at
+   its next restart or live migration.
+4. Re-run `setup-policies.sh`. Both scripts upsert, and OpenBao evaluates a
+   policy by name on each request, so the tokens already issued lose the old
+   grants without a restart of external-secrets. From then on an `eso-storage`
+   token gets 403 on a write below `kv-v2/data/ceph/`, and an `eso-hypervisor`
+   token gets 403 on `kv-v2/data/ceph/client-nova`.
+
+An ExternalSecret that still reads the `client.nova` key through the
+`eso-hypervisor` store reports `SecretSyncedError` after step 4, and its Secret
+keeps the last key it synced, so a rotation of `client.nova` no longer reaches
+the hypervisors.
+
+The scripts delete nothing, so a re-run at the earlier revision restores both
+ESO policies and leaves the two roles and `read-ceph-client-cinder` in OpenBao.
 
 ### Operational Policies
 

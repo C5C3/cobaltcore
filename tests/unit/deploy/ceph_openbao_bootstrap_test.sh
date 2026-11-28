@@ -25,6 +25,14 @@
 #   - read-ceph-client-cinder.hcl must grant read on
 #     kv-v2/data/ceph/client-cinder alone: libvirt needs the cinder key, and a
 #     hypervisor never uses the key of cinder-backup.
+#   - eso-storage.hcl and eso-hypervisor.hcl, the policies of the shared ESO
+#     identity of the storage and the hypervisor cluster, must grant read and
+#     nothing more. eso-storage reads below kv-v2/data/ceph/ and holds no KV
+#     metadata path, so a push as eso-storage fails and goes through
+#     push-ceph-keys; eso-hypervisor reads the Nova compute configuration
+#     alone. The eso-storage and eso-hypervisor roles bind their own policy
+#     and nothing else, and no role but the two push-ceph-keys roles binds
+#     push-ceph-keys.
 #   - push-ceph-keys.hcl must grant the KV v2 metadata of ceph/ beside its
 #     data: ESO writes the custom metadata of every secret it pushes, and the
 #     push fails with 403 without it.
@@ -44,6 +52,8 @@ POLICY_DIR="$PROJECT_ROOT/deploy/bases/shared-openbao/policies"
 READ_POLICY="$POLICY_DIR/read-ceph-keys.hcl"
 PUSH_POLICY="$POLICY_DIR/push-ceph-keys.hcl"
 CINDER_POLICY="$POLICY_DIR/read-ceph-client-cinder.hcl"
+ESO_STORAGE_POLICY="$POLICY_DIR/eso-storage.hcl"
+ESO_HYPERVISOR_POLICY="$POLICY_DIR/eso-hypervisor.hcl"
 
 # The four Ceph key roles of setup-auth.sh, one per entry as
 # <mount>:<role>:<ServiceAccount>:<namespace>:<policy>.
@@ -166,6 +176,19 @@ test_writes_the_ceph_key_roles() {
   assert_eq "the call log holds four Ceph key role writes and no other" "4" \
     "$(grep -cE 'auth/kubernetes/[a-z-]+/role/(push|read)-ceph' "$tmp/calls.log")"
 
+  # A token gets the grants of the policies its role binds, so the shared ESO
+  # identity of the storage and the hypervisor cluster binds its own read-only
+  # policy alone, and only the two push-ceph-keys roles bind the Ceph write
+  # policy.
+  local cluster eso_call
+  for cluster in storage hypervisor; do
+    eso_call="$(grep "auth/kubernetes/${cluster}/role/eso-${cluster} " "$tmp/calls.log")"
+    assert_eq "the eso-${cluster} role binds the policy eso-${cluster} and nothing else" \
+      "eso-${cluster}" "$(role_arg "$eso_call" token_policies)"
+  done
+  assert_eq "only the two push-ceph-keys roles bind the push-ceph-keys policy" "2" \
+    "$(grep -cE 'token_policies=([^ ]*,)?push-ceph-keys(,| |$)' "$tmp/calls.log")"
+
   # The storage and hypervisor mounts carry no role until setup-auth.sh has
   # enabled them in the same run.
   local pair enabled written
@@ -245,7 +268,8 @@ test_ceph_policies_back_the_roles() {
   echo "Test: the Ceph key policies grant what their roles need and no more"
 
   local policy
-  for policy in "$READ_POLICY" "$PUSH_POLICY" "$CINDER_POLICY"; do
+  for policy in "$READ_POLICY" "$PUSH_POLICY" "$CINDER_POLICY" \
+    "$ESO_STORAGE_POLICY" "$ESO_HYPERVISOR_POLICY"; do
     if [[ ! -f "$policy" ]]; then
       echo "  FAIL: $policy does not exist, so its role is bound to a policy that is never written"
       FAIL=$((FAIL + 1))
@@ -267,6 +291,17 @@ test_ceph_policies_back_the_roles() {
     'path "kv-v2/data/ceph/client-cinder" {' "$(grep '^path ' "$CINDER_POLICY")"
   assert_eq "read-ceph-client-cinder grants read and nothing more" 'capabilities = ["read"]' \
     "$(grep '^[[:space:]]*capabilities' "$CINDER_POLICY" | sed 's/^[[:space:]]*//' | sort -u)"
+
+  assert_eq "eso-storage grants paths below kv-v2/data/ceph/ alone" "" \
+    "$(grep '^path ' "$ESO_STORAGE_POLICY" | grep -v '^path "kv-v2/data/ceph/' || true)"
+  assert_eq "eso-storage grants read and nothing more" 'capabilities = ["read"]' \
+    "$(grep '^[[:space:]]*capabilities' "$ESO_STORAGE_POLICY" | sed 's/^[[:space:]]*//' | sort -u)"
+  assert_file_not_contains "eso-storage holds no KV metadata path, so no PushSecret goes through it" \
+    "$ESO_STORAGE_POLICY" 'kv-v2/metadata'
+  assert_eq "eso-hypervisor reads the Nova compute configuration alone" \
+    'path "kv-v2/data/openstack/nova/compute-*" {' "$(grep '^path ' "$ESO_HYPERVISOR_POLICY")"
+  assert_eq "eso-hypervisor grants read and nothing more" 'capabilities = ["read"]' \
+    "$(grep '^[[:space:]]*capabilities' "$ESO_HYPERVISOR_POLICY" | sed 's/^[[:space:]]*//' | sort -u)"
 
   # The configMapGenerator of policies/kustomization.yaml ships a file to
   # setup-policies.sh only when its files list names it.
