@@ -26,8 +26,8 @@ needs no list. Shared code goes under `tests/lib/`; a `.sh` file under `tests/un
 fails the run unless its name ends in `_test.sh`.
 
 `tests/unit/ci/` is the reference: its 70 tests were the first to move to the native
-form. The other directories still hold scripts of the old form, `<name>_test.sh` files
-that count their checks themselves. They keep that form until their own port, and the
+form. A directory not yet ported still holds scripts of the old form, `<name>_test.sh`
+files that count their checks themselves. It keeps that form until its own port, and the
 run executes both kinds side by side.
 
 ## A complete example
