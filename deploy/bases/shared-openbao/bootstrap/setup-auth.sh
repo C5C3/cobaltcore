@@ -407,21 +407,29 @@ main() {
     token_max_ttl=72h
   log "nova-cell-db role written."
 
-  # push-ceph-keys and read-ceph-keys roles on the management cluster's
-  # Kubernetes auth mount, the two halves of the Ceph key hand-off of the
-  # metal-stack lab (deploy/overlays/metal-stack/ceph/cluster). The PushSecrets in
+  # The four Ceph key roles carry the Ceph key hand-off, which the metal-stack
+  # lab runs in deploy/overlays/metal-stack/ceph/cluster. The PushSecrets in
   # rook-ceph authenticate as ceph-keys-push and write the client keys Rook
-  # generates to kv-v2/data/ceph/client-<user>; the ExternalSecrets in openstack
-  # authenticate as ceph-keys-read and read them back. Each role binds one
-  # ServiceAccount in one namespace. The read role binds openstack and not "*"
-  # because the Ceph paths are not namespace-templated (eso-hypervisor expects
-  # the flat ceph/client-nova), so a wildcard would hand every tenant namespace
-  # every Ceph key. The push side authenticates on kubernetes/management because
-  # the lab's Ceph runs in the same cluster; the kubernetes/storage mount stays
-  # for a separate storage cluster.
+  # generates to kv-v2/data/ceph/client-<user>; the ExternalSecrets in
+  # openstack authenticate as ceph-keys-read and read them back.
   #
-  # Both roles are written unconditionally, like the Nova roles above, and stay
-  # dormant on a cluster without the Ceph overlay: no ceph-keys-push or
+  # push-ceph-keys and read-ceph-keys on kubernetes/management serve the lab,
+  # whose Ceph runs in the management cluster. push-ceph-keys on
+  # kubernetes/storage binds the same ServiceAccount, namespace and policy for
+  # a separate storage cluster. read-ceph-client-cinder on kubernetes/hypervisor
+  # lets a separate hypervisor cluster read the one key libvirt defines its
+  # secret from, kv-v2/data/ceph/client-cinder. Writes below ceph/ go through
+  # the push-ceph-keys role and never through the shared eso-<cluster>
+  # identity of a cluster.
+  #
+  # Each role binds one ServiceAccount in one namespace and never "*": the Ceph
+  # paths are not namespace-templated, so a wildcard would hand every tenant
+  # namespace every Ceph key the policy grants. The storage and hypervisor roles
+  # refuse every login until the site writes auth/kubernetes/<mount>/config
+  # (see the NOTE above the ESO roles).
+  #
+  # All four roles are written unconditionally, like the Nova roles above, and
+  # stay dormant on a cluster without the Ceph overlay: no ceph-keys-push or
   # ceph-keys-read ServiceAccount exists there to authenticate.
   log "Writing push-ceph-keys role on kubernetes/management..."
   bao_exec bao write "auth/kubernetes/management/role/push-ceph-keys" \
@@ -440,6 +448,24 @@ main() {
     token_ttl=1h \
     token_max_ttl=4h
   log "read-ceph-keys role written."
+
+  log "Writing push-ceph-keys role on kubernetes/storage..."
+  bao_exec bao write "auth/kubernetes/storage/role/push-ceph-keys" \
+    bound_service_account_names=ceph-keys-push \
+    bound_service_account_namespaces=rook-ceph \
+    token_policies=push-ceph-keys \
+    token_ttl=1h \
+    token_max_ttl=4h
+  log "push-ceph-keys role on kubernetes/storage written."
+
+  log "Writing read-ceph-client-cinder role on kubernetes/hypervisor..."
+  bao_exec bao write "auth/kubernetes/hypervisor/role/read-ceph-client-cinder" \
+    bound_service_account_names=ceph-keys-read \
+    bound_service_account_namespaces=openstack \
+    token_policies=read-ceph-client-cinder \
+    token_ttl=1h \
+    token_max_ttl=4h
+  log "read-ceph-client-cinder role on kubernetes/hypervisor written."
 
   # order-db role on the management cluster's Kubernetes auth mount. The
   # VaultDynamicSecret generator of every MariaDBDatabase order authenticates
