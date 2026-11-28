@@ -513,6 +513,8 @@ token is bounded by the read-only `keystone-db-dynamic` / `glance-db-dynamic` /
 | `kubernetes/management` | `eso-tenant` | `eso-tenant-auth` | `*` | `eso-tenant` | 1h | 4h |
 | `kubernetes/management` | `push-ceph-keys` | `ceph-keys-push` | `rook-ceph` | `push-ceph-keys` | 1h | 4h |
 | `kubernetes/management` | `read-ceph-keys` | `ceph-keys-read` | `openstack` | `read-ceph-keys` | 1h | 4h |
+| `kubernetes/storage` | `push-ceph-keys` | `ceph-keys-push` | `rook-ceph` | `push-ceph-keys` | 1h | 4h |
+| `kubernetes/hypervisor` | `read-ceph-client-cinder` | `ceph-keys-read` | `openstack` | `read-ceph-client-cinder` | 1h | 4h |
 
 The management mount also carries an `eso-tenant` role — the per-ControlPlane
 ESO identity a namespaced `SecretStore` (created per tenant by
@@ -524,17 +526,31 @@ token confined by it can only reach its own namespace's Keystone key and
 bootstrap material. `token_max_ttl=4h` caps renewal so a leaked tenant token
 cannot be renewed indefinitely.
 
-The `push-ceph-keys` and `read-ceph-keys` roles carry the Ceph key hand-off of
-the metal-stack lab ([Lab Ceph](./infrastructure-manifests.md#lab-ceph)). The
-PushSecrets in `rook-ceph` authenticate as `ceph-keys-push` and write the client
-keys Rook generates to `kv-v2/data/ceph/client-cinder` and
+The `push-ceph-keys` and `read-ceph-keys` roles on `kubernetes/management`
+carry the Ceph key hand-off of the metal-stack lab
+([Lab Ceph](./infrastructure-manifests.md#lab-ceph)). The PushSecrets in
+`rook-ceph` authenticate as `ceph-keys-push` and write the client keys Rook
+generates to `kv-v2/data/ceph/client-cinder` and
 `kv-v2/data/ceph/client-cinder-backup`; the ExternalSecrets in `openstack`
 authenticate as `ceph-keys-read` and read them back. Each role binds one
 ServiceAccount in one namespace. The read role binds `openstack` and not `*`:
-the Ceph paths are not namespace-templated (`eso-hypervisor` expects the flat
-`ceph/client-nova`), so a wildcard would give every tenant namespace every Ceph
-key. Both roles are written on every bootstrap and stay unused on a cluster
-without the lab's Ceph overlay.
+the Ceph paths are not namespace-templated, so a wildcard would give every
+tenant namespace every Ceph key. Both roles are written on every bootstrap and
+stay unused on a cluster without the lab's Ceph overlay.
+
+Two more roles serve a site that runs Ceph or the hypervisors in a cluster of
+their own. The `push-ceph-keys` role on `kubernetes/storage` binds the same
+ServiceAccount, namespace and policy as the management role of that name, so
+`deploy/overlays/metal-stack/ceph/cluster/keys-push.yaml` works on a separate
+storage cluster with another `server` and `mountPath: kubernetes/storage`. The
+`read-ceph-client-cinder` role on `kubernetes/hypervisor` reads
+`kv-v2/data/ceph/client-cinder` alone, the key libvirt defines its Ceph secret
+from. A store on the hypervisor cluster uses `mountPath: kubernetes/hypervisor`,
+`role: read-ceph-client-cinder` and the ServiceAccount `ceph-keys-read` in
+`openstack`. The bootstrap does not know these clusters, so the site supplies
+the rest: `auth/kubernetes/<mount>/config` with the API server and CA of each
+cluster, a store `server` that the cluster reaches, and a client certificate of
+`openbao-ca` for each store.
 
 **Note:** The management cluster mount is fully configured — the script explicitly writes
 `auth/kubernetes/management/config` with the in-cluster Kubernetes API endpoint and CA
@@ -698,7 +714,7 @@ password versions untouched.
 
 ## HCL Access Control Policies
 
-Twenty HCL policies enforce least-privilege access for each consumer type. All policy
+Twenty-one HCL policies enforce least-privilege access for each consumer type. All policy
 paths under the KV v2 engine include the `data/` prefix, which is required by the
 OpenBao/Vault KV v2 API for read and write operations.
 
@@ -725,8 +741,9 @@ Ceph client key for Nova and Nova compute configuration, not broader secret path
 | Policy | Paths | Capabilities | Purpose |
 | --- | --- | --- | --- |
 | `eso-tenant` | `kv-v2/{data,metadata}/openstack/keystone/{ns}/…` (fernet-keys, credential-keys, admin app-credential, service-accounts), `kv-v2/{data,metadata}/openstack/rabbitmq/{ns}/+/credentials` and `kv-v2/{data,metadata}/bootstrap/{ns}/…/admin`, plus `read` on `kv-v2/data/openstack/keystone/{ns}/*` and `kv-v2/data/bootstrap/{ns}/*` | `create`, `update`, `read`, `delete` | Per-tenant **sole write path** for per-ControlPlane Keystone key material (fernet/credential-key backups, admin bootstrap, admin Application Credential, service-account passwords) and the broker credentials of `RabbitMQVhost` orders. Every path is namespace-templated to the caller's own `service_account_namespace` (bound to the `eso-tenant` role), so a tenant token cannot reach another tenant's key material. |
-| `push-ceph-keys` | `kv-v2/data/ceph/*`, `kv-v2/metadata/ceph/*` | `create`, `update`, `read` | PushSecret for Ceph client keys, bound to the `push-ceph-keys` role. ESO writes and reads the custom metadata of every KV v2 secret it pushes, so the push needs the metadata path too. |
+| `push-ceph-keys` | `kv-v2/data/ceph/*`, `kv-v2/metadata/ceph/*` | `create`, `update`, `read` | PushSecret for Ceph client keys, bound to the `push-ceph-keys` role on `kubernetes/management` and on `kubernetes/storage`. ESO writes and reads the custom metadata of every KV v2 secret it pushes, so the push needs the metadata path too. |
 | `read-ceph-keys` | `kv-v2/data/ceph/*` | `read` | ExternalSecret read of the Ceph client keys, bound to the `read-ceph-keys` role (ServiceAccount `ceph-keys-read` in `openstack`) |
+| `read-ceph-client-cinder` | `kv-v2/data/ceph/client-cinder` | `read` | ExternalSecret read of the cinder client key on a separate hypervisor cluster, bound to the `read-ceph-client-cinder` role on `kubernetes/hypervisor` (ServiceAccount `ceph-keys-read` in `openstack`) |
 | `ci-cd-provisioner` | `kv-v2/data/*` (create/update/read), `kv-v2/metadata/*` (read/list) | `create`, `update`, `read`, `list` | CI/CD pipeline secret provisioning |
 | `pki-issuer` | `pki/issue/*`, `pki/sign/*` | `create`, `update` | cert-manager PKI certificate issuing |
 | `barbican-secretstore` | `barbican/data/*` (plus `barbican/metadata/*` without `delete`) | `create`, `read`, `update`, `delete`, `list` | Barbican's secret store on the shared instance, bound to the `barbican` AppRole role. The consumer is Barbican's `vault_plugin` via castellan, which speaks the Vault-compatible HTTP API that OpenBao keeps compatible. No `delete` on `metadata/`: in KV v2 that verb permanently destroys every version of a secret, the only in-store recovery path tenant key material has, while castellan deletes through `data/*` where the delete is a recoverable soft delete. Same grants as the `barbican-secretstore` policy the proving `OpenBaoCluster` self-initializes. |

@@ -4,9 +4,11 @@
 
 # PushSecret policy for Ceph keys — allows PushSecret CRs to write
 # Ceph client keys back to OpenBao after Ceph generates them.
-# setup-auth.sh binds it with the push-ceph-keys role on kubernetes/management
-# to the ServiceAccount rook-ceph/ceph-keys-push, the identity of the lab
-# Ceph's PushSecrets (deploy/overlays/metal-stack/ceph/cluster/keys-push.yaml).
+# setup-auth.sh binds it with the push-ceph-keys role to the ServiceAccount
+# rook-ceph/ceph-keys-push on two mounts: kubernetes/management, the identity
+# of the lab Ceph's PushSecrets
+# (deploy/overlays/metal-stack/ceph/cluster/keys-push.yaml), and
+# kubernetes/storage, the same identity on a separate storage cluster.
 
 path "kv-v2/data/ceph/*" {
   capabilities = ["create", "update", "read"]

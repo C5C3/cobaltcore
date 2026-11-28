@@ -23,4 +23,5 @@ configMapGenerator:
   - pki-issuer.hcl
   - placement-db-dynamic.hcl
   - push-ceph-keys.hcl
+  - read-ceph-client-cinder.hcl
   - read-ceph-keys.hcl

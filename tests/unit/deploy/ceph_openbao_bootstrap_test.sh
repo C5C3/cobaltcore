@@ -3,19 +3,28 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify the OpenBao bootstrap legs of the lab Ceph's key hand-off
+# Verify the OpenBao bootstrap legs of the Ceph key hand-off
 # (deploy/overlays/metal-stack/ceph/cluster/keys-push.yaml and keys-pull.yaml).
 #
-#   - setup-auth.sh must write BOTH kubernetes/management roles once each:
-#     push-ceph-keys bound to the ServiceAccount ceph-keys-push in rook-ceph,
-#     and read-ceph-keys bound to ceph-keys-read in openstack. Each binds one
-#     namespace and never "*": the Ceph paths are not namespace-templated, so
-#     a wildcard would hand every namespace every Ceph key.
-#   - each role must bind the policy of its own name and nothing else, and
+#   - setup-auth.sh must write each of the four Ceph key roles of CEPH_ROLES
+#     once. push-ceph-keys and read-ceph-keys on kubernetes/management carry
+#     the lab, whose Ceph runs in the management cluster. push-ceph-keys on
+#     kubernetes/storage and read-ceph-client-cinder on kubernetes/hypervisor
+#     serve a separate storage and a separate hypervisor cluster. Each role
+#     binds one ServiceAccount in one namespace and never "*": the Ceph paths
+#     are not namespace-templated, so a wildcard would hand every namespace
+#     every Ceph key its policy grants.
+#   - setup-auth.sh enables a mount before it writes a role on it, a re-run
+#     against a bootstrapped OpenBao writes the four roles and enables no
+#     mount, and a refused write of a role stops the script before the next.
+#   - each role must bind the policy it names and nothing else, and
 #     setup-policies.sh names each policy after its file's basename, so the
-#     file must exist.
+#     file must exist and policies/kustomization.yaml must list it.
 #   - read-ceph-keys.hcl must grant read and nothing more, and only below
 #     kv-v2/data/ceph/.
+#   - read-ceph-client-cinder.hcl must grant read on
+#     kv-v2/data/ceph/client-cinder alone: libvirt needs the cinder key, and a
+#     hypervisor never uses the key of cinder-backup.
 #   - push-ceph-keys.hcl must grant the KV v2 metadata of ceph/ beside its
 #     data: ESO writes the custom metadata of every secret it pushes, and the
 #     push fails with 403 without it.
@@ -34,9 +43,23 @@ AUTH_SCRIPT="$PROJECT_ROOT/deploy/bases/shared-openbao/bootstrap/setup-auth.sh"
 POLICY_DIR="$PROJECT_ROOT/deploy/bases/shared-openbao/policies"
 READ_POLICY="$POLICY_DIR/read-ceph-keys.hcl"
 PUSH_POLICY="$POLICY_DIR/push-ceph-keys.hcl"
+CINDER_POLICY="$POLICY_DIR/read-ceph-client-cinder.hcl"
+
+# The four Ceph key roles of setup-auth.sh, one per entry as
+# <mount>:<role>:<ServiceAccount>:<namespace>:<policy>.
+CEPH_ROLES=(
+  management:push-ceph-keys:ceph-keys-push:rook-ceph:push-ceph-keys
+  management:read-ceph-keys:ceph-keys-read:openstack:read-ceph-keys
+  storage:push-ceph-keys:ceph-keys-push:rook-ceph:push-ceph-keys
+  hypervisor:read-ceph-client-cinder:ceph-keys-read:openstack:read-ceph-client-cinder
+)
 
 # A typical engine map of an already-bootstrapped instance.
 ENGINES='{"kv-v2/":{},"pki/":{},"database/mariadb/":{}}'
+
+# The auth map of an instance setup-auth.sh has already run against, the same
+# map as in tests/unit/deploy/openbao_mount_guard_test.sh.
+AUTH_BOOTSTRAPPED='{"approle/":{},"kubernetes/control-plane/":{},"kubernetes/hypervisor/":{},"kubernetes/management/":{},"kubernetes/storage/":{},"token/":{}}'
 
 PASS=0
 FAIL=0
@@ -101,11 +124,11 @@ role_arg() {
 }
 
 # ---------------------------------------------------------------------------
-# Test: both Ceph key roles are written, each bound to one ServiceAccount in
-# one namespace
+# Test: the four Ceph key roles are written, each bound to one ServiceAccount
+# in one namespace
 # ---------------------------------------------------------------------------
-test_writes_both_ceph_key_roles() {
-  echo "Test: setup-auth.sh writes the push-ceph-keys and read-ceph-keys roles"
+test_writes_the_ceph_key_roles() {
+  echo "Test: setup-auth.sh writes the four Ceph key roles"
 
   local tmp
   tmp="$(mktemp -d)"
@@ -113,42 +136,116 @@ test_writes_both_ceph_key_roles() {
 
   make_kubectl "$tmp" "$tmp/calls.log"
 
-  local exit_code
-  run_bootstrap "$tmp" >/dev/null
+  local output exit_code
+  output="$(run_bootstrap "$tmp")"
   exit_code=$?
   assert_eq "the run succeeds" "0" "$exit_code"
 
-  local pair role sa ns role_call
-  for pair in push-ceph-keys:ceph-keys-push:rook-ceph read-ceph-keys:ceph-keys-read:openstack; do
-    IFS=: read -r role sa ns <<<"$pair"
-    role_call="$(grep "auth/kubernetes/management/role/${role} " "$tmp/calls.log")"
+  local row mount role sa ns policy role_call
+  for row in "${CEPH_ROLES[@]}"; do
+    IFS=: read -r mount role sa ns policy <<<"$row"
+    role_call="$(grep "auth/kubernetes/${mount}/role/${role} " "$tmp/calls.log")"
 
-    assert_eq "the ${role} role is written exactly once" "1" "$(grep -c . <<<"$role_call")"
-    assert_contains "the ${role} role is an upsert on the management mount" \
-      "$role_call" "bao write auth/kubernetes/management/role/${role} "
-    assert_eq "the ${role} role binds the ServiceAccount ${sa} alone" \
+    assert_eq "the ${role} role on kubernetes/${mount} is written exactly once" "1" \
+      "$(grep -c . <<<"$role_call")"
+    assert_contains "the ${role} role on kubernetes/${mount} is an upsert" \
+      "$role_call" "bao write auth/kubernetes/${mount}/role/${role} "
+    assert_eq "the ${role} role on kubernetes/${mount} binds the ServiceAccount ${sa} alone" \
       "$sa" "$(role_arg "$role_call" bound_service_account_names)"
     # Never "*": the Ceph paths are not namespace-templated.
-    assert_eq "the ${role} role binds the namespace ${ns} alone" \
+    assert_eq "the ${role} role on kubernetes/${mount} binds the namespace ${ns} alone" \
       "$ns" "$(role_arg "$role_call" bound_service_account_namespaces)"
-    assert_eq "the ${role} role binds the policy of its own name and nothing else" \
-      "$role" "$(role_arg "$role_call" token_policies)"
-    assert_eq "the ${role} token lives for an hour" "1h" "$(role_arg "$role_call" token_ttl)"
-    assert_eq "the ${role} token cannot be renewed past four hours" "4h" \
+    assert_eq "the ${role} role on kubernetes/${mount} binds the policy ${policy} and nothing else" \
+      "$policy" "$(role_arg "$role_call" token_policies)"
+    assert_eq "the ${role} token on kubernetes/${mount} lives for an hour" "1h" \
+      "$(role_arg "$role_call" token_ttl)"
+    assert_eq "the ${role} token on kubernetes/${mount} cannot be renewed past four hours" "4h" \
       "$(role_arg "$role_call" token_max_ttl)"
+  done
+
+  assert_eq "the call log holds four Ceph key role writes and no other" "4" \
+    "$(grep -cE 'auth/kubernetes/[a-z-]+/role/(push|read)-ceph' "$tmp/calls.log")"
+
+  # The storage and hypervisor mounts carry no role until setup-auth.sh has
+  # enabled them in the same run.
+  local pair enabled written
+  for pair in storage:push-ceph-keys hypervisor:read-ceph-client-cinder; do
+    IFS=: read -r mount role <<<"$pair"
+    enabled="$(grep -m1 -n -F -- "bao auth enable -path=kubernetes/${mount} kubernetes" "$tmp/calls.log" | cut -d: -f1)"
+    written="$(grep -m1 -n -F -- "bao write auth/kubernetes/${mount}/role/${role} " "$tmp/calls.log" | cut -d: -f1)"
+    assert_eq "kubernetes/${mount} is enabled before its ${role} role is written" "yes" \
+      "$([[ -n "$enabled" && -n "$written" && "$enabled" -lt "$written" ]] && echo yes || echo no)"
+  done
+
+  assert_contains "the run reports the push-ceph-keys role on kubernetes/storage" \
+    "$output" "push-ceph-keys role on kubernetes/storage written."
+  assert_contains "the run reports the read-ceph-client-cinder role on kubernetes/hypervisor" \
+    "$output" "read-ceph-client-cinder role on kubernetes/hypervisor written."
+}
+
+# ---------------------------------------------------------------------------
+# Test: a re-run against a bootstrapped OpenBao writes the four roles again
+# and enables no mount
+# ---------------------------------------------------------------------------
+test_rerun_writes_the_roles_without_enabling_a_mount() {
+  echo "Test: a re-run against a bootstrapped OpenBao writes the four Ceph key roles"
+
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+
+  make_kubectl "$tmp" "$tmp/calls.log" "$AUTH_BOOTSTRAPPED"
+
+  local exit_code
+  run_bootstrap "$tmp" >/dev/null
+  exit_code=$?
+  assert_eq "the re-run succeeds" "0" "$exit_code"
+  assert_file_not_contains "the re-run enables no auth mount" "$tmp/calls.log" "bao auth enable"
+
+  local row mount role
+  for row in "${CEPH_ROLES[@]}"; do
+    IFS=: read -r mount role _ <<<"$row"
+    assert_eq "the re-run writes the ${role} role on kubernetes/${mount} once" "1" \
+      "$(grep -c "auth/kubernetes/${mount}/role/${role} " "$tmp/calls.log")"
   done
 }
 
 # ---------------------------------------------------------------------------
-# Test: the policies behind the two roles
+# Test: a refused write of the storage push role stops the bootstrap
+# ---------------------------------------------------------------------------
+test_a_failed_storage_role_write_stops_the_bootstrap() {
+  echo "Test: a refused write of the push-ceph-keys role on kubernetes/storage stops setup-auth.sh"
+
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+
+  make_kubectl "$tmp" "$tmp/calls.log" '{}' 'auth/kubernetes/storage/role/push-ceph-keys'
+
+  local output exit_code
+  output="$(run_bootstrap "$tmp")"
+  exit_code=$?
+  # set -e ends setup-auth.sh with kubectl's exit code.
+  assert_eq "the run fails with kubectl's exit code" "1" "$exit_code"
+  assert_contains "the run shows OpenBao's refusal" "$output" "permission denied"
+  assert_not_contains "the run does not report the refused role as written" \
+    "$output" "push-ceph-keys role on kubernetes/storage written."
+  assert_file_contains_fixed "the refused call is the write of the storage push role" \
+    "$tmp/calls.log" "bao write auth/kubernetes/storage/role/push-ceph-keys "
+  assert_file_not_contains "the run stops before the read-ceph-client-cinder role on kubernetes/hypervisor" \
+    "$tmp/calls.log" "auth/kubernetes/hypervisor/role/read-ceph-client-cinder"
+}
+
+# ---------------------------------------------------------------------------
+# Test: the policies behind the roles
 # ---------------------------------------------------------------------------
 # setup-policies.sh names each policy after its file's basename, so
-# token_policies=<role> resolves to <role>.hcl and nothing else.
+# token_policies=<policy> resolves to <policy>.hcl and nothing else.
 test_ceph_policies_back_the_roles() {
-  echo "Test: read-ceph-keys.hcl reads below ceph/ alone and push-ceph-keys.hcl covers the KV metadata"
+  echo "Test: the Ceph key policies grant what their roles need and no more"
 
   local policy
-  for policy in "$READ_POLICY" "$PUSH_POLICY"; do
+  for policy in "$READ_POLICY" "$PUSH_POLICY" "$CINDER_POLICY"; do
     if [[ ! -f "$policy" ]]; then
       echo "  FAIL: $policy does not exist, so its role is bound to a policy that is never written"
       FAIL=$((FAIL + 1))
@@ -165,13 +262,29 @@ test_ceph_policies_back_the_roles() {
   assert_file_contains "push-ceph-keys writes the KV metadata of ceph/, which ESO sets on every push" \
     "$PUSH_POLICY" 'path "kv-v2/metadata/ceph/\*"'
   assert_eq "push-ceph-keys never deletes" "" "$(grep -E 'capabilities.*"(delete|sudo)"' "$PUSH_POLICY" || true)"
+
+  assert_eq "read-ceph-client-cinder grants the cinder client key alone" \
+    'path "kv-v2/data/ceph/client-cinder" {' "$(grep '^path ' "$CINDER_POLICY")"
+  assert_eq "read-ceph-client-cinder grants read and nothing more" 'capabilities = ["read"]' \
+    "$(grep '^[[:space:]]*capabilities' "$CINDER_POLICY" | sed 's/^[[:space:]]*//' | sort -u)"
+
+  # The configMapGenerator of policies/kustomization.yaml ships a file to
+  # setup-policies.sh only when its files list names it.
+  local on_disk listed
+  on_disk="$(cd "$POLICY_DIR" && printf '%s\n' *.hcl | LC_ALL=C sort)"
+  listed="$(sed -n 's/^[[:space:]]*-[[:space:]]*\([^[:space:]]*\.hcl\)[[:space:]]*$/\1/p' \
+    "$POLICY_DIR/kustomization.yaml" | LC_ALL=C sort)"
+  assert_eq "every policy file is in policies/kustomization.yaml and nothing else is" \
+    "$on_disk" "$listed"
 }
 
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
-test_writes_both_ceph_key_roles
+test_writes_the_ceph_key_roles
 test_ceph_policies_back_the_roles
+test_rerun_writes_the_roles_without_enabling_a_mount
+test_a_failed_storage_role_write_stops_the_bootstrap
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
