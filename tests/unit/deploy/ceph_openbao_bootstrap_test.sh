@@ -45,25 +45,34 @@ SKIP=0
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
-# make_kubectl <dir> <log>
+# make_kubectl <dir> <log> [<auth-json>] [<fail-pattern>]
 # Installs a recording kubectl stub in <dir>. Every invocation's argument string
 # lands in <log>. `bao secrets list` answers the engine map and `bao auth list`
-# an empty map, so setup-auth.sh enables its mounts; everything else is
-# recorded and answered with exit 0.
+# <auth-json>, an empty map by default, so setup-auth.sh enables its mounts. A
+# call whose argument string contains <fail-pattern> is recorded, then prints
+# OpenBao's 403 on stderr and exits 1; the default empty pattern fails nothing.
+# Everything else is recorded and answered with exit 0.
 make_kubectl() {
-  local dir="$1" log="$2"
+  local dir="$1" log="$2" auth_json="${3-}" fail_pattern="${4-}"
+  [[ -n "$auth_json" ]] || auth_json='{}'
   mkdir -p "$dir"
   : >"$log"
   cat >"$dir/kubectl" <<STUB
 #!/bin/bash
 printf '%s\n' "\$*" >>"${log}"
 
+fail='${fail_pattern}'
+if [[ -n "\$fail" && "\$*" == *"\$fail"* ]]; then
+  printf 'Error writing data: Error making API request.\n\nCode: 403. Errors:\n\n* permission denied\n' >&2
+  exit 1
+fi
+
 case "\$*" in
   *"bao secrets list"*)
     printf '%s' '${ENGINES}'
     ;;
   *"bao auth list"*)
-    printf '%s' '{}'
+    printf '%s' '${auth_json}'
     ;;
 esac
 exit 0
