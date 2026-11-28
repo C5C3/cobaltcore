@@ -162,15 +162,17 @@ deletion branch runs before the gate.
 
 ### Finalization
 
-Emitted while the finalizer tears a deleted Glance CR down. `FinalizingDatabase`
-is gated on live MariaDB cleanup work remaining, so brownfield CRs (no MariaDB
-CRs) and repeated requeue polls do not produce noise.
+Emitted while the finalizer tears a deleted Glance CR down. In managed mode
+(`spec.database.clusterRef` is set) the finalizer requests deletion of the
+MariaDB CRs that Glance owns. `FinalizingDatabase` fires only on a pass that
+requests a new deletion, so repeated requeue polls stay quiet. A brownfield CR
+skips the database step and emits neither database event.
 
 | Reason | Type | Trigger Condition | Example Message |
 | --- | --- | --- | --- |
-| `FinalizingDatabase` | Normal | Deletion begins while MariaDB Database/User/Grant CRs are still live | `Cleaning up MariaDB Database, User, and Grant before removing Glance` |
-| `DatabaseFinalized` | Normal | MariaDB resources marked for deletion; finalizer released | `MariaDB Database, User, and Grant marked for deletion; releasing finalizer` |
-| `RemoteChildrenAbandoned` | Warning | Deletion begins while the target cluster the CR named no longer resolves; the finalizer is released without touching what was written there | `Target cluster is no longer registered; releasing the finalizer without deleting the MariaDB Database, User, and Grant on it` |
+| `FinalizingDatabase` | Normal | Managed mode: the pass requested deletion of at least one Glance-owned MariaDB Database, User, or Grant CR | `Cleaning up MariaDB Database, User, and Grant before removing Glance` |
+| `DatabaseFinalized` | Normal | Managed mode: every Glance-owned MariaDB CR is absent or already terminating; finalizer released | `Owned MariaDB resources are absent or terminating; releasing finalizer` |
+| `RemoteChildrenAbandoned` | Warning | Deletion begins while the target cluster the CR named no longer resolves; the finalizer is released without touching what was written there | `Target cluster is no longer registered; releasing the Glance finalizer` |
 
 **Source:** `reconcileDelete` in `glance_controller.go`
 

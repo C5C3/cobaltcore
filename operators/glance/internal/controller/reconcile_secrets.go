@@ -23,10 +23,7 @@ import (
 // empty (a CR that bypassed the defaulting webhook). It mirrors horizon's
 // effectiveSecretKeyKey nil-tolerance.
 func effectiveServiceUserKey(glance *glancev1alpha1.Glance) string {
-	if key := glance.Spec.ServiceUser.SecretRef.Key; key != "" {
-		return key
-	}
-	return "password"
+	return glance.Spec.EffectiveServiceUser().SecretRef.Key
 }
 
 // reconcileSecrets checks that the ESO-provided Kubernetes Secrets exist before

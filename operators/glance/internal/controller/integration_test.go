@@ -16,33 +16,23 @@ import (
 	"time"
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
-	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/v26/api/v1alpha1"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
-	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
-	networkingv1 "k8s.io/api/networking/v1"
-	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
-	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
 	commontestutil "github.com/c5c3/cobaltcore/internal/common/testutil"
 	"github.com/c5c3/cobaltcore/internal/common/testutil/simulators"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
-	"github.com/c5c3/cobaltcore/internal/common/watch"
 	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
 	"github.com/c5c3/cobaltcore/operators/glance/internal/testutil"
 )
@@ -60,21 +50,13 @@ const (
 
 // --- Shared helpers ---
 
-// setupEnvTestWithController wraps testutil.SetupGlanceEnvTestWithController with
-// the v1alpha1 scheme and the webhook + controller registration callbacks. It
-// wires BOTH webhooks (the manifests envtest installs carry both kinds,
-// failurePolicy=Fail) and BOTH reconcilers.
-//
-// The reconcilers are built manually rather than via SetupWithManager: that
-// method probes the RESTMapper for Gateway API (set explicitly here) and would
-// trip controller-runtime's process-global controller-name validation across the
-// sequential managers each test spins up, so the controllers opt out via
-// SkipNameValidation, exactly as keystone's and horizon's integration setups do.
-// Each opt is applied to the GlanceReconciler right after it is built.
-func setupEnvTestWithController(t testing.TB, opts ...func(*GlanceReconciler)) (client.Client, context.Context, context.CancelFunc) {
+// setupEnvTestWithController registers the production controllers and webhooks.
+// Repeated managers in this process can opt out of global name validation.
+func setupEnvTestWithController(t testing.TB, skipNameValidation bool, opts ...func(*GlanceReconciler)) (client.Client, context.Context, context.CancelFunc) {
 	t.Helper()
 	return testutil.SetupGlanceEnvTestWithController(
 		t,
+		skipNameValidation,
 		glancev1alpha1.AddToScheme,
 		func(mgr ctrl.Manager) error {
 			if err := (&glancev1alpha1.GlanceWebhook{Client: mgr.GetAPIReader()}).SetupWebhookWithManager(mgr); err != nil {
@@ -83,76 +65,33 @@ func setupEnvTestWithController(t testing.TB, opts ...func(*GlanceReconciler)) (
 			return (&glancev1alpha1.GlanceBackendWebhook{Client: mgr.GetAPIReader()}).SetupWebhookWithManager(mgr)
 		},
 		func(mgr ctrl.Manager) error {
-			// Register both field-index sets here — the single registration site,
-			// mirroring GlanceReconciler.SetupWithManager.
-			if err := registerGlanceIndexes(context.Background(), mgr.GetFieldIndexer()); err != nil {
+			mcMgr, err := mcmanager.WithMultiCluster(mgr, nil)
+			if err != nil {
 				return err
 			}
-			if err := registerGlanceBackendIndexes(context.Background(), mgr.GetFieldIndexer()); err != nil {
-				return err
-			}
-
+			recorderFor := mgr.GetEventRecorderFor //nolint:staticcheck // Glance consumes the legacy record.EventRecorder.
 			r := &GlanceReconciler{
-				Client:   mgr.GetClient(),
-				Scheme:   mgr.GetScheme(),
-				Recorder: mgr.GetEventRecorderFor("glance-controller"),
-				// A healthy stub keeps the health-check probe from firing slow HTTP
-				// GETs at the unreachable Service DNS; envtest has no kubelet.
-				HTTPClient: &stubDoer{status: http.StatusOK},
-				// envtest loads the fake HTTPRoute CRD, so the kind is available.
-				// Mirror what SetupWithManager would set from the RESTMapper.
-				gatewayAPIAvailable: true,
-				// The fake VerticalPodAutoscaler CRD loads into every envtest too,
-				// so the VPA latch is true as it would be at startup.
-				vpaAvailable: true,
+				Client:                  mgr.GetClient(),
+				Scheme:                  mgr.GetScheme(),
+				Resolver:                mcMgr,
+				Recorder:                recorderFor("glance-controller"),
+				HTTPClient:              &stubDoer{status: http.StatusOK},
+				MaxConcurrentReconciles: 1,
 			}
 			for _, opt := range opts {
 				opt(r)
 			}
-			if err := ctrl.NewControllerManagedBy(mgr).
-				For(&glancev1alpha1.Glance{}, builder.WithPredicates(watch.CRUpdatePredicate())).
-				Owns(&appsv1.Deployment{}).
-				Owns(&corev1.Service{}).
-				Owns(&corev1.ConfigMap{}).
-				Owns(&corev1.Secret{}).
-				Owns(&policyv1.PodDisruptionBudget{}).
-				Owns(&autoscalingv2.HorizontalPodAutoscaler{}).
-				Owns(&vpav1.VerticalPodAutoscaler{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
-				Owns(&networkingv1.NetworkPolicy{}).
-				Owns(&batchv1.Job{}).
-				Owns(&gatewayv1.HTTPRoute{}).
-				Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(
-					secretToGlanceWithBackendsMapper(mgr.GetClient()),
-				)).
-				Watches(&glancev1alpha1.GlanceBackend{}, handler.EnqueueRequestsFromMapFunc(
-					glanceBackendToGlanceMapper(),
-				)).
-				Watches(&mariadbv1alpha1.MariaDB{}, handler.EnqueueRequestsFromMapFunc(
-					mariaDBToGlanceMapper(mgr.GetClient()),
-				)).
-				Watches(&esov1.ClusterSecretStore{}, handler.EnqueueRequestsFromMapFunc(
-					storeToGlanceMapper(mgr.GetClient(), commonv1.SecretStoreKindCluster),
-				)).
-				Watches(&esov1.SecretStore{}, handler.EnqueueRequestsFromMapFunc(
-					storeToGlanceMapper(mgr.GetClient(), commonv1.SecretStoreKindNamespaced),
-				)).
-				WithOptions(controller.Options{SkipNameValidation: ptr.To(true)}).
-				Complete(r); err != nil {
+			if err := r.SetupWithManager(mcMgr); err != nil {
 				return err
 			}
-
-			br := &GlanceBackendReconciler{
-				Client:   mgr.GetClient(),
-				Scheme:   mgr.GetScheme(),
-				Recorder: mgr.GetEventRecorderFor("glancebackend-controller"),
+			backend := &GlanceBackendReconciler{
+				Client:                  mgr.GetClient(),
+				Scheme:                  mgr.GetScheme(),
+				Resolver:                mcMgr,
+				Recorder:                recorderFor("glancebackend-controller"),
+				MaxConcurrentReconciles: 1,
 			}
-			return ctrl.NewControllerManagedBy(mgr).
-				For(&glancev1alpha1.GlanceBackend{}, builder.WithPredicates(watch.CRUpdatePredicate())).
-				Watches(&glancev1alpha1.Glance{}, handler.EnqueueRequestsFromMapFunc(
-					glanceToGlanceBackendsMapper(mgr.GetClient()),
-				)).
-				WithOptions(controller.Options{SkipNameValidation: ptr.To(true)}).
-				Complete(br)
+			return backend.SetupWithManager(mgr)
 		},
 	)
 }
@@ -323,7 +262,7 @@ func TestIntegrationGlance_BackendAttachProjectsConfig(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
 
-	c, ctx, _ := setupEnvTestWithController(t)
+	c, ctx, _ := setupEnvTestWithController(t, true)
 	ns := createTestNamespace(t, ctx, c)
 	createGlancePrerequisites(t, ctx, c, ns)
 
@@ -402,7 +341,7 @@ func TestIntegrationGlance_FlipDefaultOffWakesParent(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
 
-	c, ctx, _ := setupEnvTestWithController(t)
+	c, ctx, _ := setupEnvTestWithController(t, true)
 	ns := createTestNamespace(t, ctx, c)
 	createGlancePrerequisites(t, ctx, c, ns)
 
@@ -438,7 +377,7 @@ func TestIntegrationGlance_DeleteReleasesFinalizer(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
 
-	c, ctx, _ := setupEnvTestWithController(t)
+	c, ctx, _ := setupEnvTestWithController(t, true)
 	ns := createTestNamespace(t, ctx, c)
 
 	glance := integrationGlance("glance", ns)
@@ -489,7 +428,7 @@ func TestIntegrationGlance_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 	g := NewGomegaWithT(t)
 
 	doer := commontestutil.NewSwitchableDoer(http.StatusOK)
-	c, ctx, _ := setupEnvTestWithController(t, func(r *GlanceReconciler) { r.HTTPClient = doer })
+	c, ctx, _ := setupEnvTestWithController(t, true, func(r *GlanceReconciler) { r.HTTPClient = doer })
 	ns := createTestNamespace(t, ctx, c)
 	createGlancePrerequisites(t, ctx, c, ns)
 

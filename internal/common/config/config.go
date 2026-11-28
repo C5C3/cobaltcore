@@ -19,6 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -172,6 +173,19 @@ func MergeDefaults(userConfig, defaults map[string]map[string]string) map[string
 	}
 
 	return result
+}
+
+// RenderServiceINI applies service defaults over plugin sections, user overrides
+// over both, then wires the operator-generated policy file when present.
+func RenderServiceINI(defaults, plugins, overrides map[string]map[string]string, policyPath string) string {
+	merged := defaults
+	if len(plugins) > 0 {
+		merged = MergeDefaults(defaults, plugins)
+	}
+	if len(overrides) > 0 {
+		merged = MergeDefaults(overrides, merged)
+	}
+	return RenderINI(InjectOsloPolicyConfig(merged, policyPath))
 }
 
 // RenderSortedPairs joins a map into the comma-separated "key<sep>value" list an
@@ -406,6 +420,9 @@ type PruneOptions struct {
 	// CurrentName is the actively-mounted ConfigMap that must never be pruned.
 	// Empty prunes every historical ConfigMap for the base name.
 	CurrentName string
+	// InUse returns extra names pinned by workloads. It runs only when there
+	// is history to delete. A failed observation leaves the history intact.
+	InUse func(context.Context) (sets.Set[string], error)
 	// Retain is the number of newest historical ConfigMaps to keep in addition
 	// to CurrentName. Negative values are clamped to zero.
 	Retain int
@@ -512,8 +529,18 @@ func pruneImmutableObjects(ctx context.Context, c client.Client, scheme *runtime
 		return nil
 	}
 
-	for i := retain; i < len(candidates); i++ {
-		obj := candidates[i]
+	var pinned sets.Set[string]
+	if opts.InUse != nil {
+		var err error
+		pinned, err = opts.InUse(ctx)
+		if err != nil {
+			return err
+		}
+	}
+	for _, obj := range candidates[retain:] {
+		if pinned.Has(obj.GetName()) {
+			continue
+		}
 		if err := client.IgnoreNotFound(c.Delete(ctx, obj)); err != nil {
 			return fmt.Errorf("deleting stale %s %s/%s: %w", kind, opts.Namespace, obj.GetName(), err)
 		}

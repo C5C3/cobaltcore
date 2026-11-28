@@ -11,6 +11,8 @@ import (
 	"io/fs"
 	"sort"
 
+	"k8s.io/apimachinery/pkg/util/validation/field"
+
 	"github.com/c5c3/cobaltcore/internal/common/release"
 )
 
@@ -214,4 +216,39 @@ func (c *OptionCatalog) FindUnknownOptions(extraConfig map[string]map[string]str
 		return deprecated[i].Key < deprecated[j].Key
 	})
 	return unknown, deprecated
+}
+
+// ValidateOverrides translates catalog findings into admission diagnostics. A nil
+// catalog admits the overrides with one warning. Services supply their exemptions
+// and any additional guidance for an unknown section.
+func (c *OptionCatalog) ValidateOverrides(path *field.Path, overrides map[string]map[string]string, tag string, exempt CatalogExemptions, sectionHint string) ([]string, field.ErrorList) {
+	if len(overrides) == 0 {
+		return nil, nil
+	}
+	if c == nil {
+		why := "spec.openStackRelease does not name an OpenStack release"
+		if r, err := release.ParseRelease(tag); err == nil {
+			why = fmt.Sprintf(`no catalog for release "%d.%d" is embedded in this operator build`, r.Year, r.Minor)
+		}
+		return []string{"spec.extraConfig was not validated against an option catalog: " + why}, nil
+	}
+	var errs field.ErrorList
+	var warnings []string
+	unknown, deprecated := c.FindUnknownOptions(overrides, exempt)
+	for _, u := range unknown {
+		kind, hint := "option", ""
+		if u.SectionUnknown {
+			kind, hint = "section", sectionHint
+		}
+		message := fmt.Sprintf("no such %s in the %s %s option catalog%s", kind, c.Service, c.Release, hint)
+		errs = append(errs, field.Invalid(path.Key(u.Section).Key(u.Key), u.Key, message))
+	}
+	for _, d := range deprecated {
+		detail := " with no replacement"
+		if d.Replacement != "" {
+			detail = ", replaced by " + d.Replacement
+		}
+		warnings = append(warnings, fmt.Sprintf("spec.extraConfig [%s] %s: deprecated option in %s %s%s", d.Section, d.Key, c.Service, c.Release, detail))
+	}
+	return warnings, errs
 }
