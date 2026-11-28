@@ -32,7 +32,7 @@
 #
 # Once upstream carries a change, drop its patch together with its checks
 # here; a later patch adds its file under patches/ and its check here.
-# tests/unit/images/hvo_live_migrate_opts_check_test.sh sources this file.
+# tests/unit/images/hvo_live_migrate_opts_check.bats sources this file.
 
 set -euo pipefail
 

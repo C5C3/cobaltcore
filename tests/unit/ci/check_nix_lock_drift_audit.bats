@@ -160,7 +160,7 @@ rewrite() {
 
 # fixture_git <args>: git without the user's and the system's configuration,
 # whose core.hooksPath could reject the fixture commits, as isolated_git_env
-# of tests/unit/images/python_env_pbr_commit_test.sh keeps it out.
+# of tests/unit/images/python_env_pbr_commit.bats keeps it out.
 fixture_git() {
   GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git "$@"
 }

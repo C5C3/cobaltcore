@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bats
 # SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -19,32 +19,23 @@
 # The test sources the script and runs require_pass against a log written
 # for each case, refuse_root under a stub id, and main with a go stub.
 #
-# Usage: bash tests/unit/images/kna_patch_test_guard_test.sh
+# Usage: bin/bats tests/unit/images/kna_patch_test_guard.bats
 
-set -uo pipefail
+load '../../lib/bats/common'
+load '../../lib/bats/stubs'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 KNA_DIR="$PROJECT_ROOT/images/kvm-node-agent"
 CHECKS="$KNA_DIR/patch-checks.sh"
 
 MODE_TEST=TestUpdateTLSCertificateKeyMode
 GROUP_TEST=TestUpdateTLSCertificateKeyGroupNotPermitted
 
-PASS=0
-FAIL=0
-SKIP=0
-
-# shellcheck source=tests/lib/assertions.sh
-source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=images/kvm-node-agent/patch-checks.sh
 source "$CHECKS"
-# The script turns errexit on for its own run; the cases here run failing
-# commands on purpose.
-set +e
 
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+setup() {
+  TMP_DIR="$BATS_TEST_TMPDIR"
+}
 
 # guard_rc <test> <content>
 # Runs require_pass for <test> against a log holding <content> and prints
@@ -82,9 +73,7 @@ run_main() {
 }
 
 # --- Test 1: the manager build runs both tests and both guards ---
-test_manager_build_runs_the_tests_and_guards() {
-  echo "Test: manager.nix runs patch-checks.sh, which runs both tests and checks the log for each"
-
+@test "manager.nix runs patch-checks.sh, which runs both tests and checks the log for each" {
   local check_phase
   check_phase="$(awk '/checkPhase = /,/^  '"''"';$/' "$KNA_DIR/manager.nix")"
   assert_contains "the checkPhase runs patch-checks.sh" "$check_phase" 'bash ${./patch-checks.sh}'
@@ -97,9 +86,7 @@ test_manager_build_runs_the_tests_and_guards() {
 }
 
 # --- Test 2: a top-level PASS line lets the build go on ---
-test_top_level_pass_goes_on() {
-  echo "Test: a log with the test's top-level PASS line lets the build go on"
-
+@test "a log with the test's top-level PASS line lets the build go on" {
   assert_eq "the first test's log goes on" "0" "$(guard_rc "$MODE_TEST" '=== RUN   TestUpdateTLSCertificateKeyMode
 === RUN   TestUpdateTLSCertificateKeyMode/new_files
 --- PASS: TestUpdateTLSCertificateKeyMode (0.01s)
@@ -111,9 +98,7 @@ PASS')"
 }
 
 # --- Test 3: every other log fails the build ---
-test_other_logs_fail() {
-  echo "Test: a subtest's PASS, no tests, a SKIP and a FAIL fail the build"
-
+@test "a subtest's PASS, no tests, a SKIP and a FAIL fail the build" {
   assert_eq "a subtest's PASS line alone fails the build" "1" "$(guard_rc "$MODE_TEST" '=== RUN   TestUpdateTLSCertificateKeyMode
 === RUN   TestUpdateTLSCertificateKeyMode/new_files
     --- PASS: TestUpdateTLSCertificateKeyMode/new_files (0.00s)')"
@@ -133,29 +118,25 @@ PASS')"
 }
 
 # --- Test 4: refuse_root fails a run as root ---
-test_refuse_root() {
-  echo "Test: refuse_root fails a run as root and lets a build user through"
+@test "refuse_root fails a run as root and lets a build user through" {
+  local output status=0
+  stub_script id <<'EOF'
+echo "$ID_STUB_UID"
+EOF
 
-  local stubs output status=0
-  stubs="$(mktemp -d "$TMP_DIR/stubs.XXXXXX")"
-  printf '#!/bin/sh\necho "$ID_STUB_UID"\n' > "$stubs/id"
-  chmod +x "$stubs/id"
-
-  output="$(PATH="$stubs:$PATH" ID_STUB_UID=0 refuse_root 2>&1)" || status=$?
+  output="$(ID_STUB_UID=0 with_stubs refuse_root 2>&1)" || status=$?
   assert_eq "uid 0 returns 1" "1" "$status"
   assert_eq "the message says why" \
     "patch-checks: $GROUP_TEST skips as root; build as a Nix build user" "$output"
 
   status=0
-  output="$(PATH="$stubs:$PATH" ID_STUB_UID=1000 refuse_root 2>&1)" || status=$?
+  output="$(ID_STUB_UID=1000 with_stubs refuse_root 2>&1)" || status=$?
   assert_eq "uid 1000 returns 0" "0" "$status"
   assert_eq "a build user gets no message" "" "$output"
 }
 
 # --- Test 5: a run that fails after its PASS lines fails main ---
-test_a_run_failing_after_pass_fails_main() {
-  echo "Test: main passes a passing run and fails one that exits non-zero after both PASS lines"
-
+@test "main passes a passing run and fails one that exits non-zero after both PASS lines" {
   local logs output
   logs="$(mktemp -d "$TMP_DIR/logs.XXXXXX")"
   output="$(run_main "$logs" 0)"
@@ -167,17 +148,3 @@ test_a_run_failing_after_pass_fails_main() {
   assert_contains "main says go test failed after PASS" "$output" \
     "patch-checks: go test exited non-zero after its tests passed"
 }
-
-# --- Run ---
-test_manager_build_runs_the_tests_and_guards
-test_top_level_pass_goes_on
-test_other_logs_fail
-test_refuse_root
-test_a_run_failing_after_pass_fails_main
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0

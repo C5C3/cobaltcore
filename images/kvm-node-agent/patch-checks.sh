@@ -18,7 +18,7 @@
 #
 # Once upstream carries the change, both checks go with the patch; a later
 # patch adds its file under patches/ and its check here.
-# tests/unit/images/kna_patch_test_guard_test.sh sources this file.
+# tests/unit/images/kna_patch_test_guard.bats sources this file.
 
 set -euo pipefail
 
